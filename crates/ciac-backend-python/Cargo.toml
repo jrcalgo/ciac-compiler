@@ -13,6 +13,7 @@ ciac-ir.workspace = true
 heck.workspace = true
 include_dir.workspace = true
 minijinja.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 ciac-diagnostics.workspace = true

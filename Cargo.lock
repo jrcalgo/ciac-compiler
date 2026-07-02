@@ -114,6 +114,7 @@ dependencies = [
  "heck",
  "include_dir",
  "minijinja",
+ "serde",
 ]
 
 [[package]]

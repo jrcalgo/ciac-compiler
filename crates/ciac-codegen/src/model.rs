@@ -1,10 +1,12 @@
-//! Builds the template context from the validated IR.
+//! Language-neutral template model built from the validated IR.
 //!
-//! Everything the templates need is precomputed here as plain serializable
-//! data: casing variants, per-pipeline step lists, and which capabilities
-//! each generated module must import. Templates stay purely presentational.
+//! Everything backend templates need is precomputed here as plain
+//! serializable data: casing variants, per-pipeline step lists, and which
+//! capabilities each generated unit must have injected. Backends share
+//! this model so targets stay structurally comparable; templates stay
+//! purely presentational.
 
-use ciac_codegen::GenOptions;
+use crate::GenOptions;
 use ciac_ir::{EdgeKind, NodeId, NodeKind, NormalizedIr, QueueEngine, Step};
 use heck::{ToKebabCase, ToSnakeCase};
 use serde::Serialize;
@@ -117,7 +119,7 @@ pub struct ResourceCtx {
 }
 
 pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
-    let package = ciac_codegen::project_name(ir, opts);
+    let package = crate::project_name(ir, opts);
     let module = ir.name.to_snake_case();
     let has_db = ir.singleton(NodeKind::Database).is_some();
     let has_cache = ir.singleton(NodeKind::Cache).is_some();

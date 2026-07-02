@@ -11,6 +11,7 @@ rust-version.workspace = true
 ciac-ir.workspace = true
 heck.workspace = true
 minijinja.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [lints]

@@ -1,0 +1,85 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth %}
+    environment:
+{%- if c.has_db %}
+      DATABASE_URL: postgres://postgres:postgres@db:5432/{{ c.module }}
+{%- endif %}
+{%- if c.has_cache %}
+      REDIS_URL: redis://cache:6379/0
+{%- endif %}
+{%- if c.has_queue %}
+      NATS_URL: nats://queue:4222
+{%- endif %}
+{%- if c.has_auth %}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+{%- endif %}
+{%- endif %}
+{%- if c.has_db or c.has_cache or c.has_queue %}
+    depends_on:
+{%- if c.has_db %}
+      - db
+{%- endif %}
+{%- if c.has_cache %}
+      - cache
+{%- endif %}
+{%- if c.has_queue %}
+      - queue
+{%- endif %}
+{%- endif %}
+{%- if c.workers or c.consumers %}
+
+  workers:
+    build: .
+    command: ["workers"]
+{%- if c.has_db or c.has_cache or c.has_queue %}
+    environment:
+{%- if c.has_db %}
+      DATABASE_URL: postgres://postgres:postgres@db:5432/{{ c.module }}
+{%- endif %}
+{%- if c.has_cache %}
+      REDIS_URL: redis://cache:6379/0
+{%- endif %}
+{%- if c.has_queue %}
+      NATS_URL: nats://queue:4222
+{%- endif %}
+    depends_on:
+{%- if c.has_db %}
+      - db
+{%- endif %}
+{%- if c.has_cache %}
+      - cache
+{%- endif %}
+{%- if c.has_queue %}
+      - queue
+{%- endif %}
+{%- endif %}
+{%- endif %}
+{%- if c.has_db %}
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: {{ c.module }}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+{%- endif %}
+{%- if c.has_cache %}
+
+  cache:
+    image: redis:7
+{%- endif %}
+{%- if c.has_queue %}
+
+  queue:
+    image: nats:2
+{%- endif %}
+{%- if c.has_db %}
+
+volumes:
+  db-data:
+{%- endif %}

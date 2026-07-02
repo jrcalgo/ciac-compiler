@@ -18,8 +18,7 @@
 //! running: database, cache, and queue clients are created lazily, so the
 //! generated smoke tests pass on a bare checkout.
 
-mod context;
-
+use ciac_codegen::model as context;
 use ciac_codegen::{Backend, BackendError, GenOptions, GeneratedProject};
 use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};

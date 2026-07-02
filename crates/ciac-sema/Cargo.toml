@@ -1,0 +1,17 @@
+[package]
+name = "ciac-sema"
+description = "Name resolution, validation passes, and lowering to the CIaC IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciac-diagnostics.workspace = true
+ciac-ir.workspace = true
+ciac-syntax.workspace = true
+heck.workspace = true
+
+[lints]
+workspace = true

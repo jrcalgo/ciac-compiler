@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  lint:
+    name: Format & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  generated-python:
+    name: Validate generated Python project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Generate project from the flagship example
+        run: cargo run -p ciac -- build examples/video-platform.ciac --target python --out /tmp/generated-python
+      - name: Lint generated code
+        working-directory: /tmp/generated-python
+        run: |
+          uv sync
+          uv run ruff check .
+      - name: Run generated smoke tests
+        working-directory: /tmp/generated-python
+        run: uv run pytest -q
+
+  generated-rust:
+    name: Validate generated Rust project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate project from the flagship example
+        run: cargo run -p ciac -- build examples/video-platform.ciac --target rust --out /tmp/generated-rust
+      - name: Type-check generated code
+        working-directory: /tmp/generated-rust
+        run: cargo check

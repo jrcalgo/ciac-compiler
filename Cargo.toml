@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ciac",
+    "crates/ciac-diagnostics",
+    "crates/ciac-syntax",
+    "crates/ciac-ir",
+    "crates/ciac-sema",
+    "crates/ciac-codegen",
+    "crates/ciac-backend-python",
+    "crates/ciac-backend-rust",
+    "tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/jrcalgo/ciac"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# internal crates
+ciac-diagnostics = { path = "crates/ciac-diagnostics", version = "0.1.0" }
+ciac-syntax = { path = "crates/ciac-syntax", version = "0.1.0" }
+ciac-ir = { path = "crates/ciac-ir", version = "0.1.0" }
+ciac-sema = { path = "crates/ciac-sema", version = "0.1.0" }
+ciac-codegen = { path = "crates/ciac-codegen", version = "0.1.0" }
+ciac-backend-python = { path = "crates/ciac-backend-python", version = "0.1.0" }
+ciac-backend-rust = { path = "crates/ciac-backend-rust", version = "0.1.0" }
+
+# external
+anyhow = "1"
+ariadne = "0.5"
+clap = { version = "4", features = ["derive"] }
+heck = "0.5"
+include_dir = "0.7"
+insta = { version = "1", features = ["json"] }
+logos = "0.15"
+minijinja = { version = "2", features = ["loader"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+
+[profile.release]
+lto = "thin"

@@ -1,0 +1,17 @@
+[package]
+name = "ciac-codegen"
+description = "Backend-agnostic code-generation framework for the CIaC compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciac-ir.workspace = true
+heck.workspace = true
+minijinja.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

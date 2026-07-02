@@ -1,0 +1,26 @@
+[package]
+name = "ciac-integration-tests"
+description = "Workspace-level golden, negative, and determinism tests"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+ciac-backend-python.workspace = true
+ciac-backend-rust.workspace = true
+ciac-codegen.workspace = true
+ciac-diagnostics.workspace = true
+ciac-ir.workspace = true
+ciac-sema.workspace = true
+ciac-syntax.workspace = true
+insta.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

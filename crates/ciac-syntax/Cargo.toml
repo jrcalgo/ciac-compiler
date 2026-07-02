@@ -1,0 +1,16 @@
+[package]
+name = "ciac-syntax"
+description = "Lexer, parser, and AST for the CIaC language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciac-diagnostics.workspace = true
+logos.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

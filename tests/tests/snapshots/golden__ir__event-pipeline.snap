@@ -1,0 +1,152 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "Ingest",
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Database",
+      "engine": "Postgres"
+    },
+    {
+      "id": 1,
+      "kind": "Queue",
+      "engine": "Nats"
+    },
+    {
+      "id": 2,
+      "kind": "Api",
+      "name": "Submit"
+    },
+    {
+      "id": 3,
+      "kind": "Worker",
+      "name": "Processor"
+    },
+    {
+      "id": 4,
+      "kind": "Worker",
+      "name": "PageViewConsumer"
+    },
+    {
+      "id": 5,
+      "kind": "Service",
+      "name": "Validate"
+    },
+    {
+      "id": 6,
+      "kind": "Service",
+      "name": "Enrich"
+    },
+    {
+      "id": 7,
+      "kind": "Service",
+      "name": "Store"
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 1,
+      "to": 4,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 1,
+      "from": 4,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 5,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 2,
+      "to": 5,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 4,
+      "from": 5,
+      "to": 1,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 5,
+      "from": 1,
+      "to": 3,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 6,
+      "from": 6,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 7,
+      "from": 3,
+      "to": 6,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 8,
+      "from": 7,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 6,
+      "to": 7,
+      "kind": "RequestFlow"
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "Submit",
+      "owner": 2,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 5
+        },
+        {
+          "step": "Queue",
+          "node": 1
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Processor",
+      "owner": 3,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 6
+        },
+        {
+          "step": "Handler",
+          "node": 7
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": [
+    {
+      "name": "PageView",
+      "worker": 4,
+      "subject": "page_view"
+    }
+  ]
+}

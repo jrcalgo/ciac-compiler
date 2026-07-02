@@ -1,0 +1,5 @@
+// expect: CIAC0006
+service X;
+use { queue NATS; }
+worker Loop;
+pipeline Loop: Process -> Queue;

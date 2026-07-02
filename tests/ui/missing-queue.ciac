@@ -1,0 +1,4 @@
+// expect: CIAC0005
+service X;
+api A;
+pipeline A: Work -> Queue -> Return;

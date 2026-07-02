@@ -11,7 +11,7 @@ rust-version.workspace = true
 [lib]
 path = "src/lib.rs"
 
-[dev-dependencies]
+[dependencies]
 ciac-backend-python.workspace = true
 ciac-backend-rust.workspace = true
 ciac-codegen.workspace = true
@@ -19,6 +19,8 @@ ciac-diagnostics.workspace = true
 ciac-ir.workspace = true
 ciac-sema.workspace = true
 ciac-syntax.workspace = true
+
+[dev-dependencies]
 insta.workspace = true
 serde_json.workspace = true
 

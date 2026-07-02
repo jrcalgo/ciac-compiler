@@ -1,0 +1,167 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "VideoPlatform",
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Auth",
+      "scheme": "Jwt"
+    },
+    {
+      "id": 1,
+      "kind": "Database",
+      "engine": "Postgres"
+    },
+    {
+      "id": 2,
+      "kind": "Cache",
+      "engine": "Redis"
+    },
+    {
+      "id": 3,
+      "kind": "Queue",
+      "engine": "Nats"
+    },
+    {
+      "id": 4,
+      "kind": "Api",
+      "name": "Upload"
+    },
+    {
+      "id": 5,
+      "kind": "Worker",
+      "name": "Transcoder"
+    },
+    {
+      "id": 6,
+      "kind": "Service",
+      "name": "StoreVideo"
+    },
+    {
+      "id": 7,
+      "kind": "Service",
+      "name": "Transcode"
+    },
+    {
+      "id": 8,
+      "kind": "Service",
+      "name": "SaveResult"
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 4,
+      "to": 0,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 1,
+      "from": 6,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 6,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 0,
+      "to": 6,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 4,
+      "from": 6,
+      "to": 3,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 5,
+      "from": 3,
+      "to": 5,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 6,
+      "from": 7,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 7,
+      "from": 7,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 8,
+      "from": 5,
+      "to": 7,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 9,
+      "from": 8,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 10,
+      "from": 8,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 7,
+      "to": 8,
+      "kind": "RequestFlow"
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "Upload",
+      "owner": 4,
+      "steps": [
+        {
+          "step": "Auth",
+          "node": 0
+        },
+        {
+          "step": "Handler",
+          "node": 6
+        },
+        {
+          "step": "Queue",
+          "node": 3
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Transcoder",
+      "owner": 5,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 7
+        },
+        {
+          "step": "Handler",
+          "node": 8
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

@@ -1,0 +1,3 @@
+// expect: CIAC0012
+service X;
+use { db Postgres; db Postgres; }

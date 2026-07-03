@@ -23,8 +23,12 @@ pub struct Program {
 /// A top-level declaration.
 #[derive(Debug, Clone, Serialize)]
 pub enum Item {
+    /// `project <Name>;` — names a multi-service project.
+    Project(ProjectDecl),
     /// `service <Name>;` — names the system being described.
     Service(ServiceDecl),
+    /// `service <Name> { .. }` — a deployable service scope.
+    ServiceBlock(ServiceBlock),
     /// `use { auth JWT; db Postgres; .. }` — capability requirements.
     Use(UseBlock),
     /// `record <Name> { field: Type; .. }` — a typed data schema.
@@ -46,9 +50,33 @@ pub enum Item {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ProjectDecl {
+    pub name: Ident,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ServiceDecl {
     pub name: Ident,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceBlock {
+    pub name: Ident,
+    pub items: Vec<ServiceItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum ServiceItem {
+    Use(UseBlock),
+    Api(ApiDecl),
+    Worker(WorkerDecl),
+    Crud(CrudDecl),
+    Events(ComponentDecl),
+    Handler(HandlerDecl),
+    Pipeline(PipelineDecl),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -186,6 +214,8 @@ pub enum StepExpr {
     Name(Ident),
     /// `publish <Stream>` — publish the current payload to a named stream.
     Publish(Ident),
+    /// `call <Service>.<Api>` — synchronously invoke another service's api.
+    Call(QualifiedIdent),
     /// `match field { Variant -> Step; _ -> Step; }`.
     Match {
         field: Ident,
@@ -194,10 +224,17 @@ pub enum StepExpr {
     },
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct QualifiedIdent {
+    pub segments: Vec<Ident>,
+    pub span: Span,
+}
+
 impl StepExpr {
     pub fn span(&self) -> Span {
         match self {
             StepExpr::Name(ident) | StepExpr::Publish(ident) => ident.span,
+            StepExpr::Call(ident) => ident.span,
             StepExpr::Match { span, .. } => *span,
         }
     }

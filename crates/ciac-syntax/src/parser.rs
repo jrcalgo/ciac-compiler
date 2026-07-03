@@ -92,7 +92,8 @@ impl Parser<'_> {
                     self.bump();
                     return;
                 }
-                TokenKind::Service
+                TokenKind::Project
+                | TokenKind::Service
                 | TokenKind::Use
                 | TokenKind::Record
                 | TokenKind::Stream
@@ -122,7 +123,8 @@ impl Parser<'_> {
 
     fn item(&mut self) -> Option<Item> {
         match self.peek().kind {
-            TokenKind::Service => self.service_decl(),
+            TokenKind::Project => self.project_decl(),
+            TokenKind::Service => self.service_item(),
             TokenKind::Use => self.use_block(),
             TokenKind::Record => self.record_decl(),
             TokenKind::Stream => self.stream_decl(),
@@ -134,21 +136,87 @@ impl Parser<'_> {
             TokenKind::Pipeline => self.pipeline_decl(),
             _ => {
                 self.error_expected(
-                    "a declaration (`service`, `use`, `record`, `stream`, `handler`, `api`, \
-                     `worker`, `crud`, `events`, or `pipeline`)",
+                    "a declaration (`project`, `service`, `use`, `record`, `stream`, \
+                     `handler`, `api`, `worker`, `crud`, `events`, or `pipeline`)",
                 );
                 None
             }
         }
     }
 
-    fn service_decl(&mut self) -> Option<Item> {
+    fn project_decl(&mut self) -> Option<Item> {
         let kw = self.bump();
         let name = self.expect_ident()?;
         let semi = self.expect(TokenKind::Semi)?;
-        Some(Item::Service(ServiceDecl {
+        Some(Item::Project(ProjectDecl {
             span: kw.span.to(semi.span),
             name,
+        }))
+    }
+
+    fn service_item(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        if let Some(semi) = self.eat(TokenKind::Semi) {
+            return Some(Item::Service(ServiceDecl {
+                span: kw.span.to(semi.span),
+                name,
+            }));
+        }
+        self.expect(TokenKind::LBrace)?;
+        let mut items = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Use => {
+                    if let Some(Item::Use(item)) = self.use_block() {
+                        items.push(ServiceItem::Use(item));
+                    }
+                }
+                TokenKind::Api => {
+                    if let Some(Item::Api(item)) = self.api_decl() {
+                        items.push(ServiceItem::Api(item));
+                    }
+                }
+                TokenKind::Worker => {
+                    if let Some(Item::Worker(item)) = self.worker_decl() {
+                        items.push(ServiceItem::Worker(item));
+                    }
+                }
+                TokenKind::Crud => {
+                    if let Some(Item::Crud(item)) = self.crud_decl() {
+                        items.push(ServiceItem::Crud(item));
+                    }
+                }
+                TokenKind::Events => {
+                    if let Some(Item::Events(item)) = self.component_decl(Item::Events) {
+                        items.push(ServiceItem::Events(item));
+                    }
+                }
+                TokenKind::Handler => {
+                    if let Some(Item::Handler(item)) = self.handler_decl() {
+                        items.push(ServiceItem::Handler(item));
+                    }
+                }
+                TokenKind::Pipeline => {
+                    if let Some(Item::Pipeline(item)) = self.pipeline_decl() {
+                        items.push(ServiceItem::Pipeline(item));
+                    }
+                }
+                _ => {
+                    self.error_expected(
+                        "a service item (`use`, `api`, `worker`, `crud`, `events`, \
+                         `handler`, `pipeline`) or `}`",
+                    );
+                    self.recover_inside_block();
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some(Item::ServiceBlock(ServiceBlock {
+            span: kw.span.to(close.span),
+            name,
+            items,
         }))
     }
 
@@ -502,6 +570,9 @@ impl Parser<'_> {
         if self.at(TokenKind::Match) {
             return self.match_step();
         }
+        if self.eat(TokenKind::Call).is_some() {
+            return Some(StepExpr::Call(self.qualified_ident()?));
+        }
         if self.eat(TokenKind::Publish).is_some() {
             return Some(StepExpr::Publish(self.expect_ident()?));
         }
@@ -510,6 +581,19 @@ impl Parser<'_> {
         }
         self.error_expected("a step name or `publish <Stream>`");
         None
+    }
+
+    fn qualified_ident(&mut self) -> Option<QualifiedIdent> {
+        let first = self.expect_ident()?;
+        let mut end = first.span;
+        let mut segments = vec![first];
+        while self.eat(TokenKind::Dot).is_some() {
+            let segment = self.expect_ident()?;
+            end = segment.span;
+            segments.push(segment);
+        }
+        let span = segments[0].span.to(end);
+        Some(QualifiedIdent { segments, span })
     }
 
     fn match_step(&mut self) -> Option<StepExpr> {
@@ -630,6 +714,7 @@ mod tests {
             .iter()
             .map(|s| match s {
                 StepExpr::Name(ident) | StepExpr::Publish(ident) => ident.text.as_str(),
+                StepExpr::Call(_) => "call",
                 StepExpr::Match { .. } => "match",
             })
             .collect();
@@ -811,6 +896,30 @@ mod tests {
         assert_eq!(handler.bindings.len(), 2);
         assert_eq!(handler.bindings[0].capability.text, "db");
         assert_eq!(handler.bindings[0].instance.text, "main");
+    }
+
+    #[test]
+    fn parses_project_service_blocks_and_call_steps() {
+        let (program, diags) = parse_src(
+            "project MediaSystem;\n\
+             service UploadApi { api Upload: Video; pipeline Upload: call Billing.Charge -> Return; }\n\
+             service Billing { api Charge: Video; pipeline Charge: Capture -> Return; }\n",
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert!(matches!(program.items[0], Item::Project(_)));
+        let Item::ServiceBlock(service) = &program.items[1] else {
+            panic!("expected service block");
+        };
+        assert_eq!(service.name.text, "UploadApi");
+        assert_eq!(service.items.len(), 2);
+        let ServiceItem::Pipeline(pipeline) = &service.items[1] else {
+            panic!("expected pipeline");
+        };
+        let StepExpr::Call(call) = &pipeline.steps[0] else {
+            panic!("expected call step");
+        };
+        let segments: Vec<&str> = call.segments.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(segments, ["Billing", "Charge"]);
     }
 
     #[test]

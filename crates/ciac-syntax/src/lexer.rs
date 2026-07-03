@@ -11,6 +11,8 @@ use logos::Logos;
 #[logos(skip r"//[^\n]*")]
 #[logos(skip r"/\*([^*]|\*[^/])*\*/")]
 pub enum TokenKind {
+    #[token("project")]
+    Project,
     #[token("service")]
     Service,
     #[token("use")]
@@ -35,6 +37,8 @@ pub enum TokenKind {
     On,
     #[token("publish")]
     Publish,
+    #[token("call")]
+    Call,
     #[token("enum")]
     Enum,
     #[token("match")]
@@ -50,6 +54,8 @@ pub enum TokenKind {
     Colon,
     #[token(",")]
     Comma,
+    #[token(".")]
+    Dot,
     #[token("->")]
     Arrow,
 
@@ -68,6 +74,7 @@ impl TokenKind {
     /// How the token kind is described in "expected X" messages.
     pub fn describe(self) -> &'static str {
         match self {
+            TokenKind::Project => "`project`",
             TokenKind::Service => "`service`",
             TokenKind::Use => "`use`",
             TokenKind::Api => "`api`",
@@ -80,6 +87,7 @@ impl TokenKind {
             TokenKind::Handler => "`handler`",
             TokenKind::On => "`on`",
             TokenKind::Publish => "`publish`",
+            TokenKind::Call => "`call`",
             TokenKind::Enum => "`enum`",
             TokenKind::Match => "`match`",
             TokenKind::LBrace => "`{`",
@@ -87,6 +95,7 @@ impl TokenKind {
             TokenKind::Semi => "`;`",
             TokenKind::Colon => "`:`",
             TokenKind::Comma => "`,`",
+            TokenKind::Dot => "`.`",
             TokenKind::Arrow => "`->`",
             TokenKind::Number => "a number",
             TokenKind::Str => "a string",

@@ -186,7 +186,7 @@ impl Component {
         match self {
             Component::Api { name, .. }
             | Component::Service { name }
-            | Component::Worker { name }
+            | Component::Worker { name, .. }
             | Component::Stream { name, .. } => Some(name),
             _ => None,
         }
@@ -197,7 +197,7 @@ impl Component {
         match self {
             Component::Api { name, .. } => format!("api {name}"),
             Component::Service { name } => format!("service {name}"),
-            Component::Worker { name } => format!("worker {name}"),
+            Component::Worker { name, .. } => format!("worker {name}"),
             Component::Database { engine } => format!("database {engine:?}"),
             Component::Cache { engine } => format!("cache {engine:?}"),
             Component::Queue { engine } => format!("queue {engine:?}"),

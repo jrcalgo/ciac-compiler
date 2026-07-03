@@ -31,3 +31,24 @@ async def require_auth(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid or expired token",
         ) from exc
+
+
+def require_scope(scope: str):
+    """Builds a dependency that verifies a JWT contains `scope`."""
+
+    async def dependency(claims: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+        scopes = claims.get("scope", claims.get("scp", ""))
+        if isinstance(scopes, str):
+            granted = set(scopes.split())
+        elif isinstance(scopes, list):
+            granted = {str(item) for item in scopes}
+        else:
+            granted = set()
+        if scope not in granted:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="missing required scope",
+            )
+        return claims
+
+    return dependency

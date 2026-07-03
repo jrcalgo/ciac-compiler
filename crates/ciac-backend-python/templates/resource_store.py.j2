@@ -60,14 +60,14 @@ class {{ resource.store_class }}:
 {%- endif %}
         entity = await self.session.get({{ resource.name }}, entity_id)
         if entity is not None and self.cache is not None:
-            await self.cache.set(self._key(entity_id), json.dumps(self._payload(entity)), ex=300)
+            await self.cache.set(self._key(entity_id), json.dumps(self._payload(entity)), ex={{ resource.cache_ttl }})
         return entity
 {%- else %}
         return await self.session.get({{ resource.name }}, entity_id)
 {%- endif %}
 
-    async def list(self) -> list[{{ resource.name }}]:
-        result = await self.session.scalars(select({{ resource.name }}))
+    async def list(self, limit: int = {{ resource.page_size }}, offset: int = 0) -> list[{{ resource.name }}]:
+        result = await self.session.scalars(select({{ resource.name }}).limit(limit).offset(offset))
         return list(result)
 
     async def update(self, entity_id: str, payload: {{ payload_type }}) -> {{ resource.name }} | None:

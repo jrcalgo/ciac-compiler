@@ -3,7 +3,37 @@
 Consumes `{{ worker.subject }}` in queue group `{{ worker.queue_group }}`
 so replicas of this worker load-balance messages between them.
 """
+{% macro emit_steps(steps, indent) -%}
+{%- for step in steps %}
+{%- if step.kind == "handler" %}
+{{ indent }}result = await {{ step.handler.class_name }}(
+{{ indent }}    {%- if step.handler.needs_db %}session=session{% endif %}
+{{ indent }}    {%- if step.handler.needs_db and step.handler.needs_cache %}, {% endif %}
+{{ indent }}    {%- if step.handler.needs_cache %}cache=get_cache(){% endif -%}
+{{ indent }}).handle(result)
+{%- elif step.kind == "publish" %}
+{%- if worker.payload %}
+{{ indent }}await publish("{{ step.subject }}", result.model_dump(mode="json"))
+{%- else %}
+{{ indent }}await publish("{{ step.subject }}", result)
+{%- endif %}
+{%- elif step.kind == "match" %}
+{%- for arm in step.arms %}
+{%- if loop.first and arm.label %}
+{{ indent }}if result.{{ step.field }} == "{{ arm.label }}":
+{%- elif arm.label %}
+{{ indent }}elif result.{{ step.field }} == "{{ arm.label }}":
+{%- else %}
+{{ indent }}else:
+{%- endif %}
+{{ emit_steps(arm.steps, indent ~ "    ") }}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+{%- endmacro %}
 
+import asyncio
+import logging
 {% if not worker.payload -%}
 import json
 from typing import Any
@@ -30,10 +60,13 @@ from app.services.{{ handler.module }} import {{ handler.class_name }}
 
 SUBJECT = "{{ worker.subject }}"
 QUEUE_GROUP = "{{ worker.queue_group }}"
+CONCURRENCY = {{ worker.concurrency }}
+MAX_RETRIES = {{ worker.max_retries }}
+logger = logging.getLogger(__name__)
 
 {% set payload_type = worker.payload.class_name if worker.payload else "dict[str, Any]" %}
 
-async def handle_message(payload: {{ payload_type }}) -> None:
+async def handle_message_once(payload: {{ payload_type }}) -> None:
 {%- if not worker.steps %}
     _ = payload  # TODO: process messages consumed by {{ worker.name }}.
 {%- else %}
@@ -44,46 +77,37 @@ async def handle_message(payload: {{ payload_type }}) -> None:
 {%- endif %}
 {%- if worker.needs_db %}
     async with get_sessionmaker()() as session:
-{%- for step in worker.steps %}
-{%- if step.kind == "handler" %}
-        result = await {{ step.handler.class_name }}(
-            {%- if step.handler.needs_db %}session=session{% endif %}
-            {%- if step.handler.needs_db and step.handler.needs_cache %}, {% endif %}
-            {%- if step.handler.needs_cache %}cache=get_cache(){% endif -%}
-        ).handle(result)
-{%- elif step.kind == "publish" %}
-{%- if worker.payload %}
-        await publish("{{ step.subject }}", result.model_dump(mode="json"))
+{{ emit_steps(worker.steps, "        ") }}
 {%- else %}
-        await publish("{{ step.subject }}", result)
-{%- endif %}
-{%- endif %}
-{%- endfor %}
-{%- else %}
-{%- for step in worker.steps %}
-{%- if step.kind == "handler" %}
-    result = await {{ step.handler.class_name }}(
-        {%- if step.handler.needs_cache %}cache=get_cache(){% endif -%}
-    ).handle(result)
-{%- elif step.kind == "publish" %}
-{%- if worker.payload %}
-    await publish("{{ step.subject }}", result.model_dump(mode="json"))
-{%- else %}
-    await publish("{{ step.subject }}", result)
-{%- endif %}
-{%- endif %}
-{%- endfor %}
+{{ emit_steps(worker.steps, "    ") }}
 {%- endif %}
 {%- endif %}
 
 
-async def run() -> None:
-    """Subscribes and processes messages forever."""
+async def handle_message(payload: {{ payload_type }}) -> None:
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            await handle_message_once(payload)
+            return
+        except Exception:
+            if attempt >= MAX_RETRIES:
+                logger.exception("message processing failed after retries")
+                return
+            logger.warning("message processing failed; retrying", exc_info=True)
+
+
+async def _consume(worker_index: int) -> None:
     client = await nats.connect(get_settings().nats_url)
     subscription = await client.subscribe(SUBJECT, queue=QUEUE_GROUP)
+    logger.info("worker {{ worker.name }} consumer %s subscribed", worker_index)
     async for message in subscription.messages:
 {%- if worker.payload %}
         await handle_message({{ worker.payload.class_name }}.model_validate_json(message.data))
 {%- else %}
         await handle_message(json.loads(message.data))
 {%- endif %}
+
+
+async def run() -> None:
+    """Subscribes and processes messages forever."""
+    await asyncio.gather(*(_consume(idx) for idx in range(CONCURRENCY)))

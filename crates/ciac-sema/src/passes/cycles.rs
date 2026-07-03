@@ -44,7 +44,10 @@ enum Color {
 fn flows(kind: EdgeKind) -> bool {
     matches!(
         kind,
-        EdgeKind::RequestFlow | EdgeKind::AsyncMessage | EdgeKind::ServiceCall | EdgeKind::DependsOn
+        EdgeKind::RequestFlow
+            | EdgeKind::AsyncMessage
+            | EdgeKind::ServiceCall
+            | EdgeKind::DependsOn
     )
 }
 

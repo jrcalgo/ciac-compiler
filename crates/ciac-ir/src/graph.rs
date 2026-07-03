@@ -260,7 +260,9 @@ impl SystemGraph {
     }
 
     pub fn nodes_in_service(&self, service: ServiceId) -> impl Iterator<Item = &Node> {
-        self.nodes.iter().filter(move |n| n.service == Some(service))
+        self.nodes
+            .iter()
+            .filter(move |n| n.service == Some(service))
     }
 
     /// Compatibility helper: the first node of a kind, when v0.1-v0.3

@@ -522,7 +522,13 @@ fn named_capability_instances_bind_to_handlers() {
     let store = ir.find_named(NodeKind::Service, "Store").expect("handler");
     let targets: Vec<_> = ir
         .edges_from(store.id)
-        .map(|e| ir.node(e.to).component.name().unwrap_or_default().to_owned())
+        .map(|e| {
+            ir.node(e.to)
+                .component
+                .name()
+                .unwrap_or_default()
+                .to_owned()
+        })
         .collect();
     assert!(targets.contains(&"main".to_owned()));
     assert!(targets.contains(&"hot".to_owned()));

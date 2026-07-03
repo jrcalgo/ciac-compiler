@@ -90,6 +90,7 @@ impl TypeExpr {
 pub struct StreamDecl {
     pub name: Ident,
     pub record: Ident,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
@@ -98,6 +99,7 @@ pub struct ApiDecl {
     pub name: Ident,
     /// Request body record, when the api is typed.
     pub request: Option<Ident>,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
@@ -107,6 +109,7 @@ pub struct WorkerDecl {
     /// Stream the worker consumes; `None` means the service's default
     /// stream (v0.1 behavior).
     pub stream: Option<Ident>,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
@@ -116,7 +119,32 @@ pub struct CrudDecl {
     /// Record supplying real columns; `None` keeps the generic
     /// keyed-document model.
     pub record: Option<Ident>,
+    pub attrs: Vec<Attr>,
     pub span: Span,
+}
+
+/// A closed-registry component attribute parsed from an attribute block.
+#[derive(Debug, Clone, Serialize)]
+pub struct Attr {
+    pub name: Ident,
+    pub value: AttrValue,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum AttrValue {
+    Ident(Ident),
+    Number { value: u64, span: Span },
+    Str { value: String, span: Span },
+}
+
+impl AttrValue {
+    pub fn span(&self) -> Span {
+        match self {
+            AttrValue::Ident(ident) => ident.span,
+            AttrValue::Number { span, .. } | AttrValue::Str { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,12 +168,41 @@ pub enum StepExpr {
     Name(Ident),
     /// `publish <Stream>` — publish the current payload to a named stream.
     Publish(Ident),
+    /// `match field { Variant -> Step; _ -> Step; }`.
+    Match {
+        field: Ident,
+        arms: Vec<Arm>,
+        span: Span,
+    },
 }
 
 impl StepExpr {
     pub fn span(&self) -> Span {
         match self {
             StepExpr::Name(ident) | StepExpr::Publish(ident) => ident.span,
+            StepExpr::Match { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Arm {
+    pub label: ArmLabel,
+    pub steps: Vec<StepExpr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum ArmLabel {
+    Variant(Ident),
+    Default(Span),
+}
+
+impl ArmLabel {
+    pub fn span(&self) -> Span {
+        match self {
+            ArmLabel::Variant(ident) => ident.span,
+            ArmLabel::Default(span) => *span,
         }
     }
 }

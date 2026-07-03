@@ -35,6 +35,8 @@ pub enum TokenKind {
     Publish,
     #[token("enum")]
     Enum,
+    #[token("match")]
+    Match,
 
     #[token("{")]
     LBrace,
@@ -49,6 +51,10 @@ pub enum TokenKind {
     #[token("->")]
     Arrow,
 
+    #[regex("[0-9]+")]
+    Number,
+    #[regex(r#""([^"\\]|\\.)*""#)]
+    Str,
     #[regex("[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
 
@@ -72,12 +78,15 @@ impl TokenKind {
             TokenKind::On => "`on`",
             TokenKind::Publish => "`publish`",
             TokenKind::Enum => "`enum`",
+            TokenKind::Match => "`match`",
             TokenKind::LBrace => "`{`",
             TokenKind::RBrace => "`}`",
             TokenKind::Semi => "`;`",
             TokenKind::Colon => "`:`",
             TokenKind::Comma => "`,`",
             TokenKind::Arrow => "`->`",
+            TokenKind::Number => "a number",
+            TokenKind::Str => "a string",
             TokenKind::Ident => "a name",
             TokenKind::Eof => "end of file",
         }
@@ -180,5 +189,15 @@ mod tests {
                 TokenKind::Eof
             ]
         );
+    }
+
+    #[test]
+    fn lexes_attributes_and_match() {
+        let (kinds, diags) =
+            lex_kinds(r#"api Upload { method: PUT; path: "/videos"; concurrency: 4; } pipeline Upload: match status { Ready -> Return; };"#);
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert!(kinds.contains(&TokenKind::Number));
+        assert!(kinds.contains(&TokenKind::Str));
+        assert!(kinds.contains(&TokenKind::Match));
     }
 }

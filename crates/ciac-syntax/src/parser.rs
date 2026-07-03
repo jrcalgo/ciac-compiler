@@ -69,13 +69,17 @@ impl Parser<'_> {
     fn expect_ident(&mut self) -> Option<Ident> {
         if self.at(TokenKind::Ident) {
             let tok = self.bump();
-            return Some(Ident {
-                text: self.src[tok.span.range()].to_owned(),
-                span: tok.span,
-            });
+            return Some(self.ident_from(tok));
         }
         self.error_expected("a name");
         None
+    }
+
+    fn ident_from(&self, tok: Token) -> Ident {
+        Ident {
+            text: self.src[tok.span.range()].to_owned(),
+            span: tok.span,
+        }
     }
 
     /// Skips tokens until a likely declaration boundary, consuming the
@@ -164,11 +168,12 @@ impl Parser<'_> {
             Some(_) => Some(self.expect_ident()?),
             None => None,
         };
-        let semi = self.expect(TokenKind::Semi)?;
+        let (attrs, end) = self.decl_tail()?;
         Some(Item::Api(ApiDecl {
-            span: kw.span.to(semi.span),
+            span: kw.span.to(end),
             name,
             request,
+            attrs,
         }))
     }
 
@@ -180,11 +185,12 @@ impl Parser<'_> {
             Some(_) => Some(self.expect_ident()?),
             None => None,
         };
-        let semi = self.expect(TokenKind::Semi)?;
+        let (attrs, end) = self.decl_tail()?;
         Some(Item::Worker(WorkerDecl {
-            span: kw.span.to(semi.span),
+            span: kw.span.to(end),
             name,
             stream,
+            attrs,
         }))
     }
 
@@ -196,11 +202,12 @@ impl Parser<'_> {
             Some(_) => Some(self.expect_ident()?),
             None => None,
         };
-        let semi = self.expect(TokenKind::Semi)?;
+        let (attrs, end) = self.decl_tail()?;
         Some(Item::Crud(CrudDecl {
-            span: kw.span.to(semi.span),
+            span: kw.span.to(end),
             name,
             record,
+            attrs,
         }))
     }
 
@@ -210,12 +217,81 @@ impl Parser<'_> {
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
         let record = self.expect_ident()?;
-        let semi = self.expect(TokenKind::Semi)?;
+        let (attrs, end) = self.decl_tail()?;
         Some(Item::Stream(StreamDecl {
-            span: kw.span.to(semi.span),
+            span: kw.span.to(end),
             name,
             record,
+            attrs,
         }))
+    }
+
+    /// Shared declaration tail for attributed components: either `;` or
+    /// `{ name: value; .. }`.
+    fn decl_tail(&mut self) -> Option<(Vec<Attr>, ciac_diagnostics::Span)> {
+        if let Some(semi) = self.eat(TokenKind::Semi) {
+            return Some((Vec::new(), semi.span));
+        }
+        let Some(open) = self.expect(TokenKind::LBrace) else {
+            self.recover();
+            return None;
+        };
+        let mut attrs = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Ident => {
+                    let name = self.expect_ident()?;
+                    if self.expect(TokenKind::Colon).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    let Some(value) = self.attr_value() else {
+                        self.recover_inside_block();
+                        continue;
+                    };
+                    let span = name.span.to(value.span());
+                    if self.expect(TokenKind::Semi).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    attrs.push(Attr { name, value, span });
+                }
+                _ => {
+                    self.error_expected("an attribute like `method: POST;` or `}`");
+                    self.recover_inside_block();
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some((attrs, open.span.to(close.span)))
+    }
+
+    fn attr_value(&mut self) -> Option<AttrValue> {
+        match self.peek().kind {
+            TokenKind::Ident => Some(AttrValue::Ident(self.expect_ident()?)),
+            TokenKind::Number => {
+                let tok = self.bump();
+                let raw = &self.src[tok.span.range()];
+                let value = raw.parse::<u64>().unwrap_or(0);
+                Some(AttrValue::Number {
+                    value,
+                    span: tok.span,
+                })
+            }
+            TokenKind::Str => {
+                let tok = self.bump();
+                let raw = &self.src[tok.span.range()];
+                Some(AttrValue::Str {
+                    value: unquote(raw),
+                    span: tok.span,
+                })
+            }
+            _ => {
+                self.error_expected("an attribute value");
+                None
+            }
+        }
     }
 
     /// `record <Name> { field: Type; .. }`
@@ -360,6 +436,9 @@ impl Parser<'_> {
     }
 
     fn step_expr(&mut self) -> Option<StepExpr> {
+        if self.at(TokenKind::Match) {
+            return self.match_step();
+        }
         if self.eat(TokenKind::Publish).is_some() {
             return Some(StepExpr::Publish(self.expect_ident()?));
         }
@@ -369,6 +448,84 @@ impl Parser<'_> {
         self.error_expected("a step name or `publish <Stream>`");
         None
     }
+
+    fn match_step(&mut self) -> Option<StepExpr> {
+        let kw = self.bump();
+        let field = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Ident => {
+                    let label_ident = self.expect_ident()?;
+                    let label = if label_ident.text == "_" {
+                        ArmLabel::Default(label_ident.span)
+                    } else {
+                        ArmLabel::Variant(label_ident)
+                    };
+                    if self.expect(TokenKind::Arrow).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    let mut steps = Vec::new();
+                    loop {
+                        let Some(step) = self.step_expr() else {
+                            self.recover_inside_block();
+                            break;
+                        };
+                        steps.push(step);
+                        if self.eat(TokenKind::Arrow).is_none() {
+                            break;
+                        }
+                    }
+                    let span = label.span().to(self.peek().span);
+                    if self.expect(TokenKind::Semi).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    arms.push(Arm { label, steps, span });
+                }
+                _ => {
+                    self.error_expected("a match arm like `Ready -> Return;` or `}`");
+                    self.recover_inside_block();
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some(StepExpr::Match {
+            field,
+            arms,
+            span: kw.span.to(close.span),
+        })
+    }
+}
+
+fn unquote(raw: &str) -> String {
+    let inner = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+    let mut out = String::new();
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -406,6 +563,7 @@ mod tests {
             .iter()
             .map(|s| match s {
                 StepExpr::Name(ident) | StepExpr::Publish(ident) => ident.text.as_str(),
+                StepExpr::Match { .. } => "match",
             })
             .collect();
         assert_eq!(steps, ["Auth", "StoreVideo", "Queue", "Return"]);
@@ -463,6 +621,57 @@ mod tests {
             panic!("expected pipeline");
         };
         assert!(matches!(&pipeline.steps[1], StepExpr::Publish(s) if s.text == "Uploaded"));
+    }
+
+    #[test]
+    fn parses_attribute_blocks() {
+        let (program, diags) = parse_src(
+            r#"stream Uploaded: Video { subject: "media.uploaded"; }
+               api Upload: Video { method: PUT; path: "/videos"; scope: "videos:write"; }
+               worker Transcoder on Uploaded { concurrency: 4; max_retries: 2; }
+               crud Clip: Video { cache_ttl: 60; page_size: 50; }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Api(api) = &program.items[1] else {
+            panic!("expected api");
+        };
+        assert_eq!(api.attrs.len(), 3);
+        assert_eq!(api.attrs[0].name.text, "method");
+        assert!(matches!(&api.attrs[0].value, AttrValue::Ident(v) if v.text == "PUT"));
+        assert!(matches!(&api.attrs[1].value, AttrValue::Str { value, .. } if value == "/videos"));
+        let Item::Worker(worker) = &program.items[2] else {
+            panic!("expected worker");
+        };
+        assert!(matches!(&worker.attrs[0].value, AttrValue::Number { value: 4, .. }));
+    }
+
+    #[test]
+    fn parses_match_step_with_wildcard() {
+        let (program, diags) = parse_src(
+            "pipeline Transcoder: Transcode -> match status { Ready -> Notify -> publish Done; _ -> publish Dead; };",
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Pipeline(pipeline) = &program.items[0] else {
+            panic!("expected pipeline");
+        };
+        let StepExpr::Match { field, arms, .. } = &pipeline.steps[1] else {
+            panic!("expected match step");
+        };
+        assert_eq!(field.text, "status");
+        assert_eq!(arms.len(), 2);
+        assert_eq!(arms[0].steps.len(), 2);
+        assert!(matches!(arms[1].label, ArmLabel::Default(_)));
+    }
+
+    #[test]
+    fn recovers_inside_attribute_block() {
+        let (program, diags) = parse_src("api Upload { method POST; path: \"/upload\"; }");
+        assert_eq!(diags.codes(), vec![ErrorCode::UnexpectedToken]);
+        let Item::Api(api) = &program.items[0] else {
+            panic!("expected api");
+        };
+        assert_eq!(api.attrs.len(), 1);
+        assert_eq!(api.attrs[0].name.text, "path");
     }
 
     #[test]

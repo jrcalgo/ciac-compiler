@@ -35,6 +35,10 @@ handler StoreVideo {
     object_store: media;
 }
 
+handler RecordAnalytics {
+    db: analytics;
+}
+
 handler IndexVideo {
     search: catalog;
     external_http: billing;
@@ -46,6 +50,7 @@ handler NotifyUser {
 
 pipeline Upload:
     StoreVideo
+    -> RecordAnalytics
     -> publish Uploaded
     -> Return;
 

@@ -18,8 +18,9 @@ digraph MediaOps {
     n11 [label="worker Indexer", shape=component];
     n12 [label="worker Notifier", shape=component];
     n13 [label="service StoreVideo", shape=box];
-    n14 [label="service IndexVideo", shape=box];
-    n15 [label="service NotifyUser", shape=box];
+    n14 [label="service RecordAnalytics", shape=box];
+    n15 [label="service IndexVideo", shape=box];
+    n16 [label="service NotifyUser", shape=box];
     n8 -> n3 [label="DependsOn", style=dotted];
     n9 -> n3 [label="DependsOn", style=dotted];
     n8 -> n11 [label="AsyncMessage", style=dashed];
@@ -27,12 +28,14 @@ digraph MediaOps {
     n13 -> n0 [label="DataFlow", style=bold];
     n13 -> n2 [label="DataFlow", style=bold];
     n13 -> n4 [label="DataFlow", style=bold];
+    n14 -> n1 [label="DataFlow", style=bold];
     n10 -> n13 [label="RequestFlow", style=solid];
-    n13 -> n8 [label="AsyncMessage", style=dashed];
-    n14 -> n6 [label="DataFlow", style=bold];
-    n14 -> n7 [label="DataFlow", style=bold];
-    n11 -> n14 [label="RequestFlow", style=solid];
-    n14 -> n9 [label="AsyncMessage", style=dashed];
-    n15 -> n5 [label="DataFlow", style=bold];
-    n12 -> n15 [label="RequestFlow", style=solid];
+    n13 -> n14 [label="RequestFlow", style=solid];
+    n14 -> n8 [label="AsyncMessage", style=dashed];
+    n15 -> n6 [label="DataFlow", style=bold];
+    n15 -> n7 [label="DataFlow", style=bold];
+    n11 -> n15 [label="RequestFlow", style=solid];
+    n15 -> n9 [label="AsyncMessage", style=dashed];
+    n16 -> n5 [label="DataFlow", style=bold];
+    n12 -> n16 [label="RequestFlow", style=solid];
 }

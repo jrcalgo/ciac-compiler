@@ -105,10 +105,15 @@ expression: json
     {
       "id": 14,
       "kind": "Service",
-      "name": "IndexVideo"
+      "name": "RecordAnalytics"
     },
     {
       "id": 15,
+      "kind": "Service",
+      "name": "IndexVideo"
+    },
+    {
+      "id": 16,
       "kind": "Service",
       "name": "NotifyUser"
     }
@@ -158,50 +163,62 @@ expression: json
     },
     {
       "id": 7,
+      "from": 14,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 8,
       "from": 10,
       "to": 13,
       "kind": "RequestFlow"
     },
     {
-      "id": 8,
-      "from": 13,
-      "to": 8,
-      "kind": "AsyncMessage"
-    },
-    {
       "id": 9,
-      "from": 14,
-      "to": 6,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 10,
-      "from": 14,
-      "to": 7,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 11,
-      "from": 11,
+      "from": 13,
       "to": 14,
       "kind": "RequestFlow"
     },
     {
-      "id": 12,
+      "id": 10,
       "from": 14,
+      "to": 8,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 11,
+      "from": 15,
+      "to": 6,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 12,
+      "from": 15,
+      "to": 7,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 13,
+      "from": 11,
+      "to": 15,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 14,
+      "from": 15,
       "to": 9,
       "kind": "AsyncMessage"
     },
     {
-      "id": 13,
-      "from": 15,
+      "id": 15,
+      "from": 16,
       "to": 5,
       "kind": "DataFlow"
     },
     {
-      "id": 14,
+      "id": 16,
       "from": 12,
-      "to": 15,
+      "to": 16,
       "kind": "RequestFlow"
     }
   ],
@@ -245,6 +262,10 @@ expression: json
           "node": 13
         },
         {
+          "step": "Handler",
+          "node": 14
+        },
+        {
           "step": "Publish",
           "stream": 8
         },
@@ -260,7 +281,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 14
+          "node": 15
         },
         {
           "step": "Publish",
@@ -275,7 +296,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 15
+          "node": 16
         }
       ]
     }

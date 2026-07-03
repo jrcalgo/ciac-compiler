@@ -3,68 +3,93 @@ source: tests/tests/golden.rs
 expression: json
 ---
 {
-  "name": "Media",
+  "name": "MediaOps",
   "nodes": [
     {
       "id": 0,
-      "kind": "Auth",
-      "name": "default",
-      "scheme": "Jwt"
+      "kind": "Database",
+      "name": "main",
+      "engine": "Postgres"
     },
     {
       "id": 1,
       "kind": "Database",
-      "name": "default",
+      "name": "analytics",
       "engine": "Postgres"
     },
     {
       "id": 2,
       "kind": "Cache",
-      "name": "default",
+      "name": "hot",
       "engine": "Redis"
     },
     {
       "id": 3,
       "kind": "Queue",
-      "name": "default",
+      "name": "bus",
       "engine": "Nats"
     },
     {
       "id": 4,
-      "kind": "Stream",
-      "name": "Uploaded",
-      "subject": "media.uploaded",
-      "record": 0
+      "kind": "ObjectStore",
+      "name": "media",
+      "provider": "S3",
+      "bucket": "videos"
     },
     {
       "id": 5,
-      "kind": "Stream",
-      "name": "Transcoded",
-      "subject": "media.transcoded",
-      "record": 0
+      "kind": "Email",
+      "name": "transactional",
+      "provider": "Ses"
     },
     {
       "id": 6,
+      "kind": "Search",
+      "name": "catalog",
+      "provider": "OpenSearch"
+    },
+    {
+      "id": 7,
+      "kind": "ExternalHttp",
+      "name": "billing",
+      "base_url": "https://billing.internal"
+    },
+    {
+      "id": 8,
+      "kind": "Stream",
+      "name": "Uploaded",
+      "subject": "media_ops.uploaded",
+      "record": 0
+    },
+    {
+      "id": 9,
+      "kind": "Stream",
+      "name": "Indexed",
+      "subject": "media_ops.indexed",
+      "record": 0
+    },
+    {
+      "id": 10,
       "kind": "Api",
       "name": "Upload",
       "request": 0,
       "config": {
-        "method": "Post",
-        "path": null,
+        "method": "Put",
+        "path": "/videos",
         "scope": null
       }
     },
     {
-      "id": 7,
+      "id": 11,
       "kind": "Worker",
-      "name": "Transcoder",
+      "name": "Indexer",
       "config": {
         "concurrency": 1,
         "max_retries": 0
       }
     },
     {
-      "id": 8,
+      "id": 12,
       "kind": "Worker",
       "name": "Notifier",
       "config": {
@@ -73,156 +98,110 @@ expression: json
       }
     },
     {
-      "id": 9,
-      "kind": "Api",
-      "name": "Clip",
-      "request": 0,
-      "config": {
-        "method": "Post",
-        "path": null,
-        "scope": null
-      }
-    },
-    {
-      "id": 10,
-      "kind": "Service",
-      "name": "ClipStore"
-    },
-    {
-      "id": 11,
+      "id": 13,
       "kind": "Service",
       "name": "StoreVideo"
     },
     {
-      "id": 12,
+      "id": 14,
       "kind": "Service",
-      "name": "Transcode"
+      "name": "IndexVideo"
     },
     {
-      "id": 13,
+      "id": 15,
       "kind": "Service",
-      "name": "Notify"
+      "name": "NotifyUser"
     }
   ],
   "edges": [
     {
       "id": 0,
-      "from": 4,
+      "from": 8,
       "to": 3,
       "kind": "DependsOn"
     },
     {
       "id": 1,
-      "from": 5,
+      "from": 9,
       "to": 3,
       "kind": "DependsOn"
     },
     {
       "id": 2,
-      "from": 4,
-      "to": 7,
+      "from": 8,
+      "to": 11,
       "kind": "AsyncMessage"
     },
     {
       "id": 3,
-      "from": 5,
-      "to": 8,
+      "from": 9,
+      "to": 12,
       "kind": "AsyncMessage"
     },
     {
       "id": 4,
-      "from": 9,
+      "from": 13,
       "to": 0,
-      "kind": "RequestFlow"
+      "kind": "DataFlow"
     },
     {
       "id": 5,
-      "from": 0,
-      "to": 10,
-      "kind": "RequestFlow"
+      "from": 13,
+      "to": 2,
+      "kind": "DataFlow"
     },
     {
       "id": 6,
-      "from": 10,
-      "to": 1,
+      "from": 13,
+      "to": 4,
       "kind": "DataFlow"
     },
     {
       "id": 7,
       "from": 10,
-      "to": 2,
-      "kind": "DataFlow"
+      "to": 13,
+      "kind": "RequestFlow"
     },
     {
       "id": 8,
-      "from": 11,
-      "to": 1,
-      "kind": "DataFlow"
+      "from": 13,
+      "to": 8,
+      "kind": "AsyncMessage"
     },
     {
       "id": 9,
-      "from": 11,
-      "to": 2,
+      "from": 14,
+      "to": 6,
       "kind": "DataFlow"
     },
     {
       "id": 10,
-      "from": 6,
-      "to": 0,
-      "kind": "RequestFlow"
+      "from": 14,
+      "to": 7,
+      "kind": "DataFlow"
     },
     {
       "id": 11,
-      "from": 0,
-      "to": 11,
+      "from": 11,
+      "to": 14,
       "kind": "RequestFlow"
     },
     {
       "id": 12,
-      "from": 11,
-      "to": 4,
+      "from": 14,
+      "to": 9,
       "kind": "AsyncMessage"
     },
     {
       "id": 13,
-      "from": 12,
-      "to": 1,
+      "from": 15,
+      "to": 5,
       "kind": "DataFlow"
     },
     {
       "id": 14,
       "from": 12,
-      "to": 2,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 15,
-      "from": 7,
-      "to": 12,
-      "kind": "RequestFlow"
-    },
-    {
-      "id": 16,
-      "from": 12,
-      "to": 5,
-      "kind": "AsyncMessage"
-    },
-    {
-      "id": 17,
-      "from": 13,
-      "to": 1,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 18,
-      "from": 13,
-      "to": 2,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 19,
-      "from": 8,
-      "to": 13,
+      "to": 15,
       "kind": "RequestFlow"
     }
   ],
@@ -243,17 +222,10 @@ expression: json
           }
         },
         {
-          "name": "duration_s",
-          "ty": {
-            "type": "Int"
-          }
-        },
-        {
           "name": "status",
           "ty": {
             "type": "Enum",
             "variants": [
-              "Pending",
               "Ready",
               "Failed"
             ]
@@ -265,20 +237,16 @@ expression: json
   "pipelines": [
     {
       "name": "Upload",
-      "owner": 6,
+      "owner": 10,
       "payload": 0,
       "steps": [
         {
-          "step": "Auth",
-          "node": 0
-        },
-        {
           "step": "Handler",
-          "node": 11
+          "node": 13
         },
         {
           "step": "Publish",
-          "stream": 4
+          "stream": 8
         },
         {
           "step": "Return"
@@ -286,46 +254,32 @@ expression: json
       ]
     },
     {
-      "name": "Transcoder",
-      "owner": 7,
+      "name": "Indexer",
+      "owner": 11,
       "payload": 0,
       "steps": [
         {
           "step": "Handler",
-          "node": 12
+          "node": 14
         },
         {
           "step": "Publish",
-          "stream": 5
+          "stream": 9
         }
       ]
     },
     {
       "name": "Notifier",
-      "owner": 8,
+      "owner": 12,
       "payload": 0,
       "steps": [
         {
           "step": "Handler",
-          "node": 13
+          "node": 15
         }
       ]
     }
   ],
-  "resources": [
-    {
-      "name": "Clip",
-      "api": 9,
-      "service": 10,
-      "database": 1,
-      "cache": 2,
-      "auth": 0,
-      "record": 0,
-      "config": {
-        "cache_ttl": 300,
-        "page_size": 100
-      }
-    }
-  ],
+  "resources": [],
   "event_streams": []
 }

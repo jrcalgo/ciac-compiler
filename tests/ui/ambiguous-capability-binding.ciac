@@ -1,0 +1,8 @@
+// expect: CIAC0023
+service X;
+use {
+    db main Postgres;
+    db analytics Postgres;
+}
+api A;
+pipeline A: Store -> Return;

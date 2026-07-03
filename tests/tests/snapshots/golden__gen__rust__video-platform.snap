@@ -433,6 +433,10 @@ src/services/save_result.rs
 use crate::state::AppState;
 
 /// Business logic for the `SaveResult` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct SaveResult<'a> {
     pub db: &'a sqlx::PgPool,
@@ -463,6 +467,10 @@ src/services/store_video.rs
 use crate::state::AppState;
 
 /// Business logic for the `StoreVideo` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct StoreVideo<'a> {
     pub db: &'a sqlx::PgPool,
@@ -493,6 +501,10 @@ src/services/transcode.rs
 use crate::state::AppState;
 
 /// Business logic for the `Transcode` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct Transcode<'a> {
     pub db: &'a sqlx::PgPool,

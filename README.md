@@ -84,6 +84,29 @@ The compiler checks every publish site against its stream's record
 are rejected at the boundary of the running system too. `match` is
 checked for enum labels and exhaustiveness (`CIAC0020`/`CIAC0021`).
 
+v0.4 expands the ontology and lets handlers bind to named capability
+instances:
+
+```text
+use {
+    db main Postgres;
+    db analytics Postgres;
+    object_store media S3 { bucket: "videos"; }
+    search catalog OpenSearch;
+    external_http billing { base_url: "https://billing.internal"; }
+}
+
+handler StoreVideo {
+    db: main;
+    object_store: media;
+}
+
+handler IndexVideo {
+    search: catalog;
+    external_http: billing;
+}
+```
+
 ## Why
 
 Most backend systems are the same dozen architectural patterns glued

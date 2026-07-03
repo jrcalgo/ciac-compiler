@@ -504,7 +504,12 @@ from app.schemas import Video
 
 
 class ArchiveFailure:
-    """Business logic for the `ArchiveFailure` step."""
+    """Business logic for the `ArchiveFailure` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,
@@ -610,7 +615,12 @@ from app.schemas import Video
 
 
 class Notify:
-    """Business logic for the `Notify` step."""
+    """Business logic for the `Notify` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,
@@ -640,7 +650,12 @@ from app.schemas import Video
 
 
 class SendNotification:
-    """Business logic for the `SendNotification` step."""
+    """Business logic for the `SendNotification` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,
@@ -670,7 +685,12 @@ from app.schemas import Video
 
 
 class StoreVideo:
-    """Business logic for the `StoreVideo` step."""
+    """Business logic for the `StoreVideo` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,
@@ -700,7 +720,12 @@ from app.schemas import Video
 
 
 class Transcode:
-    """Business logic for the `Transcode` step."""
+    """Business logic for the `Transcode` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,

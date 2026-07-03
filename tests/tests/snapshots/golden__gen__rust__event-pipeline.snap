@@ -327,6 +327,9 @@ src/services/enrich.rs
 use crate::state::AppState;
 
 /// Business logic for the `Enrich` step.
+///
+/// Capability bindings:
+/// - db: default
 #[derive(Debug)]
 pub struct Enrich<'a> {
     pub db: &'a sqlx::PgPool,
@@ -364,6 +367,9 @@ src/services/store.rs
 use crate::state::AppState;
 
 /// Business logic for the `Store` step.
+///
+/// Capability bindings:
+/// - db: default
 #[derive(Debug)]
 pub struct Store<'a> {
     pub db: &'a sqlx::PgPool,
@@ -392,6 +398,9 @@ src/services/validate.rs
 use crate::state::AppState;
 
 /// Business logic for the `Validate` step.
+///
+/// Capability bindings:
+/// - db: default
 #[derive(Debug)]
 pub struct Validate<'a> {
     pub db: &'a sqlx::PgPool,

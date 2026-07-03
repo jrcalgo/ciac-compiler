@@ -4,8 +4,8 @@ expression: ir.to_dot()
 ---
 digraph Ingest {
     rankdir=LR;
-    n0 [label="database Postgres", shape=cylinder];
-    n1 [label="queue Nats", shape=cds];
+    n0 [label="database default Postgres", shape=cylinder];
+    n1 [label="queue default Nats", shape=cds];
     n2 [label="api Submit", shape=rarrow];
     n3 [label="worker Processor", shape=component];
     n4 [label="stream PageView", shape=parallelogram];

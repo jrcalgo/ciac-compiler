@@ -15,16 +15,21 @@ records of expanded higher-level constructs. Inspect it with
 | `Service` | name | handler steps (implicit), `crud` (store) |
 | `Worker` | name, `WorkerConfig` | `worker X [on S];`, `events X;` (consumer) |
 | `Stream` | name, subject, optional record | `stream X: R;`, `events X;`, the default stream |
-| `Database` | engine (`Postgres`) | `use { db .. }` |
-| `Cache` | engine (`Redis`) | `use { cache .. }` |
-| `Queue` | engine (`Nats`/`Kafka`) | `use { queue .. }` |
-| `Auth` | scheme (`Jwt`) | `use { auth .. }` |
-| `Logging` / `Metrics` | provider | `use { .. }` |
+| `Database` | name, engine (`Postgres`) | `use { db [name] .. }` |
+| `Cache` | name, engine (`Redis`) | `use { cache [name] .. }` |
+| `Queue` | name, engine (`Nats`/`Kafka`) | `use { queue [name] .. }` |
+| `Auth` | name, scheme (`Jwt`) | `use { auth [name] .. }` |
+| `Logging` / `Metrics` | name, provider | `use { .. }` |
+| `ObjectStore` | name, provider, bucket | `use { object_store name S3 { .. } }` |
+| `Email` | name, provider | `use { email name SES; }` |
+| `Search` | name, provider | `use { search name OpenSearch; }` |
+| `ExternalHttp` | name, base URL | `use { external_http name { base_url: .. } }` |
+| `Scheduler` / `Realtime` | name, provider | `use { scheduler ..; realtime ..; }` |
 
-Infrastructure kinds (database, cache, queue, auth, logging, metrics)
-are singletons in v0.2; streams are not — declare as many as the
-topology needs. The `Queue` node is the broker; each stream has a
-`DependsOn` edge to it.
+Infrastructure capabilities are named instances in v0.4. Legacy unnamed
+`use` entries lower to an instance named `default`; multiple instances of
+the same kind can coexist. The `Queue` node is the broker; each stream has
+a `DependsOn` edge to the queue instance it uses.
 
 ## Records
 
@@ -44,6 +49,10 @@ Component attributes lower into typed config structs with defaults:
 
 Stream `subject` remains a plain field on `Component::Stream` after
 defaults/overrides are resolved.
+
+Handler declarations lower to `DataFlow` edges from the handler service
+node to the selected capability instances. Backends use those edges to
+surface binding metadata in generated handler stubs.
 
 ## Edges
 

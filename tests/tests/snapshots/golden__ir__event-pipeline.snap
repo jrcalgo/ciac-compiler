@@ -8,11 +8,13 @@ expression: json
     {
       "id": 0,
       "kind": "Database",
+      "name": "default",
       "engine": "Postgres"
     },
     {
       "id": 1,
       "kind": "Queue",
+      "name": "default",
       "engine": "Nats"
     },
     {

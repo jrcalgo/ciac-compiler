@@ -28,6 +28,10 @@ test.
 | CIAC0019 | error | invalid attribute value |
 | CIAC0020 | error | invalid match |
 | CIAC0021 | error | non-exhaustive match |
+| CIAC0022 | error | unknown capability instance |
+| CIAC0023 | error | ambiguous capability binding |
+| CIAC0024 | error | invalid handler binding |
+| CIAC0025 | error | unsupported provider configuration |
 
 ## Notes
 
@@ -58,3 +62,12 @@ test.
   top-level matches.
 - **CIAC0021** means a `match` over an enum omits one or more variants
   without a trailing `_` wildcard.
+- **CIAC0022** means a handler binding references a named capability
+  instance that no `use` entry declares.
+- **CIAC0023** means CIaC needs a default capability instance but several
+  exist and none is named `default`; add a handler binding or declare the
+  default instance explicitly.
+- **CIAC0024** means a `handler` declaration binds an unsupported
+  capability kind.
+- **CIAC0025** means a provider-specific config is missing or unsupported,
+  such as `external_http` without `base_url`.

@@ -8,21 +8,25 @@ expression: json
     {
       "id": 0,
       "kind": "Auth",
+      "name": "default",
       "scheme": "Jwt"
     },
     {
       "id": 1,
       "kind": "Database",
+      "name": "default",
       "engine": "Postgres"
     },
     {
       "id": 2,
       "kind": "Cache",
+      "name": "default",
       "engine": "Redis"
     },
     {
       "id": 3,
       "kind": "Queue",
+      "name": "default",
       "engine": "Nats"
     },
     {
@@ -421,6 +425,9 @@ expression: json
       "name": "Clip",
       "api": 11,
       "service": 12,
+      "database": 1,
+      "cache": 2,
+      "auth": 0,
       "record": 0,
       "config": {
         "cache_ttl": 60,

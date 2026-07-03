@@ -1,0 +1,5 @@
+// expect: CIAC0024
+service X;
+handler Store { banana: main; }
+api A;
+pipeline A: Store -> Return;

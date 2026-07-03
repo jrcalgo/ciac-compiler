@@ -269,7 +269,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class Enrich:
-    """Business logic for the `Enrich` step."""
+    """Business logic for the `Enrich` step.
+
+    Capability bindings:
+    - db: default
+    """
 
     def __init__(
         self,
@@ -296,7 +300,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class Store:
-    """Business logic for the `Store` step."""
+    """Business logic for the `Store` step.
+
+    Capability bindings:
+    - db: default
+    """
 
     def __init__(
         self,
@@ -323,7 +331,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class Validate:
-    """Business logic for the `Validate` step."""
+    """Business logic for the `Validate` step.
+
+    Capability bindings:
+    - db: default
+    """
 
     def __init__(
         self,

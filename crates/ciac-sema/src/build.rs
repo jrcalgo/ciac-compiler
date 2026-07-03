@@ -295,7 +295,7 @@ impl<'d> Builder<'d> {
                 let Some(base_url) = attr_string(&entry.attrs, "base_url") else {
                     self.diags.push(
                         Diagnostic::new(
-                            ErrorCode::InvalidAttributeValue,
+                            ErrorCode::UnsupportedProviderConfig,
                             "external_http requires a `base_url` string attribute",
                         )
                         .with_label(entry.span, "missing `base_url`"),

@@ -360,7 +360,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class SaveResult:
-    """Business logic for the `SaveResult` step."""
+    """Business logic for the `SaveResult` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,
@@ -390,7 +395,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class StoreVideo:
-    """Business logic for the `StoreVideo` step."""
+    """Business logic for the `StoreVideo` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,
@@ -420,7 +430,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class Transcode:
-    """Business logic for the `Transcode` step."""
+    """Business logic for the `Transcode` step.
+
+    Capability bindings:
+    - db: default
+    - cache: default
+    """
 
     def __init__(
         self,

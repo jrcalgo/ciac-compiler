@@ -1,4 +1,4 @@
-# The CIaC Language (v0.3)
+# The CIaC Language (v0.4)
 
 A CIaC program describes one deployable service as a set of declarations.
 Declaration order is free; the compiler resolves references after parsing
@@ -9,18 +9,23 @@ the whole file.
 ```ebnf
 program        = { item } ;
 item           = service-decl | use-block | record-decl | stream-decl
-               | api-decl | worker-decl | crud-decl | events-decl
-               | pipeline-decl ;
+               | handler-decl | api-decl | worker-decl | crud-decl
+               | events-decl | pipeline-decl ;
 
 service-decl   = "service" IDENT ";" ;
 use-block      = "use" "{" { use-entry } "}" ;
-use-entry      = IDENT IDENT ";" ;            (* capability provider *)
+use-entry      = IDENT IDENT ";"              (* capability provider *)
+               | IDENT IDENT IDENT ";"        (* capability name provider *)
+               | IDENT IDENT attr-block       (* providerless named capability *)
+               | IDENT IDENT IDENT attr-block ;
 record-decl    = "record" IDENT "{" { field } "}" ;
 field          = IDENT ":" type ";" ;
 type           = "String" | "Int" | "Float" | "Bool" | "Uuid"
                | "Timestamp" | "Json"
                | "enum" "{" IDENT { "," IDENT } "}" ;
 stream-decl    = "stream" IDENT ":" IDENT decl-tail ;
+handler-decl   = "handler" IDENT "{" { binding } "}" ;
+binding        = IDENT ":" IDENT ";" ;
 api-decl       = "api" IDENT [ ":" IDENT ] decl-tail ;
 worker-decl    = "worker" IDENT [ "on" IDENT ] decl-tail ;
 crud-decl      = "crud" IDENT [ ":" IDENT ] decl-tail ;
@@ -50,9 +55,28 @@ Names the system. Exactly one per program (`CIAC0010` if missing,
 
 ### `use { capability Provider; .. }`
 
-Declares the infrastructure capabilities the service is built on. Each
-capability may appear once (`CIAC0012`). Supported pairs (`CIAC0013`
-otherwise):
+Declares the infrastructure capabilities the service is built on. v0.3
+programs can still use the legacy unnamed form:
+
+```ciac
+use { db Postgres; cache Redis; queue NATS; }
+```
+
+v0.4 adds named instances:
+
+```ciac
+use {
+    db main Postgres;
+    db analytics Postgres;
+    cache hot Redis;
+    object_store media S3 { bucket: "videos"; }
+    external_http billing { base_url: "https://billing.internal"; }
+}
+```
+
+Legacy entries lower to an implicit instance named `default`. Duplicate
+instances of the same capability kind/name are `CIAC0012`. Supported
+pairs (`CIAC0013` otherwise):
 
 | Capability | Providers |
 |------------|-----------|
@@ -62,6 +86,12 @@ otherwise):
 | `queue` | `NATS`, `Kafka`* |
 | `logging` | `Structured` |
 | `metrics` | `Prometheus` |
+| `object_store` | `S3` |
+| `email` | `SES`, `SMTP` |
+| `search` | `OpenSearch` |
+| `external_http` | providerless; requires `base_url` |
+| `scheduler` | `Cron` |
+| `realtime` | `WebSocket`, `SSE` |
 
 \* `Kafka` is accepted by the language but not yet implemented by the
 bundled backends (`CIAC0011` at build time).
@@ -113,6 +143,25 @@ any JSON object. A worker with `on` consumes that stream (`CIAC0017` if
 undeclared); without `on` it consumes the service's *default stream*
 (see `Queue` below). Behavior is attached with a pipeline of the same
 name; an api or worker without one is reported unreachable (`CIAC0007`).
+
+### `handler <Name> { ... }`
+
+Declares which named capability instances a pipeline handler uses:
+
+```ciac
+handler StoreVideo {
+    db: main;
+    cache: hot;
+    object_store: media;
+}
+```
+
+Handlers referenced in pipelines may still be implicit. If no handler
+declaration exists, CIaC preserves v0.1-v0.3 behavior by binding to the
+default `db`/`cache` instances when they exist. If multiple instances of a
+kind exist and none is named `default`, implicit binding is ambiguous
+(`CIAC0023`). Binding to a missing instance is `CIAC0022`; binding an
+unsupported kind is `CIAC0024`.
 
 ### `pipeline <Name>: Step -> Step -> ..;`
 

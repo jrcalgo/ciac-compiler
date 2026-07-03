@@ -4,10 +4,10 @@ expression: ir.to_dot()
 ---
 digraph RoutedMedia {
     rankdir=LR;
-    n0 [label="auth Jwt", shape=hexagon];
-    n1 [label="database Postgres", shape=cylinder];
-    n2 [label="cache Redis", shape=cylinder];
-    n3 [label="queue Nats", shape=cds];
+    n0 [label="auth default Jwt", shape=hexagon];
+    n1 [label="database default Postgres", shape=cylinder];
+    n2 [label="cache default Redis", shape=cylinder];
+    n3 [label="queue default Nats", shape=cds];
     n4 [label="stream Uploaded", shape=parallelogram];
     n5 [label="stream Transcoded", shape=parallelogram];
     n6 [label="stream DeadLetters", shape=parallelogram];

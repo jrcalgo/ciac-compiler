@@ -593,6 +593,10 @@ use crate::schemas::Video;
 use crate::state::AppState;
 
 /// Business logic for the `ArchiveFailure` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct ArchiveFailure<'a> {
     pub db: &'a sqlx::PgPool,
@@ -747,6 +751,10 @@ use crate::schemas::Video;
 use crate::state::AppState;
 
 /// Business logic for the `Notify` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct Notify<'a> {
     pub db: &'a sqlx::PgPool,
@@ -778,6 +786,10 @@ use crate::schemas::Video;
 use crate::state::AppState;
 
 /// Business logic for the `SendNotification` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct SendNotification<'a> {
     pub db: &'a sqlx::PgPool,
@@ -809,6 +821,10 @@ use crate::schemas::Video;
 use crate::state::AppState;
 
 /// Business logic for the `StoreVideo` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct StoreVideo<'a> {
     pub db: &'a sqlx::PgPool,
@@ -840,6 +856,10 @@ use crate::schemas::Video;
 use crate::state::AppState;
 
 /// Business logic for the `Transcode` step.
+///
+/// Capability bindings:
+/// - db: default
+/// - cache: default
 #[derive(Debug)]
 pub struct Transcode<'a> {
     pub db: &'a sqlx::PgPool,

@@ -6,19 +6,14 @@
 use crate::record::RecordId;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 pub enum HttpMethod {
     Get,
+    #[default]
     Post,
     Put,
     Delete,
     Patch,
-}
-
-impl Default for HttpMethod {
-    fn default() -> Self {
-        Self::Post
-    }
 }
 
 impl HttpMethod {

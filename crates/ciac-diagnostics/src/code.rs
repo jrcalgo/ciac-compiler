@@ -222,6 +222,35 @@ error_codes! {
         "A `match` over an enum field must cover every declared variant, \
          either directly or with a trailing `_` wildcard arm."
     ),
+    UnknownCapabilityInstance = (
+        "CIAC0022",
+        Error,
+        "unknown capability instance",
+        "A handler, stream, resource, or pipeline step references a named \
+         capability instance that was not declared in the `use` block."
+    ),
+    AmbiguousCapabilityBinding = (
+        "CIAC0023",
+        Error,
+        "ambiguous capability binding",
+        "A construct needs a default capability instance, but multiple \
+         instances of that kind exist and none is named `default`. Add an \
+         explicit binding or declare a default instance."
+    ),
+    InvalidHandlerBinding = (
+        "CIAC0024",
+        Error,
+        "invalid handler binding",
+        "A `handler` declaration binds an unsupported capability kind or \
+         otherwise provides an invalid capability binding."
+    ),
+    UnsupportedProviderConfig = (
+        "CIAC0025",
+        Error,
+        "unsupported provider configuration",
+        "A capability provider configuration is missing required fields or \
+         includes values the selected provider cannot support."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

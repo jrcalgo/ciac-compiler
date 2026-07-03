@@ -12,8 +12,9 @@ mod graph;
 mod record;
 
 pub use component::{
-    ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, HttpMethod,
-    LoggingProvider, MetricsProvider, NodeKind, QueueEngine, WorkerConfig,
+    ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EmailProvider,
+    HttpMethod, LoggingProvider, MetricsProvider, NodeKind, ObjectStoreProvider, QueueEngine,
+    RealtimeProvider, SchedulerProvider, SearchProvider, WorkerConfig,
 };
 pub use graph::{
     Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Step,

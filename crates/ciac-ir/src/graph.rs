@@ -98,6 +98,9 @@ pub struct Resource {
     pub name: String,
     pub api: NodeId,
     pub service: NodeId,
+    pub database: NodeId,
+    pub cache: Option<NodeId>,
+    pub auth: Option<NodeId>,
     /// Record supplying real columns; `None` keeps the generic
     /// keyed-document model.
     pub record: Option<RecordId>,
@@ -206,13 +209,23 @@ impl SystemGraph {
             .filter(move |n| n.component.kind() == kind)
     }
 
-    /// The single node of an infrastructure kind (database, cache, queue,
-    /// auth, ...), if declared.
+    /// Compatibility helper: the first node of a kind, when v0.1-v0.3
+    /// programs rely on a single implicit capability instance.
     pub fn singleton(&self, kind: NodeKind) -> Option<&Node> {
         self.nodes_of_kind(kind).next()
     }
 
-    /// Finds a named component (api/service/worker) by kind and name.
+    pub fn capability(&self, kind: NodeKind, name: &str) -> Option<&Node> {
+        self.nodes_of_kind(kind)
+            .find(|n| n.component.name() == Some(name))
+    }
+
+    pub fn default_capability(&self, kind: NodeKind) -> Option<&Node> {
+        self.capability(kind, "default")
+            .or_else(|| self.nodes_of_kind(kind).next())
+    }
+
+    /// Finds a named component or capability instance by kind and name.
     pub fn find_named(&self, kind: NodeKind, name: &str) -> Option<&Node> {
         self.nodes_of_kind(kind)
             .find(|n| n.component.name() == Some(name))
@@ -246,6 +259,12 @@ impl SystemGraph {
                 NodeKind::Queue => "cds",
                 NodeKind::Stream => "parallelogram",
                 NodeKind::Auth => "hexagon",
+                NodeKind::ObjectStore => "folder",
+                NodeKind::Email => "note",
+                NodeKind::Search => "box3d",
+                NodeKind::ExternalHttp => "tab",
+                NodeKind::Scheduler => "oval",
+                NodeKind::Realtime => "doublecircle",
                 NodeKind::Logging | NodeKind::Metrics => "note",
             };
             let _ = writeln!(
@@ -308,6 +327,7 @@ mod tests {
         );
         let db = g.add_node(
             Component::Database {
+                name: "default".into(),
                 engine: DbEngine::Postgres,
             },
             None,
@@ -340,6 +360,7 @@ mod tests {
         let mut g = SystemGraph::new("Test");
         g.add_node(
             Component::Queue {
+                name: "default".into(),
                 engine: QueueEngine::Nats,
             },
             None,

@@ -12,13 +12,14 @@
 
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
 use ciac_ir::{
-    ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EdgeKind, EventStream,
-    FieldType, HttpMethod, LoggingProvider, MatchArm, MetricsProvider, NodeId, NodeKind, Pipeline,
-    QueueEngine, Record, RecordField, RecordId, Resource, Step, StepKind, SystemGraph,
+    ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EdgeKind, EmailProvider,
+    EventStream, FieldType, HttpMethod, LoggingProvider, MatchArm, MetricsProvider, NodeId,
+    NodeKind, ObjectStoreProvider, Pipeline, QueueEngine, RealtimeProvider, Record, RecordField,
+    RecordId, Resource, SchedulerProvider, SearchProvider, Step, StepKind, SystemGraph,
 };
 use ciac_syntax::ast::{
-    ApiDecl, Attr, AttrValue, ComponentDecl, CrudDecl, Ident, Item, PipelineDecl, Program,
-    RecordDecl, StepExpr, StreamDecl, TypeExpr, UseEntry, WorkerDecl,
+    ApiDecl, Attr, AttrValue, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item, PipelineDecl,
+    Program, RecordDecl, StepExpr, StreamDecl, TypeExpr, UseEntry, WorkerDecl,
 };
 use heck::{ToKebabCase, ToSnakeCase};
 use std::collections::{BTreeMap, HashMap};
@@ -38,6 +39,9 @@ struct Builder<'d> {
     records: HashMap<String, (RecordId, Span)>,
     /// Handler service nodes created implicitly from pipeline steps.
     handlers: HashMap<String, NodeId>,
+    /// Handler declarations by name; missing entries keep legacy implicit bindings.
+    handler_bindings: HashMap<String, Vec<BindingSpec>>,
+    handler_decl_spans: HashMap<String, Span>,
     /// Stream name → node, for `publish`/`on` resolution.
     streams: HashMap<String, NodeId>,
     /// Worker node → stream it consumes (from `on` or the default).
@@ -49,6 +53,13 @@ struct Builder<'d> {
     default_stream: Option<NodeId>,
 }
 
+#[derive(Debug, Clone)]
+struct BindingSpec {
+    kind: NodeKind,
+    instance: String,
+    span: Span,
+}
+
 impl<'d> Builder<'d> {
     fn new(diags: &'d mut Diagnostics) -> Self {
         Self {
@@ -57,6 +68,8 @@ impl<'d> Builder<'d> {
             declared: HashMap::new(),
             records: HashMap::new(),
             handlers: HashMap::new(),
+            handler_bindings: HashMap::new(),
+            handler_decl_spans: HashMap::new(),
             streams: HashMap::new(),
             worker_streams: HashMap::new(),
             route_paths: BTreeMap::new(),
@@ -82,6 +95,11 @@ impl<'d> Builder<'d> {
             }
         }
         for item in &program.items {
+            if let Item::Handler(decl) = item {
+                self.handler_decl(decl);
+            }
+        }
+        for item in &program.items {
             if let Item::Stream(decl) = item {
                 self.stream(decl);
             }
@@ -96,6 +114,7 @@ impl<'d> Builder<'d> {
                 | Item::Use(_)
                 | Item::Record(_)
                 | Item::Stream(_)
+                | Item::Handler(_)
                 | Item::Pipeline(_) => {}
             }
         }
@@ -220,30 +239,88 @@ impl<'d> Builder<'d> {
 
     fn use_entry(&mut self, entry: &UseEntry) {
         let capability = entry.capability.text.as_str();
-        let provider = entry.provider.text.as_str();
+        let provider = entry.provider.as_ref().map(|p| p.text.as_str());
+        let name = entry
+            .name
+            .as_ref()
+            .map(|n| n.text.as_str())
+            .unwrap_or("default");
         let component = match (capability, provider) {
-            ("auth", "JWT") => Component::Auth {
+            ("auth", Some("JWT")) => Component::Auth {
+                name: name.to_owned(),
                 scheme: AuthScheme::Jwt,
             },
-            ("db", "Postgres") => Component::Database {
+            ("db", Some("Postgres")) => Component::Database {
+                name: name.to_owned(),
                 engine: DbEngine::Postgres,
             },
-            ("cache", "Redis") => Component::Cache {
+            ("cache", Some("Redis")) => Component::Cache {
+                name: name.to_owned(),
                 engine: CacheEngine::Redis,
             },
-            ("queue", "NATS") => Component::Queue {
+            ("queue", Some("NATS")) => Component::Queue {
+                name: name.to_owned(),
                 engine: QueueEngine::Nats,
             },
-            ("queue", "Kafka") => Component::Queue {
+            ("queue", Some("Kafka")) => Component::Queue {
+                name: name.to_owned(),
                 engine: QueueEngine::Kafka,
             },
-            ("logging", "Structured") => Component::Logging {
+            ("logging", Some("Structured")) => Component::Logging {
+                name: name.to_owned(),
                 provider: LoggingProvider::Structured,
             },
-            ("metrics", "Prometheus") => Component::Metrics {
+            ("metrics", Some("Prometheus")) => Component::Metrics {
+                name: name.to_owned(),
                 provider: MetricsProvider::Prometheus,
             },
+            ("object_store", Some("S3")) => Component::ObjectStore {
+                name: name.to_owned(),
+                provider: ObjectStoreProvider::S3,
+                bucket: attr_string(&entry.attrs, "bucket"),
+            },
+            ("email", Some("SES")) => Component::Email {
+                name: name.to_owned(),
+                provider: EmailProvider::Ses,
+            },
+            ("email", Some("SMTP")) => Component::Email {
+                name: name.to_owned(),
+                provider: EmailProvider::Smtp,
+            },
+            ("search", Some("OpenSearch")) => Component::Search {
+                name: name.to_owned(),
+                provider: SearchProvider::OpenSearch,
+            },
+            ("external_http", None) => {
+                let Some(base_url) = attr_string(&entry.attrs, "base_url") else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidAttributeValue,
+                            "external_http requires a `base_url` string attribute",
+                        )
+                        .with_label(entry.span, "missing `base_url`"),
+                    );
+                    return;
+                };
+                Component::ExternalHttp {
+                    name: name.to_owned(),
+                    base_url,
+                }
+            }
+            ("scheduler", Some("Cron")) | ("scheduler", None) => Component::Scheduler {
+                name: name.to_owned(),
+                provider: SchedulerProvider::Cron,
+            },
+            ("realtime", Some("WebSocket")) => Component::Realtime {
+                name: name.to_owned(),
+                provider: RealtimeProvider::WebSocket,
+            },
+            ("realtime", Some("SSE")) | ("realtime", None) => Component::Realtime {
+                name: name.to_owned(),
+                provider: RealtimeProvider::Sse,
+            },
             _ => {
+                let provider = provider.unwrap_or("<none>");
                 self.diags.push(
                     Diagnostic::new(
                         ErrorCode::UnknownProvider,
@@ -255,10 +332,10 @@ impl<'d> Builder<'d> {
                 return;
             }
         };
-        if let Some(existing) = self.graph.singleton(component.kind()) {
+        if let Some(existing) = self.graph.capability(component.kind(), name) {
             let mut diag = Diagnostic::new(
                 ErrorCode::DuplicateCapability,
-                format!("capability `{capability}` is declared more than once"),
+                format!("capability `{capability} {name}` is declared more than once"),
             )
             .with_label(entry.span, "duplicate declaration here");
             if let Some(span) = existing.span {
@@ -268,6 +345,58 @@ impl<'d> Builder<'d> {
             return;
         }
         self.graph.add_node(component, Some(entry.span));
+    }
+
+    fn handler_decl(&mut self, decl: &HandlerDecl) {
+        if let Some(first) = self.handler_decl_spans.get(&decl.name.text) {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::DuplicateDeclaration,
+                    format!("handler `{}` is declared more than once", decl.name.text),
+                )
+                .with_label(decl.span, "duplicate handler declaration here")
+                .with_label(*first, "first declared here"),
+            );
+            return;
+        }
+        let mut bindings = Vec::new();
+        let mut seen = BTreeMap::new();
+        for binding in &decl.bindings {
+            let Some(kind) = binding_kind(&binding.capability.text) else {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::InvalidHandlerBinding,
+                        format!("unknown handler binding `{}`", binding.capability.text),
+                    )
+                    .with_label(binding.capability.span, "not a bindable capability kind"),
+                );
+                continue;
+            };
+            if let Some(first) = seen.get(&kind) {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::DuplicateDeclaration,
+                        format!(
+                            "handler `{}` binds `{}` more than once",
+                            decl.name.text, binding.capability.text
+                        ),
+                    )
+                    .with_label(binding.span, "duplicate binding here")
+                    .with_label(*first, "first binding here"),
+                );
+                continue;
+            }
+            seen.insert(kind, binding.span);
+            bindings.push(BindingSpec {
+                kind,
+                instance: binding.instance.text.clone(),
+                span: binding.span,
+            });
+        }
+        self.handler_decl_spans
+            .insert(decl.name.text.clone(), decl.span);
+        self.handler_bindings
+            .insert(decl.name.text.clone(), bindings);
     }
 
     /// Registers a declared name, reporting duplicates. Returns false when
@@ -291,7 +420,7 @@ impl<'d> Builder<'d> {
     /// Requires the queue (broker) capability, reporting `CIAC0005` with
     /// the given context otherwise.
     fn require_queue(&mut self, what: &str, span: Span) -> Option<NodeId> {
-        match self.graph.singleton(NodeKind::Queue).map(|n| n.id) {
+        match self.default_capability(NodeKind::Queue, what, span) {
             Some(queue) => Some(queue),
             None => {
                 self.diags.push(
@@ -301,6 +430,48 @@ impl<'d> Builder<'d> {
                     )
                     .with_label(span, "used here")
                     .with_help("add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block"),
+                );
+                None
+            }
+        }
+    }
+
+    fn default_capability(&mut self, kind: NodeKind, what: &str, span: Span) -> Option<NodeId> {
+        let nodes: Vec<_> = self.graph.nodes_of_kind(kind).collect();
+        if nodes.is_empty() {
+            return None;
+        }
+        if let Some(default) = nodes
+            .iter()
+            .copied()
+            .find(|node| node.component.name() == Some("default"))
+        {
+            return Some(default.id);
+        }
+        if nodes.len() == 1 {
+            return Some(nodes[0].id);
+        }
+        self.diags.push(
+            Diagnostic::new(
+                ErrorCode::AmbiguousCapabilityBinding,
+                format!("{what} needs a {kind:?} capability but multiple instances exist"),
+            )
+            .with_label(span, "ambiguous capability use")
+            .with_help("name a `default` instance or add an explicit handler/resource binding"),
+        );
+        None
+    }
+
+    fn resolve_capability(&mut self, kind: NodeKind, name: &str, span: Span) -> Option<NodeId> {
+        match self.graph.capability(kind, name) {
+            Some(node) => Some(node.id),
+            None => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownCapabilityInstance,
+                        format!("unknown {kind:?} capability instance `{name}`"),
+                    )
+                    .with_label(span, "no capability instance with this name"),
                 );
                 None
             }
@@ -449,10 +620,12 @@ impl<'d> Builder<'d> {
         let record = decl.record.as_ref().and_then(|r| self.resolve_record(r));
         let config = attrs::apply_crud_attrs(
             &decl.attrs,
-            self.graph.singleton(NodeKind::Cache).is_some(),
+            self.graph.nodes_of_kind(NodeKind::Cache).next().is_some(),
             self.diags,
         );
-        let Some(db) = self.graph.singleton(NodeKind::Database).map(|n| n.id) else {
+        let Some(db) =
+            self.default_capability(NodeKind::Database, &format!("`crud {}`", decl.name.text), decl.span)
+        else {
             self.diags.push(
                 Diagnostic::new(
                     ErrorCode::MissingCapability,
@@ -478,7 +651,8 @@ impl<'d> Builder<'d> {
             },
             Some(decl.span),
         );
-        match self.graph.singleton(NodeKind::Auth).map(|n| n.id) {
+        let auth = self.default_capability(NodeKind::Auth, &format!("`crud {}`", decl.name.text), decl.span);
+        match auth {
             Some(auth) => {
                 self.graph.add_edge(api, auth, EdgeKind::RequestFlow);
                 self.graph.add_edge(auth, service, EdgeKind::RequestFlow);
@@ -488,13 +662,17 @@ impl<'d> Builder<'d> {
             }
         }
         self.graph.add_edge(service, db, EdgeKind::DataFlow);
-        if let Some(cache) = self.graph.singleton(NodeKind::Cache).map(|n| n.id) {
+        let cache = self.default_capability(NodeKind::Cache, &format!("`crud {}`", decl.name.text), decl.span);
+        if let Some(cache) = cache {
             self.graph.add_edge(service, cache, EdgeKind::DataFlow);
         }
         self.graph.resources.push(Resource {
             name,
             api,
             service,
+            database: db,
+            cache,
+            auth,
             record,
             config,
         });
@@ -521,7 +699,9 @@ impl<'d> Builder<'d> {
         );
         self.graph.add_edge(stream, worker, EdgeKind::AsyncMessage);
         self.worker_streams.insert(worker, stream);
-        if let Some(db) = self.graph.singleton(NodeKind::Database).map(|n| n.id) {
+        if let Some(db) =
+            self.default_capability(NodeKind::Database, &format!("`events {}`", decl.name.text), decl.span)
+        {
             self.graph.add_edge(worker, db, EdgeKind::DataFlow);
         }
         self.graph.event_streams.push(EventStream {
@@ -664,8 +844,8 @@ impl<'d> Builder<'d> {
             StepExpr::Name(ident) => ident,
         };
         match ident.text.as_str() {
-            "Auth" => match self.graph.singleton(NodeKind::Auth) {
-                Some(node) => Some(step(StepKind::Auth { node: node.id }, ident.span)),
+            "Auth" => match self.default_capability(NodeKind::Auth, "the `Auth` step", ident.span) {
+                Some(node) => Some(step(StepKind::Auth { node }, ident.span)),
                 None => {
                     self.diags.push(
                         Diagnostic::new(
@@ -724,18 +904,35 @@ impl<'d> Builder<'d> {
                             },
                             Some(ident.span),
                         );
-                        // Handlers are provisioned with the declared storage
-                        // capabilities (injected by codegen).
-                        for kind in [NodeKind::Database, NodeKind::Cache] {
-                            if let Some(target) = self.graph.singleton(kind).map(|n| n.id) {
-                                self.graph.add_edge(id, target, EdgeKind::DataFlow);
-                            }
-                        }
+                        self.wire_handler_bindings(name, id, ident.span);
                         self.handlers.insert(name.to_owned(), id);
                         id
                     }
                 };
                 Some(step(StepKind::Handler { node }, ident.span))
+            }
+        }
+    }
+
+    fn wire_handler_bindings(&mut self, name: &str, handler: NodeId, span: Span) {
+        if let Some(bindings) = self.handler_bindings.get(name).cloned() {
+            for binding in bindings {
+                if let Some(target) =
+                    self.resolve_capability(binding.kind, &binding.instance, binding.span)
+                {
+                    self.graph.add_edge(handler, target, EdgeKind::DataFlow);
+                }
+            }
+            return;
+        }
+
+        for kind in [NodeKind::Database, NodeKind::Cache] {
+            if self.graph.nodes_of_kind(kind).next().is_some() {
+                if let Some(target) =
+                    self.default_capability(kind, &format!("handler `{name}`"), span)
+                {
+                    self.graph.add_edge(handler, target, EdgeKind::DataFlow);
+                }
             }
         }
     }
@@ -938,6 +1135,34 @@ fn step(kind: StepKind, span: Span) -> Step {
 
 fn default_subject(service: &str, name: &str) -> String {
     format!("{}.{}", service.to_snake_case(), name.to_snake_case())
+}
+
+fn binding_kind(capability: &str) -> Option<NodeKind> {
+    Some(match capability {
+        "auth" => NodeKind::Auth,
+        "db" => NodeKind::Database,
+        "cache" => NodeKind::Cache,
+        "queue" => NodeKind::Queue,
+        "object_store" => NodeKind::ObjectStore,
+        "email" => NodeKind::Email,
+        "search" => NodeKind::Search,
+        "external_http" => NodeKind::ExternalHttp,
+        "scheduler" => NodeKind::Scheduler,
+        "realtime" => NodeKind::Realtime,
+        "logging" => NodeKind::Logging,
+        "metrics" => NodeKind::Metrics,
+        _ => return None,
+    })
+}
+
+fn attr_string(attrs: &[Attr], name: &str) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        (attr.name.text == name).then(|| match &attr.value {
+            AttrValue::Str { value, .. } => Some(value.clone()),
+            AttrValue::Ident(ident) => Some(ident.text.clone()),
+            AttrValue::Number { .. } => None,
+        })?
+    })
 }
 
 mod attrs {

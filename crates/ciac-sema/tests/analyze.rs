@@ -503,3 +503,85 @@ fn match_validation_reports_new_codes() {
         );
     }
 }
+
+#[test]
+fn named_capability_instances_bind_to_handlers() {
+    let (ir, diags) = analyze(
+        "service X;\n\
+         use { db main Postgres; db analytics Postgres; cache hot Redis; }\n\
+         handler Store { db: main; cache: hot; }\n\
+         api A;\n\
+         pipeline A: Store -> Return;\n",
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    let store = ir.find_named(NodeKind::Service, "Store").expect("handler");
+    let targets: Vec<_> = ir
+        .edges_from(store.id)
+        .map(|e| ir.node(e.to).component.name().unwrap_or_default().to_owned())
+        .collect();
+    assert!(targets.contains(&"main".to_owned()));
+    assert!(targets.contains(&"hot".to_owned()));
+    assert!(!targets.contains(&"analytics".to_owned()));
+}
+
+#[test]
+fn multiple_instances_without_default_are_ambiguous_for_implicit_handlers() {
+    let (ir, diags) = analyze(
+        "service X;\n\
+         use { db main Postgres; db analytics Postgres; }\n\
+         api A;\n\
+         pipeline A: Store -> Return;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::AmbiguousCapabilityBinding));
+}
+
+#[test]
+fn handler_binding_to_missing_instance_is_reported() {
+    let (ir, diags) = analyze(
+        "service X;\n\
+         use { db main Postgres; }\n\
+         handler Store { db: missing; }\n\
+         api A;\n\
+         pipeline A: Store -> Return;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownCapabilityInstance));
+}
+
+#[test]
+fn new_ontology_capabilities_can_be_declared_and_bound() {
+    let (ir, diags) = analyze(
+        r#"service X;
+use {
+    object_store media S3 { bucket: "videos"; }
+    email transactional SES;
+    search catalog OpenSearch;
+    external_http billing { base_url: "https://billing.internal"; }
+}
+handler Enrich {
+    object_store: media;
+    email: transactional;
+    search: catalog;
+    external_http: billing;
+}
+api A;
+pipeline A: Enrich -> Return;
+"#,
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    assert!(ir.find_named(NodeKind::ObjectStore, "media").is_some());
+    assert!(ir.find_named(NodeKind::Email, "transactional").is_some());
+    assert!(ir.find_named(NodeKind::Search, "catalog").is_some());
+    assert!(ir.find_named(NodeKind::ExternalHttp, "billing").is_some());
+}

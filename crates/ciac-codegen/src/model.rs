@@ -402,9 +402,11 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         queue_engine: ir.singleton(NodeKind::Queue).map(|n| match n.component {
             Component::Queue {
                 engine: QueueEngine::Nats,
+                ..
             } => "nats".to_owned(),
             Component::Queue {
                 engine: QueueEngine::Kafka,
+                ..
             } => "kafka".to_owned(),
             _ => unreachable!("queue singleton is a queue"),
         }),

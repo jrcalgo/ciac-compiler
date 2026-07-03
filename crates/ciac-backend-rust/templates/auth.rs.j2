@@ -8,6 +8,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{request::Parts, StatusCode};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Verified JWT claims of the current request.
@@ -18,6 +19,24 @@ impl Claims {
     /// The `sub` claim, if present.
     pub fn subject(&self) -> Option<&str> {
         self.0.get("sub").and_then(|v| v.as_str())
+    }
+
+    pub fn require_scope(&self, scope: &str) -> Result<(), AppError> {
+        let has_scope = self
+            .0
+            .get("scope")
+            .and_then(|value| value.as_str())
+            .is_some_and(|scopes| scopes.split_whitespace().any(|item| item == scope))
+            || self
+                .0
+                .get("scp")
+                .and_then(|value| value.as_array())
+                .is_some_and(|scopes| scopes.iter().any(|item| item.as_str() == Some(scope)));
+        if has_scope {
+            Ok(())
+        } else {
+            Err(AppError::forbidden())
+        }
     }
 }
 

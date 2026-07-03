@@ -68,16 +68,18 @@ impl<'a> {{ resource.store_class }}<'a> {
 {%- if resource.has_cache %}
         if let Some(entity) = &entity {
             let _: () = cache
-                .set_ex(cache_key(id), serde_json::to_string(entity)?, 300)
+                .set_ex(cache_key(id), serde_json::to_string(entity)?, {{ resource.cache_ttl }})
                 .await?;
         }
 {%- endif %}
         Ok(entity)
     }
 
-    pub async fn list(&self) -> anyhow::Result<Vec<{{ resource.name }}>> {
+    pub async fn list(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<{{ resource.name }}>> {
         let entities =
-            sqlx::query_as("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} ORDER BY id")
+            sqlx::query_as("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} ORDER BY id LIMIT $1 OFFSET $2")
+                .bind(limit)
+                .bind(offset)
                 .fetch_all(self.db)
                 .await?;
         Ok(entities)
@@ -152,15 +154,17 @@ impl<'a> {{ resource.store_class }}<'a> {
 {%- if resource.has_cache %}
         if let Some(entity) = &entity {
             let _: () = cache
-                .set_ex(cache_key(id), serde_json::to_string(&entity.data)?, 300)
+                .set_ex(cache_key(id), serde_json::to_string(&entity.data)?, {{ resource.cache_ttl }})
                 .await?;
         }
 {%- endif %}
         Ok(entity)
     }
 
-    pub async fn list(&self) -> anyhow::Result<Vec<{{ resource.name }}>> {
-        let entities = sqlx::query_as("SELECT id, data FROM {{ resource.plural }} ORDER BY id")
+    pub async fn list(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<{{ resource.name }}>> {
+        let entities = sqlx::query_as("SELECT id, data FROM {{ resource.plural }} ORDER BY id LIMIT $1 OFFSET $2")
+            .bind(limit)
+            .bind(offset)
             .fetch_all(self.db)
             .await?;
         Ok(entities)

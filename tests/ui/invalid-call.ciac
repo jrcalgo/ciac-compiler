@@ -1,0 +1,7 @@
+// expect: CIAC0032
+project X;
+record R { id: Uuid; }
+service A {
+    api In: R;
+    pipeline In: call Too.Many.Segments -> Return;
+}

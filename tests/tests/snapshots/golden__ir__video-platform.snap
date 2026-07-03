@@ -4,33 +4,44 @@ expression: json
 ---
 {
   "name": "VideoPlatform",
+  "services": [
+    {
+      "id": 0,
+      "name": "VideoPlatform"
+    }
+  ],
   "nodes": [
     {
       "id": 0,
+      "service": 0,
       "kind": "Auth",
       "name": "default",
       "scheme": "Jwt"
     },
     {
       "id": 1,
+      "service": 0,
       "kind": "Database",
       "name": "default",
       "engine": "Postgres"
     },
     {
       "id": 2,
+      "service": 0,
       "kind": "Cache",
       "name": "default",
       "engine": "Redis"
     },
     {
       "id": 3,
+      "service": 0,
       "kind": "Queue",
       "name": "default",
       "engine": "Nats"
     },
     {
       "id": 4,
+      "service": 0,
       "kind": "Api",
       "name": "Upload",
       "request": null,
@@ -42,6 +53,7 @@ expression: json
     },
     {
       "id": 5,
+      "service": 0,
       "kind": "Worker",
       "name": "Transcoder",
       "config": {
@@ -51,11 +63,13 @@ expression: json
     },
     {
       "id": 6,
+      "service": 0,
       "kind": "Service",
       "name": "StoreVideo"
     },
     {
       "id": 7,
+      "service": null,
       "kind": "Stream",
       "name": "Events",
       "subject": "video_platform.events",
@@ -63,11 +77,13 @@ expression: json
     },
     {
       "id": 8,
+      "service": 0,
       "kind": "Service",
       "name": "Transcode"
     },
     {
       "id": 9,
+      "service": 0,
       "kind": "Service",
       "name": "SaveResult"
     }
@@ -156,6 +172,7 @@ expression: json
   "pipelines": [
     {
       "name": "Upload",
+      "service": 0,
       "owner": 4,
       "payload": null,
       "steps": [
@@ -178,6 +195,7 @@ expression: json
     },
     {
       "name": "Transcoder",
+      "service": 0,
       "owner": 5,
       "payload": null,
       "steps": [

@@ -4,27 +4,37 @@ expression: json
 ---
 {
   "name": "Notes",
+  "services": [
+    {
+      "id": 0,
+      "name": "Notes"
+    }
+  ],
   "nodes": [
     {
       "id": 0,
+      "service": 0,
       "kind": "Auth",
       "name": "default",
       "scheme": "Jwt"
     },
     {
       "id": 1,
+      "service": 0,
       "kind": "Database",
       "name": "default",
       "engine": "Postgres"
     },
     {
       "id": 2,
+      "service": 0,
       "kind": "Cache",
       "name": "default",
       "engine": "Redis"
     },
     {
       "id": 3,
+      "service": 0,
       "kind": "Api",
       "name": "Note",
       "request": null,
@@ -36,6 +46,7 @@ expression: json
     },
     {
       "id": 4,
+      "service": 0,
       "kind": "Service",
       "name": "NoteStore"
     }
@@ -71,6 +82,7 @@ expression: json
   "resources": [
     {
       "name": "Note",
+      "service_owner": 0,
       "api": 3,
       "service": 4,
       "database": 1,

@@ -1,0 +1,80 @@
+// v0.5 flagship: multiple services, shared streams, and typed service calls.
+project MediaSystem;
+
+record Video {
+    id: Uuid;
+    title: String;
+    status: enum { Ready, Failed };
+}
+
+stream Uploaded: Video;
+stream Transcoded: Video;
+stream DeadLetters: Video;
+
+service Billing {
+    api Charge: Video {
+        method: POST;
+        path: "/charge";
+    }
+
+    pipeline Charge:
+        CapturePayment
+        -> Return;
+}
+
+service UploadApi {
+    use {
+        queue bus NATS;
+    }
+
+    api Upload: Video {
+        method: PUT;
+        path: "/videos";
+    }
+
+    pipeline Upload:
+        call Billing.Charge
+        -> StoreVideo
+        -> publish Uploaded
+        -> Return;
+}
+
+service Transcoder {
+    use {
+        queue bus NATS;
+        object_store media S3 { bucket: "videos"; }
+    }
+
+    worker Transcode on Uploaded;
+
+    handler TranscodeVideo {
+        object_store: media;
+    }
+
+    pipeline Transcode:
+        TranscodeVideo
+        -> match status {
+            Ready -> publish Transcoded;
+            Failed -> publish DeadLetters;
+        };
+}
+
+service Notifier {
+    use {
+        queue bus NATS;
+        email transactional SES;
+    }
+
+    worker Notify on Transcoded;
+    worker DeadLetterSink on DeadLetters;
+
+    handler SendNotification {
+        email: transactional;
+    }
+
+    pipeline Notify:
+        SendNotification;
+
+    pipeline DeadLetterSink:
+        ArchiveFailure;
+}

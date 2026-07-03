@@ -1,9 +1,19 @@
 # The Intermediate Representation
 
 A CIaC program compiles to a `SystemGraph` (crate `ciac-ir`): a typed
-directed graph plus a record (type) table, resolved pipelines, and the
-records of expanded higher-level constructs. Inspect it with
+directed graph plus a deployable-service table, a record (type) table,
+resolved pipelines, and the records of expanded higher-level constructs. Inspect it with
 `ciac graph <file> --format json|dot`.
+
+## Services
+
+v0.5 adds deployable service ownership. `SystemGraph::services` contains
+`Service { id, name }` entries. Nodes and pipelines have
+`Option<ServiceId>` ownership:
+
+- `Some(id)` for APIs, workers, handlers, capabilities, CRUD expansions,
+  and events owned by a service block or the legacy implicit service.
+- `None` for project-global nodes such as shared streams.
 
 ## Nodes
 
@@ -61,6 +71,7 @@ surface binding metadata in generated handler stubs.
 | `RequestFlow` | synchronous invocation (api → auth → handler → …) |
 | `DataFlow` | reads/writes of stored data (handler ↔ database/cache) |
 | `AsyncMessage` | publish (node → stream) and consume (stream → worker) |
+| `ServiceCall` | synchronous typed call from one service pipeline to another service API |
 | `DependsOn` | provisioning dependency (stream → broker) |
 
 Because streams are nodes, message topology is explicit:
@@ -80,6 +91,7 @@ stream's record), and resolved recursive `Step`s. A step has an embedded
 - `Publish { stream }`
 - `Return`
 - `Handler { node }`
+- `Call { target }`, where `target` is the API node in another service
 - `Match { field, arms }`, where each `MatchArm` has an optional label
   (`None` = wildcard) and its own nested `Vec<Step>`.
 
@@ -108,7 +120,9 @@ may assume:
    (untyped streams accept any payload).
 6. Every `Match` is terminal, non-nested, branches on an enum payload
    field, and covers every variant.
-7. Node/edge/record iteration order is deterministic (declaration
+7. Every `Call` targets an existing service API and carries the target
+   API's request record.
+8. Node/edge/record/service iteration order is deterministic (declaration
    order).
 
 Construct it only through `ciac_sema::analyze`;

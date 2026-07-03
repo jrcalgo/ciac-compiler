@@ -4,33 +4,44 @@ expression: json
 ---
 {
   "name": "MediaOps",
+  "services": [
+    {
+      "id": 0,
+      "name": "MediaOps"
+    }
+  ],
   "nodes": [
     {
       "id": 0,
+      "service": 0,
       "kind": "Database",
       "name": "main",
       "engine": "Postgres"
     },
     {
       "id": 1,
+      "service": 0,
       "kind": "Database",
       "name": "analytics",
       "engine": "Postgres"
     },
     {
       "id": 2,
+      "service": 0,
       "kind": "Cache",
       "name": "hot",
       "engine": "Redis"
     },
     {
       "id": 3,
+      "service": 0,
       "kind": "Queue",
       "name": "bus",
       "engine": "Nats"
     },
     {
       "id": 4,
+      "service": 0,
       "kind": "ObjectStore",
       "name": "media",
       "provider": "S3",
@@ -38,24 +49,28 @@ expression: json
     },
     {
       "id": 5,
+      "service": 0,
       "kind": "Email",
       "name": "transactional",
       "provider": "Ses"
     },
     {
       "id": 6,
+      "service": 0,
       "kind": "Search",
       "name": "catalog",
       "provider": "OpenSearch"
     },
     {
       "id": 7,
+      "service": 0,
       "kind": "ExternalHttp",
       "name": "billing",
       "base_url": "https://billing.internal"
     },
     {
       "id": 8,
+      "service": null,
       "kind": "Stream",
       "name": "Uploaded",
       "subject": "media_ops.uploaded",
@@ -63,6 +78,7 @@ expression: json
     },
     {
       "id": 9,
+      "service": null,
       "kind": "Stream",
       "name": "Indexed",
       "subject": "media_ops.indexed",
@@ -70,6 +86,7 @@ expression: json
     },
     {
       "id": 10,
+      "service": 0,
       "kind": "Api",
       "name": "Upload",
       "request": 0,
@@ -81,6 +98,7 @@ expression: json
     },
     {
       "id": 11,
+      "service": 0,
       "kind": "Worker",
       "name": "Indexer",
       "config": {
@@ -90,6 +108,7 @@ expression: json
     },
     {
       "id": 12,
+      "service": 0,
       "kind": "Worker",
       "name": "Notifier",
       "config": {
@@ -99,21 +118,25 @@ expression: json
     },
     {
       "id": 13,
+      "service": 0,
       "kind": "Service",
       "name": "StoreVideo"
     },
     {
       "id": 14,
+      "service": 0,
       "kind": "Service",
       "name": "RecordAnalytics"
     },
     {
       "id": 15,
+      "service": 0,
       "kind": "Service",
       "name": "IndexVideo"
     },
     {
       "id": 16,
+      "service": 0,
       "kind": "Service",
       "name": "NotifyUser"
     }
@@ -254,6 +277,7 @@ expression: json
   "pipelines": [
     {
       "name": "Upload",
+      "service": 0,
       "owner": 10,
       "payload": 0,
       "steps": [
@@ -276,6 +300,7 @@ expression: json
     },
     {
       "name": "Indexer",
+      "service": 0,
       "owner": 11,
       "payload": 0,
       "steps": [
@@ -291,6 +316,7 @@ expression: json
     },
     {
       "name": "Notifier",
+      "service": 0,
       "owner": 12,
       "payload": 0,
       "steps": [

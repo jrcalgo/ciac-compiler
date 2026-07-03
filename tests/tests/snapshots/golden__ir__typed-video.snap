@@ -4,33 +4,44 @@ expression: json
 ---
 {
   "name": "Media",
+  "services": [
+    {
+      "id": 0,
+      "name": "Media"
+    }
+  ],
   "nodes": [
     {
       "id": 0,
+      "service": 0,
       "kind": "Auth",
       "name": "default",
       "scheme": "Jwt"
     },
     {
       "id": 1,
+      "service": 0,
       "kind": "Database",
       "name": "default",
       "engine": "Postgres"
     },
     {
       "id": 2,
+      "service": 0,
       "kind": "Cache",
       "name": "default",
       "engine": "Redis"
     },
     {
       "id": 3,
+      "service": 0,
       "kind": "Queue",
       "name": "default",
       "engine": "Nats"
     },
     {
       "id": 4,
+      "service": null,
       "kind": "Stream",
       "name": "Uploaded",
       "subject": "media.uploaded",
@@ -38,6 +49,7 @@ expression: json
     },
     {
       "id": 5,
+      "service": null,
       "kind": "Stream",
       "name": "Transcoded",
       "subject": "media.transcoded",
@@ -45,6 +57,7 @@ expression: json
     },
     {
       "id": 6,
+      "service": 0,
       "kind": "Api",
       "name": "Upload",
       "request": 0,
@@ -56,6 +69,7 @@ expression: json
     },
     {
       "id": 7,
+      "service": 0,
       "kind": "Worker",
       "name": "Transcoder",
       "config": {
@@ -65,6 +79,7 @@ expression: json
     },
     {
       "id": 8,
+      "service": 0,
       "kind": "Worker",
       "name": "Notifier",
       "config": {
@@ -74,6 +89,7 @@ expression: json
     },
     {
       "id": 9,
+      "service": 0,
       "kind": "Api",
       "name": "Clip",
       "request": 0,
@@ -85,21 +101,25 @@ expression: json
     },
     {
       "id": 10,
+      "service": 0,
       "kind": "Service",
       "name": "ClipStore"
     },
     {
       "id": 11,
+      "service": 0,
       "kind": "Service",
       "name": "StoreVideo"
     },
     {
       "id": 12,
+      "service": 0,
       "kind": "Service",
       "name": "Transcode"
     },
     {
       "id": 13,
+      "service": 0,
       "kind": "Service",
       "name": "Notify"
     }
@@ -265,6 +285,7 @@ expression: json
   "pipelines": [
     {
       "name": "Upload",
+      "service": 0,
       "owner": 6,
       "payload": 0,
       "steps": [
@@ -287,6 +308,7 @@ expression: json
     },
     {
       "name": "Transcoder",
+      "service": 0,
       "owner": 7,
       "payload": 0,
       "steps": [
@@ -302,6 +324,7 @@ expression: json
     },
     {
       "name": "Notifier",
+      "service": 0,
       "owner": 8,
       "payload": 0,
       "steps": [
@@ -315,6 +338,7 @@ expression: json
   "resources": [
     {
       "name": "Clip",
+      "service_owner": 0,
       "api": 9,
       "service": 10,
       "database": 1,

@@ -4,21 +4,30 @@ expression: json
 ---
 {
   "name": "Ingest",
+  "services": [
+    {
+      "id": 0,
+      "name": "Ingest"
+    }
+  ],
   "nodes": [
     {
       "id": 0,
+      "service": 0,
       "kind": "Database",
       "name": "default",
       "engine": "Postgres"
     },
     {
       "id": 1,
+      "service": 0,
       "kind": "Queue",
       "name": "default",
       "engine": "Nats"
     },
     {
       "id": 2,
+      "service": 0,
       "kind": "Api",
       "name": "Submit",
       "request": null,
@@ -30,6 +39,7 @@ expression: json
     },
     {
       "id": 3,
+      "service": 0,
       "kind": "Worker",
       "name": "Processor",
       "config": {
@@ -39,6 +49,7 @@ expression: json
     },
     {
       "id": 4,
+      "service": null,
       "kind": "Stream",
       "name": "PageView",
       "subject": "ingest.page_view",
@@ -46,6 +57,7 @@ expression: json
     },
     {
       "id": 5,
+      "service": 0,
       "kind": "Worker",
       "name": "PageViewConsumer",
       "config": {
@@ -55,11 +67,13 @@ expression: json
     },
     {
       "id": 6,
+      "service": 0,
       "kind": "Service",
       "name": "Validate"
     },
     {
       "id": 7,
+      "service": null,
       "kind": "Stream",
       "name": "Events",
       "subject": "ingest.events",
@@ -67,11 +81,13 @@ expression: json
     },
     {
       "id": 8,
+      "service": 0,
       "kind": "Service",
       "name": "Enrich"
     },
     {
       "id": 9,
+      "service": 0,
       "kind": "Service",
       "name": "Store"
     }
@@ -154,6 +170,7 @@ expression: json
   "pipelines": [
     {
       "name": "Submit",
+      "service": 0,
       "owner": 2,
       "payload": null,
       "steps": [
@@ -172,6 +189,7 @@ expression: json
     },
     {
       "name": "Processor",
+      "service": 0,
       "owner": 3,
       "payload": null,
       "steps": [
@@ -190,6 +208,7 @@ expression: json
   "event_streams": [
     {
       "name": "PageView",
+      "service_owner": 0,
       "stream": 4,
       "worker": 5
     }

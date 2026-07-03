@@ -1,0 +1,7 @@
+// expect: CIAC0027
+project X;
+record R { id: Uuid; }
+service A {
+    api In: R;
+    pipeline In: call Missing.Api -> Return;
+}

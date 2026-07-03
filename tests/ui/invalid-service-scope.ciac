@@ -1,0 +1,4 @@
+// expect: CIAC0030
+project X;
+api Flat;
+service A {}

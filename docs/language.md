@@ -1,4 +1,4 @@
-# The CIaC Language (v0.4)
+# The CIaC Language (v0.5)
 
 A CIaC program describes one deployable service as a set of declarations.
 Declaration order is free; the compiler resolves references after parsing
@@ -8,11 +8,16 @@ the whole file.
 
 ```ebnf
 program        = { item } ;
-item           = service-decl | use-block | record-decl | stream-decl
-               | handler-decl | api-decl | worker-decl | crud-decl
-               | events-decl | pipeline-decl ;
+item           = project-decl | service-decl | service-block
+               | use-block | record-decl | stream-decl | handler-decl
+               | api-decl | worker-decl | crud-decl | events-decl
+               | pipeline-decl ;
 
+project-decl   = "project" IDENT ";" ;
 service-decl   = "service" IDENT ";" ;
+service-block  = "service" IDENT "{" { service-item } "}" ;
+service-item   = use-block | api-decl | worker-decl | crud-decl
+               | events-decl | handler-decl | pipeline-decl ;
 use-block      = "use" "{" { use-entry } "}" ;
 use-entry      = IDENT IDENT ";"              (* capability provider *)
                | IDENT IDENT IDENT ";"        (* capability name provider *)
@@ -35,9 +40,11 @@ decl-tail      = ";" | attr-block ;
 attr-block     = "{" { attr } "}" ;
 attr           = IDENT ":" attr-value ";" ;
 attr-value     = IDENT | NUMBER | STRING ;
-step           = IDENT | "publish" IDENT | match-step ;
+step           = IDENT | "publish" IDENT | "call" qualified-ident
+               | match-step ;
 match-step     = "match" IDENT "{" { arm } "}" ;
 arm            = ( IDENT | "_" ) "->" step { "->" step } ";" ;
+qualified-ident = IDENT { "." IDENT } ;
 
 IDENT          = letter-or-underscore { letter-digit-underscore } ;
 NUMBER         = digit { digit } ;
@@ -52,6 +59,33 @@ Comments: `// line` and `/* block */`.
 
 Names the system. Exactly one per program (`CIAC0010` if missing,
 `CIAC0003` if repeated). The name drives generated package/module names.
+
+In v0.5, multi-service projects use `project <Name>;` plus service
+blocks. The legacy `service <Name>;` form remains valid and lowers to a
+single implicit service.
+
+### `project <Name>;` and `service <Name> { ... }`
+
+`project` names a multi-service CIaC project. Each `service` block owns
+its APIs, workers, CRUD resources, handler bindings, capabilities, and
+pipelines:
+
+```ciac
+project MediaSystem;
+
+record Video { id: Uuid; }
+stream Uploaded: Video;
+
+service UploadApi {
+    use { queue bus NATS; }
+    api Upload: Video;
+    pipeline Upload: publish Uploaded -> Return;
+}
+```
+
+Records and streams are project-global. Service-local declarations must
+live inside a service block once any service block is used (`CIAC0030`).
+Service names are project-global (`CIAC0026`).
 
 ### `use { capability Provider; .. }`
 
@@ -190,6 +224,10 @@ Steps are:
   consume. Requires the `queue` capability (`CIAC0005`).
 - **`Return`** — respond to the caller. Only valid as the final step of
   an api pipeline (`CIAC0009`).
+- **`call <Service>.<Api>`** — synchronously invoke another service's
+  typed API. The target service and API must exist (`CIAC0027`/
+  `CIAC0028`), and the caller payload type must match the target API's
+  request record (`CIAC0029`). Malformed call targets are `CIAC0032`.
 - **`match <field> { ... }`** — statically branch on an enum field of
   the pipeline payload. A match must be the final top-level step and may
   not be nested in v0.3 (`CIAC0020`). Arm labels must be declared enum

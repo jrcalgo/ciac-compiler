@@ -1,0 +1,4 @@
+// expect: CIAC0026
+project X;
+service A {}
+service A {}

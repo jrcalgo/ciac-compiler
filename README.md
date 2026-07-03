@@ -107,6 +107,29 @@ handler IndexVideo {
 }
 ```
 
+v0.5 lets one file describe a multi-service topology with shared typed
+streams and checked service-to-service calls:
+
+```text
+project MediaSystem;
+
+record Video { id: Uuid; }
+stream Uploaded: Video;
+
+service Billing {
+    api Charge: Video;
+    pipeline Charge: CapturePayment -> Return;
+}
+
+service UploadApi {
+    api Upload: Video;
+    pipeline Upload:
+        call Billing.Charge
+        -> publish Uploaded
+        -> Return;
+}
+```
+
 ## Why
 
 Most backend systems are the same dozen architectural patterns glued

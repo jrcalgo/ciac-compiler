@@ -787,6 +787,11 @@ impl<'d> Builder<'d> {
             let Some(stream) = self.resolve_stream(stream_name) else {
                 return;
             };
+            if let Some(queue) =
+                self.require_queue(&format!("worker `{}`", decl.name.text), stream_name.span)
+            {
+                self.graph.add_edge(stream, queue, EdgeKind::DependsOn);
+            }
             self.graph.add_edge(stream, node, EdgeKind::AsyncMessage);
             self.worker_streams.insert(node, stream);
         }
@@ -1041,6 +1046,11 @@ impl<'d> Builder<'d> {
         let ident = match expr {
             StepExpr::Publish(stream_name) => {
                 let stream = self.resolve_stream(stream_name)?;
+                if let Some(queue) =
+                    self.require_queue(&format!("publish `{}`", stream_name.text), stream_name.span)
+                {
+                    self.graph.add_edge(stream, queue, EdgeKind::DependsOn);
+                }
                 self.check_publish_type(stream, payload, stream_name.span);
                 return Some(step(StepKind::Publish { stream }, expr.span()));
             }

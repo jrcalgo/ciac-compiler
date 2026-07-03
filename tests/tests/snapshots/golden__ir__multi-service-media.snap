@@ -172,83 +172,119 @@ expression: json
     {
       "id": 0,
       "from": 0,
+      "to": 6,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 0,
       "to": 8,
       "kind": "AsyncMessage"
     },
     {
-      "id": 1,
+      "id": 2,
+      "from": 1,
+      "to": 9,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 3,
       "from": 1,
       "to": 11,
       "kind": "AsyncMessage"
     },
     {
-      "id": 2,
+      "id": 4,
+      "from": 2,
+      "to": 9,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 5,
       "from": 2,
       "to": 12,
       "kind": "AsyncMessage"
     },
     {
-      "id": 3,
+      "id": 6,
       "from": 3,
       "to": 13,
       "kind": "RequestFlow"
     },
     {
-      "id": 4,
+      "id": 7,
+      "from": 0,
+      "to": 4,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 8,
       "from": 5,
       "to": 3,
       "kind": "ServiceCall"
     },
     {
-      "id": 5,
+      "id": 9,
       "from": 5,
       "to": 14,
       "kind": "RequestFlow"
     },
     {
-      "id": 6,
+      "id": 10,
       "from": 14,
       "to": 0,
       "kind": "AsyncMessage"
     },
     {
-      "id": 7,
+      "id": 11,
       "from": 15,
       "to": 7,
       "kind": "DataFlow"
     },
     {
-      "id": 8,
+      "id": 12,
+      "from": 1,
+      "to": 6,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 13,
+      "from": 2,
+      "to": 6,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 14,
       "from": 8,
       "to": 15,
       "kind": "RequestFlow"
     },
     {
-      "id": 9,
+      "id": 15,
       "from": 15,
       "to": 1,
       "kind": "AsyncMessage"
     },
     {
-      "id": 10,
+      "id": 16,
       "from": 15,
       "to": 2,
       "kind": "AsyncMessage"
     },
     {
-      "id": 11,
+      "id": 17,
       "from": 16,
       "to": 10,
       "kind": "DataFlow"
     },
     {
-      "id": 12,
+      "id": 18,
       "from": 11,
       "to": 16,
       "kind": "RequestFlow"
     },
     {
-      "id": 13,
+      "id": 19,
       "from": 12,
       "to": 17,
       "kind": "RequestFlow"

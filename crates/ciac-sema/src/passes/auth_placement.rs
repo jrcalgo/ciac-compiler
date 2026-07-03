@@ -58,7 +58,10 @@ fn check_steps(
                     check_steps(&arm.steps, owner_kind, pipeline_name, false, diags);
                 }
             }
-            StepKind::Publish { .. } | StepKind::Return | StepKind::Handler { .. } => {}
+            StepKind::Publish { .. }
+            | StepKind::Return
+            | StepKind::Handler { .. }
+            | StepKind::Call { .. } => {}
         }
     }
 }

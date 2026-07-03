@@ -15,11 +15,12 @@ use ciac_ir::{
     ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EdgeKind, EmailProvider,
     EventStream, FieldType, HttpMethod, LoggingProvider, MatchArm, MetricsProvider, NodeId,
     NodeKind, ObjectStoreProvider, Pipeline, QueueEngine, RealtimeProvider, Record, RecordField,
-    RecordId, Resource, SchedulerProvider, SearchProvider, Step, StepKind, SystemGraph,
+    RecordId, Resource, SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph,
 };
 use ciac_syntax::ast::{
     ApiDecl, Attr, AttrValue, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item, PipelineDecl,
-    Program, RecordDecl, StepExpr, StreamDecl, TypeExpr, UseEntry, WorkerDecl,
+    Program, RecordDecl, ServiceBlock, ServiceItem, StepExpr, StreamDecl, TypeExpr, UseEntry,
+    WorkerDecl,
 };
 use heck::{ToKebabCase, ToSnakeCase};
 use std::collections::{BTreeMap, HashMap};
@@ -35,6 +36,8 @@ struct Builder<'d> {
     /// expansions) with their declaration spans, for duplicate detection
     /// and step resolution.
     declared: HashMap<String, (NodeKind, Span)>,
+    service_ids: HashMap<String, (ServiceId, Span)>,
+    current_service: Option<ServiceId>,
     /// Record names → ids (types live in their own namespace).
     records: HashMap<String, (RecordId, Span)>,
     /// Handler service nodes created implicitly from pipeline steps.
@@ -66,6 +69,8 @@ impl<'d> Builder<'d> {
             diags,
             graph: SystemGraph::default(),
             declared: HashMap::new(),
+            service_ids: HashMap::new(),
+            current_service: None,
             records: HashMap::new(),
             handlers: HashMap::new(),
             handler_bindings: HashMap::new(),
@@ -79,60 +84,96 @@ impl<'d> Builder<'d> {
     }
 
     fn build(mut self, program: &Program) -> SystemGraph {
-        self.service_name(program);
+        let has_service_blocks = program
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::ServiceBlock(_)));
+        self.project_name(program, has_service_blocks);
         // Types first: streams and components reference them.
         for item in &program.items {
             if let Item::Record(decl) = item {
                 self.record(decl);
             }
         }
-        // Capabilities next: streams and pipelines reference them.
-        for item in &program.items {
-            if let Item::Use(block) = item {
-                for entry in &block.entries {
-                    self.use_entry(entry);
+        self.register_services(program, has_service_blocks);
+        if has_service_blocks {
+            for item in &program.items {
+                if let Item::Stream(decl) = item {
+                    self.stream(decl, false);
                 }
             }
-        }
-        for item in &program.items {
-            if let Item::Handler(decl) = item {
-                self.handler_decl(decl);
+            for item in &program.items {
+                match item {
+                    Item::Use(_)
+                    | Item::Api(_)
+                    | Item::Worker(_)
+                    | Item::Crud(_)
+                    | Item::Events(_)
+                    | Item::Handler(_)
+                    | Item::Pipeline(_) => self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidServiceScope,
+                            "service-local declarations must be inside a `service { .. }` block",
+                        )
+                        .with_label(item_span(item), "move this declaration into a service block"),
+                    ),
+                    Item::ServiceBlock(block) => self.build_service_block_decls(block),
+                    Item::Project(_) | Item::Service(_) | Item::Record(_) | Item::Stream(_) => {}
+                }
             }
-        }
-        for item in &program.items {
-            if let Item::Stream(decl) = item {
-                self.stream(decl);
+            for item in &program.items {
+                if let Item::ServiceBlock(block) = item {
+                    self.build_service_block_pipelines(block);
+                }
             }
-        }
-        for item in &program.items {
-            match item {
-                Item::Api(decl) => self.api(decl),
-                Item::Worker(decl) => self.worker(decl),
-                Item::Crud(decl) => self.crud(decl),
-                Item::Events(decl) => self.events(decl),
-                Item::Service(_)
-                | Item::Use(_)
-                | Item::Record(_)
-                | Item::Stream(_)
-                | Item::Handler(_)
-                | Item::Pipeline(_) => {}
+        } else {
+            self.current_service = self
+                .graph
+                .services()
+                .next()
+                .map(|service| service.id);
+            for item in &program.items {
+                if let Item::Use(block) = item {
+                    for entry in &block.entries {
+                        self.use_entry(entry);
+                    }
+                }
             }
-        }
-        // Pipelines last: they reference declared components.
-        for item in &program.items {
-            if let Item::Pipeline(decl) = item {
-                self.pipeline(decl);
+            for item in &program.items {
+                if let Item::Stream(decl) = item {
+                    self.stream(decl, true);
+                }
             }
+            self.build_flat_items(&program.items);
         }
         self.check_scoped_apis();
         self.graph
     }
 
-    fn service_name(&mut self, program: &Program) {
+    fn project_name(&mut self, program: &Program, has_service_blocks: bool) {
+        let project = program.items.iter().filter_map(|item| match item {
+            Item::Project(decl) => Some(decl),
+            _ => None,
+        }).next();
+        if let Some(project) = project {
+            self.graph.name = project.name.text.clone();
+            return;
+        }
         let mut decls = program.items.iter().filter_map(|item| match item {
             Item::Service(decl) => Some(decl),
             _ => None,
         });
+        if has_service_blocks {
+            self.graph.name = program
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::ServiceBlock(block) => Some(block.name.text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "Project".to_owned());
+            return;
+        }
         match decls.next() {
             None => self.diags.push(
                 Diagnostic::new(
@@ -153,6 +194,113 @@ impl<'d> Builder<'d> {
                         .with_label(first.span, "first declared here"),
                     );
                 }
+            }
+        }
+    }
+
+    fn register_services(&mut self, program: &Program, has_service_blocks: bool) {
+        if has_service_blocks {
+            for item in &program.items {
+                if let Item::ServiceBlock(block) = item {
+                    self.add_service_decl(&block.name, block.span);
+                }
+            }
+        } else if let Some(decl) = program.items.iter().find_map(|item| match item {
+            Item::Service(decl) => Some(decl),
+            _ => None,
+        }) {
+            self.add_service_decl(&decl.name, decl.span);
+        }
+    }
+
+    fn add_service_decl(&mut self, name: &Ident, span: Span) -> Option<ServiceId> {
+        if let Some((_, first)) = self.service_ids.get(&name.text) {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::DuplicateService,
+                    format!("service `{}` is declared more than once", name.text),
+                )
+                .with_label(span, "duplicate service here")
+                .with_label(*first, "first declared here"),
+            );
+            return None;
+        }
+        let id = self.graph.add_service(name.text.clone(), Some(span));
+        self.service_ids.insert(name.text.clone(), (id, span));
+        Some(id)
+    }
+
+    fn enter_service(&mut self, block: &ServiceBlock) -> Option<Option<ServiceId>> {
+        let Some((service, _)) = self.service_ids.get(&block.name.text).copied() else {
+            return None;
+        };
+        let previous = self.current_service;
+        self.current_service = Some(service);
+        Some(previous)
+    }
+
+    fn build_service_block_decls(&mut self, block: &ServiceBlock) {
+        let Some(previous) = self.enter_service(block) else {
+            return;
+        };
+        self.build_service_items(&block.items);
+        self.current_service = previous;
+    }
+
+    fn build_service_block_pipelines(&mut self, block: &ServiceBlock) {
+        let Some(previous) = self.enter_service(block) else {
+            return;
+        };
+        for item in &block.items {
+            if let ServiceItem::Pipeline(decl) = item {
+                self.pipeline(decl);
+            }
+        }
+        self.current_service = previous;
+    }
+
+    fn build_flat_items(&mut self, items: &[Item]) {
+        for item in items {
+            if let Item::Handler(decl) = item {
+                self.handler_decl(decl);
+            }
+        }
+        for item in items {
+            match item {
+                Item::Api(decl) => self.api(decl),
+                Item::Worker(decl) => self.worker(decl),
+                Item::Crud(decl) => self.crud(decl),
+                Item::Events(decl) => self.events(decl),
+                _ => {}
+            }
+        }
+        for item in items {
+            if let Item::Pipeline(decl) = item {
+                self.pipeline(decl);
+            }
+        }
+    }
+
+    fn build_service_items(&mut self, items: &[ServiceItem]) {
+        for item in items {
+            if let ServiceItem::Use(block) = item {
+                for entry in &block.entries {
+                    self.use_entry(entry);
+                }
+            }
+        }
+        for item in items {
+            if let ServiceItem::Handler(decl) = item {
+                self.handler_decl(decl);
+            }
+        }
+        for item in items {
+            match item {
+                ServiceItem::Api(decl) => self.api(decl),
+                ServiceItem::Worker(decl) => self.worker(decl),
+                ServiceItem::Crud(decl) => self.crud(decl),
+                ServiceItem::Events(decl) => self.events(decl),
+                ServiceItem::Use(_) | ServiceItem::Handler(_) | ServiceItem::Pipeline(_) => {}
             }
         }
     }
@@ -332,7 +480,7 @@ impl<'d> Builder<'d> {
                 return;
             }
         };
-        if let Some(existing) = self.graph.capability(component.kind(), name) {
+        if let Some(existing) = self.find_capability(component.kind(), name) {
             let mut diag = Diagnostic::new(
                 ErrorCode::DuplicateCapability,
                 format!("capability `{capability} {name}` is declared more than once"),
@@ -344,11 +492,12 @@ impl<'d> Builder<'d> {
             self.diags.push(diag);
             return;
         }
-        self.graph.add_node(component, Some(entry.span));
+        self.add_node(component, Some(entry.span));
     }
 
     fn handler_decl(&mut self, decl: &HandlerDecl) {
-        if let Some(first) = self.handler_decl_spans.get(&decl.name.text) {
+        let key = self.scoped_key(&decl.name.text);
+        if let Some(first) = self.handler_decl_spans.get(&key) {
             self.diags.push(
                 Diagnostic::new(
                     ErrorCode::DuplicateDeclaration,
@@ -394,15 +543,15 @@ impl<'d> Builder<'d> {
             });
         }
         self.handler_decl_spans
-            .insert(decl.name.text.clone(), decl.span);
-        self.handler_bindings
-            .insert(decl.name.text.clone(), bindings);
+            .insert(key.clone(), decl.span);
+        self.handler_bindings.insert(key, bindings);
     }
 
     /// Registers a declared name, reporting duplicates. Returns false when
     /// the declaration collides with an earlier one.
     fn register(&mut self, name: &Ident, kind: NodeKind, span: Span) -> bool {
-        if let Some((_, first)) = self.declared.get(&name.text) {
+        let key = self.scoped_key(&name.text);
+        if let Some((_, first)) = self.declared.get(&key) {
             self.diags.push(
                 Diagnostic::new(
                     ErrorCode::DuplicateDeclaration,
@@ -413,8 +562,20 @@ impl<'d> Builder<'d> {
             );
             return false;
         }
-        self.declared.insert(name.text.clone(), (kind, span));
+        self.declared.insert(key, (kind, span));
         true
+    }
+
+    fn scoped_key(&self, name: &str) -> String {
+        match self.current_service {
+            Some(service) => format!("{}::{name}", service.0),
+            None => name.to_owned(),
+        }
+    }
+
+    fn add_node(&mut self, component: Component, span: Option<Span>) -> NodeId {
+        self.graph
+            .add_node_owned(self.current_service, component, span)
     }
 
     /// Requires the queue (broker) capability, reporting `CIAC0005` with
@@ -437,7 +598,11 @@ impl<'d> Builder<'d> {
     }
 
     fn default_capability(&mut self, kind: NodeKind, what: &str, span: Span) -> Option<NodeId> {
-        let nodes: Vec<_> = self.graph.nodes_of_kind(kind).collect();
+        let nodes: Vec<_> = self
+            .graph
+            .nodes_of_kind(kind)
+            .filter(|node| node.service == self.current_service)
+            .collect();
         if nodes.is_empty() {
             return None;
         }
@@ -463,7 +628,7 @@ impl<'d> Builder<'d> {
     }
 
     fn resolve_capability(&mut self, kind: NodeKind, name: &str, span: Span) -> Option<NodeId> {
-        match self.graph.capability(kind, name) {
+        match self.find_capability(kind, name) {
             Some(node) => Some(node.id),
             None => {
                 self.diags.push(
@@ -478,13 +643,19 @@ impl<'d> Builder<'d> {
         }
     }
 
+    fn find_capability(&self, kind: NodeKind, name: &str) -> Option<&ciac_ir::Node> {
+        self.graph
+            .nodes_of_kind(kind)
+            .find(|node| node.service == self.current_service && node.component.name() == Some(name))
+    }
+
     /// Creates a stream node wired to the broker.
     fn add_stream(
         &mut self,
         name: &str,
         record: Option<RecordId>,
         subject: String,
-        queue: NodeId,
+        queue: Option<NodeId>,
         span: Option<Span>,
     ) -> NodeId {
         if let Some(first) = self.stream_subjects.get(&subject) {
@@ -500,7 +671,8 @@ impl<'d> Builder<'d> {
         } else if let Some(span) = span {
             self.stream_subjects.insert(subject.clone(), span);
         }
-        let node = self.graph.add_node(
+        let node = self.graph.add_node_owned(
+            None,
             Component::Stream {
                 name: name.to_owned(),
                 subject,
@@ -508,19 +680,26 @@ impl<'d> Builder<'d> {
             },
             span,
         );
-        self.graph.add_edge(node, queue, EdgeKind::DependsOn);
+        if let Some(queue) = queue {
+            self.graph.add_edge(node, queue, EdgeKind::DependsOn);
+        }
         self.streams.insert(name.to_owned(), node);
         node
     }
 
-    fn stream(&mut self, decl: &StreamDecl) {
+    fn stream(&mut self, decl: &StreamDecl, require_queue: bool) {
         if !self.register(&decl.name, NodeKind::Stream, decl.span) {
             return;
         }
         let record = self.resolve_record(&decl.record);
-        let Some(queue) = self.require_queue(&format!("stream `{}`", decl.name.text), decl.span)
-        else {
-            return;
+        let queue = if require_queue {
+            let Some(queue) = self.require_queue(&format!("stream `{}`", decl.name.text), decl.span)
+            else {
+                return;
+            };
+            Some(queue)
+        } else {
+            None
         };
         let subject =
             attrs::apply_stream_attrs(&decl.attrs, &self.graph.name, &decl.name.text, self.diags);
@@ -534,7 +713,7 @@ impl<'d> Builder<'d> {
             Some(node) => node,
             None => {
                 let subject = default_subject(&self.graph.name, "Events");
-                let node = self.add_stream("Events", None, subject, queue, None);
+                let node = self.add_stream("Events", None, subject, Some(queue), None);
                 self.default_stream = Some(node);
                 node
             }
@@ -581,7 +760,7 @@ impl<'d> Builder<'d> {
         } else {
             self.route_paths.insert(path, decl.span);
         }
-        self.graph.add_node(
+        self.add_node(
             Component::Api {
                 name: decl.name.text.clone(),
                 request,
@@ -595,10 +774,11 @@ impl<'d> Builder<'d> {
         if !self.register(&decl.name, NodeKind::Worker, decl.span) {
             return;
         }
-        let node = self.graph.add_node(
+        let config = attrs::apply_worker_attrs(&decl.attrs, self.diags);
+        let node = self.add_node(
             Component::Worker {
                 name: decl.name.text.clone(),
-                config: attrs::apply_worker_attrs(&decl.attrs, self.diags),
+                config,
             },
             Some(decl.span),
         );
@@ -637,7 +817,7 @@ impl<'d> Builder<'d> {
             return;
         };
         let name = decl.name.text.clone();
-        let api = self.graph.add_node(
+        let api = self.add_node(
             Component::Api {
                 name: name.clone(),
                 request: record,
@@ -645,7 +825,7 @@ impl<'d> Builder<'d> {
             },
             Some(decl.span),
         );
-        let service = self.graph.add_node(
+        let service = self.add_node(
             Component::Service {
                 name: format!("{name}Store"),
             },
@@ -668,6 +848,7 @@ impl<'d> Builder<'d> {
         }
         self.graph.resources.push(Resource {
             name,
+            service_owner: self.current_service,
             api,
             service,
             database: db,
@@ -689,8 +870,8 @@ impl<'d> Builder<'d> {
         };
         let name = decl.name.text.clone();
         let subject = default_subject(&self.graph.name, &name);
-        let stream = self.add_stream(&name, None, subject, queue, Some(decl.span));
-        let worker = self.graph.add_node(
+        let stream = self.add_stream(&name, None, subject, Some(queue), Some(decl.span));
+        let worker = self.add_node(
             Component::Worker {
                 name: format!("{name}Consumer"),
                 config: Default::default(),
@@ -706,6 +887,7 @@ impl<'d> Builder<'d> {
         }
         self.graph.event_streams.push(EventStream {
             name,
+            service_owner: self.current_service,
             stream,
             worker,
         });
@@ -713,11 +895,21 @@ impl<'d> Builder<'d> {
 
     fn pipeline(&mut self, decl: &PipelineDecl) {
         // The pipeline name must match a declared api or worker.
-        let owner = self
-            .graph
-            .find_named(NodeKind::Api, &decl.name.text)
-            .or_else(|| self.graph.find_named(NodeKind::Worker, &decl.name.text))
-            .map(|n| (n.id, n.component.clone()));
+        let owner = match self.current_service {
+            Some(service) => self
+                .graph
+                .find_named_in_service(service, NodeKind::Api, &decl.name.text)
+                .or_else(|| {
+                    self.graph
+                        .find_named_in_service(service, NodeKind::Worker, &decl.name.text)
+                })
+                .map(|n| (n.id, n.component.clone())),
+            None => self
+                .graph
+                .find_named(NodeKind::Api, &decl.name.text)
+                .or_else(|| self.graph.find_named(NodeKind::Worker, &decl.name.text))
+                .map(|n| (n.id, n.component.clone())),
+        };
         let Some((owner, owner_component)) = owner else {
             self.diags.push(
                 Diagnostic::new(
@@ -788,6 +980,7 @@ impl<'d> Builder<'d> {
         self.wire_steps(owner, &steps);
         self.graph.pipelines.push(Pipeline {
             name: decl.name.text.clone(),
+            service: self.current_service,
             owner,
             payload,
             steps,
@@ -838,6 +1031,9 @@ impl<'d> Builder<'d> {
                 self.check_publish_type(stream, payload, stream_name.span);
                 return Some(step(StepKind::Publish { stream }, expr.span()));
             }
+            StepExpr::Call(target) => {
+                return self.resolve_call(target, payload);
+            }
             StepExpr::Match { field, arms, .. } => {
                 return self.resolve_match(field, arms, payload, expr.span());
             }
@@ -868,7 +1064,7 @@ impl<'d> Builder<'d> {
             name => {
                 // Referencing a declared api/worker/stream as a step is
                 // invalid; any other name declares an implicit handler.
-                if let Some((kind, _)) = self.declared.get(name) {
+                if let Some((kind, _)) = self.declared.get(&self.scoped_key(name)) {
                     self.diags.push(
                         Diagnostic::new(
                             ErrorCode::IncompatibleComposition,
@@ -895,17 +1091,18 @@ impl<'d> Builder<'d> {
                     );
                     return None;
                 }
-                let node = match self.handlers.get(name) {
+                let handler_key = self.scoped_key(name);
+                let node = match self.handlers.get(&handler_key) {
                     Some(id) => *id,
                     None => {
-                        let id = self.graph.add_node(
+                        let id = self.add_node(
                             Component::Service {
                                 name: name.to_owned(),
                             },
                             Some(ident.span),
                         );
                         self.wire_handler_bindings(name, id, ident.span);
-                        self.handlers.insert(name.to_owned(), id);
+                        self.handlers.insert(handler_key, id);
                         id
                     }
                 };
@@ -914,8 +1111,76 @@ impl<'d> Builder<'d> {
         }
     }
 
+    fn resolve_call(
+        &mut self,
+        target: &ciac_syntax::ast::QualifiedIdent,
+        payload: Option<RecordId>,
+    ) -> Option<Step> {
+        if target.segments.len() != 2 {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidCall,
+                    "`call` targets must be written as `Service.Api`",
+                )
+                .with_label(target.span, "invalid call target"),
+            );
+            return None;
+        }
+        let service_name = &target.segments[0];
+        let api_name = &target.segments[1];
+        let Some((service, _)) = self.service_ids.get(&service_name.text).copied() else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownService,
+                    format!("unknown service `{}`", service_name.text),
+                )
+                .with_label(service_name.span, "no service with this name"),
+            );
+            return None;
+        };
+        let Some(api) = self
+            .graph
+            .find_named_in_service(service, NodeKind::Api, &api_name.text)
+            .map(|node| (node.id, node.component.clone()))
+        else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownServiceMember,
+                    format!(
+                        "service `{}` has no api `{}`",
+                        service_name.text, api_name.text
+                    ),
+                )
+                .with_label(api_name.span, "unknown api in target service"),
+            );
+            return None;
+        };
+        let Component::Api { request, .. } = api.1 else {
+            unreachable!("find_named_in_service requested an api");
+        };
+        if request != payload {
+            let expected = request
+                .map(|id| format!("`{}`", self.graph.record(id).name))
+                .unwrap_or_else(|| "untyped JSON".to_owned());
+            let found = payload
+                .map(|id| format!("`{}`", self.graph.record(id).name))
+                .unwrap_or_else(|| "untyped JSON".to_owned());
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::CrossServiceTypeMismatch,
+                    format!(
+                        "call to `{}.{}` expects {expected} but caller payload is {found}",
+                        service_name.text, api_name.text
+                    ),
+                )
+                .with_label(target.span, "payload type mismatch at call site"),
+            );
+        }
+        Some(step(StepKind::Call { target: api.0 }, target.span))
+    }
+
     fn wire_handler_bindings(&mut self, name: &str, handler: NodeId, span: Span) {
-        if let Some(bindings) = self.handler_bindings.get(name).cloned() {
+        if let Some(bindings) = self.handler_bindings.get(&self.scoped_key(name)).cloned() {
             for binding in bindings {
                 if let Some(target) =
                     self.resolve_capability(binding.kind, &binding.instance, binding.span)
@@ -1077,6 +1342,9 @@ impl<'d> Builder<'d> {
                     // Publishing is fire-and-forget: later synchronous
                     // steps still run in the caller's context.
                 }
+                StepKind::Call { target } => {
+                    self.graph.add_edge(prev, *target, EdgeKind::ServiceCall);
+                }
                 StepKind::Return => {}
                 StepKind::Match { arms, .. } => {
                     for arm in arms {
@@ -1163,6 +1431,23 @@ fn attr_string(attrs: &[Attr], name: &str) -> Option<String> {
             AttrValue::Number { .. } => None,
         })?
     })
+}
+
+fn item_span(item: &Item) -> Span {
+    match item {
+        Item::Project(decl) => decl.span,
+        Item::Service(decl) => decl.span,
+        Item::ServiceBlock(decl) => decl.span,
+        Item::Use(decl) => decl.span,
+        Item::Record(decl) => decl.span,
+        Item::Stream(decl) => decl.span,
+        Item::Api(decl) => decl.span,
+        Item::Worker(decl) => decl.span,
+        Item::Crud(decl) => decl.span,
+        Item::Events(decl) => decl.span,
+        Item::Handler(decl) => decl.span,
+        Item::Pipeline(decl) => decl.span,
+    }
 }
 
 mod attrs {

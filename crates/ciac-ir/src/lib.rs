@@ -17,8 +17,8 @@ pub use component::{
     RealtimeProvider, SchedulerProvider, SearchProvider, WorkerConfig,
 };
 pub use graph::{
-    Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Step,
-    StepKind, SystemGraph,
+    Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Service,
+    ServiceId, Step, StepKind, SystemGraph,
 };
 pub use record::{FieldType, Record, RecordField, RecordId};
 

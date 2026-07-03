@@ -251,6 +251,55 @@ error_codes! {
         "A capability provider configuration is missing required fields or \
          includes values the selected provider cannot support."
     ),
+    DuplicateService = (
+        "CIAC0026",
+        Error,
+        "duplicate service",
+        "A multi-service project declares the same service name more than \
+         once. Service names are project-global."
+    ),
+    UnknownService = (
+        "CIAC0027",
+        Error,
+        "unknown service",
+        "A cross-service `call` references a service that is not declared in \
+         the project."
+    ),
+    UnknownServiceMember = (
+        "CIAC0028",
+        Error,
+        "unknown service member",
+        "A cross-service `call` references an api that does not exist in the \
+         target service."
+    ),
+    CrossServiceTypeMismatch = (
+        "CIAC0029",
+        Error,
+        "cross-service payload mismatch",
+        "The payload carried by a caller pipeline does not match the request \
+         record expected by the target service api."
+    ),
+    InvalidServiceScope = (
+        "CIAC0030",
+        Error,
+        "invalid service scope",
+        "A project that uses `service { ... }` blocks must keep service-local \
+         declarations inside those blocks. Records and streams remain global."
+    ),
+    InvalidSharedStreamTopology = (
+        "CIAC0031",
+        Error,
+        "invalid shared stream topology",
+        "A shared stream is used across service boundaries in a way the \
+         compiler cannot lower safely."
+    ),
+    InvalidCall = (
+        "CIAC0032",
+        Error,
+        "invalid call",
+        "A `call` step is malformed or targets a construct that cannot be \
+         invoked as a typed service api."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

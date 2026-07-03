@@ -60,6 +60,8 @@ async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
 {{ indent }}    .queue
 {{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?.into())
 {{ indent }}    .await?;
+{%- elif step.kind == "call" %}
+{{ indent }}// TODO: call {{ step.call.service }}.{{ step.call.api }} with result.
 {%- elif step.kind == "match" %}
 {{ indent }}let result = match result.{{ step.field }} {
 {%- for arm in step.arms %}

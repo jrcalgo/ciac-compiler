@@ -585,3 +585,104 @@ pipeline A: Enrich -> Return;
     assert!(ir.find_named(NodeKind::Search, "catalog").is_some());
     assert!(ir.find_named(NodeKind::ExternalHttp, "billing").is_some());
 }
+
+#[test]
+fn multi_service_project_supports_shared_streams_and_typed_calls() {
+    let (ir, diags) = analyze(
+        r#"project MediaSystem;
+record Video { id: Uuid; status: enum { Ready, Failed }; }
+stream Uploaded: Video;
+
+service Billing {
+    api Charge: Video;
+    pipeline Charge: CapturePayment -> Return;
+}
+
+service UploadApi {
+    use { queue bus NATS; }
+    api Upload: Video;
+    pipeline Upload:
+        call Billing.Charge
+        -> publish Uploaded
+        -> Return;
+}
+
+service Transcoder {
+    use { queue bus NATS; }
+    worker Transcode on Uploaded;
+    pipeline Transcode: Process;
+}
+"#,
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    assert_eq!(ir.name, "MediaSystem");
+    assert_eq!(ir.services().count(), 3);
+    let upload_service = ir
+        .services()
+        .find(|service| service.name == "UploadApi")
+        .expect("upload service")
+        .id;
+    let billing_service = ir
+        .services()
+        .find(|service| service.name == "Billing")
+        .expect("billing service")
+        .id;
+    let upload = ir
+        .find_named_in_service(upload_service, NodeKind::Api, "Upload")
+        .expect("upload api");
+    let charge = ir
+        .find_named_in_service(billing_service, NodeKind::Api, "Charge")
+        .expect("charge api");
+    let pipeline = ir.pipeline_of(upload.id).expect("upload pipeline");
+    assert_eq!(pipeline.service, Some(upload_service));
+    assert!(matches!(&pipeline.steps[0].kind, StepKind::Call { target } if *target == charge.id));
+    assert!(ir
+        .edges_from(upload.id)
+        .any(|edge| edge.to == charge.id && edge.kind == EdgeKind::ServiceCall));
+}
+
+#[test]
+fn duplicate_service_is_rejected() {
+    let (ir, diags) = analyze("project X;\nservice A {}\nservice A {}\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::DuplicateService));
+}
+
+#[test]
+fn unknown_service_call_is_rejected() {
+    let (ir, diags) = analyze(
+        "project X;\nrecord R { id: Uuid; }\nservice A { api In: R; pipeline In: call Missing.Api -> Return; }\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownService));
+}
+
+#[test]
+fn unknown_service_member_call_is_rejected() {
+    let (ir, diags) = analyze(
+        "project X;\nrecord R { id: Uuid; }\nservice A { api In: R; pipeline In: call B.Missing -> Return; }\nservice B { api Out: R; pipeline Out: Return; }\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownServiceMember));
+}
+
+#[test]
+fn cross_service_payload_mismatch_is_rejected() {
+    let (ir, diags) = analyze(
+        "project X;\nrecord A { id: Uuid; }\nrecord B { id: Uuid; }\nservice Caller { api In: A; pipeline In: call Callee.Out -> Return; }\nservice Callee { api Out: B; pipeline Out: Return; }\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::CrossServiceTypeMismatch));
+}
+
+#[test]
+fn flat_service_local_decls_cannot_mix_with_service_blocks() {
+    let (ir, diags) = analyze("project X;\napi Flat;\nservice A {}\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::InvalidServiceScope));
+}

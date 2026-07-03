@@ -129,8 +129,15 @@ pub struct StepCtx {
     pub handler: Option<HandlerRef>,
     /// Subject of the published stream, for `publish` steps.
     pub subject: Option<String>,
+    pub call: Option<CallCtx>,
     pub field: Option<String>,
     pub arms: Vec<ArmCtx>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CallCtx {
+    pub service: String,
+    pub api: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -458,6 +465,7 @@ fn step_ctxs(
                 kind: "auth",
                 handler: None,
                 subject: None,
+                call: None,
                 field: None,
                 arms: Vec::new(),
             },
@@ -465,6 +473,7 @@ fn step_ctxs(
                 kind: "publish",
                 handler: None,
                 subject: Some(stream_subject(ir, *stream)),
+                call: None,
                 field: None,
                 arms: Vec::new(),
             },
@@ -472,6 +481,15 @@ fn step_ctxs(
                 kind: "return",
                 handler: None,
                 subject: None,
+                call: None,
+                field: None,
+                arms: Vec::new(),
+            },
+            StepKind::Call { target } => StepCtx {
+                kind: "call",
+                handler: None,
+                subject: None,
+                call: Some(call_ctx(ir, *target)),
                 field: None,
                 arms: Vec::new(),
             },
@@ -484,6 +502,7 @@ fn step_ctxs(
                     kind: "handler",
                     handler: Some(handler),
                     subject: None,
+                    call: None,
                     field: None,
                     arms: Vec::new(),
                 }
@@ -492,6 +511,7 @@ fn step_ctxs(
                 kind: "match",
                 handler: None,
                 subject: None,
+                call: None,
                 field: Some(field.clone()),
                 arms: arms
                     .iter()
@@ -528,6 +548,18 @@ fn stream_subject(ir: &NormalizedIr, id: NodeId) -> String {
     }
 }
 
+fn call_ctx(ir: &NormalizedIr, target: NodeId) -> CallCtx {
+    let node = ir.node(target);
+    let service = node
+        .service
+        .map(|id| ir.service(id).name.clone())
+        .unwrap_or_else(|| "Project".to_owned());
+    CallCtx {
+        service,
+        api: node.component.name().unwrap_or_default().to_owned(),
+    }
+}
+
 fn handler_nodes(steps: &[Step]) -> Vec<NodeId> {
     let mut nodes = Vec::new();
     for step in steps {
@@ -538,7 +570,10 @@ fn handler_nodes(steps: &[Step]) -> Vec<NodeId> {
                     nodes.extend(handler_nodes(&arm.steps));
                 }
             }
-            StepKind::Auth { .. } | StepKind::Publish { .. } | StepKind::Return => {}
+            StepKind::Auth { .. }
+            | StepKind::Publish { .. }
+            | StepKind::Return
+            | StepKind::Call { .. } => {}
         }
     }
     nodes

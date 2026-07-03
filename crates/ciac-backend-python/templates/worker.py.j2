@@ -17,6 +17,8 @@ so replicas of this worker load-balance messages between them.
 {%- else %}
 {{ indent }}await publish("{{ step.subject }}", result)
 {%- endif %}
+{%- elif step.kind == "call" %}
+{{ indent }}# TODO: call {{ step.call.service }}.{{ step.call.api }} with result.
 {%- elif step.kind == "match" %}
 {%- for arm in step.arms %}
 {%- if loop.first and arm.label %}

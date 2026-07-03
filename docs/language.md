@@ -1,4 +1,4 @@
-# The CIaC Language (v0.2)
+# The CIaC Language (v0.3)
 
 A CIaC program describes one deployable service as a set of declarations.
 Declaration order is free; the compiler resolves references after parsing
@@ -20,15 +20,23 @@ field          = IDENT ":" type ";" ;
 type           = "String" | "Int" | "Float" | "Bool" | "Uuid"
                | "Timestamp" | "Json"
                | "enum" "{" IDENT { "," IDENT } "}" ;
-stream-decl    = "stream" IDENT ":" IDENT ";" ;
-api-decl       = "api" IDENT [ ":" IDENT ] ";" ;
-worker-decl    = "worker" IDENT [ "on" IDENT ] ";" ;
-crud-decl      = "crud" IDENT [ ":" IDENT ] ";" ;
+stream-decl    = "stream" IDENT ":" IDENT decl-tail ;
+api-decl       = "api" IDENT [ ":" IDENT ] decl-tail ;
+worker-decl    = "worker" IDENT [ "on" IDENT ] decl-tail ;
+crud-decl      = "crud" IDENT [ ":" IDENT ] decl-tail ;
 events-decl    = "events" IDENT ";" ;
 pipeline-decl  = "pipeline" IDENT ":" step { "->" step } ";" ;
-step           = IDENT | "publish" IDENT ;
+decl-tail      = ";" | attr-block ;
+attr-block     = "{" { attr } "}" ;
+attr           = IDENT ":" attr-value ";" ;
+attr-value     = IDENT | NUMBER | STRING ;
+step           = IDENT | "publish" IDENT | match-step ;
+match-step     = "match" IDENT "{" { arm } "}" ;
+arm            = ( IDENT | "_" ) "->" step { "->" step } ";" ;
 
 IDENT          = letter-or-underscore { letter-digit-underscore } ;
+NUMBER         = digit { digit } ;
+STRING         = '"' { char } '"' ;
 ```
 
 Comments: `// line` and `/* block */`.
@@ -66,6 +74,24 @@ fields are `CIAC0003`. Records compile to pydantic models (Python) and
 serde structs (Rust); enums become `Literal[..]` / Rust enums and are
 stored as text.
 
+### Attributes
+
+`api`, `worker`, `stream`, and `crud` declarations may end in an
+attribute block instead of `;`. Attributes are validated from a closed
+registry; unknown names are `CIAC0018`, invalid values or unmet
+preconditions are `CIAC0019`.
+
+| Target | Attribute | Value | Default | Checks |
+|--------|-----------|-------|---------|--------|
+| `api` | `method` | `GET`/`POST`/`PUT`/`DELETE`/`PATCH` | `POST` | `GET`/`DELETE` cannot have a typed request body |
+| `api` | `path` | string starting with `/` | `/<kebab-name>` | duplicate api paths are `CIAC0003` |
+| `api` | `scope` | string | none | pipeline must start with `Auth` |
+| `worker` | `concurrency` | integer >= 1 | `1` | |
+| `worker` | `max_retries` | integer >= 0 | `0` | |
+| `stream` | `subject` | string | `<service>.<stream>` | duplicate subjects are `CIAC0003` |
+| `crud` | `cache_ttl` | integer >= 1 | `300` | requires `cache` |
+| `crud` | `page_size` | integer >= 1 | `100` | |
+
 ### `stream <Name>: <Record>;`
 
 A named message channel carrying `<Record>` payloads (`CIAC0015` if the
@@ -75,7 +101,7 @@ with `on <Name>`. Multiple workers may consume the same stream —
 fan-out is first-class. A stream with no publisher or no consumer is
 reported unreachable (`CIAC0007`, warning).
 
-Subjects follow `<service>.<stream>` in snake_case, e.g. stream
+Subjects follow `<service>.<stream>` in snake_case by default, e.g. stream
 `Uploaded` in service `Media` uses `media.uploaded`. Each worker
 consumes in a queue group named after it, so replicas load-balance.
 
@@ -115,6 +141,13 @@ Steps are:
   consume. Requires the `queue` capability (`CIAC0005`).
 - **`Return`** — respond to the caller. Only valid as the final step of
   an api pipeline (`CIAC0009`).
+- **`match <field> { ... }`** — statically branch on an enum field of
+  the pipeline payload. A match must be the final top-level step and may
+  not be nested in v0.3 (`CIAC0020`). Arm labels must be declared enum
+  variants, with at most one trailing `_` wildcard. Every enum variant
+  must be covered directly or by `_` (`CIAC0021`). Arm chains can contain
+  handlers, publishes, and `Return`; type checks, cycle detection, auth
+  placement, and duplicate-publish checks apply inside each arm.
 - **Any other name** — a *handler*: an implicitly declared service
   (business-logic unit) invoked at that point. Handlers are created on
   first reference, shared by name across pipelines, and provisioned

@@ -1,0 +1,8 @@
+// expect: CIAC0021
+service X;
+record A { id: Uuid; status: enum { Ready, Failed }; }
+api A: A;
+pipeline A:
+    match status {
+        Ready -> Return;
+    };

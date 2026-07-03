@@ -1,0 +1,7 @@
+// expect: CIAC0020
+service X;
+api A;
+pipeline A:
+    match status {
+        Ready -> Return;
+    };

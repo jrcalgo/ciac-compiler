@@ -11,9 +11,9 @@ records of expanded higher-level constructs. Inspect it with
 
 | Kind | Payload | Created by |
 |------|---------|------------|
-| `Api` | name, optional request record | `api X[: R];`, `crud X[: R];` |
+| `Api` | name, optional request record, `ApiConfig` | `api X[: R];`, `crud X[: R];` |
 | `Service` | name | handler steps (implicit), `crud` (store) |
-| `Worker` | name | `worker X [on S];`, `events X;` (consumer) |
+| `Worker` | name, `WorkerConfig` | `worker X [on S];`, `events X;` (consumer) |
 | `Stream` | name, subject, optional record | `stream X: R;`, `events X;`, the default stream |
 | `Database` | engine (`Postgres`) | `use { db .. }` |
 | `Cache` | engine (`Redis`) | `use { cache .. }` |
@@ -34,6 +34,17 @@ of `Record { name, fields }` values with a closed `FieldType` set
 `Enum { variants }`). Types are not nodes: they carry no edges and are
 referenced by `RecordId` from apis, streams, resources, and pipelines.
 
+## Configs
+
+Component attributes lower into typed config structs with defaults:
+
+- `ApiConfig { method, path, scope }`
+- `WorkerConfig { concurrency, max_retries }`
+- `CrudConfig { cache_ttl, page_size }`
+
+Stream `subject` remains a plain field on `Component::Stream` after
+defaults/overrides are resolved.
+
 ## Edges
 
 | `EdgeKind` | Meaning |
@@ -53,16 +64,23 @@ stream it consumes is a cycle, while publishing to a different stream
 
 Each `Pipeline` records its owner (api or worker node), its **payload
 type** (`Option<RecordId>`: the api's request record or the consumed
-stream's record), and resolved `Step`s: `Auth { node }`,
-`Publish { stream }`, `Return`, or `Handler { node }`. The surface
-`Queue` step lowers to `Publish` on the default stream. Source spans are
-kept alongside (not serialized) for diagnostics.
+stream's record), and resolved recursive `Step`s. A step has an embedded
+`StepKind` plus an optional source span (not serialized):
+
+- `Auth { node }`
+- `Publish { stream }`
+- `Return`
+- `Handler { node }`
+- `Match { field, arms }`, where each `MatchArm` has an optional label
+  (`None` = wildcard) and its own nested `Vec<Step>`.
+
+The surface `Queue` step lowers to `Publish` on the default stream.
 
 ## Expansion records
 
-- `Resource { name, api, service, record }` — one per `crud X[: R];`,
-  so backends generate full CRUD surfaces (typed columns when `record`
-  is present).
+- `Resource { name, api, service, record, config }` — one per
+  `crud X[: R];`, so backends generate full CRUD surfaces (typed
+  columns when `record` is present).
 - `EventStream { name, stream, worker }` — one per `events X;`.
 
 ## Invariants of `NormalizedIr`
@@ -76,10 +94,12 @@ may assume:
 3. `Auth` steps and streams are backed by declared capabilities.
 4. `Auth` only appears first in api pipelines; `Return` only appears
    terminally in api pipelines; each stream is published to at most once
-   per pipeline.
+   per top-level path or match arm.
 5. Every `Publish` step's payload type equals the stream's record type
    (untyped streams accept any payload).
-6. Node/edge/record iteration order is deterministic (declaration
+6. Every `Match` is terminal, non-nested, branches on an enum payload
+   field, and covers every variant.
+7. Node/edge/record iteration order is deterministic (declaration
    order).
 
 Construct it only through `ciac_sema::analyze`;

@@ -24,6 +24,10 @@ test.
 | CIAC0015 | error | unknown type |
 | CIAC0016 | error | payload type mismatch |
 | CIAC0017 | error | unknown stream |
+| CIAC0018 | error | unknown attribute |
+| CIAC0019 | error | invalid attribute value |
+| CIAC0020 | error | invalid match |
+| CIAC0021 | error | non-exhaustive match |
 
 ## Notes
 
@@ -44,3 +48,13 @@ test.
   workers) must match the record of every stream it publishes to.
 - **CIAC0017** means `publish X` or `worker .. on X` references a
   stream that no `stream X: <Record>;` declares.
+- **CIAC0018** means an attribute is not supported for that declaration
+  kind; attributes are a closed registry, not free-form metadata.
+- **CIAC0019** covers wrong attribute value types, out-of-range numeric
+  values, and attribute preconditions such as scoped apis without an
+  `Auth` gate or `cache_ttl` without `cache`.
+- **CIAC0020** covers invalid `match` usage: untyped/non-enum fields,
+  unknown variants, nested matches, wildcard placement, and non-terminal
+  top-level matches.
+- **CIAC0021** means a `match` over an enum omits one or more variants
+  without a trailing `_` wildcard.

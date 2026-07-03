@@ -1,0 +1,41 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph MediaOps {
+    rankdir=LR;
+    n0 [label="database main Postgres", shape=cylinder];
+    n1 [label="database analytics Postgres", shape=cylinder];
+    n2 [label="cache hot Redis", shape=cylinder];
+    n3 [label="queue bus Nats", shape=cds];
+    n4 [label="object_store media S3", shape=folder];
+    n5 [label="email transactional Ses", shape=note];
+    n6 [label="search catalog OpenSearch", shape=box3d];
+    n7 [label="external_http billing", shape=tab];
+    n8 [label="stream Uploaded", shape=parallelogram];
+    n9 [label="stream Indexed", shape=parallelogram];
+    n10 [label="api Upload", shape=rarrow];
+    n11 [label="worker Indexer", shape=component];
+    n12 [label="worker Notifier", shape=component];
+    n13 [label="service StoreVideo", shape=box];
+    n14 [label="service RecordAnalytics", shape=box];
+    n15 [label="service IndexVideo", shape=box];
+    n16 [label="service NotifyUser", shape=box];
+    n8 -> n3 [label="DependsOn", style=dotted];
+    n9 -> n3 [label="DependsOn", style=dotted];
+    n8 -> n11 [label="AsyncMessage", style=dashed];
+    n9 -> n12 [label="AsyncMessage", style=dashed];
+    n13 -> n0 [label="DataFlow", style=bold];
+    n13 -> n2 [label="DataFlow", style=bold];
+    n13 -> n4 [label="DataFlow", style=bold];
+    n14 -> n1 [label="DataFlow", style=bold];
+    n10 -> n13 [label="RequestFlow", style=solid];
+    n13 -> n14 [label="RequestFlow", style=solid];
+    n14 -> n8 [label="AsyncMessage", style=dashed];
+    n15 -> n6 [label="DataFlow", style=bold];
+    n15 -> n7 [label="DataFlow", style=bold];
+    n11 -> n15 [label="RequestFlow", style=solid];
+    n15 -> n9 [label="AsyncMessage", style=dashed];
+    n16 -> n5 [label="DataFlow", style=bold];
+    n12 -> n16 [label="RequestFlow", style=solid];
+}

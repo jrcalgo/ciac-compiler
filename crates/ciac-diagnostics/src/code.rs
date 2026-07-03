@@ -190,6 +190,116 @@ error_codes! {
         "A `publish` step or a worker's `on` clause references a stream \
          that is not declared. Declare it with `stream <Name>: <Record>;`."
     ),
+    UnknownAttribute = (
+        "CIAC0018",
+        Error,
+        "unknown attribute",
+        "A component attribute is not in the closed registry for that \
+         declaration kind. Check the language reference for supported api, \
+         worker, stream, and crud attributes."
+    ),
+    InvalidAttributeValue = (
+        "CIAC0019",
+        Error,
+        "invalid attribute value",
+        "An attribute has the wrong value type, is out of range, or violates \
+         a precondition such as GET/DELETE carrying a typed request body, a \
+         scoped api without an Auth gate, or cache_ttl without a cache \
+         capability."
+    ),
+    InvalidMatch = (
+        "CIAC0020",
+        Error,
+        "invalid match",
+        "A `match` step must be terminal, must not be nested, and may only \
+         branch on an enum field of the pipeline payload. Arm labels must be \
+         declared enum variants, with at most one trailing `_` wildcard."
+    ),
+    NonExhaustiveMatch = (
+        "CIAC0021",
+        Error,
+        "non-exhaustive match",
+        "A `match` over an enum field must cover every declared variant, \
+         either directly or with a trailing `_` wildcard arm."
+    ),
+    UnknownCapabilityInstance = (
+        "CIAC0022",
+        Error,
+        "unknown capability instance",
+        "A handler, stream, resource, or pipeline step references a named \
+         capability instance that was not declared in the `use` block."
+    ),
+    AmbiguousCapabilityBinding = (
+        "CIAC0023",
+        Error,
+        "ambiguous capability binding",
+        "A construct needs a default capability instance, but multiple \
+         instances of that kind exist and none is named `default`. Add an \
+         explicit binding or declare a default instance."
+    ),
+    InvalidHandlerBinding = (
+        "CIAC0024",
+        Error,
+        "invalid handler binding",
+        "A `handler` declaration binds an unsupported capability kind or \
+         otherwise provides an invalid capability binding."
+    ),
+    UnsupportedProviderConfig = (
+        "CIAC0025",
+        Error,
+        "unsupported provider configuration",
+        "A capability provider configuration is missing required fields or \
+         includes values the selected provider cannot support."
+    ),
+    DuplicateService = (
+        "CIAC0026",
+        Error,
+        "duplicate service",
+        "A multi-service project declares the same service name more than \
+         once. Service names are project-global."
+    ),
+    UnknownService = (
+        "CIAC0027",
+        Error,
+        "unknown service",
+        "A cross-service `call` references a service that is not declared in \
+         the project."
+    ),
+    UnknownServiceMember = (
+        "CIAC0028",
+        Error,
+        "unknown service member",
+        "A cross-service `call` references an api that does not exist in the \
+         target service."
+    ),
+    CrossServiceTypeMismatch = (
+        "CIAC0029",
+        Error,
+        "cross-service payload mismatch",
+        "The payload carried by a caller pipeline does not match the request \
+         record expected by the target service api."
+    ),
+    InvalidServiceScope = (
+        "CIAC0030",
+        Error,
+        "invalid service scope",
+        "A project that uses `service { ... }` blocks must keep service-local \
+         declarations inside those blocks. Records and streams remain global."
+    ),
+    InvalidSharedStreamTopology = (
+        "CIAC0031",
+        Error,
+        "invalid shared stream topology",
+        "A shared stream is used across service boundaries in a way the \
+         compiler cannot lower safely."
+    ),
+    InvalidCall = (
+        "CIAC0032",
+        Error,
+        "invalid call",
+        "A `call` step is malformed or targets a construct that cannot be \
+         invoked as a typed service api."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

@@ -24,6 +24,21 @@ test.
 | CIAC0015 | error | unknown type |
 | CIAC0016 | error | payload type mismatch |
 | CIAC0017 | error | unknown stream |
+| CIAC0018 | error | unknown attribute |
+| CIAC0019 | error | invalid attribute value |
+| CIAC0020 | error | invalid match |
+| CIAC0021 | error | non-exhaustive match |
+| CIAC0022 | error | unknown capability instance |
+| CIAC0023 | error | ambiguous capability binding |
+| CIAC0024 | error | invalid handler binding |
+| CIAC0025 | error | unsupported provider configuration |
+| CIAC0026 | error | duplicate service |
+| CIAC0027 | error | unknown service |
+| CIAC0028 | error | unknown service member |
+| CIAC0029 | error | cross-service payload mismatch |
+| CIAC0030 | error | invalid service scope |
+| CIAC0031 | error | invalid shared stream topology |
+| CIAC0032 | error | invalid call |
 
 ## Notes
 
@@ -44,3 +59,32 @@ test.
   workers) must match the record of every stream it publishes to.
 - **CIAC0017** means `publish X` or `worker .. on X` references a
   stream that no `stream X: <Record>;` declares.
+- **CIAC0018** means an attribute is not supported for that declaration
+  kind; attributes are a closed registry, not free-form metadata.
+- **CIAC0019** covers wrong attribute value types, out-of-range numeric
+  values, and attribute preconditions such as scoped apis without an
+  `Auth` gate or `cache_ttl` without `cache`.
+- **CIAC0020** covers invalid `match` usage: untyped/non-enum fields,
+  unknown variants, nested matches, wildcard placement, and non-terminal
+  top-level matches.
+- **CIAC0021** means a `match` over an enum omits one or more variants
+  without a trailing `_` wildcard.
+- **CIAC0022** means a handler binding references a named capability
+  instance that no `use` entry declares.
+- **CIAC0023** means CIaC needs a default capability instance but several
+  exist and none is named `default`; add a handler binding or declare the
+  default instance explicitly.
+- **CIAC0024** means a `handler` declaration binds an unsupported
+  capability kind.
+- **CIAC0025** means a provider-specific config is missing or unsupported,
+  such as `external_http` without `base_url`.
+- **CIAC0026** means a project declares the same `service` block name
+  more than once.
+- **CIAC0027** means a `call Service.Api` target names an unknown service.
+- **CIAC0028** means the target service exists, but the named API does not.
+- **CIAC0029** means the caller pipeline payload does not match the target
+  API request record.
+- **CIAC0030** means a project mixes `service { ... }` blocks with flat
+  service-local declarations.
+- **CIAC0031** is reserved for invalid shared-stream topologies.
+- **CIAC0032** means a `call` target is malformed, e.g. not `Service.Api`.

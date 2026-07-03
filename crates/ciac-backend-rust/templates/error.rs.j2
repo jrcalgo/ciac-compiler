@@ -18,6 +18,13 @@ impl AppError {
             source: None,
         }
     }
+
+    pub fn forbidden() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            source: None,
+        }
+    }
 }
 
 impl IntoResponse for AppError {

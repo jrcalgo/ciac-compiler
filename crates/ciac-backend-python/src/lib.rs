@@ -43,7 +43,8 @@ impl Backend for PythonBackend {
         !matches!(
             component,
             Component::Queue {
-                engine: ciac_ir::QueueEngine::Kafka
+                engine: ciac_ir::QueueEngine::Kafka,
+                ..
             }
         )
     }

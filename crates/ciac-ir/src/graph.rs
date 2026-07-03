@@ -1,4 +1,4 @@
-use crate::component::{Component, NodeKind};
+use crate::component::{Component, CrudConfig, NodeKind};
 use crate::record::{Record, RecordId};
 use ciac_diagnostics::Span;
 use serde::Serialize;
@@ -14,6 +14,11 @@ pub struct NodeId(pub u32);
 #[serde(transparent)]
 pub struct EdgeId(pub u32);
 
+/// Index of a deployable service in a multi-service project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct ServiceId(pub u32);
+
 /// What an edge means architecturally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum EdgeKind {
@@ -23,13 +28,24 @@ pub enum EdgeKind {
     DataFlow,
     /// Asynchronous messaging through a queue.
     AsyncMessage,
+    /// Synchronous typed call across service boundaries.
+    ServiceCall,
     /// Provisioning/startup dependency without direct data movement.
     DependsOn,
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct Service {
+    pub id: ServiceId,
+    pub name: String,
+    #[serde(skip)]
+    pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Node {
     pub id: NodeId,
+    pub service: Option<ServiceId>,
     #[serde(flatten)]
     pub component: Component,
     /// Where the component was declared, when it maps to source directly.
@@ -46,9 +62,17 @@ pub struct Edge {
 }
 
 /// A resolved pipeline step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Step {
+    #[serde(flatten)]
+    pub kind: StepKind,
+    #[serde(skip)]
+    pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "step")]
-pub enum Step {
+pub enum StepKind {
     /// Builtin `Auth`: authenticate the request against the auth node.
     Auth { node: NodeId },
     /// Publish the current payload to a stream node. The surface `Queue`
@@ -58,6 +82,17 @@ pub enum Step {
     Return,
     /// Invoke a service handler node.
     Handler { node: NodeId },
+    /// Invoke an API owned by another service.
+    Call { target: NodeId },
+    /// Static branch over an enum field on the pipeline payload.
+    Match { field: String, arms: Vec<MatchArm> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MatchArm {
+    /// Variant label; `None` is the wildcard arm.
+    pub label: Option<String>,
+    pub steps: Vec<Step>,
 }
 
 /// An ordered execution chain owned by an api (request flow) or a worker
@@ -65,6 +100,7 @@ pub enum Step {
 #[derive(Debug, Clone, Serialize)]
 pub struct Pipeline {
     pub name: String,
+    pub service: Option<ServiceId>,
     /// The api or worker node this pipeline belongs to.
     pub owner: NodeId,
     /// The payload record every step handles: the api's request type or
@@ -73,26 +109,29 @@ pub struct Pipeline {
     pub steps: Vec<Step>,
     #[serde(skip)]
     pub span: Option<Span>,
-    /// Source spans per step, parallel to `steps` (for diagnostics).
-    #[serde(skip)]
-    pub step_spans: Vec<Option<Span>>,
 }
 
 /// A CRUD resource produced by expanding `crud <Name>;`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Resource {
     pub name: String,
+    pub service_owner: Option<ServiceId>,
     pub api: NodeId,
     pub service: NodeId,
+    pub database: NodeId,
+    pub cache: Option<NodeId>,
+    pub auth: Option<NodeId>,
     /// Record supplying real columns; `None` keeps the generic
     /// keyed-document model.
     pub record: Option<RecordId>,
+    pub config: CrudConfig,
 }
 
 /// An event stream produced by expanding `events <Name>;`.
 #[derive(Debug, Clone, Serialize)]
 pub struct EventStream {
     pub name: String,
+    pub service_owner: Option<ServiceId>,
     /// The stream node the expansion created.
     pub stream: NodeId,
     pub worker: NodeId,
@@ -107,6 +146,7 @@ pub struct EventStream {
 pub struct SystemGraph {
     /// The system name from the `service <Name>;` declaration.
     pub name: String,
+    services: Vec<Service>,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     records: Vec<Record>,
@@ -124,13 +164,41 @@ impl SystemGraph {
     }
 
     pub fn add_node(&mut self, component: Component, span: Option<Span>) -> NodeId {
+        self.add_node_owned(None, component, span)
+    }
+
+    pub fn add_node_owned(
+        &mut self,
+        service: Option<ServiceId>,
+        component: Component,
+        span: Option<Span>,
+    ) -> NodeId {
         let id = NodeId(self.nodes.len() as u32);
         self.nodes.push(Node {
             id,
+            service,
             component,
             span,
         });
         id
+    }
+
+    pub fn add_service(&mut self, name: impl Into<String>, span: Option<Span>) -> ServiceId {
+        let id = ServiceId(self.services.len() as u32);
+        self.services.push(Service {
+            id,
+            name: name.into(),
+            span,
+        });
+        id
+    }
+
+    pub fn service(&self, id: ServiceId) -> &Service {
+        &self.services[id.0 as usize]
+    }
+
+    pub fn services(&self) -> impl Iterator<Item = &Service> {
+        self.services.iter()
     }
 
     /// Adds an edge, reusing an existing identical edge if present so
@@ -191,16 +259,42 @@ impl SystemGraph {
             .filter(move |n| n.component.kind() == kind)
     }
 
-    /// The single node of an infrastructure kind (database, cache, queue,
-    /// auth, ...), if declared.
+    pub fn nodes_in_service(&self, service: ServiceId) -> impl Iterator<Item = &Node> {
+        self.nodes
+            .iter()
+            .filter(move |n| n.service == Some(service))
+    }
+
+    /// Compatibility helper: the first node of a kind, when v0.1-v0.3
+    /// programs rely on a single implicit capability instance.
     pub fn singleton(&self, kind: NodeKind) -> Option<&Node> {
         self.nodes_of_kind(kind).next()
     }
 
-    /// Finds a named component (api/service/worker) by kind and name.
+    pub fn capability(&self, kind: NodeKind, name: &str) -> Option<&Node> {
+        self.nodes_of_kind(kind)
+            .find(|n| n.component.name() == Some(name))
+    }
+
+    pub fn default_capability(&self, kind: NodeKind) -> Option<&Node> {
+        self.capability(kind, "default")
+            .or_else(|| self.nodes_of_kind(kind).next())
+    }
+
+    /// Finds a named component or capability instance by kind and name.
     pub fn find_named(&self, kind: NodeKind, name: &str) -> Option<&Node> {
         self.nodes_of_kind(kind)
             .find(|n| n.component.name() == Some(name))
+    }
+
+    pub fn find_named_in_service(
+        &self,
+        service: ServiceId,
+        kind: NodeKind,
+        name: &str,
+    ) -> Option<&Node> {
+        self.nodes_in_service(service)
+            .find(|n| n.component.kind() == kind && n.component.name() == Some(name))
     }
 
     pub fn edges_from(&self, node: NodeId) -> impl Iterator<Item = &Edge> {
@@ -231,6 +325,12 @@ impl SystemGraph {
                 NodeKind::Queue => "cds",
                 NodeKind::Stream => "parallelogram",
                 NodeKind::Auth => "hexagon",
+                NodeKind::ObjectStore => "folder",
+                NodeKind::Email => "note",
+                NodeKind::Search => "box3d",
+                NodeKind::ExternalHttp => "tab",
+                NodeKind::Scheduler => "oval",
+                NodeKind::Realtime => "doublecircle",
                 NodeKind::Logging | NodeKind::Metrics => "note",
             };
             let _ = writeln!(
@@ -245,6 +345,7 @@ impl SystemGraph {
                 EdgeKind::RequestFlow => "solid",
                 EdgeKind::DataFlow => "bold",
                 EdgeKind::AsyncMessage => "dashed",
+                EdgeKind::ServiceCall => "solid",
                 EdgeKind::DependsOn => "dotted",
             };
             let _ = writeln!(
@@ -281,6 +382,7 @@ mod tests {
             Component::Api {
                 name: "Upload".into(),
                 request: None,
+                config: Default::default(),
             },
             None,
         );
@@ -292,6 +394,7 @@ mod tests {
         );
         let db = g.add_node(
             Component::Database {
+                name: "default".into(),
                 engine: DbEngine::Postgres,
             },
             None,
@@ -324,6 +427,7 @@ mod tests {
         let mut g = SystemGraph::new("Test");
         g.add_node(
             Component::Queue {
+                name: "default".into(),
                 engine: QueueEngine::Nats,
             },
             None,

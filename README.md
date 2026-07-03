@@ -38,7 +38,8 @@ ciac build video-platform.ciac --target rust --out ./video-platform-rs
 # → the same architecture as an Axum/SQLx/async-nats Cargo project.
 ```
 
-Since v0.2, payloads and message topology are typed and named:
+Since v0.3, payloads and message topology are typed and named, and
+components can be tuned with closed, validated attributes:
 
 ```text
 record Video {
@@ -49,22 +50,85 @@ record Video {
 
 stream Uploaded: Video;              // a named, typed channel
 stream Transcoded: Video;
+stream DeadLetters: Video;
 
-api Upload: Video;                   // request body validated as Video
-worker Transcoder on Uploaded;       // consumes Uploaded
+api Upload: Video {                  // request body validated as Video
+    method: PUT;
+    path: "/videos";
+    scope: "videos:write";
+}
+worker Transcoder on Uploaded {      // consumes Uploaded
+    concurrency: 4;
+    max_retries: 2;
+}
 worker Notifier on Transcoded;       // fan-out via a second stream
 
 pipeline Upload: Auth -> StoreVideo -> publish Uploaded -> Return;
-pipeline Transcoder: Transcode -> publish Transcoded;
+pipeline Transcoder:
+    Transcode
+    -> match status {
+        Ready -> Notify -> publish Transcoded;
+        Failed -> publish DeadLetters;
+    };
 pipeline Notifier: Notify;
 
-crud Clip: Video;                    // real typed columns, not JSON blobs
+crud Clip: Video {                   // real typed columns, not JSON blobs
+    cache_ttl: 60;
+    page_size: 50;
+}
 ```
 
 The compiler checks every publish site against its stream's record
 (`CIAC0016`), rejects workers that republish to the stream they consume
 (`CIAC0006`), and generates pydantic/serde schemas so malformed payloads
-are rejected at the boundary of the running system too.
+are rejected at the boundary of the running system too. `match` is
+checked for enum labels and exhaustiveness (`CIAC0020`/`CIAC0021`).
+
+v0.4 expands the ontology and lets handlers bind to named capability
+instances:
+
+```text
+use {
+    db main Postgres;
+    db analytics Postgres;
+    object_store media S3 { bucket: "videos"; }
+    search catalog OpenSearch;
+    external_http billing { base_url: "https://billing.internal"; }
+}
+
+handler StoreVideo {
+    db: main;
+    object_store: media;
+}
+
+handler IndexVideo {
+    search: catalog;
+    external_http: billing;
+}
+```
+
+v0.5 lets one file describe a multi-service topology with shared typed
+streams and checked service-to-service calls:
+
+```text
+project MediaSystem;
+
+record Video { id: Uuid; }
+stream Uploaded: Video;
+
+service Billing {
+    api Charge: Video;
+    pipeline Charge: CapturePayment -> Return;
+}
+
+service UploadApi {
+    api Upload: Video;
+    pipeline Upload:
+        call Billing.Charge
+        -> publish Uploaded
+        -> Return;
+}
+```
 
 ## Why
 

@@ -11,6 +11,8 @@ use logos::Logos;
 #[logos(skip r"//[^\n]*")]
 #[logos(skip r"/\*([^*]|\*[^/])*\*/")]
 pub enum TokenKind {
+    #[token("project")]
+    Project,
     #[token("service")]
     Service,
     #[token("use")]
@@ -29,12 +31,18 @@ pub enum TokenKind {
     Record,
     #[token("stream")]
     Stream,
+    #[token("handler")]
+    Handler,
     #[token("on")]
     On,
     #[token("publish")]
     Publish,
+    #[token("call")]
+    Call,
     #[token("enum")]
     Enum,
+    #[token("match")]
+    Match,
 
     #[token("{")]
     LBrace,
@@ -46,9 +54,15 @@ pub enum TokenKind {
     Colon,
     #[token(",")]
     Comma,
+    #[token(".")]
+    Dot,
     #[token("->")]
     Arrow,
 
+    #[regex("[0-9]+")]
+    Number,
+    #[regex(r#""([^"\\]|\\.)*""#)]
+    Str,
     #[regex("[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
 
@@ -60,6 +74,7 @@ impl TokenKind {
     /// How the token kind is described in "expected X" messages.
     pub fn describe(self) -> &'static str {
         match self {
+            TokenKind::Project => "`project`",
             TokenKind::Service => "`service`",
             TokenKind::Use => "`use`",
             TokenKind::Api => "`api`",
@@ -69,15 +84,21 @@ impl TokenKind {
             TokenKind::Events => "`events`",
             TokenKind::Record => "`record`",
             TokenKind::Stream => "`stream`",
+            TokenKind::Handler => "`handler`",
             TokenKind::On => "`on`",
             TokenKind::Publish => "`publish`",
+            TokenKind::Call => "`call`",
             TokenKind::Enum => "`enum`",
+            TokenKind::Match => "`match`",
             TokenKind::LBrace => "`{`",
             TokenKind::RBrace => "`}`",
             TokenKind::Semi => "`;`",
             TokenKind::Colon => "`:`",
             TokenKind::Comma => "`,`",
+            TokenKind::Dot => "`.`",
             TokenKind::Arrow => "`->`",
+            TokenKind::Number => "a number",
+            TokenKind::Str => "a string",
             TokenKind::Ident => "a name",
             TokenKind::Eof => "end of file",
         }
@@ -180,5 +201,16 @@ mod tests {
                 TokenKind::Eof
             ]
         );
+    }
+
+    #[test]
+    fn lexes_attributes_and_match() {
+        let (kinds, diags) = lex_kinds(
+            r#"api Upload { method: PUT; path: "/videos"; concurrency: 4; } pipeline Upload: match status { Ready -> Return; };"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert!(kinds.contains(&TokenKind::Number));
+        assert!(kinds.contains(&TokenKind::Str));
+        assert!(kinds.contains(&TokenKind::Match));
     }
 }

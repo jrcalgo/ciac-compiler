@@ -1,0 +1,4 @@
+// expect: CIAC0019
+service X;
+api A { scope: "x:write"; }
+pipeline A: Return;

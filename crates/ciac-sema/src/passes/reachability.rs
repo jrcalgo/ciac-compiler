@@ -77,7 +77,15 @@ impl Pass for Reachability {
                         );
                     }
                 }
-                NodeKind::Database | NodeKind::Cache | NodeKind::Auth => {
+                NodeKind::Database
+                | NodeKind::Cache
+                | NodeKind::Auth
+                | NodeKind::ObjectStore
+                | NodeKind::Email
+                | NodeKind::Search
+                | NodeKind::ExternalHttp
+                | NodeKind::Scheduler
+                | NodeKind::Realtime => {
                     let used = graph.edges_to(node.id).next().is_some()
                         || graph.edges_from(node.id).next().is_some();
                     if !used {

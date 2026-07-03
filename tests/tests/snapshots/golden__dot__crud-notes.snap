@@ -4,9 +4,9 @@ expression: ir.to_dot()
 ---
 digraph Notes {
     rankdir=LR;
-    n0 [label="auth Jwt", shape=hexagon];
-    n1 [label="database Postgres", shape=cylinder];
-    n2 [label="cache Redis", shape=cylinder];
+    n0 [label="auth default Jwt", shape=hexagon];
+    n1 [label="database default Postgres", shape=cylinder];
+    n2 [label="cache default Redis", shape=cylinder];
     n3 [label="api Note", shape=rarrow];
     n4 [label="service NoteStore", shape=box];
     n3 -> n0 [label="RequestFlow", style=solid];

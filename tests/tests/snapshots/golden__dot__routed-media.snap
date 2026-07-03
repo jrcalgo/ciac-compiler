@@ -1,0 +1,54 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph RoutedMedia {
+    rankdir=LR;
+    n0 [label="auth default Jwt", shape=hexagon];
+    n1 [label="database default Postgres", shape=cylinder];
+    n2 [label="cache default Redis", shape=cylinder];
+    n3 [label="queue default Nats", shape=cds];
+    n4 [label="stream Uploaded", shape=parallelogram];
+    n5 [label="stream Transcoded", shape=parallelogram];
+    n6 [label="stream DeadLetters", shape=parallelogram];
+    n7 [label="api Upload", shape=rarrow];
+    n8 [label="worker Transcoder", shape=component];
+    n9 [label="worker Notifier", shape=component];
+    n10 [label="worker DeadLetterSink", shape=component];
+    n11 [label="api Clip", shape=rarrow];
+    n12 [label="service ClipStore", shape=box];
+    n13 [label="service StoreVideo", shape=box];
+    n14 [label="service Transcode", shape=box];
+    n15 [label="service Notify", shape=box];
+    n16 [label="service SendNotification", shape=box];
+    n17 [label="service ArchiveFailure", shape=box];
+    n4 -> n3 [label="DependsOn", style=dotted];
+    n5 -> n3 [label="DependsOn", style=dotted];
+    n6 -> n3 [label="DependsOn", style=dotted];
+    n4 -> n8 [label="AsyncMessage", style=dashed];
+    n5 -> n9 [label="AsyncMessage", style=dashed];
+    n6 -> n10 [label="AsyncMessage", style=dashed];
+    n11 -> n0 [label="RequestFlow", style=solid];
+    n0 -> n12 [label="RequestFlow", style=solid];
+    n12 -> n1 [label="DataFlow", style=bold];
+    n12 -> n2 [label="DataFlow", style=bold];
+    n13 -> n1 [label="DataFlow", style=bold];
+    n13 -> n2 [label="DataFlow", style=bold];
+    n7 -> n0 [label="RequestFlow", style=solid];
+    n0 -> n13 [label="RequestFlow", style=solid];
+    n13 -> n4 [label="AsyncMessage", style=dashed];
+    n14 -> n1 [label="DataFlow", style=bold];
+    n14 -> n2 [label="DataFlow", style=bold];
+    n15 -> n1 [label="DataFlow", style=bold];
+    n15 -> n2 [label="DataFlow", style=bold];
+    n8 -> n14 [label="RequestFlow", style=solid];
+    n14 -> n15 [label="RequestFlow", style=solid];
+    n15 -> n5 [label="AsyncMessage", style=dashed];
+    n14 -> n6 [label="AsyncMessage", style=dashed];
+    n16 -> n1 [label="DataFlow", style=bold];
+    n16 -> n2 [label="DataFlow", style=bold];
+    n9 -> n16 [label="RequestFlow", style=solid];
+    n17 -> n1 [label="DataFlow", style=bold];
+    n17 -> n2 [label="DataFlow", style=bold];
+    n10 -> n17 [label="RequestFlow", style=solid];
+}

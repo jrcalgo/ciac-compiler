@@ -2,7 +2,7 @@
 //! graph shape out.
 
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
-use ciac_ir::{Component, EdgeKind, FieldType, NodeKind, NormalizedIr, Step};
+use ciac_ir::{Component, EdgeKind, FieldType, HttpMethod, NodeKind, NormalizedIr, StepKind};
 
 fn analyze(src: &str) -> (Option<NormalizedIr>, Diagnostics) {
     let mut sources = SourceMap::new();
@@ -79,16 +79,16 @@ fn flagship_example_analyzes_cleanly() {
     // Pipeline steps resolved in order.
     let api = ir.find_named(NodeKind::Api, "Upload").expect("api");
     let pipeline = ir.pipeline_of(api.id).expect("api pipeline");
-    assert!(matches!(pipeline.steps[0], Step::Auth { .. }));
-    assert!(matches!(pipeline.steps[1], Step::Handler { .. }));
-    let Step::Publish { stream } = pipeline.steps[2] else {
+    assert!(matches!(&pipeline.steps[0].kind, StepKind::Auth { .. }));
+    assert!(matches!(&pipeline.steps[1].kind, StepKind::Handler { .. }));
+    let StepKind::Publish { stream } = &pipeline.steps[2].kind else {
         panic!("Queue step lowers to a publish on the default stream");
     };
-    let Component::Stream { subject, .. } = &ir.node(stream).component else {
+    let Component::Stream { subject, .. } = &ir.node(*stream).component else {
         panic!("publish target is a stream node");
     };
     assert_eq!(subject, "video_platform.events");
-    assert!(matches!(pipeline.steps[3], Step::Return));
+    assert!(matches!(&pipeline.steps[3].kind, StepKind::Return));
 }
 
 #[test]
@@ -325,4 +325,370 @@ fn stream_requires_queue_capability() {
     let (ir, diags) = analyze("service X;\nrecord A { id: Uuid; }\nstream S: A;\n");
     assert!(ir.is_none());
     assert!(error_codes(&diags).contains(&ErrorCode::MissingCapability));
+}
+
+#[test]
+fn component_attributes_resolve_to_configs() {
+    let (ir, diags) = analyze(
+        r#"service Media;
+use { auth JWT; db Postgres; cache Redis; queue NATS; }
+record Video { id: Uuid; status: enum { Ready, Failed }; }
+stream Uploaded: Video { subject: "media.custom"; }
+api Upload: Video { method: PUT; path: "/videos"; scope: "videos:write"; }
+worker Transcoder on Uploaded { concurrency: 4; max_retries: 2; }
+crud Clip: Video { cache_ttl: 60; page_size: 50; }
+pipeline Upload: Auth -> Return;
+pipeline Transcoder: Process;
+"#,
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    let api = ir.find_named(NodeKind::Api, "Upload").expect("api");
+    let Component::Api { config, .. } = &api.component else {
+        panic!("api node");
+    };
+    assert_eq!(config.method, HttpMethod::Put);
+    assert_eq!(config.path.as_deref(), Some("/videos"));
+    assert_eq!(config.scope.as_deref(), Some("videos:write"));
+
+    let stream = ir.find_named(NodeKind::Stream, "Uploaded").expect("stream");
+    let Component::Stream { subject, .. } = &stream.component else {
+        panic!("stream node");
+    };
+    assert_eq!(subject, "media.custom");
+
+    let worker = ir
+        .find_named(NodeKind::Worker, "Transcoder")
+        .expect("worker");
+    let Component::Worker { config, .. } = &worker.component else {
+        panic!("worker node");
+    };
+    assert_eq!(config.concurrency, 4);
+    assert_eq!(config.max_retries, 2);
+
+    assert_eq!(ir.resources[0].config.cache_ttl, 60);
+    assert_eq!(ir.resources[0].config.page_size, 50);
+}
+
+#[test]
+fn unknown_attribute_is_rejected() {
+    let (ir, diags) = analyze("service X;\napi A { nope: 1; }\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownAttribute));
+}
+
+#[test]
+fn invalid_attribute_values_are_rejected() {
+    let cases = [
+        (
+            "service X;\nrecord A { id: Uuid; }\napi A: A { method: GET; }\n",
+            "GET with typed body",
+        ),
+        (
+            "service X;\napi A { scope: \"x\"; }\npipeline A: Return;\n",
+            "scope without Auth",
+        ),
+        (
+            "service X;\nuse { db Postgres; }\ncrud Note { cache_ttl: 60; }\n",
+            "cache_ttl without cache",
+        ),
+    ];
+    for (src, label) in cases {
+        let (ir, diags) = analyze(src);
+        assert!(ir.is_none(), "{label}");
+        assert!(
+            error_codes(&diags).contains(&ErrorCode::InvalidAttributeValue),
+            "{label}: {:?}",
+            diags.codes()
+        );
+    }
+}
+
+const MATCH_PROGRAM: &str = r#"service Media;
+use { queue NATS; }
+record Video { id: Uuid; status: enum { Ready, Failed }; }
+stream Transcoded: Video;
+stream DeadLetters: Video;
+api In: Video;
+worker TranscodedWorker on Transcoded;
+worker DeadWorker on DeadLetters;
+pipeline In:
+    Transcode
+    -> match status {
+        Ready -> publish Transcoded;
+        Failed -> publish DeadLetters;
+    };
+pipeline TranscodedWorker: Notify;
+pipeline DeadWorker: Archive;
+"#;
+
+#[test]
+fn exhaustive_match_analyzes_and_wires_arms() {
+    let (ir, diags) = analyze(MATCH_PROGRAM);
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    let api = ir.find_named(NodeKind::Api, "In").expect("api");
+    let pipeline = ir.pipeline_of(api.id).expect("pipeline");
+    let StepKind::Match { field, arms } = &pipeline.steps[1].kind else {
+        panic!("expected match");
+    };
+    assert_eq!(field, "status");
+    assert_eq!(arms.len(), 2);
+    assert_eq!(arms[0].label.as_deref(), Some("Ready"));
+    assert!(matches!(&arms[0].steps[0].kind, StepKind::Publish { .. }));
+}
+
+#[test]
+fn wildcard_match_is_exhaustive() {
+    let src = MATCH_PROGRAM.replace(
+        "Ready -> publish Transcoded;\n        Failed -> publish DeadLetters;",
+        "Ready -> publish Transcoded;\n        _ -> publish DeadLetters;",
+    );
+    let (ir, diags) = analyze(&src);
+    assert!(
+        ir.is_some(),
+        "wildcard covers remaining variants: {:?}",
+        diags.codes()
+    );
+    assert!(!diags.has_errors());
+}
+
+#[test]
+fn match_validation_reports_new_codes() {
+    let cases = [
+        (
+            MATCH_PROGRAM.replace("Failed -> publish DeadLetters;\n", ""),
+            ErrorCode::NonExhaustiveMatch,
+            "non-exhaustive",
+        ),
+        (
+            MATCH_PROGRAM.replace("Failed -> publish DeadLetters;", "Other -> publish DeadLetters;"),
+            ErrorCode::InvalidMatch,
+            "unknown variant",
+        ),
+        (
+            "service X;\napi A;\npipeline A: match status { Ready -> Return; };\n".to_owned(),
+            ErrorCode::InvalidMatch,
+            "untyped",
+        ),
+        (
+            MATCH_PROGRAM.replace(
+                "Ready -> publish Transcoded;",
+                "Ready -> match status { Ready -> publish Transcoded; Failed -> publish DeadLetters; };",
+            ),
+            ErrorCode::InvalidMatch,
+            "nested",
+        ),
+        (
+            MATCH_PROGRAM.replace("    };\n", "    } -> Return;\n"),
+            ErrorCode::InvalidMatch,
+            "not terminal",
+        ),
+    ];
+    for (src, code, label) in cases {
+        let (ir, diags) = analyze(&src);
+        assert!(ir.is_none(), "{label}");
+        assert!(
+            error_codes(&diags).contains(&code),
+            "{label}: expected {code:?}, got {:?}",
+            diags.codes()
+        );
+    }
+}
+
+#[test]
+fn named_capability_instances_bind_to_handlers() {
+    let (ir, diags) = analyze(
+        "service X;\n\
+         use { db main Postgres; db analytics Postgres; cache hot Redis; }\n\
+         handler Store { db: main; cache: hot; }\n\
+         api A;\n\
+         pipeline A: Store -> Return;\n",
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    let store = ir.find_named(NodeKind::Service, "Store").expect("handler");
+    let targets: Vec<_> = ir
+        .edges_from(store.id)
+        .map(|e| {
+            ir.node(e.to)
+                .component
+                .name()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert!(targets.contains(&"main".to_owned()));
+    assert!(targets.contains(&"hot".to_owned()));
+    assert!(!targets.contains(&"analytics".to_owned()));
+}
+
+#[test]
+fn multiple_instances_without_default_are_ambiguous_for_implicit_handlers() {
+    let (ir, diags) = analyze(
+        "service X;\n\
+         use { db main Postgres; db analytics Postgres; }\n\
+         api A;\n\
+         pipeline A: Store -> Return;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::AmbiguousCapabilityBinding));
+}
+
+#[test]
+fn handler_binding_to_missing_instance_is_reported() {
+    let (ir, diags) = analyze(
+        "service X;\n\
+         use { db main Postgres; }\n\
+         handler Store { db: missing; }\n\
+         api A;\n\
+         pipeline A: Store -> Return;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownCapabilityInstance));
+}
+
+#[test]
+fn new_ontology_capabilities_can_be_declared_and_bound() {
+    let (ir, diags) = analyze(
+        r#"service X;
+use {
+    object_store media S3 { bucket: "videos"; }
+    email transactional SES;
+    search catalog OpenSearch;
+    external_http billing { base_url: "https://billing.internal"; }
+}
+handler Enrich {
+    object_store: media;
+    email: transactional;
+    search: catalog;
+    external_http: billing;
+}
+api A;
+pipeline A: Enrich -> Return;
+"#,
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    assert!(ir.find_named(NodeKind::ObjectStore, "media").is_some());
+    assert!(ir.find_named(NodeKind::Email, "transactional").is_some());
+    assert!(ir.find_named(NodeKind::Search, "catalog").is_some());
+    assert!(ir.find_named(NodeKind::ExternalHttp, "billing").is_some());
+}
+
+#[test]
+fn multi_service_project_supports_shared_streams_and_typed_calls() {
+    let (ir, diags) = analyze(
+        r#"project MediaSystem;
+record Video { id: Uuid; status: enum { Ready, Failed }; }
+stream Uploaded: Video;
+
+service Billing {
+    api Charge: Video;
+    pipeline Charge: CapturePayment -> Return;
+}
+
+service UploadApi {
+    use { queue bus NATS; }
+    api Upload: Video;
+    pipeline Upload:
+        call Billing.Charge
+        -> publish Uploaded
+        -> Return;
+}
+
+service Transcoder {
+    use { queue bus NATS; }
+    worker Transcode on Uploaded;
+    pipeline Transcode: Process;
+}
+"#,
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    assert_eq!(ir.name, "MediaSystem");
+    assert_eq!(ir.services().count(), 3);
+    let upload_service = ir
+        .services()
+        .find(|service| service.name == "UploadApi")
+        .expect("upload service")
+        .id;
+    let billing_service = ir
+        .services()
+        .find(|service| service.name == "Billing")
+        .expect("billing service")
+        .id;
+    let upload = ir
+        .find_named_in_service(upload_service, NodeKind::Api, "Upload")
+        .expect("upload api");
+    let charge = ir
+        .find_named_in_service(billing_service, NodeKind::Api, "Charge")
+        .expect("charge api");
+    let pipeline = ir.pipeline_of(upload.id).expect("upload pipeline");
+    assert_eq!(pipeline.service, Some(upload_service));
+    assert!(matches!(&pipeline.steps[0].kind, StepKind::Call { target } if *target == charge.id));
+    assert!(ir
+        .edges_from(upload.id)
+        .any(|edge| edge.to == charge.id && edge.kind == EdgeKind::ServiceCall));
+}
+
+#[test]
+fn duplicate_service_is_rejected() {
+    let (ir, diags) = analyze("project X;\nservice A {}\nservice A {}\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::DuplicateService));
+}
+
+#[test]
+fn unknown_service_call_is_rejected() {
+    let (ir, diags) = analyze(
+        "project X;\nrecord R { id: Uuid; }\nservice A { api In: R; pipeline In: call Missing.Api -> Return; }\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownService));
+}
+
+#[test]
+fn unknown_service_member_call_is_rejected() {
+    let (ir, diags) = analyze(
+        "project X;\nrecord R { id: Uuid; }\nservice A { api In: R; pipeline In: call B.Missing -> Return; }\nservice B { api Out: R; pipeline Out: Return; }\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownServiceMember));
+}
+
+#[test]
+fn cross_service_payload_mismatch_is_rejected() {
+    let (ir, diags) = analyze(
+        "project X;\nrecord A { id: Uuid; }\nrecord B { id: Uuid; }\nservice Caller { api In: A; pipeline In: call Callee.Out -> Return; }\nservice Callee { api Out: B; pipeline Out: Return; }\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::CrossServiceTypeMismatch));
+}
+
+#[test]
+fn flat_service_local_decls_cannot_mix_with_service_blocks() {
+    let (ir, diags) = analyze("project X;\napi Flat;\nservice A {}\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::InvalidServiceScope));
 }

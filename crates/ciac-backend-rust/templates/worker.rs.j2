@@ -4,6 +4,7 @@
 //! so replicas of this worker load-balance messages between them.
 
 use futures::StreamExt;
+use futures::future::try_join_all;
 
 {% if worker.payload -%}
 use crate::schemas::{{ worker.payload.class_name }};
@@ -15,13 +16,26 @@ use crate::state::AppState;
 
 pub const SUBJECT: &str = "{{ worker.subject }}";
 pub const QUEUE_GROUP: &str = "{{ worker.queue_group }}";
+pub const CONCURRENCY: usize = {{ worker.concurrency }};
+pub const MAX_RETRIES: u32 = {{ worker.max_retries }};
 {% set payload_type = worker.payload.class_name if worker.payload else "serde_json::Value" %}
 pub async fn run(state: AppState) -> anyhow::Result<()> {
+    let tasks = (0..CONCURRENCY).map(|worker_index| {
+        let state = state.clone();
+        tokio::spawn(async move { consume(state, worker_index).await })
+    });
+    for result in try_join_all(tasks).await? {
+        result?;
+    }
+    Ok(())
+}
+
+async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
     let mut subscription = state
         .queue
         .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
         .await?;
-    tracing::info!(subject = SUBJECT, "worker {{ worker.name }} consuming");
+    tracing::info!(subject = SUBJECT, worker_index, "worker {{ worker.name }} consuming");
     while let Some(message) = subscription.next().await {
         let payload: {{ payload_type }} = match serde_json::from_slice(&message.payload) {
             Ok(payload) => payload,
@@ -31,25 +45,57 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
             }
         };
         if let Err(err) = handle_message(&state, payload).await {
-            tracing::error!(?err, "message processing failed");
+            tracing::error!(?err, "message processing failed after retries");
         }
     }
     Ok(())
 }
 
-{% if worker.steps -%}
-async fn handle_message(state: &AppState, payload: {{ payload_type }}) -> anyhow::Result<()> {
-    let result = payload;
-{%- for step in worker.steps %}
+{% macro emit_steps(steps, indent) -%}
+{%- for step in steps %}
 {%- if step.kind == "handler" %}
-    let result = {{ step.handler.class_name }}::new(state).handle(result).await?;
+{{ indent }}let result = {{ step.handler.class_name }}::new(state).handle(result).await?;
 {%- elif step.kind == "publish" %}
-    state
-        .queue
-        .publish("{{ step.subject }}", serde_json::to_vec(&result)?.into())
-        .await?;
+{{ indent }}state
+{{ indent }}    .queue
+{{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?.into())
+{{ indent }}    .await?;
+{%- elif step.kind == "call" %}
+{{ indent }}// TODO: call {{ step.call.service }}.{{ step.call.api }} with result.
+{%- elif step.kind == "match" %}
+{{ indent }}let result = match result.{{ step.field }} {
+{%- for arm in step.arms %}
+{%- if arm.rust_variant %}
+{{ indent }}    {{ arm.rust_variant }} => {
+{%- else %}
+{{ indent }}    _ => {
+{%- endif %}
+{{ emit_steps(arm.steps, indent ~ "        ") }}
+{{ indent }}        result
+{{ indent }}    }
+{%- endfor %}
+{{ indent }}};
 {%- endif %}
 {%- endfor %}
+{%- endmacro %}
+
+{% if worker.steps -%}
+async fn handle_message(state: &AppState, payload: {{ payload_type }}) -> anyhow::Result<()> {
+    for attempt in 0..=MAX_RETRIES {
+        match handle_message_once(state, payload.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < MAX_RETRIES => {
+                tracing::warn!(?err, attempt, "message processing failed; retrying");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+async fn handle_message_once(state: &AppState, payload: {{ payload_type }}) -> anyhow::Result<()> {
+    let result = payload;
+{{ emit_steps(worker.steps, "    ") }}
     let _ = result;
     Ok(())
 }

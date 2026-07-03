@@ -23,8 +23,12 @@ pub struct Program {
 /// A top-level declaration.
 #[derive(Debug, Clone, Serialize)]
 pub enum Item {
+    /// `project <Name>;` — names a multi-service project.
+    Project(ProjectDecl),
     /// `service <Name>;` — names the system being described.
     Service(ServiceDecl),
+    /// `service <Name> { .. }` — a deployable service scope.
+    ServiceBlock(ServiceBlock),
     /// `use { auth JWT; db Postgres; .. }` — capability requirements.
     Use(UseBlock),
     /// `record <Name> { field: Type; .. }` — a typed data schema.
@@ -39,14 +43,40 @@ pub enum Item {
     Crud(CrudDecl),
     /// `events <Name>;` — expands to Stream + Worker.
     Events(ComponentDecl),
+    /// `handler <Name> { db: main; .. }` — binds a handler to capability instances.
+    Handler(HandlerDecl),
     /// `pipeline <Name>: Step -> Step -> ..;`
     Pipeline(PipelineDecl),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectDecl {
+    pub name: Ident,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ServiceDecl {
     pub name: Ident,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceBlock {
+    pub name: Ident,
+    pub items: Vec<ServiceItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum ServiceItem {
+    Use(UseBlock),
+    Api(ApiDecl),
+    Worker(WorkerDecl),
+    Crud(CrudDecl),
+    Events(ComponentDecl),
+    Handler(HandlerDecl),
+    Pipeline(PipelineDecl),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +120,7 @@ impl TypeExpr {
 pub struct StreamDecl {
     pub name: Ident,
     pub record: Ident,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
@@ -98,6 +129,7 @@ pub struct ApiDecl {
     pub name: Ident,
     /// Request body record, when the api is typed.
     pub request: Option<Ident>,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
@@ -107,6 +139,7 @@ pub struct WorkerDecl {
     /// Stream the worker consumes; `None` means the service's default
     /// stream (v0.1 behavior).
     pub stream: Option<Ident>,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
@@ -116,7 +149,32 @@ pub struct CrudDecl {
     /// Record supplying real columns; `None` keeps the generic
     /// keyed-document model.
     pub record: Option<Ident>,
+    pub attrs: Vec<Attr>,
     pub span: Span,
+}
+
+/// A closed-registry component attribute parsed from an attribute block.
+#[derive(Debug, Clone, Serialize)]
+pub struct Attr {
+    pub name: Ident,
+    pub value: AttrValue,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum AttrValue {
+    Ident(Ident),
+    Number { value: u64, span: Span },
+    Str { value: String, span: Span },
+}
+
+impl AttrValue {
+    pub fn span(&self) -> Span {
+        match self {
+            AttrValue::Ident(ident) => ident.span,
+            AttrValue::Number { span, .. } | AttrValue::Str { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,7 +187,23 @@ pub struct UseBlock {
 #[derive(Debug, Clone, Serialize)]
 pub struct UseEntry {
     pub capability: Ident,
-    pub provider: Ident,
+    pub name: Option<Ident>,
+    pub provider: Option<Ident>,
+    pub attrs: Vec<Attr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HandlerDecl {
+    pub name: Ident,
+    pub bindings: Vec<HandlerBinding>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HandlerBinding {
+    pub capability: Ident,
+    pub instance: Ident,
     pub span: Span,
 }
 
@@ -140,12 +214,50 @@ pub enum StepExpr {
     Name(Ident),
     /// `publish <Stream>` — publish the current payload to a named stream.
     Publish(Ident),
+    /// `call <Service>.<Api>` — synchronously invoke another service's api.
+    Call(QualifiedIdent),
+    /// `match field { Variant -> Step; _ -> Step; }`.
+    Match {
+        field: Ident,
+        arms: Vec<Arm>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QualifiedIdent {
+    pub segments: Vec<Ident>,
+    pub span: Span,
 }
 
 impl StepExpr {
     pub fn span(&self) -> Span {
         match self {
             StepExpr::Name(ident) | StepExpr::Publish(ident) => ident.span,
+            StepExpr::Call(ident) => ident.span,
+            StepExpr::Match { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Arm {
+    pub label: ArmLabel,
+    pub steps: Vec<StepExpr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum ArmLabel {
+    Variant(Ident),
+    Default(Span),
+}
+
+impl ArmLabel {
+    pub fn span(&self) -> Span {
+        match self {
+            ArmLabel::Variant(ident) => ident.span,
+            ArmLabel::Default(span) => *span,
         }
     }
 }

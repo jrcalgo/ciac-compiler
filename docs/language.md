@@ -1,4 +1,4 @@
-# The CIaC Language (v0.2)
+# The CIaC Language (v0.5)
 
 A CIaC program describes one deployable service as a set of declarations.
 Declaration order is free; the compiler resolves references after parsing
@@ -8,27 +8,47 @@ the whole file.
 
 ```ebnf
 program        = { item } ;
-item           = service-decl | use-block | record-decl | stream-decl
+item           = project-decl | service-decl | service-block
+               | use-block | record-decl | stream-decl | handler-decl
                | api-decl | worker-decl | crud-decl | events-decl
                | pipeline-decl ;
 
+project-decl   = "project" IDENT ";" ;
 service-decl   = "service" IDENT ";" ;
+service-block  = "service" IDENT "{" { service-item } "}" ;
+service-item   = use-block | api-decl | worker-decl | crud-decl
+               | events-decl | handler-decl | pipeline-decl ;
 use-block      = "use" "{" { use-entry } "}" ;
-use-entry      = IDENT IDENT ";" ;            (* capability provider *)
+use-entry      = IDENT IDENT ";"              (* capability provider *)
+               | IDENT IDENT IDENT ";"        (* capability name provider *)
+               | IDENT IDENT attr-block       (* providerless named capability *)
+               | IDENT IDENT IDENT attr-block ;
 record-decl    = "record" IDENT "{" { field } "}" ;
 field          = IDENT ":" type ";" ;
 type           = "String" | "Int" | "Float" | "Bool" | "Uuid"
                | "Timestamp" | "Json"
                | "enum" "{" IDENT { "," IDENT } "}" ;
-stream-decl    = "stream" IDENT ":" IDENT ";" ;
-api-decl       = "api" IDENT [ ":" IDENT ] ";" ;
-worker-decl    = "worker" IDENT [ "on" IDENT ] ";" ;
-crud-decl      = "crud" IDENT [ ":" IDENT ] ";" ;
+stream-decl    = "stream" IDENT ":" IDENT decl-tail ;
+handler-decl   = "handler" IDENT "{" { binding } "}" ;
+binding        = IDENT ":" IDENT ";" ;
+api-decl       = "api" IDENT [ ":" IDENT ] decl-tail ;
+worker-decl    = "worker" IDENT [ "on" IDENT ] decl-tail ;
+crud-decl      = "crud" IDENT [ ":" IDENT ] decl-tail ;
 events-decl    = "events" IDENT ";" ;
 pipeline-decl  = "pipeline" IDENT ":" step { "->" step } ";" ;
-step           = IDENT | "publish" IDENT ;
+decl-tail      = ";" | attr-block ;
+attr-block     = "{" { attr } "}" ;
+attr           = IDENT ":" attr-value ";" ;
+attr-value     = IDENT | NUMBER | STRING ;
+step           = IDENT | "publish" IDENT | "call" qualified-ident
+               | match-step ;
+match-step     = "match" IDENT "{" { arm } "}" ;
+arm            = ( IDENT | "_" ) "->" step { "->" step } ";" ;
+qualified-ident = IDENT { "." IDENT } ;
 
 IDENT          = letter-or-underscore { letter-digit-underscore } ;
+NUMBER         = digit { digit } ;
+STRING         = '"' { char } '"' ;
 ```
 
 Comments: `// line` and `/* block */`.
@@ -40,11 +60,57 @@ Comments: `// line` and `/* block */`.
 Names the system. Exactly one per program (`CIAC0010` if missing,
 `CIAC0003` if repeated). The name drives generated package/module names.
 
+In v0.5, multi-service projects use `project <Name>;` plus service
+blocks. The legacy `service <Name>;` form remains valid and lowers to a
+single implicit service.
+
+### `project <Name>;` and `service <Name> { ... }`
+
+`project` names a multi-service CIaC project. Each `service` block owns
+its APIs, workers, CRUD resources, handler bindings, capabilities, and
+pipelines:
+
+```ciac
+project MediaSystem;
+
+record Video { id: Uuid; }
+stream Uploaded: Video;
+
+service UploadApi {
+    use { queue bus NATS; }
+    api Upload: Video;
+    pipeline Upload: publish Uploaded -> Return;
+}
+```
+
+Records and streams are project-global. Service-local declarations must
+live inside a service block once any service block is used (`CIAC0030`).
+Service names are project-global (`CIAC0026`).
+
 ### `use { capability Provider; .. }`
 
-Declares the infrastructure capabilities the service is built on. Each
-capability may appear once (`CIAC0012`). Supported pairs (`CIAC0013`
-otherwise):
+Declares the infrastructure capabilities the service is built on. v0.3
+programs can still use the legacy unnamed form:
+
+```ciac
+use { db Postgres; cache Redis; queue NATS; }
+```
+
+v0.4 adds named instances:
+
+```ciac
+use {
+    db main Postgres;
+    db analytics Postgres;
+    cache hot Redis;
+    object_store media S3 { bucket: "videos"; }
+    external_http billing { base_url: "https://billing.internal"; }
+}
+```
+
+Legacy entries lower to an implicit instance named `default`. Duplicate
+instances of the same capability kind/name are `CIAC0012`. Supported
+pairs (`CIAC0013` otherwise):
 
 | Capability | Providers |
 |------------|-----------|
@@ -54,6 +120,12 @@ otherwise):
 | `queue` | `NATS`, `Kafka`* |
 | `logging` | `Structured` |
 | `metrics` | `Prometheus` |
+| `object_store` | `S3` |
+| `email` | `SES`, `SMTP` |
+| `search` | `OpenSearch` |
+| `external_http` | providerless; requires `base_url` |
+| `scheduler` | `Cron` |
+| `realtime` | `WebSocket`, `SSE` |
 
 \* `Kafka` is accepted by the language but not yet implemented by the
 bundled backends (`CIAC0011` at build time).
@@ -66,6 +138,24 @@ fields are `CIAC0003`. Records compile to pydantic models (Python) and
 serde structs (Rust); enums become `Literal[..]` / Rust enums and are
 stored as text.
 
+### Attributes
+
+`api`, `worker`, `stream`, and `crud` declarations may end in an
+attribute block instead of `;`. Attributes are validated from a closed
+registry; unknown names are `CIAC0018`, invalid values or unmet
+preconditions are `CIAC0019`.
+
+| Target | Attribute | Value | Default | Checks |
+|--------|-----------|-------|---------|--------|
+| `api` | `method` | `GET`/`POST`/`PUT`/`DELETE`/`PATCH` | `POST` | `GET`/`DELETE` cannot have a typed request body |
+| `api` | `path` | string starting with `/` | `/<kebab-name>` | duplicate api paths are `CIAC0003` |
+| `api` | `scope` | string | none | pipeline must start with `Auth` |
+| `worker` | `concurrency` | integer >= 1 | `1` | |
+| `worker` | `max_retries` | integer >= 0 | `0` | |
+| `stream` | `subject` | string | `<service>.<stream>` | duplicate subjects are `CIAC0003` |
+| `crud` | `cache_ttl` | integer >= 1 | `300` | requires `cache` |
+| `crud` | `page_size` | integer >= 1 | `100` | |
+
 ### `stream <Name>: <Record>;`
 
 A named message channel carrying `<Record>` payloads (`CIAC0015` if the
@@ -75,7 +165,7 @@ with `on <Name>`. Multiple workers may consume the same stream —
 fan-out is first-class. A stream with no publisher or no consumer is
 reported unreachable (`CIAC0007`, warning).
 
-Subjects follow `<service>.<stream>` in snake_case, e.g. stream
+Subjects follow `<service>.<stream>` in snake_case by default, e.g. stream
 `Uploaded` in service `Media` uses `media.uploaded`. Each worker
 consumes in a queue group named after it, so replicas load-balance.
 
@@ -87,6 +177,25 @@ any JSON object. A worker with `on` consumes that stream (`CIAC0017` if
 undeclared); without `on` it consumes the service's *default stream*
 (see `Queue` below). Behavior is attached with a pipeline of the same
 name; an api or worker without one is reported unreachable (`CIAC0007`).
+
+### `handler <Name> { ... }`
+
+Declares which named capability instances a pipeline handler uses:
+
+```ciac
+handler StoreVideo {
+    db: main;
+    cache: hot;
+    object_store: media;
+}
+```
+
+Handlers referenced in pipelines may still be implicit. If no handler
+declaration exists, CIaC preserves v0.1-v0.3 behavior by binding to the
+default `db`/`cache` instances when they exist. If multiple instances of a
+kind exist and none is named `default`, implicit binding is ambiguous
+(`CIAC0023`). Binding to a missing instance is `CIAC0022`; binding an
+unsupported kind is `CIAC0024`.
 
 ### `pipeline <Name>: Step -> Step -> ..;`
 
@@ -115,6 +224,17 @@ Steps are:
   consume. Requires the `queue` capability (`CIAC0005`).
 - **`Return`** — respond to the caller. Only valid as the final step of
   an api pipeline (`CIAC0009`).
+- **`call <Service>.<Api>`** — synchronously invoke another service's
+  typed API. The target service and API must exist (`CIAC0027`/
+  `CIAC0028`), and the caller payload type must match the target API's
+  request record (`CIAC0029`). Malformed call targets are `CIAC0032`.
+- **`match <field> { ... }`** — statically branch on an enum field of
+  the pipeline payload. A match must be the final top-level step and may
+  not be nested in v0.3 (`CIAC0020`). Arm labels must be declared enum
+  variants, with at most one trailing `_` wildcard. Every enum variant
+  must be covered directly or by `_` (`CIAC0021`). Arm chains can contain
+  handlers, publishes, and `Return`; type checks, cycle detection, auth
+  placement, and duplicate-publish checks apply inside each arm.
 - **Any other name** — a *handler*: an implicitly declared service
   (business-logic unit) invoked at that point. Handlers are created on
   first reference, shared by name across pipelines, and provisioned

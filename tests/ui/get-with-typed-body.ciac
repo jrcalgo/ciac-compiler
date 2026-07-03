@@ -1,0 +1,4 @@
+// expect: CIAC0019
+service X;
+record A { id: Uuid; }
+api A: A { method: GET; }

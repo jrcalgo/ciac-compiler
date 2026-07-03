@@ -1,0 +1,3 @@
+// expect: CIAC0018
+service X;
+api A { retries: 3; }

@@ -8,7 +8,8 @@
 
 use crate::GenOptions;
 use ciac_ir::{
-    Component, EdgeKind, FieldType, NodeId, NodeKind, NormalizedIr, QueueEngine, RecordId, Step,
+    Component, EdgeKind, FieldType, HttpMethod, NodeId, NodeKind, NormalizedIr, QueueEngine,
+    RecordId, Step, StepKind,
 };
 use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use serde::Serialize;
@@ -105,6 +106,10 @@ pub struct ApiCtx {
     pub snake: String,
     /// Route path, e.g. `/upload`.
     pub route: String,
+    pub method_upper: String,
+    pub method_lower: String,
+    pub scope: Option<String>,
+    pub has_body: bool,
     /// Typed request payload; `None` = untyped JSON body.
     pub payload: Option<PayloadRef>,
     pub steps: Vec<StepCtx>,
@@ -119,11 +124,20 @@ pub struct ApiCtx {
 
 #[derive(Debug, Serialize)]
 pub struct StepCtx {
-    /// One of `auth`, `handler`, `publish`, `return`.
+    /// One of `auth`, `handler`, `publish`, `return`, `match`.
     pub kind: &'static str,
     pub handler: Option<HandlerRef>,
     /// Subject of the published stream, for `publish` steps.
     pub subject: Option<String>,
+    pub field: Option<String>,
+    pub arms: Vec<ArmCtx>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArmCtx {
+    pub label: Option<String>,
+    pub rust_variant: Option<String>,
+    pub steps: Vec<StepCtx>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -147,6 +161,8 @@ pub struct WorkerCtx {
     pub queue_group: String,
     /// Typed message payload; `None` = untyped JSON.
     pub payload: Option<PayloadRef>,
+    pub concurrency: u32,
+    pub max_retries: u32,
     pub has_publish_step: bool,
     pub steps: Vec<StepCtx>,
     pub handlers: Vec<HandlerRef>,
@@ -193,6 +209,8 @@ pub struct ResourceCtx {
     pub record: Option<RecordCtx>,
     pub has_auth: bool,
     pub has_cache: bool,
+    pub cache_ttl: u32,
+    pub page_size: u32,
 }
 
 pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
@@ -211,73 +229,13 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         })
     };
 
-    let handler_ref = |id: NodeId| -> HandlerRef {
-        let node = ir.node(id);
-        let name = node.component.name().unwrap_or_default().to_owned();
-        HandlerRef {
-            module: name.to_snake_case(),
-            class_name: name,
-            needs_db: touches(ir, id, NodeKind::Database),
-            needs_cache: touches(ir, id, NodeKind::Cache),
-        }
-    };
-
-    let stream_subject = |id: NodeId| -> String {
-        match &ir.node(id).component {
-            Component::Stream { subject, .. } => subject.clone(),
-            other => unreachable!("publish target is a stream, found {other:?}"),
-        }
-    };
-
-    let steps_of = |owner: NodeId| -> (Vec<StepCtx>, Vec<HandlerRef>) {
-        let mut steps = Vec::new();
-        let mut handlers: Vec<HandlerRef> = Vec::new();
-        if let Some(pipeline) = ir.pipeline_of(owner) {
-            for step in &pipeline.steps {
-                let ctx = match step {
-                    Step::Auth { .. } => StepCtx {
-                        kind: "auth",
-                        handler: None,
-                        subject: None,
-                    },
-                    Step::Publish { stream } => StepCtx {
-                        kind: "publish",
-                        handler: None,
-                        subject: Some(stream_subject(*stream)),
-                    },
-                    Step::Return => StepCtx {
-                        kind: "return",
-                        handler: None,
-                        subject: None,
-                    },
-                    Step::Handler { node } => {
-                        let handler = handler_ref(*node);
-                        if !handlers.contains(&handler) {
-                            handlers.push(handler.clone());
-                        }
-                        StepCtx {
-                            kind: "handler",
-                            handler: Some(handler),
-                            subject: None,
-                        }
-                    }
-                };
-                steps.push(ctx);
-            }
-        }
-        (steps, handlers)
-    };
-
     // Payload type per handler node: the single payload every pipeline
     // using it agrees on, else untyped.
     let mut handler_payloads: BTreeMap<NodeId, Option<RecordId>> = BTreeMap::new();
     for pipeline in &ir.pipelines {
-        for step in &pipeline.steps {
-            let Step::Handler { node } = step else {
-                continue;
-            };
+        for node in handler_nodes(&pipeline.steps) {
             handler_payloads
-                .entry(*node)
+                .entry(node)
                 .and_modify(|existing| {
                     if *existing != pipeline.payload {
                         *existing = None;
@@ -292,13 +250,33 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         .filter(|api| ir.pipeline_of(api.id).is_some())
         .map(|api| {
             let name = api.component.name().unwrap_or_default().to_owned();
-            let (steps, handlers) = steps_of(api.id);
-            let payload = ir.pipeline_of(api.id).and_then(|p| payload_ref(p.payload));
+            let pipeline = ir
+                .pipeline_of(api.id)
+                .expect("filtered to apis with pipelines");
+            let (steps, handlers) = steps_of(ir, api.id);
+            let payload = payload_ref(pipeline.payload);
+            let (method, path, scope) = match &api.component {
+                Component::Api { config, .. } => {
+                    let path = config
+                        .path
+                        .clone()
+                        .unwrap_or_else(|| format!("/{}", name.to_kebab_case()));
+                    (config.method, path, config.scope.clone())
+                }
+                _ => unreachable!("api node is an api"),
+            };
+            let method_upper = method.as_str().to_owned();
+            let method_lower = method_upper.to_ascii_lowercase();
+            let has_body = !matches!(method, HttpMethod::Get | HttpMethod::Delete);
             ApiCtx {
-                route: format!("/{}", name.to_kebab_case()),
+                route: path,
+                method_upper,
+                method_lower,
+                scope,
+                has_body,
                 snake: name.to_snake_case(),
                 has_auth_step: steps.iter().any(|s| s.kind == "auth"),
-                has_publish_step: steps.iter().any(|s| s.kind == "publish"),
+                has_publish_step: has_publish(&steps),
                 needs_db: handlers.iter().any(|h| h.needs_db),
                 needs_cache: handlers.iter().any(|h| h.needs_cache),
                 payload,
@@ -315,24 +293,30 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         .filter(|w| !consumer_workers.contains(&w.id))
         .map(|worker| {
             let name = worker.component.name().unwrap_or_default().to_owned();
-            let (steps, handlers) = steps_of(worker.id);
+            let (steps, handlers) = steps_of(ir, worker.id);
             // The stream this worker consumes (via `on` or the default).
             let consumed = ir
                 .edges_to(worker.id)
                 .find(|e| e.kind == EdgeKind::AsyncMessage)
                 .map(|e| e.from);
             let subject = consumed
-                .map(&stream_subject)
+                .map(|id| stream_subject(ir, id))
                 .unwrap_or_else(|| default_subject.clone());
             let payload = ir
                 .pipeline_of(worker.id)
                 .and_then(|p| payload_ref(p.payload));
+            let config = match &worker.component {
+                Component::Worker { config, .. } => config,
+                _ => unreachable!("worker node is a worker"),
+            };
             WorkerCtx {
                 snake: name.to_snake_case(),
                 queue_group: name.to_snake_case(),
                 needs_db: handlers.iter().any(|h| h.needs_db),
                 needs_cache: handlers.iter().any(|h| h.needs_cache),
-                has_publish_step: steps.iter().any(|s| s.kind == "publish"),
+                has_publish_step: has_publish(&steps),
+                concurrency: config.concurrency,
+                max_retries: config.max_retries,
                 subject,
                 payload,
                 steps,
@@ -355,7 +339,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
             ConsumerCtx {
                 snake: name.to_snake_case(),
                 queue_group: name.to_snake_case(),
-                subject: stream_subject(stream.stream),
+                subject: stream_subject(ir, stream.stream),
                 needs_db: has_db,
                 name,
             }
@@ -390,6 +374,8 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 record: resource.record.map(record_ctx),
                 has_auth: ir.singleton(NodeKind::Auth).is_some(),
                 has_cache,
+                cache_ttl: resource.config.cache_ttl,
+                page_size: resource.config.page_size,
                 snake,
             }
         })
@@ -434,6 +420,141 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         resources,
         module,
     }
+}
+
+fn steps_of(ir: &NormalizedIr, owner: NodeId) -> (Vec<StepCtx>, Vec<HandlerRef>) {
+    let mut handlers = Vec::new();
+    let steps = ir
+        .pipeline_of(owner)
+        .map(|pipeline| step_ctxs(ir, &pipeline.steps, pipeline.payload, &mut handlers))
+        .unwrap_or_default();
+    (steps, handlers)
+}
+
+fn step_ctxs(
+    ir: &NormalizedIr,
+    steps: &[Step],
+    payload: Option<RecordId>,
+    handlers: &mut Vec<HandlerRef>,
+) -> Vec<StepCtx> {
+    steps
+        .iter()
+        .map(|step| match &step.kind {
+            StepKind::Auth { .. } => StepCtx {
+                kind: "auth",
+                handler: None,
+                subject: None,
+                field: None,
+                arms: Vec::new(),
+            },
+            StepKind::Publish { stream } => StepCtx {
+                kind: "publish",
+                handler: None,
+                subject: Some(stream_subject(ir, *stream)),
+                field: None,
+                arms: Vec::new(),
+            },
+            StepKind::Return => StepCtx {
+                kind: "return",
+                handler: None,
+                subject: None,
+                field: None,
+                arms: Vec::new(),
+            },
+            StepKind::Handler { node } => {
+                let handler = handler_ref(ir, *node);
+                if !handlers.contains(&handler) {
+                    handlers.push(handler.clone());
+                }
+                StepCtx {
+                    kind: "handler",
+                    handler: Some(handler),
+                    subject: None,
+                    field: None,
+                    arms: Vec::new(),
+                }
+            }
+            StepKind::Match { field, arms } => StepCtx {
+                kind: "match",
+                handler: None,
+                subject: None,
+                field: Some(field.clone()),
+                arms: arms
+                    .iter()
+                    .map(|arm| ArmCtx {
+                        label: arm.label.clone(),
+                        rust_variant: arm
+                            .label
+                            .as_ref()
+                            .and_then(|label| rust_variant(ir, payload, field, label)),
+                        steps: step_ctxs(ir, &arm.steps, payload, handlers),
+                    })
+                    .collect(),
+            },
+        })
+        .collect()
+}
+
+fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
+    let node = ir.node(id);
+    let name = node.component.name().unwrap_or_default().to_owned();
+    HandlerRef {
+        module: name.to_snake_case(),
+        class_name: name,
+        needs_db: touches(ir, id, NodeKind::Database),
+        needs_cache: touches(ir, id, NodeKind::Cache),
+    }
+}
+
+fn stream_subject(ir: &NormalizedIr, id: NodeId) -> String {
+    match &ir.node(id).component {
+        Component::Stream { subject, .. } => subject.clone(),
+        other => unreachable!("publish target is a stream, found {other:?}"),
+    }
+}
+
+fn handler_nodes(steps: &[Step]) -> Vec<NodeId> {
+    let mut nodes = Vec::new();
+    for step in steps {
+        match &step.kind {
+            StepKind::Handler { node } => nodes.push(*node),
+            StepKind::Match { arms, .. } => {
+                for arm in arms {
+                    nodes.extend(handler_nodes(&arm.steps));
+                }
+            }
+            StepKind::Auth { .. } | StepKind::Publish { .. } | StepKind::Return => {}
+        }
+    }
+    nodes
+}
+
+fn has_publish(steps: &[StepCtx]) -> bool {
+    steps.iter().any(|step| {
+        step.kind == "publish"
+            || step
+                .arms
+                .iter()
+                .any(|arm| has_publish(arm.steps.as_slice()))
+    })
+}
+
+fn rust_variant(
+    ir: &NormalizedIr,
+    payload: Option<RecordId>,
+    field: &str,
+    label: &str,
+) -> Option<String> {
+    let record = ir.record(payload?);
+    let field = record.fields.iter().find(|f| f.name == field)?;
+    if !matches!(field.ty, FieldType::Enum { .. }) {
+        return None;
+    }
+    Some(format!(
+        "crate::schemas::{}{}::{label}",
+        record.name,
+        field.name.to_pascal_case()
+    ))
 }
 
 fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {

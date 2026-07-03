@@ -7,6 +7,70 @@ use crate::record::RecordId;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+}
+
+impl Default for HttpMethod {
+    fn default() -> Self {
+        Self::Post
+    }
+}
+
+impl HttpMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HttpMethod::Get => "GET",
+            HttpMethod::Post => "POST",
+            HttpMethod::Put => "PUT",
+            HttpMethod::Delete => "DELETE",
+            HttpMethod::Patch => "PATCH",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ApiConfig {
+    pub method: HttpMethod,
+    pub path: Option<String>,
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct WorkerConfig {
+    pub concurrency: u32,
+    pub max_retries: u32,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: 1,
+            max_retries: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CrudConfig {
+    pub cache_ttl: u32,
+    pub page_size: u32,
+}
+
+impl Default for CrudConfig {
+    fn default() -> Self {
+        Self {
+            cache_ttl: 300,
+            page_size: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum AuthScheme {
     Jwt,
 }
@@ -62,6 +126,7 @@ pub enum Component {
         name: String,
         /// Request body record, when the api is typed.
         request: Option<RecordId>,
+        config: ApiConfig,
     },
     /// A business-logic handler invoked from pipelines.
     Service {
@@ -70,6 +135,7 @@ pub enum Component {
     /// An asynchronous consumer of queue messages.
     Worker {
         name: String,
+        config: WorkerConfig,
     },
     Database {
         engine: DbEngine,

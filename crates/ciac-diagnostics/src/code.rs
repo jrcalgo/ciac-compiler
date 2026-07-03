@@ -190,6 +190,38 @@ error_codes! {
         "A `publish` step or a worker's `on` clause references a stream \
          that is not declared. Declare it with `stream <Name>: <Record>;`."
     ),
+    UnknownAttribute = (
+        "CIAC0018",
+        Error,
+        "unknown attribute",
+        "A component attribute is not in the closed registry for that \
+         declaration kind. Check the language reference for supported api, \
+         worker, stream, and crud attributes."
+    ),
+    InvalidAttributeValue = (
+        "CIAC0019",
+        Error,
+        "invalid attribute value",
+        "An attribute has the wrong value type, is out of range, or violates \
+         a precondition such as GET/DELETE carrying a typed request body, a \
+         scoped api without an Auth gate, or cache_ttl without a cache \
+         capability."
+    ),
+    InvalidMatch = (
+        "CIAC0020",
+        Error,
+        "invalid match",
+        "A `match` step must be terminal, must not be nested, and may only \
+         branch on an enum field of the pipeline payload. Arm labels must be \
+         declared enum variants, with at most one trailing `_` wildcard."
+    ),
+    NonExhaustiveMatch = (
+        "CIAC0021",
+        Error,
+        "non-exhaustive match",
+        "A `match` over an enum field must cover every declared variant, \
+         either directly or with a trailing `_` wildcard arm."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

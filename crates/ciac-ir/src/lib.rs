@@ -12,11 +12,12 @@ mod graph;
 mod record;
 
 pub use component::{
-    AuthScheme, CacheEngine, Component, DbEngine, LoggingProvider, MetricsProvider, NodeKind,
-    QueueEngine,
+    ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, HttpMethod,
+    LoggingProvider, MetricsProvider, NodeKind, QueueEngine, WorkerConfig,
 };
 pub use graph::{
-    Edge, EdgeId, EdgeKind, EventStream, Node, NodeId, Pipeline, Resource, Step, SystemGraph,
+    Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Step,
+    StepKind, SystemGraph,
 };
 pub use record::{FieldType, Record, RecordField, RecordId};
 

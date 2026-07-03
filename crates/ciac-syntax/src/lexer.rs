@@ -193,8 +193,9 @@ mod tests {
 
     #[test]
     fn lexes_attributes_and_match() {
-        let (kinds, diags) =
-            lex_kinds(r#"api Upload { method: PUT; path: "/videos"; concurrency: 4; } pipeline Upload: match status { Ready -> Return; };"#);
+        let (kinds, diags) = lex_kinds(
+            r#"api Upload { method: PUT; path: "/videos"; concurrency: 4; } pipeline Upload: match status { Ready -> Return; };"#,
+        );
         assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
         assert!(kinds.contains(&TokenKind::Number));
         assert!(kinds.contains(&TokenKind::Str));

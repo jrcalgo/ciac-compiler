@@ -2,7 +2,7 @@
 //! graph shape out.
 
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
-use ciac_ir::{Component, EdgeKind, FieldType, NodeKind, NormalizedIr, Step};
+use ciac_ir::{Component, EdgeKind, FieldType, HttpMethod, NodeKind, NormalizedIr, StepKind};
 
 fn analyze(src: &str) -> (Option<NormalizedIr>, Diagnostics) {
     let mut sources = SourceMap::new();
@@ -79,16 +79,16 @@ fn flagship_example_analyzes_cleanly() {
     // Pipeline steps resolved in order.
     let api = ir.find_named(NodeKind::Api, "Upload").expect("api");
     let pipeline = ir.pipeline_of(api.id).expect("api pipeline");
-    assert!(matches!(pipeline.steps[0], Step::Auth { .. }));
-    assert!(matches!(pipeline.steps[1], Step::Handler { .. }));
-    let Step::Publish { stream } = pipeline.steps[2] else {
+    assert!(matches!(&pipeline.steps[0].kind, StepKind::Auth { .. }));
+    assert!(matches!(&pipeline.steps[1].kind, StepKind::Handler { .. }));
+    let StepKind::Publish { stream } = &pipeline.steps[2].kind else {
         panic!("Queue step lowers to a publish on the default stream");
     };
-    let Component::Stream { subject, .. } = &ir.node(stream).component else {
+    let Component::Stream { subject, .. } = &ir.node(*stream).component else {
         panic!("publish target is a stream node");
     };
     assert_eq!(subject, "video_platform.events");
-    assert!(matches!(pipeline.steps[3], Step::Return));
+    assert!(matches!(&pipeline.steps[3].kind, StepKind::Return));
 }
 
 #[test]
@@ -325,4 +325,181 @@ fn stream_requires_queue_capability() {
     let (ir, diags) = analyze("service X;\nrecord A { id: Uuid; }\nstream S: A;\n");
     assert!(ir.is_none());
     assert!(error_codes(&diags).contains(&ErrorCode::MissingCapability));
+}
+
+#[test]
+fn component_attributes_resolve_to_configs() {
+    let (ir, diags) = analyze(
+        r#"service Media;
+use { auth JWT; db Postgres; cache Redis; queue NATS; }
+record Video { id: Uuid; status: enum { Ready, Failed }; }
+stream Uploaded: Video { subject: "media.custom"; }
+api Upload: Video { method: PUT; path: "/videos"; scope: "videos:write"; }
+worker Transcoder on Uploaded { concurrency: 4; max_retries: 2; }
+crud Clip: Video { cache_ttl: 60; page_size: 50; }
+pipeline Upload: Auth -> Return;
+pipeline Transcoder: Process;
+"#,
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    let api = ir.find_named(NodeKind::Api, "Upload").expect("api");
+    let Component::Api { config, .. } = &api.component else {
+        panic!("api node");
+    };
+    assert_eq!(config.method, HttpMethod::Put);
+    assert_eq!(config.path.as_deref(), Some("/videos"));
+    assert_eq!(config.scope.as_deref(), Some("videos:write"));
+
+    let stream = ir.find_named(NodeKind::Stream, "Uploaded").expect("stream");
+    let Component::Stream { subject, .. } = &stream.component else {
+        panic!("stream node");
+    };
+    assert_eq!(subject, "media.custom");
+
+    let worker = ir
+        .find_named(NodeKind::Worker, "Transcoder")
+        .expect("worker");
+    let Component::Worker { config, .. } = &worker.component else {
+        panic!("worker node");
+    };
+    assert_eq!(config.concurrency, 4);
+    assert_eq!(config.max_retries, 2);
+
+    assert_eq!(ir.resources[0].config.cache_ttl, 60);
+    assert_eq!(ir.resources[0].config.page_size, 50);
+}
+
+#[test]
+fn unknown_attribute_is_rejected() {
+    let (ir, diags) = analyze("service X;\napi A { nope: 1; }\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownAttribute));
+}
+
+#[test]
+fn invalid_attribute_values_are_rejected() {
+    let cases = [
+        (
+            "service X;\nrecord A { id: Uuid; }\napi A: A { method: GET; }\n",
+            "GET with typed body",
+        ),
+        (
+            "service X;\napi A { scope: \"x\"; }\npipeline A: Return;\n",
+            "scope without Auth",
+        ),
+        (
+            "service X;\nuse { db Postgres; }\ncrud Note { cache_ttl: 60; }\n",
+            "cache_ttl without cache",
+        ),
+    ];
+    for (src, label) in cases {
+        let (ir, diags) = analyze(src);
+        assert!(ir.is_none(), "{label}");
+        assert!(
+            error_codes(&diags).contains(&ErrorCode::InvalidAttributeValue),
+            "{label}: {:?}",
+            diags.codes()
+        );
+    }
+}
+
+const MATCH_PROGRAM: &str = r#"service Media;
+use { queue NATS; }
+record Video { id: Uuid; status: enum { Ready, Failed }; }
+stream Transcoded: Video;
+stream DeadLetters: Video;
+api In: Video;
+worker TranscodedWorker on Transcoded;
+worker DeadWorker on DeadLetters;
+pipeline In:
+    Transcode
+    -> match status {
+        Ready -> publish Transcoded;
+        Failed -> publish DeadLetters;
+    };
+pipeline TranscodedWorker: Notify;
+pipeline DeadWorker: Archive;
+"#;
+
+#[test]
+fn exhaustive_match_analyzes_and_wires_arms() {
+    let (ir, diags) = analyze(MATCH_PROGRAM);
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+    let api = ir.find_named(NodeKind::Api, "In").expect("api");
+    let pipeline = ir.pipeline_of(api.id).expect("pipeline");
+    let StepKind::Match { field, arms } = &pipeline.steps[1].kind else {
+        panic!("expected match");
+    };
+    assert_eq!(field, "status");
+    assert_eq!(arms.len(), 2);
+    assert_eq!(arms[0].label.as_deref(), Some("Ready"));
+    assert!(matches!(&arms[0].steps[0].kind, StepKind::Publish { .. }));
+}
+
+#[test]
+fn wildcard_match_is_exhaustive() {
+    let src = MATCH_PROGRAM.replace(
+        "Ready -> publish Transcoded;\n        Failed -> publish DeadLetters;",
+        "Ready -> publish Transcoded;\n        _ -> publish DeadLetters;",
+    );
+    let (ir, diags) = analyze(&src);
+    assert!(
+        ir.is_some(),
+        "wildcard covers remaining variants: {:?}",
+        diags.codes()
+    );
+    assert!(!diags.has_errors());
+}
+
+#[test]
+fn match_validation_reports_new_codes() {
+    let cases = [
+        (
+            MATCH_PROGRAM.replace("Failed -> publish DeadLetters;\n", ""),
+            ErrorCode::NonExhaustiveMatch,
+            "non-exhaustive",
+        ),
+        (
+            MATCH_PROGRAM.replace("Failed -> publish DeadLetters;", "Other -> publish DeadLetters;"),
+            ErrorCode::InvalidMatch,
+            "unknown variant",
+        ),
+        (
+            "service X;\napi A;\npipeline A: match status { Ready -> Return; };\n".to_owned(),
+            ErrorCode::InvalidMatch,
+            "untyped",
+        ),
+        (
+            MATCH_PROGRAM.replace(
+                "Ready -> publish Transcoded;",
+                "Ready -> match status { Ready -> publish Transcoded; Failed -> publish DeadLetters; };",
+            ),
+            ErrorCode::InvalidMatch,
+            "nested",
+        ),
+        (
+            MATCH_PROGRAM.replace("    };\n", "    } -> Return;\n"),
+            ErrorCode::InvalidMatch,
+            "not terminal",
+        ),
+    ];
+    for (src, code, label) in cases {
+        let (ir, diags) = analyze(&src);
+        assert!(ir.is_none(), "{label}");
+        assert!(
+            error_codes(&diags).contains(&code),
+            "{label}: expected {code:?}, got {:?}",
+            diags.codes()
+        );
+    }
 }

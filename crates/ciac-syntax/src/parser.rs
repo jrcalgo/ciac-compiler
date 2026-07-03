@@ -642,7 +642,10 @@ mod tests {
         let Item::Worker(worker) = &program.items[2] else {
             panic!("expected worker");
         };
-        assert!(matches!(&worker.attrs[0].value, AttrValue::Number { value: 4, .. }));
+        assert!(matches!(
+            &worker.attrs[0].value,
+            AttrValue::Number { value: 4, .. }
+        ));
     }
 
     #[test]

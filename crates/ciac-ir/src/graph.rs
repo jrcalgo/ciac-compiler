@@ -1,4 +1,4 @@
-use crate::component::{Component, NodeKind};
+use crate::component::{Component, CrudConfig, NodeKind};
 use crate::record::{Record, RecordId};
 use ciac_diagnostics::Span;
 use serde::Serialize;
@@ -46,9 +46,17 @@ pub struct Edge {
 }
 
 /// A resolved pipeline step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Step {
+    #[serde(flatten)]
+    pub kind: StepKind,
+    #[serde(skip)]
+    pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "step")]
-pub enum Step {
+pub enum StepKind {
     /// Builtin `Auth`: authenticate the request against the auth node.
     Auth { node: NodeId },
     /// Publish the current payload to a stream node. The surface `Queue`
@@ -58,6 +66,15 @@ pub enum Step {
     Return,
     /// Invoke a service handler node.
     Handler { node: NodeId },
+    /// Static branch over an enum field on the pipeline payload.
+    Match { field: String, arms: Vec<MatchArm> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MatchArm {
+    /// Variant label; `None` is the wildcard arm.
+    pub label: Option<String>,
+    pub steps: Vec<Step>,
 }
 
 /// An ordered execution chain owned by an api (request flow) or a worker
@@ -73,9 +90,6 @@ pub struct Pipeline {
     pub steps: Vec<Step>,
     #[serde(skip)]
     pub span: Option<Span>,
-    /// Source spans per step, parallel to `steps` (for diagnostics).
-    #[serde(skip)]
-    pub step_spans: Vec<Option<Span>>,
 }
 
 /// A CRUD resource produced by expanding `crud <Name>;`.
@@ -87,6 +101,7 @@ pub struct Resource {
     /// Record supplying real columns; `None` keeps the generic
     /// keyed-document model.
     pub record: Option<RecordId>,
+    pub config: CrudConfig,
 }
 
 /// An event stream produced by expanding `events <Name>;`.
@@ -281,6 +296,7 @@ mod tests {
             Component::Api {
                 name: "Upload".into(),
                 request: None,
+                config: Default::default(),
             },
             None,
         );

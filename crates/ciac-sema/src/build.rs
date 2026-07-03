@@ -12,16 +12,16 @@
 
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
 use ciac_ir::{
-    AuthScheme, CacheEngine, Component, DbEngine, EdgeKind, EventStream, FieldType,
-    LoggingProvider, MetricsProvider, NodeId, NodeKind, Pipeline, QueueEngine, Record, RecordField,
-    RecordId, Resource, Step, SystemGraph,
+    ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EdgeKind, EventStream,
+    FieldType, HttpMethod, LoggingProvider, MatchArm, MetricsProvider, NodeId, NodeKind, Pipeline,
+    QueueEngine, Record, RecordField, RecordId, Resource, Step, StepKind, SystemGraph,
 };
 use ciac_syntax::ast::{
-    ApiDecl, ComponentDecl, CrudDecl, Ident, Item, PipelineDecl, Program, RecordDecl, StepExpr,
-    StreamDecl, TypeExpr, UseEntry, WorkerDecl,
+    ApiDecl, Attr, AttrValue, ComponentDecl, CrudDecl, Ident, Item, PipelineDecl, Program,
+    RecordDecl, StepExpr, StreamDecl, TypeExpr, UseEntry, WorkerDecl,
 };
-use heck::ToSnakeCase;
-use std::collections::HashMap;
+use heck::{ToKebabCase, ToSnakeCase};
+use std::collections::{BTreeMap, HashMap};
 
 pub fn build_graph(program: &Program, diags: &mut Diagnostics) -> SystemGraph {
     Builder::new(diags).build(program)
@@ -42,6 +42,9 @@ struct Builder<'d> {
     streams: HashMap<String, NodeId>,
     /// Worker node → stream it consumes (from `on` or the default).
     worker_streams: HashMap<NodeId, NodeId>,
+    /// Resolved API paths and stream subjects, for duplicate checks.
+    route_paths: BTreeMap<String, Span>,
+    stream_subjects: BTreeMap<String, Span>,
     /// Lazily-created default stream backing the legacy `Queue` step.
     default_stream: Option<NodeId>,
 }
@@ -56,6 +59,8 @@ impl<'d> Builder<'d> {
             handlers: HashMap::new(),
             streams: HashMap::new(),
             worker_streams: HashMap::new(),
+            route_paths: BTreeMap::new(),
+            stream_subjects: BTreeMap::new(),
             default_stream: None,
         }
     }
@@ -100,6 +105,7 @@ impl<'d> Builder<'d> {
                 self.pipeline(decl);
             }
         }
+        self.check_scoped_apis();
         self.graph
     }
 
@@ -306,14 +312,23 @@ impl<'d> Builder<'d> {
         &mut self,
         name: &str,
         record: Option<RecordId>,
+        subject: String,
         queue: NodeId,
         span: Option<Span>,
     ) -> NodeId {
-        let subject = format!(
-            "{}.{}",
-            self.graph.name.to_snake_case(),
-            name.to_snake_case()
-        );
+        if let Some(first) = self.stream_subjects.get(&subject) {
+            let mut diag = Diagnostic::new(
+                ErrorCode::DuplicateDeclaration,
+                format!("stream subject `{subject}` is used more than once"),
+            )
+            .with_label(*first, "first subject used here");
+            if let Some(span) = span {
+                diag = diag.with_label(span, "duplicate subject here");
+            }
+            self.diags.push(diag);
+        } else if let Some(span) = span {
+            self.stream_subjects.insert(subject.clone(), span);
+        }
         let node = self.graph.add_node(
             Component::Stream {
                 name: name.to_owned(),
@@ -336,7 +351,9 @@ impl<'d> Builder<'d> {
         else {
             return;
         };
-        self.add_stream(&decl.name.text, record, queue, Some(decl.span));
+        let subject =
+            attrs::apply_stream_attrs(&decl.attrs, &self.graph.name, &decl.name.text, self.diags);
+        self.add_stream(&decl.name.text, record, subject, queue, Some(decl.span));
     }
 
     /// The stream backing the legacy `Queue` step and unbound workers:
@@ -345,7 +362,8 @@ impl<'d> Builder<'d> {
         match self.default_stream {
             Some(node) => node,
             None => {
-                let node = self.add_stream("Events", None, queue, None);
+                let subject = default_subject(&self.graph.name, "Events");
+                let node = self.add_stream("Events", None, subject, queue, None);
                 self.default_stream = Some(node);
                 node
             }
@@ -375,10 +393,28 @@ impl<'d> Builder<'d> {
             return;
         }
         let request = decl.request.as_ref().and_then(|r| self.resolve_record(r));
+        let config = attrs::apply_api_attrs(&decl.attrs, request.is_some(), self.diags);
+        let path = config
+            .path
+            .clone()
+            .unwrap_or_else(|| format!("/{}", decl.name.text.to_kebab_case()));
+        if let Some(first) = self.route_paths.get(&path) {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::DuplicateDeclaration,
+                    format!("api route path `{path}` is used more than once"),
+                )
+                .with_label(decl.span, "duplicate route here")
+                .with_label(*first, "first route used here"),
+            );
+        } else {
+            self.route_paths.insert(path, decl.span);
+        }
         self.graph.add_node(
             Component::Api {
                 name: decl.name.text.clone(),
                 request,
+                config,
             },
             Some(decl.span),
         );
@@ -391,6 +427,7 @@ impl<'d> Builder<'d> {
         let node = self.graph.add_node(
             Component::Worker {
                 name: decl.name.text.clone(),
+                config: attrs::apply_worker_attrs(&decl.attrs, self.diags),
             },
             Some(decl.span),
         );
@@ -410,6 +447,11 @@ impl<'d> Builder<'d> {
             return;
         }
         let record = decl.record.as_ref().and_then(|r| self.resolve_record(r));
+        let config = attrs::apply_crud_attrs(
+            &decl.attrs,
+            self.graph.singleton(NodeKind::Cache).is_some(),
+            self.diags,
+        );
         let Some(db) = self.graph.singleton(NodeKind::Database).map(|n| n.id) else {
             self.diags.push(
                 Diagnostic::new(
@@ -426,6 +468,7 @@ impl<'d> Builder<'d> {
             Component::Api {
                 name: name.clone(),
                 request: record,
+                config: ApiConfig::default(),
             },
             Some(decl.span),
         );
@@ -453,6 +496,7 @@ impl<'d> Builder<'d> {
             api,
             service,
             record,
+            config,
         });
     }
 
@@ -466,10 +510,12 @@ impl<'d> Builder<'d> {
             return;
         };
         let name = decl.name.text.clone();
-        let stream = self.add_stream(&name, None, queue, Some(decl.span));
+        let subject = default_subject(&self.graph.name, &name);
+        let stream = self.add_stream(&name, None, subject, queue, Some(decl.span));
         let worker = self.graph.add_node(
             Component::Worker {
                 name: format!("{name}Consumer"),
+                config: Default::default(),
             },
             Some(decl.span),
         );
@@ -553,34 +599,19 @@ impl<'d> Builder<'d> {
         };
 
         let mut steps = Vec::new();
-        let mut step_spans = Vec::new();
-        let mut prev = owner;
         for expr in &decl.steps {
             let Some(step) = self.resolve_step(expr, payload) else {
                 continue;
             };
-            match step {
-                Step::Auth { node } | Step::Handler { node } => {
-                    self.graph.add_edge(prev, node, EdgeKind::RequestFlow);
-                    prev = node;
-                }
-                Step::Publish { stream } => {
-                    self.graph.add_edge(prev, stream, EdgeKind::AsyncMessage);
-                    // Publishing is fire-and-forget: later synchronous
-                    // steps still run in the caller's context.
-                }
-                Step::Return => {}
-            }
             steps.push(step);
-            step_spans.push(Some(expr.span()));
         }
+        self.wire_steps(owner, &steps);
         self.graph.pipelines.push(Pipeline {
             name: decl.name.text.clone(),
             owner,
             payload,
             steps,
             span: Some(decl.span),
-            step_spans,
         });
     }
 
@@ -625,13 +656,16 @@ impl<'d> Builder<'d> {
             StepExpr::Publish(stream_name) => {
                 let stream = self.resolve_stream(stream_name)?;
                 self.check_publish_type(stream, payload, stream_name.span);
-                return Some(Step::Publish { stream });
+                return Some(step(StepKind::Publish { stream }, expr.span()));
+            }
+            StepExpr::Match { field, arms, .. } => {
+                return self.resolve_match(field, arms, payload, expr.span());
             }
             StepExpr::Name(ident) => ident,
         };
         match ident.text.as_str() {
             "Auth" => match self.graph.singleton(NodeKind::Auth) {
-                Some(node) => Some(Step::Auth { node: node.id }),
+                Some(node) => Some(step(StepKind::Auth { node: node.id }, ident.span)),
                 None => {
                     self.diags.push(
                         Diagnostic::new(
@@ -648,9 +682,9 @@ impl<'d> Builder<'d> {
                 let queue = self.require_queue("the `Queue` step", ident.span)?;
                 let stream = self.default_stream(queue);
                 self.check_publish_type(stream, payload, ident.span);
-                Some(Step::Publish { stream })
+                Some(step(StepKind::Publish { stream }, ident.span))
             }
-            "Return" => Some(Step::Return),
+            "Return" => Some(step(StepKind::Return, ident.span)),
             name => {
                 // Referencing a declared api/worker/stream as a step is
                 // invalid; any other name declares an implicit handler.
@@ -701,7 +735,185 @@ impl<'d> Builder<'d> {
                         id
                     }
                 };
-                Some(Step::Handler { node })
+                Some(step(StepKind::Handler { node }, ident.span))
+            }
+        }
+    }
+
+    fn resolve_match(
+        &mut self,
+        field: &Ident,
+        arms: &[ciac_syntax::ast::Arm],
+        payload: Option<RecordId>,
+        span: Span,
+    ) -> Option<Step> {
+        let Some(payload) = payload else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidMatch,
+                    "`match` requires a typed pipeline payload",
+                )
+                .with_label(field.span, "matched field on an untyped payload"),
+            );
+            return None;
+        };
+        let record = self.graph.record(payload);
+        let Some(record_field) = record.fields.iter().find(|f| f.name == field.text) else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidMatch,
+                    format!("record `{}` has no field `{}`", record.name, field.text),
+                )
+                .with_label(field.span, "unknown field"),
+            );
+            return None;
+        };
+        let FieldType::Enum { variants } = &record_field.ty else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidMatch,
+                    format!("field `{}` is not an enum", field.text),
+                )
+                .with_label(field.span, "match fields must be enum fields"),
+            );
+            return None;
+        };
+        let variants = variants.clone();
+        let mut seen: BTreeMap<String, Span> = BTreeMap::new();
+        let mut saw_wildcard = false;
+        let mut ir_arms = Vec::new();
+        for (idx, arm) in arms.iter().enumerate() {
+            let label = match &arm.label {
+                ciac_syntax::ast::ArmLabel::Default(label_span) => {
+                    if saw_wildcard {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::DuplicateDeclaration,
+                                "match wildcard arm appears more than once",
+                            )
+                            .with_label(*label_span, "duplicate wildcard here"),
+                        );
+                    }
+                    if idx + 1 != arms.len() {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::InvalidMatch,
+                                "match wildcard arm must be last",
+                            )
+                            .with_label(*label_span, "`_` must be the trailing arm"),
+                        );
+                    }
+                    saw_wildcard = true;
+                    None
+                }
+                ciac_syntax::ast::ArmLabel::Variant(ident) => {
+                    if !variants.iter().any(|v| v == &ident.text) {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::InvalidMatch,
+                                format!("`{}` is not a variant of `{}`", ident.text, field.text),
+                            )
+                            .with_label(ident.span, "unknown enum variant"),
+                        );
+                    }
+                    if let Some(first) = seen.get(&ident.text) {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::DuplicateDeclaration,
+                                format!("match arm `{}` appears more than once", ident.text),
+                            )
+                            .with_label(ident.span, "duplicate arm here")
+                            .with_label(*first, "first arm here"),
+                        );
+                    } else {
+                        seen.insert(ident.text.clone(), ident.span);
+                    }
+                    Some(ident.text.clone())
+                }
+            };
+            let steps = arm
+                .steps
+                .iter()
+                .filter_map(|step| self.resolve_step(step, Some(payload)))
+                .collect();
+            ir_arms.push(MatchArm { label, steps });
+        }
+        if !saw_wildcard {
+            let missing: Vec<&str> = variants
+                .iter()
+                .map(String::as_str)
+                .filter(|variant| !seen.contains_key(*variant))
+                .collect();
+            if !missing.is_empty() {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::NonExhaustiveMatch,
+                        format!(
+                            "match on `{}` does not cover {}",
+                            field.text,
+                            missing.join(", ")
+                        ),
+                    )
+                    .with_label(span, "non-exhaustive match"),
+                );
+            }
+        }
+        Some(step(
+            StepKind::Match {
+                field: field.text.clone(),
+                arms: ir_arms,
+            },
+            span,
+        ))
+    }
+
+    fn wire_steps(&mut self, start: NodeId, steps: &[Step]) -> NodeId {
+        let mut prev = start;
+        for step in steps {
+            match &step.kind {
+                StepKind::Auth { node } | StepKind::Handler { node } => {
+                    self.graph.add_edge(prev, *node, EdgeKind::RequestFlow);
+                    prev = *node;
+                }
+                StepKind::Publish { stream } => {
+                    self.graph.add_edge(prev, *stream, EdgeKind::AsyncMessage);
+                    // Publishing is fire-and-forget: later synchronous
+                    // steps still run in the caller's context.
+                }
+                StepKind::Return => {}
+                StepKind::Match { arms, .. } => {
+                    for arm in arms {
+                        self.wire_steps(prev, &arm.steps);
+                    }
+                }
+            }
+        }
+        prev
+    }
+
+    fn check_scoped_apis(&mut self) {
+        for node in self.graph.nodes_of_kind(NodeKind::Api) {
+            let Component::Api { config, name, .. } = &node.component else {
+                continue;
+            };
+            let Some(scope) = &config.scope else {
+                continue;
+            };
+            let auth_first = self
+                .graph
+                .pipeline_of(node.id)
+                .and_then(|pipeline| pipeline.steps.first())
+                .is_some_and(|step| matches!(&step.kind, StepKind::Auth { .. }));
+            if !auth_first {
+                let mut diag = Diagnostic::new(
+                    ErrorCode::InvalidAttributeValue,
+                    format!("api `{name}` declares scope `{scope}` but is not gated by Auth"),
+                )
+                .with_help("put `Auth` first in the api pipeline or remove the `scope` attribute");
+                if let Some(span) = node.span {
+                    diag = diag.with_label(span, "scoped api declared here");
+                }
+                self.diags.push(diag);
             }
         }
     }
@@ -714,5 +926,215 @@ fn kind_noun(kind: NodeKind) -> &'static str {
         NodeKind::Service => "service",
         NodeKind::Stream => "stream",
         _ => "component",
+    }
+}
+
+fn step(kind: StepKind, span: Span) -> Step {
+    Step {
+        kind,
+        span: Some(span),
+    }
+}
+
+fn default_subject(service: &str, name: &str) -> String {
+    format!("{}.{}", service.to_snake_case(), name.to_snake_case())
+}
+
+mod attrs {
+    use super::*;
+
+    pub fn apply_api_attrs(
+        attrs: &[Attr],
+        has_typed_body: bool,
+        diags: &mut Diagnostics,
+    ) -> ApiConfig {
+        let mut config = ApiConfig::default();
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "method" => match ident_value(attr) {
+                    Some("GET") => config.method = HttpMethod::Get,
+                    Some("POST") => config.method = HttpMethod::Post,
+                    Some("PUT") => config.method = HttpMethod::Put,
+                    Some("DELETE") => config.method = HttpMethod::Delete,
+                    Some("PATCH") => config.method = HttpMethod::Patch,
+                    Some(_) | None => invalid_value(
+                        attr,
+                        "api `method` must be one of GET, POST, PUT, DELETE, or PATCH",
+                        diags,
+                    ),
+                },
+                "path" => match string_value(attr) {
+                    Some(path) if path.starts_with('/') => config.path = Some(path.to_owned()),
+                    Some(_) | None => {
+                        invalid_value(attr, "api `path` must be a string starting with `/`", diags)
+                    }
+                },
+                "scope" => match string_value(attr) {
+                    Some(scope) => config.scope = Some(scope.to_owned()),
+                    None => invalid_value(attr, "api `scope` must be a string", diags),
+                },
+                _ => unknown_attr(attr, "api", diags),
+            }
+        }
+        if has_typed_body && matches!(config.method, HttpMethod::Get | HttpMethod::Delete) {
+            if let Some(attr) = attrs.iter().find(|a| a.name.text == "method") {
+                invalid_value(
+                    attr,
+                    "GET and DELETE apis cannot declare a typed request body",
+                    diags,
+                );
+            }
+        }
+        config
+    }
+
+    pub fn apply_worker_attrs(attrs: &[Attr], diags: &mut Diagnostics) -> ciac_ir::WorkerConfig {
+        let mut config = ciac_ir::WorkerConfig::default();
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "concurrency" => match int_value(attr) {
+                    Some(value) if value >= 1 => config.concurrency = value,
+                    Some(_) | None => {
+                        invalid_value(attr, "worker `concurrency` must be an integer >= 1", diags)
+                    }
+                },
+                "max_retries" => match int_value(attr) {
+                    Some(value) => config.max_retries = value,
+                    None => invalid_value(attr, "worker `max_retries` must be an integer", diags),
+                },
+                _ => unknown_attr(attr, "worker", diags),
+            }
+        }
+        config
+    }
+
+    pub fn apply_stream_attrs(
+        attrs: &[Attr],
+        service_name: &str,
+        stream_name: &str,
+        diags: &mut Diagnostics,
+    ) -> String {
+        let mut subject = super::default_subject(service_name, stream_name);
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "subject" => match string_value(attr) {
+                    Some(value) => subject = value.to_owned(),
+                    None => invalid_value(attr, "stream `subject` must be a string", diags),
+                },
+                _ => unknown_attr(attr, "stream", diags),
+            }
+        }
+        subject
+    }
+
+    pub fn apply_crud_attrs(
+        attrs: &[Attr],
+        has_cache: bool,
+        diags: &mut Diagnostics,
+    ) -> CrudConfig {
+        let mut config = CrudConfig::default();
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "cache_ttl" => match int_value(attr) {
+                    Some(value) if value >= 1 => {
+                        if has_cache {
+                            config.cache_ttl = value;
+                        } else {
+                            invalid_value(
+                                attr,
+                                "crud `cache_ttl` requires a cache capability",
+                                diags,
+                            );
+                        }
+                    }
+                    Some(_) | None => {
+                        invalid_value(attr, "crud `cache_ttl` must be an integer >= 1", diags)
+                    }
+                },
+                "page_size" => match int_value(attr) {
+                    Some(value) if value >= 1 => config.page_size = value,
+                    Some(_) | None => {
+                        invalid_value(attr, "crud `page_size` must be an integer >= 1", diags)
+                    }
+                },
+                _ => unknown_attr(attr, "crud", diags),
+            }
+        }
+        config
+    }
+
+    fn duplicate_attr(
+        attr: &Attr,
+        seen: &mut BTreeMap<String, Span>,
+        diags: &mut Diagnostics,
+    ) -> bool {
+        if let Some(first) = seen.get(&attr.name.text) {
+            diags.push(
+                Diagnostic::new(
+                    ErrorCode::DuplicateDeclaration,
+                    format!("attribute `{}` appears more than once", attr.name.text),
+                )
+                .with_label(attr.span, "duplicate attribute here")
+                .with_label(*first, "first attribute here"),
+            );
+            true
+        } else {
+            seen.insert(attr.name.text.clone(), attr.span);
+            false
+        }
+    }
+
+    fn ident_value(attr: &Attr) -> Option<&str> {
+        match &attr.value {
+            AttrValue::Ident(ident) => Some(ident.text.as_str()),
+            _ => None,
+        }
+    }
+
+    fn string_value(attr: &Attr) -> Option<&str> {
+        match &attr.value {
+            AttrValue::Str { value, .. } => Some(value.as_str()),
+            _ => None,
+        }
+    }
+
+    fn int_value(attr: &Attr) -> Option<u32> {
+        match &attr.value {
+            AttrValue::Number { value, .. } => u32::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+
+    fn unknown_attr(attr: &Attr, target: &str, diags: &mut Diagnostics) {
+        diags.push(
+            Diagnostic::new(
+                ErrorCode::UnknownAttribute,
+                format!("unknown {target} attribute `{}`", attr.name.text),
+            )
+            .with_label(attr.name.span, "not valid for this declaration"),
+        );
+    }
+
+    fn invalid_value(attr: &Attr, message: &str, diags: &mut Diagnostics) {
+        diags.push(
+            Diagnostic::new(ErrorCode::InvalidAttributeValue, message)
+                .with_label(attr.value.span(), "invalid value"),
+        );
     }
 }

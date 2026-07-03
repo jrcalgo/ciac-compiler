@@ -29,6 +29,8 @@ pub enum TokenKind {
     Record,
     #[token("stream")]
     Stream,
+    #[token("handler")]
+    Handler,
     #[token("on")]
     On,
     #[token("publish")]
@@ -75,6 +77,7 @@ impl TokenKind {
             TokenKind::Events => "`events`",
             TokenKind::Record => "`record`",
             TokenKind::Stream => "`stream`",
+            TokenKind::Handler => "`handler`",
             TokenKind::On => "`on`",
             TokenKind::Publish => "`publish`",
             TokenKind::Enum => "`enum`",

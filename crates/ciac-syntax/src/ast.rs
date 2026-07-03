@@ -39,6 +39,8 @@ pub enum Item {
     Crud(CrudDecl),
     /// `events <Name>;` — expands to Stream + Worker.
     Events(ComponentDecl),
+    /// `handler <Name> { db: main; .. }` — binds a handler to capability instances.
+    Handler(HandlerDecl),
     /// `pipeline <Name>: Step -> Step -> ..;`
     Pipeline(PipelineDecl),
 }
@@ -157,7 +159,23 @@ pub struct UseBlock {
 #[derive(Debug, Clone, Serialize)]
 pub struct UseEntry {
     pub capability: Ident,
-    pub provider: Ident,
+    pub name: Option<Ident>,
+    pub provider: Option<Ident>,
+    pub attrs: Vec<Attr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HandlerDecl {
+    pub name: Ident,
+    pub bindings: Vec<HandlerBinding>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HandlerBinding {
+    pub capability: Ident,
+    pub instance: Ident,
     pub span: Span,
 }
 

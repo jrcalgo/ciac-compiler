@@ -96,6 +96,7 @@ impl Parser<'_> {
                 | TokenKind::Use
                 | TokenKind::Record
                 | TokenKind::Stream
+                | TokenKind::Handler
                 | TokenKind::Api
                 | TokenKind::Worker
                 | TokenKind::Pipeline
@@ -125,6 +126,7 @@ impl Parser<'_> {
             TokenKind::Use => self.use_block(),
             TokenKind::Record => self.record_decl(),
             TokenKind::Stream => self.stream_decl(),
+            TokenKind::Handler => self.handler_decl(),
             TokenKind::Api => self.api_decl(),
             TokenKind::Worker => self.worker_decl(),
             TokenKind::Crud => self.crud_decl(),
@@ -132,8 +134,8 @@ impl Parser<'_> {
             TokenKind::Pipeline => self.pipeline_decl(),
             _ => {
                 self.error_expected(
-                    "a declaration (`service`, `use`, `record`, `stream`, `api`, `worker`, \
-                     `crud`, `events`, or `pipeline`)",
+                    "a declaration (`service`, `use`, `record`, `stream`, `handler`, `api`, \
+                     `worker`, `crud`, `events`, or `pipeline`)",
                 );
                 None
             }
@@ -294,6 +296,50 @@ impl Parser<'_> {
         }
     }
 
+    /// `handler <Name> { db: main; cache: hot; .. }`
+    fn handler_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut bindings = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Ident => {
+                    let capability = self.expect_ident()?;
+                    if self.expect(TokenKind::Colon).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    let Some(instance) = self.expect_ident() else {
+                        self.recover_inside_block();
+                        continue;
+                    };
+                    let span = capability.span.to(self.peek().span);
+                    if self.expect(TokenKind::Semi).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    bindings.push(HandlerBinding {
+                        capability,
+                        instance,
+                        span,
+                    });
+                }
+                _ => {
+                    self.error_expected("a binding like `db: main;` or `}`");
+                    self.recover_inside_block();
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some(Item::Handler(HandlerDecl {
+            span: kw.span.to(close.span),
+            name,
+            bindings,
+        }))
+    }
+
     /// `record <Name> { field: Type; .. }`
     fn record_decl(&mut self) -> Option<Item> {
         let kw = self.bump();
@@ -368,21 +414,38 @@ impl Parser<'_> {
                 TokenKind::RBrace | TokenKind::Eof => break,
                 TokenKind::Ident => {
                     let capability = self.expect_ident()?;
-                    let provider = match self.expect_ident() {
+                    let first = match self.expect_ident() {
                         Some(p) => p,
                         None => {
                             self.recover_inside_block();
                             continue;
                         }
                     };
-                    let span = capability.span.to(self.peek().span);
-                    if self.expect(TokenKind::Semi).is_none() {
+                    let (name, provider) = if self.at(TokenKind::Ident) {
+                        (Some(first), Some(self.expect_ident()?))
+                    } else if providerless_use_entry(&capability.text) {
+                        (Some(first), None)
+                    } else {
+                        (None, Some(first))
+                    };
+                    let (attrs, end) = match self.decl_tail() {
+                        Some(tail) => tail,
+                        None => {
+                            self.recover_inside_block();
+                            continue;
+                        }
+                    };
+                    let span = capability.span.to(end);
+                    if !matches!(self.peek().kind, TokenKind::RBrace | TokenKind::Eof)
+                        && self.at(TokenKind::Semi)
+                    {
                         self.recover_inside_block();
-                        continue;
                     }
                     entries.push(UseEntry {
                         capability,
+                        name,
                         provider,
+                        attrs,
                         span,
                     });
                 }
@@ -526,6 +589,10 @@ fn unquote(raw: &str) -> String {
         }
     }
     out
+}
+
+fn providerless_use_entry(capability: &str) -> bool {
+    matches!(capability, "external_http" | "scheduler" | "realtime")
 }
 
 #[cfg(test)]
@@ -697,7 +764,53 @@ mod tests {
         };
         assert_eq!(block.entries.len(), 2);
         assert_eq!(block.entries[0].capability.text, "db");
-        assert_eq!(block.entries[0].provider.text, "Postgres");
+        assert_eq!(
+            block.entries[0].provider.as_ref().map(|p| p.text.as_str()),
+            Some("Postgres")
+        );
+        assert!(block.entries[0].name.is_none());
+    }
+
+    #[test]
+    fn parses_named_use_entries_and_attrs() {
+        let (program, diags) = parse_src(
+            r#"use {
+                db main Postgres;
+                object_store media S3 { bucket: "videos"; }
+                external_http billing { base_url: "https://billing.internal"; }
+            }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Use(block) = &program.items[0] else {
+            panic!("expected use block");
+        };
+        assert_eq!(block.entries.len(), 3);
+        assert_eq!(
+            block.entries[0].name.as_ref().map(|n| n.text.as_str()),
+            Some("main")
+        );
+        assert_eq!(
+            block.entries[0].provider.as_ref().map(|p| p.text.as_str()),
+            Some("Postgres")
+        );
+        assert_eq!(block.entries[1].attrs.len(), 1);
+        assert_eq!(
+            block.entries[2].provider.as_ref().map(|p| p.text.as_str()),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_handler_bindings() {
+        let (program, diags) = parse_src("handler StoreVideo { db: main; cache: hot; }");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler");
+        };
+        assert_eq!(handler.name.text, "StoreVideo");
+        assert_eq!(handler.bindings.len(), 2);
+        assert_eq!(handler.bindings[0].capability.text, "db");
+        assert_eq!(handler.bindings[0].instance.text, "main");
     }
 
     #[test]

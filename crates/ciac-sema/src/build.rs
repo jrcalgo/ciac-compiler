@@ -115,7 +115,10 @@ impl<'d> Builder<'d> {
                             ErrorCode::InvalidServiceScope,
                             "service-local declarations must be inside a `service { .. }` block",
                         )
-                        .with_label(item_span(item), "move this declaration into a service block"),
+                        .with_label(
+                            item_span(item),
+                            "move this declaration into a service block",
+                        ),
                     ),
                     Item::ServiceBlock(block) => self.build_service_block_decls(block),
                     Item::Project(_) | Item::Service(_) | Item::Record(_) | Item::Stream(_) => {}
@@ -127,11 +130,7 @@ impl<'d> Builder<'d> {
                 }
             }
         } else {
-            self.current_service = self
-                .graph
-                .services()
-                .next()
-                .map(|service| service.id);
+            self.current_service = self.graph.services().next().map(|service| service.id);
             for item in &program.items {
                 if let Item::Use(block) = item {
                     for entry in &block.entries {
@@ -151,10 +150,14 @@ impl<'d> Builder<'d> {
     }
 
     fn project_name(&mut self, program: &Program, has_service_blocks: bool) {
-        let project = program.items.iter().filter_map(|item| match item {
-            Item::Project(decl) => Some(decl),
-            _ => None,
-        }).next();
+        let project = program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Project(decl) => Some(decl),
+                _ => None,
+            })
+            .next();
         if let Some(project) = project {
             self.graph.name = project.name.text.clone();
             return;
@@ -231,9 +234,7 @@ impl<'d> Builder<'d> {
     }
 
     fn enter_service(&mut self, block: &ServiceBlock) -> Option<Option<ServiceId>> {
-        let Some((service, _)) = self.service_ids.get(&block.name.text).copied() else {
-            return None;
-        };
+        let (service, _) = self.service_ids.get(&block.name.text).copied()?;
         let previous = self.current_service;
         self.current_service = Some(service);
         Some(previous)
@@ -542,8 +543,7 @@ impl<'d> Builder<'d> {
                 span: binding.span,
             });
         }
-        self.handler_decl_spans
-            .insert(key.clone(), decl.span);
+        self.handler_decl_spans.insert(key.clone(), decl.span);
         self.handler_bindings.insert(key, bindings);
     }
 
@@ -644,9 +644,9 @@ impl<'d> Builder<'d> {
     }
 
     fn find_capability(&self, kind: NodeKind, name: &str) -> Option<&ciac_ir::Node> {
-        self.graph
-            .nodes_of_kind(kind)
-            .find(|node| node.service == self.current_service && node.component.name() == Some(name))
+        self.graph.nodes_of_kind(kind).find(|node| {
+            node.service == self.current_service && node.component.name() == Some(name)
+        })
     }
 
     /// Creates a stream node wired to the broker.
@@ -693,7 +693,8 @@ impl<'d> Builder<'d> {
         }
         let record = self.resolve_record(&decl.record);
         let queue = if require_queue {
-            let Some(queue) = self.require_queue(&format!("stream `{}`", decl.name.text), decl.span)
+            let Some(queue) =
+                self.require_queue(&format!("stream `{}`", decl.name.text), decl.span)
             else {
                 return;
             };
@@ -803,9 +804,11 @@ impl<'d> Builder<'d> {
             self.graph.nodes_of_kind(NodeKind::Cache).next().is_some(),
             self.diags,
         );
-        let Some(db) =
-            self.default_capability(NodeKind::Database, &format!("`crud {}`", decl.name.text), decl.span)
-        else {
+        let Some(db) = self.default_capability(
+            NodeKind::Database,
+            &format!("`crud {}`", decl.name.text),
+            decl.span,
+        ) else {
             self.diags.push(
                 Diagnostic::new(
                     ErrorCode::MissingCapability,
@@ -831,7 +834,11 @@ impl<'d> Builder<'d> {
             },
             Some(decl.span),
         );
-        let auth = self.default_capability(NodeKind::Auth, &format!("`crud {}`", decl.name.text), decl.span);
+        let auth = self.default_capability(
+            NodeKind::Auth,
+            &format!("`crud {}`", decl.name.text),
+            decl.span,
+        );
         match auth {
             Some(auth) => {
                 self.graph.add_edge(api, auth, EdgeKind::RequestFlow);
@@ -842,7 +849,11 @@ impl<'d> Builder<'d> {
             }
         }
         self.graph.add_edge(service, db, EdgeKind::DataFlow);
-        let cache = self.default_capability(NodeKind::Cache, &format!("`crud {}`", decl.name.text), decl.span);
+        let cache = self.default_capability(
+            NodeKind::Cache,
+            &format!("`crud {}`", decl.name.text),
+            decl.span,
+        );
         if let Some(cache) = cache {
             self.graph.add_edge(service, cache, EdgeKind::DataFlow);
         }
@@ -880,9 +891,11 @@ impl<'d> Builder<'d> {
         );
         self.graph.add_edge(stream, worker, EdgeKind::AsyncMessage);
         self.worker_streams.insert(worker, stream);
-        if let Some(db) =
-            self.default_capability(NodeKind::Database, &format!("`events {}`", decl.name.text), decl.span)
-        {
+        if let Some(db) = self.default_capability(
+            NodeKind::Database,
+            &format!("`events {}`", decl.name.text),
+            decl.span,
+        ) {
             self.graph.add_edge(worker, db, EdgeKind::DataFlow);
         }
         self.graph.event_streams.push(EventStream {
@@ -1040,20 +1053,22 @@ impl<'d> Builder<'d> {
             StepExpr::Name(ident) => ident,
         };
         match ident.text.as_str() {
-            "Auth" => match self.default_capability(NodeKind::Auth, "the `Auth` step", ident.span) {
-                Some(node) => Some(step(StepKind::Auth { node }, ident.span)),
-                None => {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::MissingCapability,
-                            "the `Auth` step requires an auth capability",
-                        )
-                        .with_label(ident.span, "used here")
-                        .with_help("add `auth JWT;` to the `use { .. }` block"),
-                    );
-                    None
+            "Auth" => {
+                match self.default_capability(NodeKind::Auth, "the `Auth` step", ident.span) {
+                    Some(node) => Some(step(StepKind::Auth { node }, ident.span)),
+                    None => {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::MissingCapability,
+                                "the `Auth` step requires an auth capability",
+                            )
+                            .with_label(ident.span, "used here")
+                            .with_help("add `auth JWT;` to the `use { .. }` block"),
+                        );
+                        None
+                    }
                 }
-            },
+            }
             "Queue" => {
                 let queue = self.require_queue("the `Queue` step", ident.span)?;
                 let stream = self.default_stream(queue);

@@ -436,7 +436,8 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
-        let db = sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url)?;
+        let db =
+            sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url)?;
         let queue = async_nats::connect(&config.nats_url).await?;
         Ok(Self {
             config,

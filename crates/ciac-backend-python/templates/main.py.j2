@@ -25,7 +25,13 @@ configure_logging()
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     from app.db import create_schema
 
+{%- if c.schema_key_args %}
+{%- for key in c.schema_key_args %}
+    await create_schema({{ key }})
+{%- endfor %}
+{%- else %}
     await create_schema()
+{%- endif %}
     yield
 
 

@@ -18,9 +18,9 @@ pub struct {{ resource.store_class }}<'a> {
 impl<'a> {{ resource.store_class }}<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self {
-            db: &state.db,
+            db: &state.{{ resource.rust_db_field }},
 {%- if resource.has_cache %}
-            cache: &state.cache,
+            cache: &state.{{ resource.rust_cache_field }},
 {%- endif %}
         }
     }

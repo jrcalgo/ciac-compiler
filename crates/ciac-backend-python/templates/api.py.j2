@@ -48,7 +48,7 @@ from app.auth import require_auth
 from app.cache import get_cache
 {%- endif %}
 {%- if api.needs_db %}
-from app.db import get_session
+from app.db import {{ api.db_imports }}
 {%- endif %}
 {%- if api.has_publish_step %}
 from app.queue import publish
@@ -75,9 +75,9 @@ async def {{ api.snake }}(
 {%- elif api.has_auth_step %}
     claims: dict[str, Any] = Depends(require_auth),
 {%- endif %}
-{%- if api.needs_db %}
-    session: AsyncSession = Depends(get_session),
-{%- endif %}
+{%- for db_session in api.db_sessions %}
+    {{ db_session.param }}: AsyncSession = Depends({{ db_session.dep }}),
+{%- endfor %}
 ) -> dict[str, Any]:
 {%- if api.has_body and api.payload %}
     result = payload

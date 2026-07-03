@@ -5,14 +5,14 @@ use crate::config::Config;
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub config: Config,
-{%- if c.has_db %}
+{%- for inst in c.db_instances %}
     /// Lazy pool: connections are established on first use, so the server
     /// starts (and compiles) without a running database.
-    pub db: sqlx::PgPool,
-{%- endif %}
-{%- if c.has_cache %}
-    pub cache: redis::Client,
-{%- endif %}
+    pub {{ inst.state_field }}: sqlx::PgPool,
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+    pub {{ inst.state_field }}: redis::Client,
+{%- endfor %}
 {%- if c.has_queue %}
     pub queue: async_nats::Client,
 {%- endif %}
@@ -20,23 +20,24 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
-{%- if c.has_db %}
-        let db = sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url)?;
-{%- endif %}
-{%- if c.has_cache %}
-        let cache = redis::Client::open(config.redis_url.as_str())?;
-{%- endif %}
+{%- for inst in c.db_instances %}
+        let {{ inst.state_field }} =
+            sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.{{ inst.url_field }})?;
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+        let {{ inst.state_field }} = redis::Client::open(config.{{ inst.url_field }}.as_str())?;
+{%- endfor %}
 {%- if c.has_queue %}
         let queue = async_nats::connect(&config.nats_url).await?;
 {%- endif %}
         Ok(Self {
             config,
-{%- if c.has_db %}
-            db,
-{%- endif %}
-{%- if c.has_cache %}
-            cache,
-{%- endif %}
+{%- for inst in c.db_instances %}
+            {{ inst.state_field }},
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+            {{ inst.state_field }},
+{%- endfor %}
 {%- if c.has_queue %}
             queue,
 {%- endif %}

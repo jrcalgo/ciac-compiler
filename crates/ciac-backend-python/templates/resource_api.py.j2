@@ -8,7 +8,7 @@ from app.auth import require_auth
 {%- if resource.has_cache %}
 from app.cache import get_cache
 {%- endif %}
-from app.db import get_session
+from app.db import {{ resource.db_session.dep }}
 from app.models import {{ resource.name }}In, {{ resource.name }}Out
 from app.services.{{ resource.store_module }} import {{ resource.store_class }}
 
@@ -27,9 +27,11 @@ router = APIRouter(
 {%- set store_arg = "payload.data" %}
 {%- endif %}
 
-def _store(session: AsyncSession = Depends(get_session)) -> {{ resource.store_class }}:
+def _store(
+    session: AsyncSession = Depends({{ resource.db_session.dep }}),
+) -> {{ resource.store_class }}:
     return {{ resource.store_class }}(
-        session{% if resource.has_cache %}, cache=get_cache(){% endif %}
+        session{% if resource.has_cache %}, cache={{ resource.cache_expr }}{% endif %}
     )
 
 {% if resource.record %}

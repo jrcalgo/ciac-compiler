@@ -28,6 +28,13 @@ pub struct Ctx {
     pub has_db: bool,
     pub has_cache: bool,
     pub has_queue: bool,
+    pub db_instances: Vec<InstanceCtx>,
+    pub cache_instances: Vec<InstanceCtx>,
+    /// Sessionmaker key args for instances that back CRUD resources
+    /// (schema creation targets), e.g. [""] or ["\"main\""].
+    pub schema_key_args: Vec<String>,
+    /// Rust `AppState` fields for the same schema targets, e.g. ["db"].
+    pub schema_state_fields: Vec<String>,
     pub has_logging: bool,
     pub has_metrics: bool,
     pub queue_engine: Option<String>,
@@ -99,6 +106,48 @@ pub struct PayloadRef {
     pub class_name: String,
 }
 
+/// One named capability instance (db/cache), with every naming variant
+/// codegen needs. The legacy/`default` instance keeps the unsuffixed
+/// names so pre-v0.4 output is unchanged.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceCtx {
+    /// Instance name as declared, e.g. `default`, `main`.
+    pub name: String,
+    pub snake: String,
+    pub is_default: bool,
+    /// Settings field, e.g. `database_url` / `database_url_main`.
+    pub url_field: String,
+    /// Environment variable, e.g. `DATABASE_URL_MAIN`.
+    pub env_var: String,
+    /// Compose container name, e.g. `db` / `db-main`.
+    pub container: String,
+    /// Redis database index for cache instances (0, 1, ..).
+    pub redis_db: u32,
+    /// Rust `AppState` field, e.g. `db` / `db_main`.
+    pub state_field: String,
+    /// Postgres database name (db instances only).
+    pub db_name: String,
+    /// FastAPI session dependency (db instances only),
+    /// e.g. `get_session` / `get_session_main`.
+    pub session_dep: String,
+    /// Route parameter name (db instances only), e.g. `session_main`.
+    pub session_param: String,
+    /// Argument for `get_sessionmaker(..)` / `get_cache(..)`:
+    /// empty for the default instance, else `"name"` (quoted).
+    pub key_arg: String,
+}
+
+/// A database session a route/worker needs for its handlers.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SessionCtx {
+    /// Parameter/variable name, e.g. `session` / `session_main`.
+    pub param: String,
+    /// FastAPI dependency function, e.g. `get_session_main`.
+    pub dep: String,
+    /// `get_sessionmaker(..)` argument (empty or `"main"` quoted).
+    pub key_arg: String,
+}
+
 /// An api with a request pipeline.
 #[derive(Debug, Serialize)]
 pub struct ApiCtx {
@@ -118,6 +167,10 @@ pub struct ApiCtx {
     /// Whether any invoked handler needs a database session / cache client.
     pub needs_db: bool,
     pub needs_cache: bool,
+    /// Distinct database sessions the route must inject, in first-use order.
+    pub db_sessions: Vec<SessionCtx>,
+    /// Comma-joined dependency names for the `from app.db import ..` line.
+    pub db_imports: String,
     /// Deduplicated handlers, in invocation order, for imports.
     pub handlers: Vec<HandlerRef>,
 }
@@ -157,9 +210,15 @@ pub struct HandlerRef {
     pub needs_cache: bool,
     pub bindings: Vec<BindingCtx>,
     /// Precomputed Python constructor arguments for invoking this handler
-    /// from a route/worker, e.g. `session=session, cache=get_cache()`.
+    /// from a route/worker, e.g. `session=session_main, cache=get_cache("hot")`.
     /// Keeps templates free of whitespace gymnastics.
     pub py_args: String,
+    /// The database session this handler consumes, when bound.
+    pub db_session: Option<SessionCtx>,
+    /// Rust `AppState` field for the bound database, e.g. `db_main`.
+    pub rust_db_field: Option<String>,
+    /// Rust `AppState` field for the bound cache, e.g. `cache_hot`.
+    pub rust_cache_field: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -189,6 +248,11 @@ pub struct WorkerCtx {
     pub handlers: Vec<HandlerRef>,
     pub needs_db: bool,
     pub needs_cache: bool,
+    /// Distinct database sessions the worker opens per message.
+    pub db_sessions: Vec<SessionCtx>,
+    /// Pre-joined `async with` items, e.g.
+    /// `get_sessionmaker()() as session, get_sessionmaker("main")() as session_main`.
+    pub session_with: String,
 }
 
 /// A consumer generated from `events <Name>;`.
@@ -212,6 +276,9 @@ pub struct ServiceCtx {
     pub needs_db: bool,
     pub needs_cache: bool,
     pub bindings: Vec<BindingCtx>,
+    /// Rust `AppState` fields for the bound db/cache instances.
+    pub rust_db_field: Option<String>,
+    pub rust_cache_field: Option<String>,
 }
 
 /// A CRUD resource from `crud <Name>;`.
@@ -233,6 +300,13 @@ pub struct ResourceCtx {
     pub has_cache: bool,
     pub cache_ttl: u32,
     pub page_size: u32,
+    /// Session dependency backing this resource's store.
+    pub db_session: SessionCtx,
+    /// `get_cache(..)` expression when caching is enabled.
+    pub cache_expr: String,
+    /// Rust `AppState` fields for the bound instances.
+    pub rust_db_field: String,
+    pub rust_cache_field: Option<String>,
 }
 
 pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
@@ -290,6 +364,12 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
             let method_upper = method.as_str().to_owned();
             let method_lower = method_upper.to_ascii_lowercase();
             let has_body = !matches!(method, HttpMethod::Get | HttpMethod::Delete);
+            let db_sessions = sessions_of(&handlers);
+            let db_imports = db_sessions
+                .iter()
+                .map(|s| s.dep.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             ApiCtx {
                 route: path,
                 method_upper,
@@ -301,6 +381,8 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 has_publish_step: has_publish(&steps),
                 needs_db: handlers.iter().any(|h| h.needs_db),
                 needs_cache: handlers.iter().any(|h| h.needs_cache),
+                db_sessions,
+                db_imports,
                 payload,
                 steps,
                 handlers,
@@ -331,6 +413,12 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 Component::Worker { config, .. } => config,
                 _ => unreachable!("worker node is a worker"),
             };
+            let db_sessions = sessions_of(&handlers);
+            let session_with = db_sessions
+                .iter()
+                .map(|s| format!("get_sessionmaker({})() as {}", s.key_arg, s.param))
+                .collect::<Vec<_>>()
+                .join(", ");
             WorkerCtx {
                 snake: name.to_snake_case(),
                 queue_group: name.to_snake_case(),
@@ -339,6 +427,8 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 has_publish_step: has_publish(&steps),
                 concurrency: config.concurrency,
                 max_retries: config.max_retries,
+                db_sessions,
+                session_with,
                 subject,
                 payload,
                 steps,
@@ -373,22 +463,28 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         .filter(|s| !resource_services.contains(&s.id))
         .map(|service| {
             let name = service.component.name().unwrap_or_default().to_owned();
+            let bindings = bindings_of(ir, service.id);
+            let access = access_of(&bindings);
             ServiceCtx {
                 module: name.to_snake_case(),
                 payload: payload_ref(handler_payloads.get(&service.id).copied().flatten()),
-                needs_db: touches(ir, service.id, NodeKind::Database),
-                needs_cache: touches(ir, service.id, NodeKind::Cache),
-                bindings: bindings_of(ir, service.id),
+                needs_db: access.db.is_some(),
+                needs_cache: access.cache_expr.is_some(),
+                rust_db_field: access.rust_db_field,
+                rust_cache_field: access.rust_cache_field,
+                bindings,
                 class_name: name,
             }
         })
         .collect();
 
-    let resources = ir
+    let resources: Vec<ResourceCtx> = ir
         .resources
         .iter()
         .map(|resource| {
             let snake = resource.name.to_snake_case();
+            let bindings = bindings_of(ir, resource.service);
+            let access = access_of(&bindings);
             ResourceCtx {
                 name: resource.name.clone(),
                 plural: format!("{snake}s"),
@@ -396,13 +492,26 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 store_module: format!("{snake}_store"),
                 record: resource.record.map(record_ctx),
                 has_auth: ir.singleton(NodeKind::Auth).is_some(),
-                has_cache,
+                has_cache: access.cache_expr.is_some(),
                 cache_ttl: resource.config.cache_ttl,
                 page_size: resource.config.page_size,
+                db_session: access.db.unwrap_or(SessionCtx {
+                    param: "session".to_owned(),
+                    dep: "get_session".to_owned(),
+                    key_arg: String::new(),
+                }),
+                cache_expr: access
+                    .cache_expr
+                    .unwrap_or_else(|| "get_cache()".to_owned()),
+                rust_db_field: access.rust_db_field.unwrap_or_else(|| "db".to_owned()),
+                rust_cache_field: access.rust_cache_field,
                 snake,
             }
         })
         .collect();
+
+    let db_instances = instances_of(ir, NodeKind::Database, &module);
+    let cache_instances = instances_of(ir, NodeKind::Cache, &module);
 
     let records: Vec<RecordCtx> = ir.records().map(|(id, _)| build_record(ir, id)).collect();
     let all_fields = |records: &[RecordCtx]| -> Vec<String> {
@@ -419,6 +528,26 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         has_auth: ir.singleton(NodeKind::Auth).is_some(),
         has_db,
         has_cache,
+        schema_key_args: {
+            let mut keys: Vec<String> = Vec::new();
+            for resource in &resources {
+                if !keys.contains(&resource.db_session.key_arg) {
+                    keys.push(resource.db_session.key_arg.clone());
+                }
+            }
+            keys
+        },
+        schema_state_fields: {
+            let mut fields: Vec<String> = Vec::new();
+            for resource in &resources {
+                if !fields.contains(&resource.rust_db_field) {
+                    fields.push(resource.rust_db_field.clone());
+                }
+            }
+            fields
+        },
+        db_instances,
+        cache_instances,
         has_queue: ir.singleton(NodeKind::Queue).is_some(),
         has_logging: ir.singleton(NodeKind::Logging).is_some(),
         has_metrics: ir.singleton(NodeKind::Metrics).is_some(),
@@ -445,6 +574,108 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         resources,
         module,
     }
+}
+
+fn suffixed(base: &str, sep: &str, snake: &str, is_default: bool) -> String {
+    if is_default {
+        base.to_owned()
+    } else {
+        format!("{base}{sep}{snake}")
+    }
+}
+
+fn instance_ctx(kind: NodeKind, module: &str, name: &str, index: u32) -> InstanceCtx {
+    let snake = name.to_snake_case();
+    let is_default = name == "default";
+    let (url_base, container_base, state_base) = match kind {
+        NodeKind::Database => ("database_url", "db", "db"),
+        NodeKind::Cache => ("redis_url", "cache", "cache"),
+        _ => unreachable!("instances are built for db/cache only"),
+    };
+    let url_field = suffixed(url_base, "_", &snake, is_default);
+    InstanceCtx {
+        env_var: url_field.to_shouty_snake_case(),
+        container: suffixed(container_base, "-", &name.to_kebab_case(), is_default),
+        state_field: suffixed(state_base, "_", &snake, is_default),
+        db_name: suffixed(module, "_", &snake, is_default),
+        session_dep: suffixed("get_session", "_", &snake, is_default),
+        session_param: suffixed("session", "_", &snake, is_default),
+        key_arg: if is_default {
+            String::new()
+        } else {
+            format!("\"{snake}\"")
+        },
+        redis_db: index,
+        name: name.to_owned(),
+        is_default,
+        snake,
+        url_field,
+    }
+}
+
+fn instances_of(ir: &NormalizedIr, kind: NodeKind, module: &str) -> Vec<InstanceCtx> {
+    ir.nodes_of_kind(kind)
+        .enumerate()
+        .map(|(index, node)| {
+            instance_ctx(
+                kind,
+                module,
+                node.component.name().unwrap_or("default"),
+                index as u32,
+            )
+        })
+        .collect()
+}
+
+/// Resolved capability access for a handler/resource, derived from its
+/// binding edges.
+struct Access {
+    db: Option<SessionCtx>,
+    cache_expr: Option<String>,
+    rust_db_field: Option<String>,
+    rust_cache_field: Option<String>,
+}
+
+fn access_of(bindings: &[BindingCtx]) -> Access {
+    let find = |kind: &str| bindings.iter().find(|b| b.kind == kind);
+    let db = find("db").map(|b| {
+        let is_default = b.name == "default";
+        SessionCtx {
+            param: suffixed("session", "_", &b.snake, is_default),
+            dep: suffixed("get_session", "_", &b.snake, is_default),
+            key_arg: if is_default {
+                String::new()
+            } else {
+                format!("\"{}\"", b.snake)
+            },
+        }
+    });
+    let cache = find("cache");
+    Access {
+        rust_db_field: find("db").map(|b| suffixed("db", "_", &b.snake, b.name == "default")),
+        rust_cache_field: cache.map(|b| suffixed("cache", "_", &b.snake, b.name == "default")),
+        cache_expr: cache.map(|b| {
+            if b.name == "default" {
+                "get_cache()".to_owned()
+            } else {
+                format!("get_cache(\"{}\")", b.snake)
+            }
+        }),
+        db,
+    }
+}
+
+/// Distinct sessions used by a set of handlers, in first-use order.
+fn sessions_of(handlers: &[HandlerRef]) -> Vec<SessionCtx> {
+    let mut sessions: Vec<SessionCtx> = Vec::new();
+    for handler in handlers {
+        if let Some(session) = &handler.db_session {
+            if !sessions.contains(session) {
+                sessions.push(session.clone());
+            }
+        }
+    }
+    sessions
 }
 
 fn steps_of(ir: &NormalizedIr, owner: NodeId) -> (Vec<StepCtx>, Vec<HandlerRef>) {
@@ -536,21 +767,24 @@ fn step_ctxs(
 fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     let node = ir.node(id);
     let name = node.component.name().unwrap_or_default().to_owned();
-    let needs_db = touches(ir, id, NodeKind::Database);
-    let needs_cache = touches(ir, id, NodeKind::Cache);
+    let bindings = bindings_of(ir, id);
+    let access = access_of(&bindings);
     let mut args = Vec::new();
-    if needs_db {
-        args.push("session=session".to_owned());
+    if let Some(session) = &access.db {
+        args.push(format!("session={}", session.param));
     }
-    if needs_cache {
-        args.push("cache=get_cache()".to_owned());
+    if let Some(cache_expr) = &access.cache_expr {
+        args.push(format!("cache={cache_expr}"));
     }
     HandlerRef {
         module: name.to_snake_case(),
         class_name: name,
-        needs_db,
-        needs_cache,
-        bindings: bindings_of(ir, id),
+        needs_db: access.db.is_some(),
+        needs_cache: access.cache_expr.is_some(),
+        db_session: access.db,
+        rust_db_field: access.rust_db_field,
+        rust_cache_field: access.rust_cache_field,
+        bindings,
         py_args: args.join(", "),
     }
 }
@@ -705,14 +939,6 @@ fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
         fields,
         enums,
     }
-}
-
-/// Whether `node` has a data-flow edge to the (singleton) component of the
-/// given kind — i.e. codegen must inject that client into the handler.
-fn touches(ir: &NormalizedIr, node: NodeId, kind: NodeKind) -> bool {
-    ir.edges_from(node)
-        .filter(|e| e.kind == EdgeKind::DataFlow)
-        .any(|e| ir.node(e.to).component.kind() == kind)
 }
 
 fn bindings_of(ir: &NormalizedIr, node: NodeId) -> Vec<BindingCtx> {

@@ -14,12 +14,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 {%- if c.has_db %}
-
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/{{ c.module }}"
+{% for inst in c.db_instances %}
+    {{ inst.url_field }}: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/{{ inst.db_name }}"
+{%- endfor %}
 {%- endif %}
 {%- if c.has_cache %}
-
-    redis_url: str = "redis://localhost:6379/0"
+{% for inst in c.cache_instances %}
+    {{ inst.url_field }}: str = "redis://localhost:6379/{{ inst.redis_db }}"
+{%- endfor %}
 {%- endif %}
 {%- if c.has_queue %}
 

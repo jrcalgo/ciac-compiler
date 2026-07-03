@@ -74,7 +74,7 @@ async def handle_message_once(payload: {{ payload_type }}) -> None:
     result = dict(payload)
 {%- endif %}
 {%- if worker.needs_db %}
-    async with get_sessionmaker()() as session:
+    async with {{ worker.session_with }}:
 {{ emit_steps(worker.steps, "        ") }}
 {%- else %}
 {{ emit_steps(worker.steps, "    ") }}

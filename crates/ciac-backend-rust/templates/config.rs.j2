@@ -5,12 +5,12 @@
 
 #[derive(Debug, Clone)]
 pub struct Config {
-{%- if c.has_db %}
-    pub database_url: String,
-{%- endif %}
-{%- if c.has_cache %}
-    pub redis_url: String,
-{%- endif %}
+{%- for inst in c.db_instances %}
+    pub {{ inst.url_field }}: String,
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+    pub {{ inst.url_field }}: String,
+{%- endfor %}
 {%- if c.has_queue %}
     pub nats_url: String,
 {%- endif %}
@@ -22,15 +22,15 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Self {
         Self {
-{%- if c.has_db %}
-            database_url: env_or(
-                "DATABASE_URL",
-                "postgres://postgres:postgres@localhost:5432/{{ c.module }}",
+{%- for inst in c.db_instances %}
+            {{ inst.url_field }}: env_or(
+                "{{ inst.env_var }}",
+                "postgres://postgres:postgres@localhost:5432/{{ inst.db_name }}",
             ),
-{%- endif %}
-{%- if c.has_cache %}
-            redis_url: env_or("REDIS_URL", "redis://localhost:6379/0"),
-{%- endif %}
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+            {{ inst.url_field }}: env_or("{{ inst.env_var }}", "redis://localhost:6379/{{ inst.redis_db }}"),
+{%- endfor %}
 {%- if c.has_queue %}
             nats_url: env_or("NATS_URL", "nats://localhost:4222"),
 {%- endif %}

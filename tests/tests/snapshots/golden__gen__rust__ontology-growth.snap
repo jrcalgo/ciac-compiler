@@ -88,42 +88,55 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/media_ops
-      REDIS_URL: redis://cache:6379/0
+      DATABASE_URL_MAIN: postgres://postgres:postgres@db-main:5432/media_ops_main
+      DATABASE_URL_ANALYTICS: postgres://postgres:postgres@db-analytics:5432/media_ops_analytics
+      REDIS_URL_HOT: redis://cache-hot:6379/0
       NATS_URL: nats://queue:4222
     depends_on:
-      - db
-      - cache
+      - db-main
+      - db-analytics
+      - cache-hot
       - queue
 
   workers:
     build: .
     command: ["workers"]
     environment:
-      DATABASE_URL: postgres://postgres:postgres@db:5432/media_ops
-      REDIS_URL: redis://cache:6379/0
+      DATABASE_URL_MAIN: postgres://postgres:postgres@db-main:5432/media_ops_main
+      DATABASE_URL_ANALYTICS: postgres://postgres:postgres@db-analytics:5432/media_ops_analytics
+      REDIS_URL_HOT: redis://cache-hot:6379/0
       NATS_URL: nats://queue:4222
     depends_on:
-      - db
-      - cache
+      - db-main
+      - db-analytics
+      - cache-hot
       - queue
 
-  db:
+  db-main:
     image: postgres:16
     environment:
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: media_ops
+      POSTGRES_DB: media_ops_main
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - db-main-data:/var/lib/postgresql/data
 
-  cache:
+  db-analytics:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: media_ops_analytics
+    volumes:
+      - db-analytics-data:/var/lib/postgresql/data
+
+  cache-hot:
     image: redis:7
 
   queue:
     image: nats:2
 
 volumes:
-  db-data:
+  db-main-data:
+  db-analytics-data:
 ============================================================
 src/bin/workers.rs
 ============================================================
@@ -152,19 +165,24 @@ src/config.rs
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
-    pub redis_url: String,
+    pub database_url_main: String,
+    pub database_url_analytics: String,
+    pub redis_url_hot: String,
     pub nats_url: String,
 }
 
 impl Config {
     pub fn from_env() -> Self {
         Self {
-            database_url: env_or(
-                "DATABASE_URL",
-                "postgres://postgres:postgres@localhost:5432/media_ops",
+            database_url_main: env_or(
+                "DATABASE_URL_MAIN",
+                "postgres://postgres:postgres@localhost:5432/media_ops_main",
             ),
-            redis_url: env_or("REDIS_URL", "redis://localhost:6379/0"),
+            database_url_analytics: env_or(
+                "DATABASE_URL_ANALYTICS",
+                "postgres://postgres:postgres@localhost:5432/media_ops_analytics",
+            ),
+            redis_url_hot: env_or("REDIS_URL_HOT", "redis://localhost:6379/0"),
             nats_url: env_or("NATS_URL", "nats://localhost:4222"),
         }
     }
@@ -453,7 +471,7 @@ pub struct RecordAnalytics<'a> {
 impl<'a> RecordAnalytics<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self {
-            db: &state.db,
+            db: &state.db_analytics,
         }
     }
 
@@ -488,8 +506,8 @@ pub struct StoreVideo<'a> {
 impl<'a> StoreVideo<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self {
-            db: &state.db,
-            cache: &state.cache,
+            db: &state.db_main,
+            cache: &state.cache_hot,
         }
     }
 
@@ -510,20 +528,27 @@ pub struct AppState {
     pub config: Config,
     /// Lazy pool: connections are established on first use, so the server
     /// starts (and compiles) without a running database.
-    pub db: sqlx::PgPool,
-    pub cache: redis::Client,
+    pub db_main: sqlx::PgPool,
+    /// Lazy pool: connections are established on first use, so the server
+    /// starts (and compiles) without a running database.
+    pub db_analytics: sqlx::PgPool,
+    pub cache_hot: redis::Client,
     pub queue: async_nats::Client,
 }
 
 impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
-        let db = sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url)?;
-        let cache = redis::Client::open(config.redis_url.as_str())?;
+        let db_main =
+            sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url_main)?;
+        let db_analytics =
+            sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url_analytics)?;
+        let cache_hot = redis::Client::open(config.redis_url_hot.as_str())?;
         let queue = async_nats::connect(&config.nats_url).await?;
         Ok(Self {
             config,
-            db,
-            cache,
+            db_main,
+            db_analytics,
+            cache_hot,
             queue,
         })
     }

@@ -31,10 +31,10 @@ impl{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {{ service.c
     pub fn new(state: &'a AppState) -> Self {
         Self {
 {%- if service.needs_db %}
-            db: &state.db,
+            db: &state.{{ service.rust_db_field }},
 {%- endif %}
 {%- if service.needs_cache %}
-            cache: &state.cache,
+            cache: &state.{{ service.rust_cache_field }},
 {%- endif %}
         }
     }

@@ -161,7 +161,6 @@ app/api/upload.py
 Pipeline: Auth -> StoreVideo -> publish media.uploaded -> Return
 """
 
-
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -185,10 +184,7 @@ async def upload(
 ) -> dict[str, Any]:
     result = payload
 
-    result = await StoreVideo(
-    session=session
-    , 
-    cache=get_cache()    ).handle(result)
+    result = await StoreVideo(session=session, cache=get_cache()).handle(result)
     await publish("media.uploaded", result.model_dump(mode="json"))
     return {"status": "accepted", "data": result.model_dump(mode="json")}
 ============================================================
@@ -708,7 +704,6 @@ Consumes `media.transcoded` in queue group `notifier`
 so replicas of this worker load-balance messages between them.
 """
 
-
 import asyncio
 import logging
 import nats
@@ -731,10 +726,7 @@ async def handle_message_once(payload: Video) -> None:
     result = payload
     async with get_sessionmaker()() as session:
 
-        result = await Notify(
-        session=session
-        , 
-        cache=get_cache()        ).handle(result)
+        result = await Notify(session=session, cache=get_cache()).handle(result)
 
 
 async def handle_message(payload: Video) -> None:
@@ -769,7 +761,6 @@ Consumes `media.uploaded` in queue group `transcoder`
 so replicas of this worker load-balance messages between them.
 """
 
-
 import asyncio
 import logging
 import nats
@@ -793,10 +784,7 @@ async def handle_message_once(payload: Video) -> None:
     result = payload
     async with get_sessionmaker()() as session:
 
-        result = await Transcode(
-        session=session
-        , 
-        cache=get_cache()        ).handle(result)
+        result = await Transcode(session=session, cache=get_cache()).handle(result)
         await publish("media.transcoded", result.model_dump(mode="json"))
 
 

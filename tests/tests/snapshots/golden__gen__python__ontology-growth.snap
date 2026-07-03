@@ -77,7 +77,6 @@ app/api/upload.py
 Pipeline: StoreVideo -> RecordAnalytics -> publish media_ops.uploaded -> Return
 """
 
-
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -100,14 +99,8 @@ async def upload(
 ) -> dict[str, Any]:
     result = payload
 
-    result = await StoreVideo(
-    session=session
-    , 
-    cache=get_cache()    ).handle(result)
-    result = await RecordAnalytics(
-    session=session
-    
-        ).handle(result)
+    result = await StoreVideo(session=session, cache=get_cache()).handle(result)
+    result = await RecordAnalytics(session=session).handle(result)
     await publish("media_ops.uploaded", result.model_dump(mode="json"))
     return {"status": "accepted", "data": result.model_dump(mode="json")}
 ============================================================
@@ -308,7 +301,6 @@ This file is yours: the compiler wires `IndexVideo` into its
 pipelines, and you implement the business logic in `handle`.
 """
 
-
 from app.schemas import Video
 
 
@@ -338,7 +330,6 @@ This file is yours: the compiler wires `NotifyUser` into its
 pipelines, and you implement the business logic in `handle`.
 """
 
-
 from app.schemas import Video
 
 
@@ -366,7 +357,6 @@ app/services/record_analytics.py
 This file is yours: the compiler wires `RecordAnalytics` into its
 pipelines, and you implement the business logic in `handle`.
 """
-
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas import Video
@@ -460,7 +450,6 @@ Consumes `media_ops.uploaded` in queue group `indexer`
 so replicas of this worker load-balance messages between them.
 """
 
-
 import asyncio
 import logging
 import nats
@@ -481,10 +470,7 @@ logger = logging.getLogger(__name__)
 async def handle_message_once(payload: Video) -> None:
     result = payload
 
-    result = await IndexVideo(
-    
-    
-        ).handle(result)
+    result = await IndexVideo().handle(result)
     await publish("media_ops.indexed", result.model_dump(mode="json"))
 
 
@@ -520,7 +506,6 @@ Consumes `media_ops.indexed` in queue group `notifier`
 so replicas of this worker load-balance messages between them.
 """
 
-
 import asyncio
 import logging
 import nats
@@ -540,10 +525,7 @@ logger = logging.getLogger(__name__)
 async def handle_message_once(payload: Video) -> None:
     result = payload
 
-    result = await NotifyUser(
-    
-    
-        ).handle(result)
+    result = await NotifyUser().handle(result)
 
 
 async def handle_message(payload: Video) -> None:

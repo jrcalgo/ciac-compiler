@@ -88,7 +88,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "ciac"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "ciac-backend-python",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-backend-python"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ciac-codegen",
  "ciac-diagnostics",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-backend-rust"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ciac-codegen",
  "ciac-diagnostics",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-codegen"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ciac-ir",
  "heck",
@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-diagnostics"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ariadne",
  "serde",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-integration-tests"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ciac-backend-python",
  "ciac-backend-rust",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-ir"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ciac-diagnostics",
  "serde",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-sema"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ciac-diagnostics",
  "ciac-ir",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-syntax"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "ciac-diagnostics",
  "logos",

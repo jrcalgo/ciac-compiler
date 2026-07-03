@@ -80,7 +80,6 @@ app/api/upload.py
 Pipeline: Auth -> StoreVideo -> publish video_platform.events -> Return
 """
 
-
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -104,10 +103,7 @@ async def upload(
     result: dict[str, Any] = dict(payload)
     result["subject"] = claims.get("sub")
 
-    result = await StoreVideo(
-    session=session
-    , 
-    cache=get_cache()    ).handle(result)
+    result = await StoreVideo(session=session, cache=get_cache()).handle(result)
     await publish("video_platform.events", result)
     return {"status": "accepted", "data": result}
 ============================================================
@@ -481,7 +477,6 @@ Consumes `video_platform.events` in queue group `transcoder`
 so replicas of this worker load-balance messages between them.
 """
 
-
 import asyncio
 import logging
 import json
@@ -507,14 +502,8 @@ async def handle_message_once(payload: dict[str, Any]) -> None:
     result = dict(payload)
     async with get_sessionmaker()() as session:
 
-        result = await Transcode(
-        session=session
-        , 
-        cache=get_cache()        ).handle(result)
-        result = await SaveResult(
-        session=session
-        , 
-        cache=get_cache()        ).handle(result)
+        result = await Transcode(session=session, cache=get_cache()).handle(result)
+        result = await SaveResult(session=session, cache=get_cache()).handle(result)
 
 
 async def handle_message(payload: dict[str, Any]) -> None:

@@ -77,7 +77,6 @@ app/api/submit.py
 Pipeline: Validate -> publish ingest.events -> Return
 """
 
-
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -97,10 +96,7 @@ async def submit(
 ) -> dict[str, Any]:
     result: dict[str, Any] = dict(payload)
 
-    result = await Validate(
-    session=session
-    
-        ).handle(result)
+    result = await Validate(session=session).handle(result)
     await publish("ingest.events", result)
     return {"status": "accepted", "data": result}
 ============================================================
@@ -263,7 +259,6 @@ pipelines, and you implement the business logic in `handle`.
 """
 
 from typing import Any
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -294,7 +289,6 @@ pipelines, and you implement the business logic in `handle`.
 """
 
 from typing import Any
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -325,7 +319,6 @@ pipelines, and you implement the business logic in `handle`.
 """
 
 from typing import Any
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -413,7 +406,6 @@ Consumes `ingest.events` in queue group `processor`
 so replicas of this worker load-balance messages between them.
 """
 
-
 import asyncio
 import logging
 import json
@@ -438,14 +430,8 @@ async def handle_message_once(payload: dict[str, Any]) -> None:
     result = dict(payload)
     async with get_sessionmaker()() as session:
 
-        result = await Enrich(
-        session=session
-        
-                ).handle(result)
-        result = await Store(
-        session=session
-        
-                ).handle(result)
+        result = await Enrich(session=session).handle(result)
+        result = await Store(session=session).handle(result)
 
 
 async def handle_message(payload: dict[str, Any]) -> None:

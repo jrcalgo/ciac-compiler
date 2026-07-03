@@ -156,6 +156,10 @@ pub struct HandlerRef {
     pub needs_db: bool,
     pub needs_cache: bool,
     pub bindings: Vec<BindingCtx>,
+    /// Precomputed Python constructor arguments for invoking this handler
+    /// from a route/worker, e.g. `session=session, cache=get_cache()`.
+    /// Keeps templates free of whitespace gymnastics.
+    pub py_args: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -532,12 +536,22 @@ fn step_ctxs(
 fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     let node = ir.node(id);
     let name = node.component.name().unwrap_or_default().to_owned();
+    let needs_db = touches(ir, id, NodeKind::Database);
+    let needs_cache = touches(ir, id, NodeKind::Cache);
+    let mut args = Vec::new();
+    if needs_db {
+        args.push("session=session".to_owned());
+    }
+    if needs_cache {
+        args.push("cache=get_cache()".to_owned());
+    }
     HandlerRef {
         module: name.to_snake_case(),
         class_name: name,
-        needs_db: touches(ir, id, NodeKind::Database),
-        needs_cache: touches(ir, id, NodeKind::Cache),
+        needs_db,
+        needs_cache,
         bindings: bindings_of(ir, id),
+        py_args: args.join(", "),
     }
 }
 

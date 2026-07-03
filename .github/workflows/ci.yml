@@ -32,7 +32,7 @@ jobs:
       - run: cargo test --workspace
 
   generated-python:
-    name: Validate generated Python project
+    name: Validate generated Python projects (all examples)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,26 +41,42 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: Generate project from the flagship example
-        run: cargo run -p ciac -- build examples/video-platform.ciac --target python --out /tmp/generated-python
-      - name: Lint generated code
-        working-directory: /tmp/generated-python
+      - name: Build the compiler
+        run: cargo build -p ciac
+      - name: Generate, lint, and test every example
         run: |
-          uv sync
-          uv run ruff check .
-      - name: Run generated smoke tests
-        working-directory: /tmp/generated-python
-        run: uv run pytest -q
+          set -euo pipefail
+          for src in examples/*.ciac; do
+            name="$(basename "$src" .ciac)"
+            out="/tmp/gen-py-$name"
+            echo "::group::$name"
+            cargo run -q -p ciac -- build "$src" --target python --out "$out"
+            for project in $(find "$out" -name pyproject.toml -exec dirname {} \;); do
+              (cd "$project" && uv sync -q && uv run ruff check . && uv run pytest -q)
+            done
+            echo "::endgroup::"
+          done
 
   generated-rust:
-    name: Validate generated Rust project
+    name: Validate generated Rust projects (all examples)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Generate project from the flagship example
-        run: cargo run -p ciac -- build examples/video-platform.ciac --target rust --out /tmp/generated-rust
-      - name: Type-check generated code
-        working-directory: /tmp/generated-rust
-        run: cargo check
+      - name: Build the compiler
+        run: cargo build -p ciac
+      - name: Generate and type-check every example
+        run: |
+          set -euo pipefail
+          for src in examples/*.ciac; do
+            name="$(basename "$src" .ciac)"
+            out="/tmp/gen-rs-$name"
+            echo "::group::$name"
+            cargo run -q -p ciac -- build "$src" --target rust --out "$out"
+            for project in $(find "$out" -name Cargo.toml -exec dirname {} \;); do
+              (cd "$project" && cargo check 2>&1 | tee /tmp/check.log \
+                && [ "$(grep -cE '^(error|warning)' /tmp/check.log)" = "0" ])
+            done
+            echo "::endgroup::"
+          done

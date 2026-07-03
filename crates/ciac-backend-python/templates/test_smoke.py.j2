@@ -38,7 +38,11 @@ async def test_health() -> None:
 @pytest.mark.anyio
 async def test_{{ api.snake }}_requires_auth() -> None:
     async with _client() as client:
-        response = await client.post("{{ api.route }}", json={})
+{%- if api.has_body %}
+        response = await client.{{ api.method_lower }}("{{ api.route }}", json={})
+{%- else %}
+        response = await client.{{ api.method_lower }}("{{ api.route }}")
+{%- endif %}
     assert response.status_code in (401, 403)
 {%- endif %}
 {%- endfor %}

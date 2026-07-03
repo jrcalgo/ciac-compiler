@@ -3,14 +3,10 @@
 Consumes `{{ worker.subject }}` in queue group `{{ worker.queue_group }}`
 so replicas of this worker load-balance messages between them.
 """
-{% macro emit_steps(steps, indent) -%}
+{%- macro emit_steps(steps, indent) -%}
 {%- for step in steps %}
 {%- if step.kind == "handler" %}
-{{ indent }}result = await {{ step.handler.class_name }}(
-{{ indent }}    {%- if step.handler.needs_db %}session=session{% endif %}
-{{ indent }}    {%- if step.handler.needs_db and step.handler.needs_cache %}, {% endif %}
-{{ indent }}    {%- if step.handler.needs_cache %}cache=get_cache(){% endif -%}
-{{ indent }}).handle(result)
+{{ indent }}result = await {{ step.handler.class_name }}({{ step.handler.py_args }}).handle(result)
 {%- elif step.kind == "publish" %}
 {%- if worker.payload %}
 {{ indent }}await publish("{{ step.subject }}", result.model_dump(mode="json"))

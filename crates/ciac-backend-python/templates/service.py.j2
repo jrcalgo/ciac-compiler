@@ -3,11 +3,11 @@
 This file is yours: the compiler wires `{{ service.class_name }}` into its
 pipelines, and you implement the business logic in `handle`.
 """
-
-{% if not service.payload -%}
+{% if not service.payload %}
 from typing import Any
-{% endif -%}
-{% if service.needs_cache %}
+{%- endif %}
+{%- if service.needs_cache %}
+
 from redis.asyncio import Redis
 {%- endif %}
 {%- if service.needs_db %}

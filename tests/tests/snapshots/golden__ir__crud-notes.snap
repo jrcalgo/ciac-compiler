@@ -23,7 +23,8 @@ expression: json
     {
       "id": 3,
       "kind": "Api",
-      "name": "Note"
+      "name": "Note",
+      "request": null
     },
     {
       "id": 4,
@@ -57,12 +58,14 @@ expression: json
       "kind": "DataFlow"
     }
   ],
+  "records": [],
   "pipelines": [],
   "resources": [
     {
       "name": "Note",
       "api": 3,
-      "service": 4
+      "service": 4,
+      "record": null
     }
   ],
   "event_streams": []

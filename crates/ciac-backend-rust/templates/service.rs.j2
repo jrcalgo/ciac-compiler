@@ -3,8 +3,11 @@
 //! This file is yours: the compiler wires `{{ service.class_name }}` into
 //! its pipelines, and you implement the business logic in `handle`.
 
+{% if service.payload -%}
+use crate::schemas::{{ service.payload.class_name }};
+{% endif -%}
 use crate::state::AppState;
-
+{% set payload_type = service.payload.class_name if service.payload else "serde_json::Value" %}
 /// Business logic for the `{{ service.class_name }}` step.
 #[derive(Debug)]
 pub struct {{ service.class_name }}{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {
@@ -34,10 +37,7 @@ impl{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {{ service.c
     }
 {%- endif %}
 
-    pub async fn handle(
-        &self,
-        payload: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    pub async fn handle(&self, payload: {{ payload_type }}) -> anyhow::Result<{{ payload_type }}> {
         // TODO: implement the {{ service.class_name }} step.
         Ok(payload)
     }

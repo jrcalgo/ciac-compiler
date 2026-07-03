@@ -15,6 +15,9 @@ pub mod auth;
 pub mod db;
 pub mod models;
 {%- endif %}
+{%- if c.records %}
+pub mod schemas;
+{%- endif %}
 {%- if c.services or c.resources %}
 pub mod services;
 {%- endif %}

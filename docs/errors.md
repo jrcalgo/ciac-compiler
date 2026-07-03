@@ -21,6 +21,9 @@ test.
 | CIAC0012 | error | duplicate capability |
 | CIAC0013 | error | unknown provider |
 | CIAC0014 | error | empty pipeline |
+| CIAC0015 | error | unknown type |
+| CIAC0016 | error | payload type mismatch |
+| CIAC0017 | error | unknown stream |
 
 ## Notes
 
@@ -34,3 +37,10 @@ test.
 - **CIAC0011** is reported at `ciac build` time when the selected
   backend cannot implement a declared component (e.g. `queue Kafka`
   with the bundled backends); choose another provider or target.
+- **CIAC0015** covers undeclared records referenced by `stream`/`api`/
+  `crud` declarations and unknown field types inside records.
+- **CIAC0016** is the publish-site type check: the pipeline's payload
+  type (its api's request record, or the consumed stream's record for
+  workers) must match the record of every stream it publishes to.
+- **CIAC0017** means `publish X` or `worker .. on X` references a
+  stream that no `stream X: <Record>;` declares.

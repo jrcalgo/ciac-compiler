@@ -165,6 +165,31 @@ error_codes! {
         "empty pipeline",
         "A pipeline must contain at least one step."
     ),
+    UnknownType = (
+        "CIAC0015",
+        Error,
+        "unknown type",
+        "A declaration references a type the program does not define: a \
+         stream, api, or crud names an undeclared record, or a record field \
+         uses an unknown type. Field types are String, Int, Float, Bool, \
+         Uuid, Timestamp, Json, or an inline `enum { A, B }`."
+    ),
+    TypeMismatch = (
+        "CIAC0016",
+        Error,
+        "payload type mismatch",
+        "A pipeline publishes to a stream whose record type differs from \
+         the pipeline's payload type. The payload type comes from the api's \
+         request record (or the consumed stream's record for workers); it \
+         must match the published stream's record."
+    ),
+    UnknownStream = (
+        "CIAC0017",
+        Error,
+        "unknown stream",
+        "A `publish` step or a worker's `on` clause references a stream \
+         that is not declared. Declare it with `stream <Name>: <Record>;`."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

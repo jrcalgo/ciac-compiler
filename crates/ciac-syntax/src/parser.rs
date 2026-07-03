@@ -90,6 +90,8 @@ impl Parser<'_> {
                 }
                 TokenKind::Service
                 | TokenKind::Use
+                | TokenKind::Record
+                | TokenKind::Stream
                 | TokenKind::Api
                 | TokenKind::Worker
                 | TokenKind::Pipeline
@@ -117,13 +119,18 @@ impl Parser<'_> {
         match self.peek().kind {
             TokenKind::Service => self.service_decl(),
             TokenKind::Use => self.use_block(),
-            TokenKind::Api => self.component_decl(Item::Api),
-            TokenKind::Worker => self.component_decl(Item::Worker),
-            TokenKind::Crud => self.component_decl(Item::Crud),
+            TokenKind::Record => self.record_decl(),
+            TokenKind::Stream => self.stream_decl(),
+            TokenKind::Api => self.api_decl(),
+            TokenKind::Worker => self.worker_decl(),
+            TokenKind::Crud => self.crud_decl(),
             TokenKind::Events => self.component_decl(Item::Events),
             TokenKind::Pipeline => self.pipeline_decl(),
             _ => {
-                self.error_expected("a declaration (`service`, `use`, `api`, `worker`, `crud`, `events`, or `pipeline`)");
+                self.error_expected(
+                    "a declaration (`service`, `use`, `record`, `stream`, `api`, `worker`, \
+                     `crud`, `events`, or `pipeline`)",
+                );
                 None
             }
         }
@@ -147,6 +154,133 @@ impl Parser<'_> {
             span: kw.span.to(semi.span),
             name,
         }))
+    }
+
+    /// `api <Name>[: <Record>];`
+    fn api_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        let request = match self.eat(TokenKind::Colon) {
+            Some(_) => Some(self.expect_ident()?),
+            None => None,
+        };
+        let semi = self.expect(TokenKind::Semi)?;
+        Some(Item::Api(ApiDecl {
+            span: kw.span.to(semi.span),
+            name,
+            request,
+        }))
+    }
+
+    /// `worker <Name> [on <Stream>];`
+    fn worker_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        let stream = match self.eat(TokenKind::On) {
+            Some(_) => Some(self.expect_ident()?),
+            None => None,
+        };
+        let semi = self.expect(TokenKind::Semi)?;
+        Some(Item::Worker(WorkerDecl {
+            span: kw.span.to(semi.span),
+            name,
+            stream,
+        }))
+    }
+
+    /// `crud <Name>[: <Record>];`
+    fn crud_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        let record = match self.eat(TokenKind::Colon) {
+            Some(_) => Some(self.expect_ident()?),
+            None => None,
+        };
+        let semi = self.expect(TokenKind::Semi)?;
+        Some(Item::Crud(CrudDecl {
+            span: kw.span.to(semi.span),
+            name,
+            record,
+        }))
+    }
+
+    /// `stream <Name>: <Record>;`
+    fn stream_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let record = self.expect_ident()?;
+        let semi = self.expect(TokenKind::Semi)?;
+        Some(Item::Stream(StreamDecl {
+            span: kw.span.to(semi.span),
+            name,
+            record,
+        }))
+    }
+
+    /// `record <Name> { field: Type; .. }`
+    fn record_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Ident => {
+                    let field_name = self.expect_ident()?;
+                    if self.expect(TokenKind::Colon).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    let Some(ty) = self.type_expr() else {
+                        self.recover_inside_block();
+                        continue;
+                    };
+                    let span = field_name.span.to(self.peek().span);
+                    if self.expect(TokenKind::Semi).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    fields.push(Field {
+                        name: field_name,
+                        ty,
+                        span,
+                    });
+                }
+                _ => {
+                    self.error_expected("a field like `title: String;` or `}`");
+                    self.recover_inside_block();
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some(Item::Record(RecordDecl {
+            span: kw.span.to(close.span),
+            name,
+            fields,
+        }))
+    }
+
+    /// A field type: a named type or `enum { A, B, .. }`.
+    fn type_expr(&mut self) -> Option<TypeExpr> {
+        if let Some(kw) = self.eat(TokenKind::Enum) {
+            self.expect(TokenKind::LBrace)?;
+            let mut variants = vec![self.expect_ident()?];
+            while self.eat(TokenKind::Comma).is_some() {
+                variants.push(self.expect_ident()?);
+            }
+            let close = self.expect(TokenKind::RBrace)?;
+            return Some(TypeExpr::Enum {
+                variants,
+                span: kw.span.to(close.span),
+            });
+        }
+        if self.at(TokenKind::Ident) {
+            return Some(TypeExpr::Named(self.expect_ident()?));
+        }
+        self.error_expected("a type like `String` or `enum { A, B }`");
+        None
     }
 
     fn use_block(&mut self) -> Option<Item> {
@@ -212,7 +346,7 @@ impl Parser<'_> {
         self.expect(TokenKind::Colon)?;
         let mut steps = Vec::new();
         loop {
-            steps.push(self.expect_ident()?);
+            steps.push(self.step_expr()?);
             if self.eat(TokenKind::Arrow).is_none() {
                 break;
             }
@@ -223,6 +357,17 @@ impl Parser<'_> {
             name,
             steps,
         }))
+    }
+
+    fn step_expr(&mut self) -> Option<StepExpr> {
+        if self.eat(TokenKind::Publish).is_some() {
+            return Some(StepExpr::Publish(self.expect_ident()?));
+        }
+        if self.at(TokenKind::Ident) {
+            return Some(StepExpr::Name(self.expect_ident()?));
+        }
+        self.error_expected("a step name or `publish <Stream>`");
+        None
     }
 }
 
@@ -256,8 +401,79 @@ mod tests {
         let Item::Pipeline(pipeline) = &program.items[3] else {
             panic!("expected pipeline");
         };
-        let steps: Vec<_> = pipeline.steps.iter().map(|s| s.text.as_str()).collect();
+        let steps: Vec<&str> = pipeline
+            .steps
+            .iter()
+            .map(|s| match s {
+                StepExpr::Name(ident) | StepExpr::Publish(ident) => ident.text.as_str(),
+            })
+            .collect();
         assert_eq!(steps, ["Auth", "StoreVideo", "Queue", "Return"]);
+    }
+
+    #[test]
+    fn parses_record_with_enum_field() {
+        let (program, diags) =
+            parse_src("record Video { id: Uuid; title: String; status: enum { Pending, Ready }; }");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Record(record) = &program.items[0] else {
+            panic!("expected record");
+        };
+        assert_eq!(record.name.text, "Video");
+        assert_eq!(record.fields.len(), 3);
+        let TypeExpr::Enum { variants, .. } = &record.fields[2].ty else {
+            panic!("expected enum field");
+        };
+        let names: Vec<&str> = variants.iter().map(|v| v.text.as_str()).collect();
+        assert_eq!(names, ["Pending", "Ready"]);
+    }
+
+    #[test]
+    fn parses_stream_and_typed_components() {
+        let (program, diags) = parse_src(
+            "stream Uploaded: Video;\napi Upload: Video;\nworker T on Uploaded;\ncrud Note: Video;\n",
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Stream(stream) = &program.items[0] else {
+            panic!("expected stream");
+        };
+        assert_eq!(stream.record.text, "Video");
+        let Item::Api(api) = &program.items[1] else {
+            panic!("expected api");
+        };
+        assert_eq!(api.request.as_ref().map(|r| r.text.as_str()), Some("Video"));
+        let Item::Worker(worker) = &program.items[2] else {
+            panic!("expected worker");
+        };
+        assert_eq!(
+            worker.stream.as_ref().map(|s| s.text.as_str()),
+            Some("Uploaded")
+        );
+        let Item::Crud(crud) = &program.items[3] else {
+            panic!("expected crud");
+        };
+        assert_eq!(crud.record.as_ref().map(|r| r.text.as_str()), Some("Video"));
+    }
+
+    #[test]
+    fn parses_publish_step() {
+        let (program, diags) = parse_src("pipeline Upload: Work -> publish Uploaded -> Return;");
+        assert!(diags.is_empty());
+        let Item::Pipeline(pipeline) = &program.items[0] else {
+            panic!("expected pipeline");
+        };
+        assert!(matches!(&pipeline.steps[1], StepExpr::Publish(s) if s.text == "Uploaded"));
+    }
+
+    #[test]
+    fn recovers_inside_record_body() {
+        let (program, diags) = parse_src("record R { good: String; bad ; also: Int; }");
+        assert_eq!(diags.codes(), vec![ErrorCode::UnexpectedToken]);
+        let Item::Record(record) = &program.items[0] else {
+            panic!("expected record");
+        };
+        let names: Vec<&str> = record.fields.iter().map(|f| f.name.text.as_str()).collect();
+        assert_eq!(names, ["good", "also"]);
     }
 
     #[test]

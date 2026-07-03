@@ -28,7 +28,8 @@ expression: json
     {
       "id": 4,
       "kind": "Api",
-      "name": "Upload"
+      "name": "Upload",
+      "request": null
     },
     {
       "id": 5,
@@ -42,11 +43,18 @@ expression: json
     },
     {
       "id": 7,
+      "kind": "Stream",
+      "name": "Events",
+      "subject": "video_platform.events",
+      "record": null
+    },
+    {
+      "id": 8,
       "kind": "Service",
       "name": "Transcode"
     },
     {
-      "id": 8,
+      "id": 9,
       "kind": "Service",
       "name": "SaveResult"
     }
@@ -78,57 +86,65 @@ expression: json
     },
     {
       "id": 4,
-      "from": 6,
+      "from": 7,
       "to": 3,
-      "kind": "AsyncMessage"
+      "kind": "DependsOn"
     },
     {
       "id": 5,
-      "from": 3,
-      "to": 5,
+      "from": 6,
+      "to": 7,
       "kind": "AsyncMessage"
     },
     {
       "id": 6,
       "from": 7,
-      "to": 1,
-      "kind": "DataFlow"
+      "to": 5,
+      "kind": "AsyncMessage"
     },
     {
       "id": 7,
-      "from": 7,
-      "to": 2,
+      "from": 8,
+      "to": 1,
       "kind": "DataFlow"
     },
     {
       "id": 8,
-      "from": 5,
-      "to": 7,
-      "kind": "RequestFlow"
-    },
-    {
-      "id": 9,
-      "from": 8,
-      "to": 1,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 10,
       "from": 8,
       "to": 2,
       "kind": "DataFlow"
     },
     {
-      "id": 11,
-      "from": 7,
+      "id": 9,
+      "from": 5,
       "to": 8,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 9,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 9,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 12,
+      "from": 8,
+      "to": 9,
       "kind": "RequestFlow"
     }
   ],
+  "records": [],
   "pipelines": [
     {
       "name": "Upload",
       "owner": 4,
+      "payload": null,
       "steps": [
         {
           "step": "Auth",
@@ -139,8 +155,8 @@ expression: json
           "node": 6
         },
         {
-          "step": "Queue",
-          "node": 3
+          "step": "Publish",
+          "stream": 7
         },
         {
           "step": "Return"
@@ -150,14 +166,15 @@ expression: json
     {
       "name": "Transcoder",
       "owner": 5,
+      "payload": null,
       "steps": [
         {
           "step": "Handler",
-          "node": 7
+          "node": 8
         },
         {
           "step": "Handler",
-          "node": 8
+          "node": 9
         }
       ]
     }

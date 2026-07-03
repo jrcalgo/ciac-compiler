@@ -3,6 +3,7 @@
 //! so backends can match exhaustively and unsupported combinations are
 //! caught at compile time of the compiler itself.
 
+use crate::record::RecordId;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -45,6 +46,7 @@ pub enum NodeKind {
     Database,
     Cache,
     Queue,
+    Stream,
     Auth,
     Logging,
     Metrics,
@@ -58,6 +60,8 @@ pub enum Component {
     /// An HTTP API surface (one router / group of endpoints).
     Api {
         name: String,
+        /// Request body record, when the api is typed.
+        request: Option<RecordId>,
     },
     /// A business-logic handler invoked from pipelines.
     Service {
@@ -75,6 +79,13 @@ pub enum Component {
     },
     Queue {
         engine: QueueEngine,
+    },
+    /// A named message channel on the queue broker. `record` is the
+    /// payload type it carries (`None` = untyped JSON).
+    Stream {
+        name: String,
+        subject: String,
+        record: Option<RecordId>,
     },
     Auth {
         scheme: AuthScheme,
@@ -96,6 +107,7 @@ impl Component {
             Component::Database { .. } => NodeKind::Database,
             Component::Cache { .. } => NodeKind::Cache,
             Component::Queue { .. } => NodeKind::Queue,
+            Component::Stream { .. } => NodeKind::Stream,
             Component::Auth { .. } => NodeKind::Auth,
             Component::Logging { .. } => NodeKind::Logging,
             Component::Metrics { .. } => NodeKind::Metrics,
@@ -106,9 +118,10 @@ impl Component {
     /// Infrastructure components are identified by their kind instead.
     pub fn name(&self) -> Option<&str> {
         match self {
-            Component::Api { name } | Component::Service { name } | Component::Worker { name } => {
-                Some(name)
-            }
+            Component::Api { name, .. }
+            | Component::Service { name }
+            | Component::Worker { name }
+            | Component::Stream { name, .. } => Some(name),
             _ => None,
         }
     }
@@ -116,12 +129,13 @@ impl Component {
     /// A stable human-readable label used in graph dumps and diagnostics.
     pub fn label(&self) -> String {
         match self {
-            Component::Api { name } => format!("api {name}"),
+            Component::Api { name, .. } => format!("api {name}"),
             Component::Service { name } => format!("service {name}"),
             Component::Worker { name } => format!("worker {name}"),
             Component::Database { engine } => format!("database {engine:?}"),
             Component::Cache { engine } => format!("cache {engine:?}"),
             Component::Queue { engine } => format!("queue {engine:?}"),
+            Component::Stream { name, .. } => format!("stream {name}"),
             Component::Auth { scheme } => format!("auth {scheme:?}"),
             Component::Logging { provider } => format!("logging {provider:?}"),
             Component::Metrics { provider } => format!("metrics {provider:?}"),

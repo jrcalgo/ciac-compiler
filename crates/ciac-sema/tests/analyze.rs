@@ -2,7 +2,7 @@
 //! graph shape out.
 
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
-use ciac_ir::{EdgeKind, NodeKind, NormalizedIr, Step};
+use ciac_ir::{Component, EdgeKind, FieldType, NodeKind, NormalizedIr, Step};
 
 fn analyze(src: &str) -> (Option<NormalizedIr>, Diagnostics) {
     let mut sources = SourceMap::new();
@@ -61,21 +61,33 @@ fn flagship_example_analyzes_cleanly() {
     assert!(targets.contains(&NodeKind::Database));
     assert!(targets.contains(&NodeKind::Cache));
 
-    // The worker consumes from the queue.
+    // The worker consumes from the default stream, which sits on the broker.
     let queue = ir.singleton(NodeKind::Queue).expect("queue node");
+    let stream = ir
+        .find_named(NodeKind::Stream, "Events")
+        .expect("default stream created for the legacy Queue step");
     let worker = ir
         .find_named(NodeKind::Worker, "Transcoder")
         .expect("worker");
     assert!(ir
-        .edges_from(queue.id)
+        .edges_from(stream.id)
         .any(|e| e.to == worker.id && e.kind == EdgeKind::AsyncMessage));
+    assert!(ir
+        .edges_from(stream.id)
+        .any(|e| e.to == queue.id && e.kind == EdgeKind::DependsOn));
 
     // Pipeline steps resolved in order.
     let api = ir.find_named(NodeKind::Api, "Upload").expect("api");
     let pipeline = ir.pipeline_of(api.id).expect("api pipeline");
     assert!(matches!(pipeline.steps[0], Step::Auth { .. }));
     assert!(matches!(pipeline.steps[1], Step::Handler { .. }));
-    assert!(matches!(pipeline.steps[2], Step::Queue { .. }));
+    let Step::Publish { stream } = pipeline.steps[2] else {
+        panic!("Queue step lowers to a publish on the default stream");
+    };
+    let Component::Stream { subject, .. } = &ir.node(stream).component else {
+        panic!("publish target is a stream node");
+    };
+    assert_eq!(subject, "video_platform.events");
     assert!(matches!(pipeline.steps[3], Step::Return));
 }
 
@@ -109,7 +121,10 @@ fn events_expands_into_queue_and_worker() {
     assert!(!diags.has_errors());
     let ir = ir.expect("valid program");
     assert_eq!(ir.event_streams.len(), 1);
-    assert_eq!(ir.event_streams[0].subject, "click");
+    let Component::Stream { subject, .. } = &ir.node(ir.event_streams[0].stream).component else {
+        panic!("events expansion creates a stream node");
+    };
+    assert_eq!(subject, "t.click");
     let worker = ir.node(ir.event_streams[0].worker);
     assert_eq!(worker.component.name(), Some("ClickConsumer"));
 }
@@ -184,6 +199,130 @@ fn unused_api_is_a_warning_not_an_error() {
 #[test]
 fn crud_requires_database() {
     let (ir, diags) = analyze("service X;\ncrud Note;\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::MissingCapability));
+}
+
+const TYPED_PLATFORM: &str = "\
+service Media;
+use { auth JWT; db Postgres; queue NATS; }
+record Video {
+    id: Uuid;
+    title: String;
+    status: enum { Pending, Ready };
+}
+stream Uploaded: Video;
+stream Notified: Video;
+api Upload: Video;
+worker Transcoder on Uploaded;
+worker Notifier on Notified;
+pipeline Upload: Auth -> StoreVideo -> publish Uploaded -> Return;
+pipeline Transcoder: Transcode -> publish Notified;
+pipeline Notifier: Notify;
+";
+
+#[test]
+fn typed_program_with_stream_fanout_analyzes_cleanly() {
+    let (ir, diags) = analyze(TYPED_PLATFORM);
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("valid program");
+
+    // Records resolved with typed fields.
+    let (video_id, video) = ir.records().next().expect("record exists");
+    assert_eq!(video.name, "Video");
+    assert_eq!(video.fields[0].ty, FieldType::Uuid);
+    assert!(matches!(video.fields[2].ty, FieldType::Enum { .. }));
+
+    // Streams are typed nodes; the api pipeline carries the record.
+    let uploaded = ir.find_named(NodeKind::Stream, "Uploaded").expect("stream");
+    let Component::Stream {
+        record, subject, ..
+    } = &uploaded.component
+    else {
+        panic!("stream node");
+    };
+    assert_eq!(*record, Some(video_id));
+    assert_eq!(subject, "media.uploaded");
+
+    let api = ir.find_named(NodeKind::Api, "Upload").expect("api");
+    let pipeline = ir.pipeline_of(api.id).expect("pipeline");
+    assert_eq!(pipeline.payload, Some(video_id));
+
+    // Worker chain: Uploaded -> Transcoder, whose pipeline republishes to
+    // a *different* stream — legal, no cycle.
+    let transcoder = ir
+        .find_named(NodeKind::Worker, "Transcoder")
+        .expect("worker");
+    assert!(ir
+        .edges_from(uploaded.id)
+        .any(|e| e.to == transcoder.id && e.kind == EdgeKind::AsyncMessage));
+    let worker_pipeline = ir.pipeline_of(transcoder.id).expect("worker pipeline");
+    assert_eq!(worker_pipeline.payload, Some(video_id));
+}
+
+#[test]
+fn republishing_to_consumed_stream_is_a_cycle() {
+    let (ir, diags) = analyze(
+        "service X;\nuse { queue NATS; }\nrecord E { id: Uuid; }\nstream S: E;\napi In: E;\nworker W on S;\npipeline In: publish S -> Return;\npipeline W: Work -> publish S;\n",
+    );
+    assert!(
+        ir.is_none(),
+        "worker republishing to its own stream must fail"
+    );
+    assert!(error_codes(&diags).contains(&ErrorCode::CyclicDependency));
+}
+
+#[test]
+fn publish_type_mismatch_is_reported() {
+    let (ir, diags) = analyze(
+        "service X;\nuse { queue NATS; }\nrecord A { id: Uuid; }\nrecord B { id: Uuid; }\nstream S: A;\napi In: B;\nworker W on S;\npipeline W: Work;\npipeline In: publish S -> Return;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::TypeMismatch));
+}
+
+#[test]
+fn untyped_pipeline_cannot_publish_to_typed_stream() {
+    let (ir, diags) = analyze(
+        "service X;\nuse { queue NATS; }\nrecord A { id: Uuid; }\nstream S: A;\napi In;\nworker W on S;\npipeline W: Work;\npipeline In: publish S -> Return;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::TypeMismatch));
+}
+
+#[test]
+fn unknown_stream_is_reported() {
+    let (ir, diags) = analyze(
+        "service X;\nuse { queue NATS; }\napi In;\npipeline In: publish Nowhere -> Return;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownStream));
+}
+
+#[test]
+fn unknown_record_and_field_type_are_reported() {
+    let (ir, diags) = analyze(
+        "service X;\nuse { queue NATS; }\nrecord R { bad: Nope; }\nstream S: Missing;\nworker W on S;\npipeline W: Work;\n",
+    );
+    assert!(ir.is_none());
+    let codes = error_codes(&diags);
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|c| **c == ErrorCode::UnknownType)
+            .count(),
+        2,
+        "both the bad field type and the missing record are reported: {codes:?}"
+    );
+}
+
+#[test]
+fn stream_requires_queue_capability() {
+    let (ir, diags) = analyze("service X;\nrecord A { id: Uuid; }\nstream S: A;\n");
     assert!(ir.is_none());
     assert!(error_codes(&diags).contains(&ErrorCode::MissingCapability));
 }

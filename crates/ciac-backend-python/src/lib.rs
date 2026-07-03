@@ -105,6 +105,9 @@ impl Backend for PythonBackend {
                 render("observability.py.j2", empty())?,
             );
         }
+        if !ctx.records.is_empty() {
+            project.add_file("app/schemas.py", render("schemas.py.j2", empty())?);
+        }
         if !ctx.resources.is_empty() {
             project.add_file("app/models.py", render("models.py.j2", empty())?);
         }

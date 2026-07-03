@@ -94,6 +94,9 @@ impl Backend for RustBackend {
             project.add_file("src/db.rs", render("db.rs.j2", empty())?);
             project.add_file("src/models.rs", render("models.rs.j2", empty())?);
         }
+        if !ctx.records.is_empty() {
+            project.add_file("src/schemas.rs", render("schemas.rs.j2", empty())?);
+        }
 
         project.add_file("src/routes/mod.rs", render("routes_mod.rs.j2", empty())?);
         for api in &ctx.apis {

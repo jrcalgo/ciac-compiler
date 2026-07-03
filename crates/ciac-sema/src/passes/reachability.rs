@@ -2,7 +2,7 @@
 
 use super::Pass;
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode};
-use ciac_ir::{Node, NodeKind, SystemGraph};
+use ciac_ir::{EdgeKind, Node, NodeKind, SystemGraph};
 
 pub struct Reachability;
 
@@ -45,7 +45,35 @@ impl Pass for Reachability {
                             diags,
                             node,
                             "queue is declared but never used",
-                            "publish to it with a `Queue` step or consume with a worker",
+                            "declare a stream, publish with `publish <Stream>`, or consume \
+                             with a worker",
+                        );
+                    }
+                }
+                NodeKind::Stream => {
+                    // Streams sit between publishers and consumers; a
+                    // missing side means dead topology. (The DependsOn
+                    // edge to the broker always exists and doesn't count.)
+                    let has_publisher = graph
+                        .edges_to(node.id)
+                        .any(|e| e.kind == EdgeKind::AsyncMessage);
+                    let has_consumer = graph
+                        .edges_from(node.id)
+                        .any(|e| e.kind == EdgeKind::AsyncMessage);
+                    if !has_publisher {
+                        warn(
+                            diags,
+                            node,
+                            "stream has no publisher",
+                            "publish to it from a pipeline with `publish <Stream>`",
+                        );
+                    }
+                    if !has_consumer {
+                        warn(
+                            diags,
+                            node,
+                            "stream has no consumer",
+                            "bind a worker to it with `worker <Name> on <Stream>;`",
                         );
                     }
                 }

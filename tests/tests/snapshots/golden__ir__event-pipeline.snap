@@ -18,7 +18,8 @@ expression: json
     {
       "id": 2,
       "kind": "Api",
-      "name": "Submit"
+      "name": "Submit",
+      "request": null
     },
     {
       "id": 3,
@@ -27,21 +28,35 @@ expression: json
     },
     {
       "id": 4,
+      "kind": "Stream",
+      "name": "PageView",
+      "subject": "ingest.page_view",
+      "record": null
+    },
+    {
+      "id": 5,
       "kind": "Worker",
       "name": "PageViewConsumer"
     },
     {
-      "id": 5,
+      "id": 6,
       "kind": "Service",
       "name": "Validate"
     },
     {
-      "id": 6,
+      "id": 7,
+      "kind": "Stream",
+      "name": "Events",
+      "subject": "ingest.events",
+      "record": null
+    },
+    {
+      "id": 8,
       "kind": "Service",
       "name": "Enrich"
     },
     {
-      "id": 7,
+      "id": 9,
       "kind": "Service",
       "name": "Store"
     }
@@ -49,15 +64,15 @@ expression: json
   "edges": [
     {
       "id": 0,
-      "from": 1,
-      "to": 4,
-      "kind": "AsyncMessage"
+      "from": 4,
+      "to": 1,
+      "kind": "DependsOn"
     },
     {
       "id": 1,
       "from": 4,
-      "to": 0,
-      "kind": "DataFlow"
+      "to": 5,
+      "kind": "AsyncMessage"
     },
     {
       "id": 2,
@@ -67,59 +82,73 @@ expression: json
     },
     {
       "id": 3,
-      "from": 2,
-      "to": 5,
-      "kind": "RequestFlow"
-    },
-    {
-      "id": 4,
-      "from": 5,
-      "to": 1,
-      "kind": "AsyncMessage"
-    },
-    {
-      "id": 5,
-      "from": 1,
-      "to": 3,
-      "kind": "AsyncMessage"
-    },
-    {
-      "id": 6,
       "from": 6,
       "to": 0,
       "kind": "DataFlow"
     },
     {
-      "id": 7,
-      "from": 3,
+      "id": 4,
+      "from": 2,
       "to": 6,
       "kind": "RequestFlow"
     },
     {
-      "id": 8,
+      "id": 5,
       "from": 7,
+      "to": 1,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 6,
+      "from": 6,
+      "to": 7,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 7,
+      "from": 7,
+      "to": 3,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 8,
+      "from": 8,
       "to": 0,
       "kind": "DataFlow"
     },
     {
       "id": 9,
-      "from": 6,
-      "to": 7,
+      "from": 3,
+      "to": 8,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 9,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 8,
+      "to": 9,
       "kind": "RequestFlow"
     }
   ],
+  "records": [],
   "pipelines": [
     {
       "name": "Submit",
       "owner": 2,
+      "payload": null,
       "steps": [
         {
           "step": "Handler",
-          "node": 5
+          "node": 6
         },
         {
-          "step": "Queue",
-          "node": 1
+          "step": "Publish",
+          "stream": 7
         },
         {
           "step": "Return"
@@ -129,14 +158,15 @@ expression: json
     {
       "name": "Processor",
       "owner": 3,
+      "payload": null,
       "steps": [
         {
           "step": "Handler",
-          "node": 6
+          "node": 8
         },
         {
           "step": "Handler",
-          "node": 7
+          "node": 9
         }
       ]
     }
@@ -145,8 +175,8 @@ expression: json
   "event_streams": [
     {
       "name": "PageView",
-      "worker": 4,
-      "subject": "page_view"
+      "stream": 4,
+      "worker": 5
     }
   ]
 }

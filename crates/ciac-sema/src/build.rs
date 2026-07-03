@@ -1,16 +1,25 @@
 //! AST → [`SystemGraph`] lowering.
 //!
-//! This stage resolves names, checks that constructs are backed by the
-//! capabilities the `use { .. }` block declares, and expands the
+//! This stage resolves names and types, checks that constructs are backed
+//! by the capabilities the `use { .. }` block declares, and expands the
 //! higher-level `crud`/`events` constructs into primitive components, so
 //! the passes in [`crate::passes`] and every backend see only primitives.
+//!
+//! Streams become graph nodes: publisher → stream → consumer edges make
+//! message topology (and cycle detection) per-stream. The v0.1 `Queue`
+//! step survives as sugar for publishing to an auto-created default
+//! stream (`<service>.events`).
 
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
 use ciac_ir::{
-    AuthScheme, CacheEngine, Component, DbEngine, EdgeKind, EventStream, LoggingProvider,
-    MetricsProvider, NodeId, NodeKind, Pipeline, QueueEngine, Resource, Step, SystemGraph,
+    AuthScheme, CacheEngine, Component, DbEngine, EdgeKind, EventStream, FieldType,
+    LoggingProvider, MetricsProvider, NodeId, NodeKind, Pipeline, QueueEngine, Record, RecordField,
+    RecordId, Resource, Step, SystemGraph,
 };
-use ciac_syntax::ast::{ComponentDecl, Ident, Item, PipelineDecl, Program, UseEntry};
+use ciac_syntax::ast::{
+    ApiDecl, ComponentDecl, CrudDecl, Ident, Item, PipelineDecl, Program, RecordDecl, StepExpr,
+    StreamDecl, TypeExpr, UseEntry, WorkerDecl,
+};
 use heck::ToSnakeCase;
 use std::collections::HashMap;
 
@@ -21,11 +30,20 @@ pub fn build_graph(program: &Program, diags: &mut Diagnostics) -> SystemGraph {
 struct Builder<'d> {
     diags: &'d mut Diagnostics,
     graph: SystemGraph,
-    /// Declared component names (apis, workers, crud/events resources) with
-    /// their declaration spans, for duplicate detection and step resolution.
+    /// Declared component names (apis, workers, streams, crud/events
+    /// expansions) with their declaration spans, for duplicate detection
+    /// and step resolution.
     declared: HashMap<String, (NodeKind, Span)>,
+    /// Record names → ids (types live in their own namespace).
+    records: HashMap<String, (RecordId, Span)>,
     /// Handler service nodes created implicitly from pipeline steps.
     handlers: HashMap<String, NodeId>,
+    /// Stream name → node, for `publish`/`on` resolution.
+    streams: HashMap<String, NodeId>,
+    /// Worker node → stream it consumes (from `on` or the default).
+    worker_streams: HashMap<NodeId, NodeId>,
+    /// Lazily-created default stream backing the legacy `Queue` step.
+    default_stream: Option<NodeId>,
 }
 
 impl<'d> Builder<'d> {
@@ -34,13 +52,23 @@ impl<'d> Builder<'d> {
             diags,
             graph: SystemGraph::default(),
             declared: HashMap::new(),
+            records: HashMap::new(),
             handlers: HashMap::new(),
+            streams: HashMap::new(),
+            worker_streams: HashMap::new(),
+            default_stream: None,
         }
     }
 
     fn build(mut self, program: &Program) -> SystemGraph {
         self.service_name(program);
-        // Capabilities first: components and pipelines reference them.
+        // Types first: streams and components reference them.
+        for item in &program.items {
+            if let Item::Record(decl) = item {
+                self.record(decl);
+            }
+        }
+        // Capabilities next: streams and pipelines reference them.
         for item in &program.items {
             if let Item::Use(block) = item {
                 for entry in &block.entries {
@@ -49,12 +77,21 @@ impl<'d> Builder<'d> {
             }
         }
         for item in &program.items {
+            if let Item::Stream(decl) = item {
+                self.stream(decl);
+            }
+        }
+        for item in &program.items {
             match item {
-                Item::Api(decl) => self.declare_component(decl, NodeKind::Api),
-                Item::Worker(decl) => self.declare_component(decl, NodeKind::Worker),
+                Item::Api(decl) => self.api(decl),
+                Item::Worker(decl) => self.worker(decl),
                 Item::Crud(decl) => self.crud(decl),
                 Item::Events(decl) => self.events(decl),
-                Item::Service(_) | Item::Use(_) | Item::Pipeline(_) => {}
+                Item::Service(_)
+                | Item::Use(_)
+                | Item::Record(_)
+                | Item::Stream(_)
+                | Item::Pipeline(_) => {}
             }
         }
         // Pipelines last: they reference declared components.
@@ -91,6 +128,86 @@ impl<'d> Builder<'d> {
                         .with_label(first.span, "first declared here"),
                     );
                 }
+            }
+        }
+    }
+
+    fn record(&mut self, decl: &RecordDecl) {
+        if let Some((_, first)) = self.records.get(&decl.name.text) {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::DuplicateDeclaration,
+                    format!("record `{}` is declared more than once", decl.name.text),
+                )
+                .with_label(decl.span, "duplicate declaration here")
+                .with_label(*first, "first declared here"),
+            );
+            return;
+        }
+        let mut fields: Vec<RecordField> = Vec::new();
+        for field in &decl.fields {
+            if fields.iter().any(|f| f.name == field.name.text) {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::DuplicateDeclaration,
+                        format!(
+                            "field `{}` is declared more than once in record `{}`",
+                            field.name.text, decl.name.text
+                        ),
+                    )
+                    .with_label(field.span, "duplicate field here"),
+                );
+                continue;
+            }
+            let ty = match &field.ty {
+                TypeExpr::Named(name) => match FieldType::parse(&name.text) {
+                    Some(ty) => ty,
+                    None => {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::UnknownType,
+                                format!("unknown field type `{}`", name.text),
+                            )
+                            .with_label(name.span, "not a known type")
+                            .with_help(
+                                "field types are String, Int, Float, Bool, Uuid, Timestamp, \
+                                 Json, or an inline `enum { A, B }`",
+                            ),
+                        );
+                        continue;
+                    }
+                },
+                TypeExpr::Enum { variants, .. } => FieldType::Enum {
+                    variants: variants.iter().map(|v| v.text.clone()).collect(),
+                },
+            };
+            fields.push(RecordField {
+                name: field.name.text.clone(),
+                ty,
+            });
+        }
+        let id = self.graph.add_record(Record {
+            name: decl.name.text.clone(),
+            fields,
+        });
+        self.records.insert(decl.name.text.clone(), (id, decl.span));
+    }
+
+    /// Resolves an optional record reference, reporting `CIAC0015` when
+    /// the name is not declared.
+    fn resolve_record(&mut self, name: &Ident) -> Option<RecordId> {
+        match self.records.get(&name.text) {
+            Some((id, _)) => Some(*id),
+            None => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownType,
+                        format!("unknown record `{}`", name.text),
+                    )
+                    .with_label(name.span, "no record with this name")
+                    .with_help(format!("declare it with `record {} {{ .. }}`", name.text)),
+                );
+                None
             }
         }
     }
@@ -165,25 +282,134 @@ impl<'d> Builder<'d> {
         true
     }
 
-    fn declare_component(&mut self, decl: &ComponentDecl, kind: NodeKind) {
-        if !self.register(&decl.name, kind, decl.span) {
+    /// Requires the queue (broker) capability, reporting `CIAC0005` with
+    /// the given context otherwise.
+    fn require_queue(&mut self, what: &str, span: Span) -> Option<NodeId> {
+        match self.graph.singleton(NodeKind::Queue).map(|n| n.id) {
+            Some(queue) => Some(queue),
+            None => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::MissingCapability,
+                        format!("{what} requires a queue capability"),
+                    )
+                    .with_label(span, "used here")
+                    .with_help("add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Creates a stream node wired to the broker.
+    fn add_stream(
+        &mut self,
+        name: &str,
+        record: Option<RecordId>,
+        queue: NodeId,
+        span: Option<Span>,
+    ) -> NodeId {
+        let subject = format!(
+            "{}.{}",
+            self.graph.name.to_snake_case(),
+            name.to_snake_case()
+        );
+        let node = self.graph.add_node(
+            Component::Stream {
+                name: name.to_owned(),
+                subject,
+                record,
+            },
+            span,
+        );
+        self.graph.add_edge(node, queue, EdgeKind::DependsOn);
+        self.streams.insert(name.to_owned(), node);
+        node
+    }
+
+    fn stream(&mut self, decl: &StreamDecl) {
+        if !self.register(&decl.name, NodeKind::Stream, decl.span) {
             return;
         }
-        let name = decl.name.text.clone();
-        let component = match kind {
-            NodeKind::Api => Component::Api { name },
-            NodeKind::Worker => Component::Worker { name },
-            _ => unreachable!("only apis and workers are declared directly"),
+        let record = self.resolve_record(&decl.record);
+        let Some(queue) = self.require_queue(&format!("stream `{}`", decl.name.text), decl.span)
+        else {
+            return;
         };
-        self.graph.add_node(component, Some(decl.span));
+        self.add_stream(&decl.name.text, record, queue, Some(decl.span));
+    }
+
+    /// The stream backing the legacy `Queue` step and unbound workers:
+    /// `<service>.events`, untyped, created on first use.
+    fn default_stream(&mut self, queue: NodeId) -> NodeId {
+        match self.default_stream {
+            Some(node) => node,
+            None => {
+                let node = self.add_stream("Events", None, queue, None);
+                self.default_stream = Some(node);
+                node
+            }
+        }
+    }
+
+    /// Resolves a stream reference from `publish X` / `on X`.
+    fn resolve_stream(&mut self, name: &Ident) -> Option<NodeId> {
+        match self.streams.get(&name.text) {
+            Some(node) => Some(*node),
+            None => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownStream,
+                        format!("unknown stream `{}`", name.text),
+                    )
+                    .with_label(name.span, "no stream with this name")
+                    .with_help(format!("declare it with `stream {}: <Record>;`", name.text)),
+                );
+                None
+            }
+        }
+    }
+
+    fn api(&mut self, decl: &ApiDecl) {
+        if !self.register(&decl.name, NodeKind::Api, decl.span) {
+            return;
+        }
+        let request = decl.request.as_ref().and_then(|r| self.resolve_record(r));
+        self.graph.add_node(
+            Component::Api {
+                name: decl.name.text.clone(),
+                request,
+            },
+            Some(decl.span),
+        );
+    }
+
+    fn worker(&mut self, decl: &WorkerDecl) {
+        if !self.register(&decl.name, NodeKind::Worker, decl.span) {
+            return;
+        }
+        let node = self.graph.add_node(
+            Component::Worker {
+                name: decl.name.text.clone(),
+            },
+            Some(decl.span),
+        );
+        if let Some(stream_name) = &decl.stream {
+            let Some(stream) = self.resolve_stream(stream_name) else {
+                return;
+            };
+            self.graph.add_edge(stream, node, EdgeKind::AsyncMessage);
+            self.worker_streams.insert(node, stream);
+        }
     }
 
     /// Expands `crud <Name>;` into API → (Auth) → Service → Database
     /// (+ Cache) and records the resource for CRUD-aware codegen.
-    fn crud(&mut self, decl: &ComponentDecl) {
+    fn crud(&mut self, decl: &CrudDecl) {
         if !self.register(&decl.name, NodeKind::Api, decl.span) {
             return;
         }
+        let record = decl.record.as_ref().and_then(|r| self.resolve_record(r));
         let Some(db) = self.graph.singleton(NodeKind::Database).map(|n| n.id) else {
             self.diags.push(
                 Diagnostic::new(
@@ -196,9 +422,13 @@ impl<'d> Builder<'d> {
             return;
         };
         let name = decl.name.text.clone();
-        let api = self
-            .graph
-            .add_node(Component::Api { name: name.clone() }, Some(decl.span));
+        let api = self.graph.add_node(
+            Component::Api {
+                name: name.clone(),
+                request: record,
+            },
+            Some(decl.span),
+        );
         let service = self.graph.add_node(
             Component::Service {
                 name: format!("{name}Store"),
@@ -218,42 +448,40 @@ impl<'d> Builder<'d> {
         if let Some(cache) = self.graph.singleton(NodeKind::Cache).map(|n| n.id) {
             self.graph.add_edge(service, cache, EdgeKind::DataFlow);
         }
-        self.graph.resources.push(Resource { name, api, service });
+        self.graph.resources.push(Resource {
+            name,
+            api,
+            service,
+            record,
+        });
     }
 
-    /// Expands `events <Name>;` into Queue → Worker (→ Database) and
-    /// records the stream so producers and codegen agree on the subject.
+    /// Expands `events <Name>;` into Stream → Worker (→ Database).
     fn events(&mut self, decl: &ComponentDecl) {
-        if !self.register(&decl.name, NodeKind::Worker, decl.span) {
+        if !self.register(&decl.name, NodeKind::Stream, decl.span) {
             return;
         }
-        let Some(queue) = self.graph.singleton(NodeKind::Queue).map(|n| n.id) else {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::MissingCapability,
-                    format!("`events {}` requires a queue", decl.name.text),
-                )
-                .with_label(decl.span, "declared here")
-                .with_help("add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block"),
-            );
+        let Some(queue) = self.require_queue(&format!("`events {}`", decl.name.text), decl.span)
+        else {
             return;
         };
         let name = decl.name.text.clone();
+        let stream = self.add_stream(&name, None, queue, Some(decl.span));
         let worker = self.graph.add_node(
             Component::Worker {
                 name: format!("{name}Consumer"),
             },
             Some(decl.span),
         );
-        self.graph.add_edge(queue, worker, EdgeKind::AsyncMessage);
+        self.graph.add_edge(stream, worker, EdgeKind::AsyncMessage);
+        self.worker_streams.insert(worker, stream);
         if let Some(db) = self.graph.singleton(NodeKind::Database).map(|n| n.id) {
             self.graph.add_edge(worker, db, EdgeKind::DataFlow);
         }
-        let subject = name.to_snake_case();
         self.graph.event_streams.push(EventStream {
             name,
+            stream,
             worker,
-            subject,
         });
     }
 
@@ -263,8 +491,8 @@ impl<'d> Builder<'d> {
             .graph
             .find_named(NodeKind::Api, &decl.name.text)
             .or_else(|| self.graph.find_named(NodeKind::Worker, &decl.name.text))
-            .map(|n| (n.id, n.component.kind()));
-        let Some((owner, owner_kind)) = owner else {
+            .map(|n| (n.id, n.component.clone()));
+        let Some((owner, owner_component)) = owner else {
             self.diags.push(
                 Diagnostic::new(
                     ErrorCode::UnknownPipelineTarget,
@@ -299,35 +527,36 @@ impl<'d> Builder<'d> {
             return;
         }
 
-        // A worker pipeline means the worker consumes from the queue.
-        if owner_kind == NodeKind::Worker {
-            match self.graph.singleton(NodeKind::Queue).map(|n| n.id) {
-                Some(queue) => {
-                    self.graph.add_edge(queue, owner, EdgeKind::AsyncMessage);
-                }
-                None => {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::MissingCapability,
-                            format!(
-                                "worker pipeline `{}` requires a queue to consume from",
-                                decl.name.text
-                            ),
-                        )
-                        .with_label(decl.span, "worker pipelines are queue-driven")
-                        .with_help(
-                            "add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block",
-                        ),
-                    );
-                }
+        // The payload type every step of this pipeline handles.
+        let payload = match &owner_component {
+            Component::Api { request, .. } => *request,
+            Component::Worker { .. } => {
+                // A worker pipeline consumes a stream: the bound one, or
+                // the service's default stream (v0.1 behavior).
+                let stream = match self.worker_streams.get(&owner) {
+                    Some(stream) => Some(*stream),
+                    None => self
+                        .require_queue(&format!("worker pipeline `{}`", decl.name.text), decl.span)
+                        .map(|queue| {
+                            let stream = self.default_stream(queue);
+                            self.graph.add_edge(stream, owner, EdgeKind::AsyncMessage);
+                            self.worker_streams.insert(owner, stream);
+                            stream
+                        }),
+                };
+                stream.and_then(|s| match &self.graph.node(s).component {
+                    Component::Stream { record, .. } => *record,
+                    _ => None,
+                })
             }
-        }
+            _ => None,
+        };
 
         let mut steps = Vec::new();
         let mut step_spans = Vec::new();
         let mut prev = owner;
-        for ident in &decl.steps {
-            let Some(step) = self.resolve_step(ident) else {
+        for expr in &decl.steps {
+            let Some(step) = self.resolve_step(expr, payload) else {
                 continue;
             };
             match step {
@@ -335,27 +564,71 @@ impl<'d> Builder<'d> {
                     self.graph.add_edge(prev, node, EdgeKind::RequestFlow);
                     prev = node;
                 }
-                Step::Queue { node } => {
-                    self.graph.add_edge(prev, node, EdgeKind::AsyncMessage);
-                    // Later synchronous steps still run in the caller's
-                    // context: publishing is fire-and-forget, so `prev`
-                    // stays unchanged.
+                Step::Publish { stream } => {
+                    self.graph.add_edge(prev, stream, EdgeKind::AsyncMessage);
+                    // Publishing is fire-and-forget: later synchronous
+                    // steps still run in the caller's context.
                 }
                 Step::Return => {}
             }
             steps.push(step);
-            step_spans.push(Some(ident.span));
+            step_spans.push(Some(expr.span()));
         }
         self.graph.pipelines.push(Pipeline {
             name: decl.name.text.clone(),
             owner,
+            payload,
             steps,
             span: Some(decl.span),
             step_spans,
         });
     }
 
-    fn resolve_step(&mut self, ident: &Ident) -> Option<Step> {
+    /// Checks that publishing the pipeline payload onto `stream` is
+    /// type-correct (`CIAC0016`). Untyped streams accept any payload.
+    fn check_publish_type(&mut self, stream: NodeId, payload: Option<RecordId>, span: Span) {
+        let Component::Stream {
+            record: Some(expected),
+            name,
+            ..
+        } = &self.graph.node(stream).component
+        else {
+            return;
+        };
+        if payload == Some(*expected) {
+            return;
+        }
+        let expected_name = self.graph.record(*expected).name.clone();
+        let found = match payload {
+            Some(id) => format!("`{}`", self.graph.record(id).name),
+            None => "untyped JSON".to_owned(),
+        };
+        let stream_name = name.clone();
+        self.diags.push(
+            Diagnostic::new(
+                ErrorCode::TypeMismatch,
+                format!(
+                    "stream `{stream_name}` carries `{expected_name}` but the pipeline's \
+                     payload is {found}"
+                ),
+            )
+            .with_label(span, format!("publishes {found} here"))
+            .with_help(format!(
+                "type the pipeline's owner with `: {expected_name}` or publish to a \
+                 stream carrying {found}"
+            )),
+        );
+    }
+
+    fn resolve_step(&mut self, expr: &StepExpr, payload: Option<RecordId>) -> Option<Step> {
+        let ident = match expr {
+            StepExpr::Publish(stream_name) => {
+                let stream = self.resolve_stream(stream_name)?;
+                self.check_publish_type(stream, payload, stream_name.span);
+                return Some(Step::Publish { stream });
+            }
+            StepExpr::Name(ident) => ident,
+        };
         match ident.text.as_str() {
             "Auth" => match self.graph.singleton(NodeKind::Auth) {
                 Some(node) => Some(Step::Auth { node: node.id }),
@@ -371,26 +644,16 @@ impl<'d> Builder<'d> {
                     None
                 }
             },
-            "Queue" => match self.graph.singleton(NodeKind::Queue) {
-                Some(node) => Some(Step::Queue { node: node.id }),
-                None => {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::MissingCapability,
-                            "the `Queue` step requires a queue capability",
-                        )
-                        .with_label(ident.span, "used here")
-                        .with_help(
-                            "add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block",
-                        ),
-                    );
-                    None
-                }
-            },
+            "Queue" => {
+                let queue = self.require_queue("the `Queue` step", ident.span)?;
+                let stream = self.default_stream(queue);
+                self.check_publish_type(stream, payload, ident.span);
+                Some(Step::Publish { stream })
+            }
             "Return" => Some(Step::Return),
             name => {
-                // Referencing a declared api/worker as a step is invalid;
-                // any other name declares an implicit service handler.
+                // Referencing a declared api/worker/stream as a step is
+                // invalid; any other name declares an implicit handler.
                 if let Some((kind, _)) = self.declared.get(name) {
                     self.diags.push(
                         Diagnostic::new(
@@ -402,8 +665,8 @@ impl<'d> Builder<'d> {
                             format!("`{name}` is declared as a {}", kind_noun(*kind)),
                         )
                         .with_help(
-                            "apis receive requests and workers consume queue messages; \
-                             pipeline steps are logic handlers, `Auth`, `Queue`, or `Return`",
+                            "pipeline steps are logic handlers, `Auth`, `publish <Stream>`, \
+                             or `Return`; streams are published to, not invoked",
                         ),
                     );
                     return None;
@@ -449,6 +712,7 @@ fn kind_noun(kind: NodeKind) -> &'static str {
         NodeKind::Api => "api",
         NodeKind::Worker => "worker",
         NodeKind::Service => "service",
+        NodeKind::Stream => "stream",
         _ => "component",
     }
 }

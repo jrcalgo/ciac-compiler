@@ -1,4 +1,5 @@
 use crate::component::{Component, NodeKind};
+use crate::record::{Record, RecordId};
 use ciac_diagnostics::Span;
 use serde::Serialize;
 
@@ -50,8 +51,9 @@ pub struct Edge {
 pub enum Step {
     /// Builtin `Auth`: authenticate the request against the auth node.
     Auth { node: NodeId },
-    /// Builtin `Queue`: publish the current payload to the queue node.
-    Queue { node: NodeId },
+    /// Publish the current payload to a stream node. The surface `Queue`
+    /// step lowers to a publish on the service's default stream.
+    Publish { stream: NodeId },
     /// Builtin `Return`: respond to the caller. Always terminal.
     Return,
     /// Invoke a service handler node.
@@ -65,6 +67,9 @@ pub struct Pipeline {
     pub name: String,
     /// The api or worker node this pipeline belongs to.
     pub owner: NodeId,
+    /// The payload record every step handles: the api's request type or
+    /// the consumed stream's record. `None` = untyped JSON.
+    pub payload: Option<RecordId>,
     pub steps: Vec<Step>,
     #[serde(skip)]
     pub span: Option<Span>,
@@ -79,15 +84,18 @@ pub struct Resource {
     pub name: String,
     pub api: NodeId,
     pub service: NodeId,
+    /// Record supplying real columns; `None` keeps the generic
+    /// keyed-document model.
+    pub record: Option<RecordId>,
 }
 
 /// An event stream produced by expanding `events <Name>;`.
 #[derive(Debug, Clone, Serialize)]
 pub struct EventStream {
     pub name: String,
+    /// The stream node the expansion created.
+    pub stream: NodeId,
     pub worker: NodeId,
-    /// Queue subject/topic the stream's worker consumes.
-    pub subject: String,
 }
 
 /// The typed directed graph a CIaC program compiles to.
@@ -101,6 +109,7 @@ pub struct SystemGraph {
     pub name: String,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
+    records: Vec<Record>,
     pub pipelines: Vec<Pipeline>,
     pub resources: Vec<Resource>,
     pub event_streams: Vec<EventStream>,
@@ -142,6 +151,30 @@ impl SystemGraph {
 
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0 as usize]
+    }
+
+    pub fn add_record(&mut self, record: Record) -> RecordId {
+        let id = RecordId(self.records.len() as u32);
+        self.records.push(record);
+        id
+    }
+
+    pub fn record(&self, id: RecordId) -> &Record {
+        &self.records[id.0 as usize]
+    }
+
+    pub fn records(&self) -> impl Iterator<Item = (RecordId, &Record)> {
+        self.records
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (RecordId(i as u32), r))
+    }
+
+    pub fn find_record(&self, name: &str) -> Option<RecordId> {
+        self.records
+            .iter()
+            .position(|r| r.name == name)
+            .map(|i| RecordId(i as u32))
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
@@ -196,6 +229,7 @@ impl SystemGraph {
                 NodeKind::Worker => "component",
                 NodeKind::Database | NodeKind::Cache => "cylinder",
                 NodeKind::Queue => "cds",
+                NodeKind::Stream => "parallelogram",
                 NodeKind::Auth => "hexagon",
                 NodeKind::Logging | NodeKind::Metrics => "note",
             };
@@ -246,6 +280,7 @@ mod tests {
         let api = g.add_node(
             Component::Api {
                 name: "Upload".into(),
+                request: None,
             },
             None,
         );

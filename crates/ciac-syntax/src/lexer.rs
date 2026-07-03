@@ -25,6 +25,16 @@ pub enum TokenKind {
     Crud,
     #[token("events")]
     Events,
+    #[token("record")]
+    Record,
+    #[token("stream")]
+    Stream,
+    #[token("on")]
+    On,
+    #[token("publish")]
+    Publish,
+    #[token("enum")]
+    Enum,
 
     #[token("{")]
     LBrace,
@@ -34,6 +44,8 @@ pub enum TokenKind {
     Semi,
     #[token(":")]
     Colon,
+    #[token(",")]
+    Comma,
     #[token("->")]
     Arrow,
 
@@ -55,10 +67,16 @@ impl TokenKind {
             TokenKind::Pipeline => "`pipeline`",
             TokenKind::Crud => "`crud`",
             TokenKind::Events => "`events`",
+            TokenKind::Record => "`record`",
+            TokenKind::Stream => "`stream`",
+            TokenKind::On => "`on`",
+            TokenKind::Publish => "`publish`",
+            TokenKind::Enum => "`enum`",
             TokenKind::LBrace => "`{`",
             TokenKind::RBrace => "`}`",
             TokenKind::Semi => "`;`",
             TokenKind::Colon => "`:`",
+            TokenKind::Comma => "`,`",
             TokenKind::Arrow => "`->`",
             TokenKind::Ident => "a name",
             TokenKind::Eof => "end of file",

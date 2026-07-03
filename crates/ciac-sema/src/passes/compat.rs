@@ -59,26 +59,29 @@ fn check_return(pipeline: &Pipeline, owner_kind: NodeKind, diags: &mut Diagnosti
     }
 }
 
-/// `Queue` may appear at most once per pipeline.
+/// A pipeline may publish to any number of *different* streams, but
+/// publishing to the same stream twice is a mistake.
 fn check_queue(pipeline: &Pipeline, diags: &mut Diagnostics) {
-    let queue_steps: Vec<usize> = pipeline
-        .steps
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, step)| matches!(step, Step::Queue { .. }).then_some(idx))
-        .collect();
-    if queue_steps.len() > 1 {
-        let mut diag = Diagnostic::new(
-            ErrorCode::IncompatibleComposition,
-            format!(
-                "pipeline `{}` publishes to the queue more than once",
-                pipeline.name
-            ),
-        )
-        .with_help("a pipeline may contain at most one `Queue` step");
-        if let Some(span) = step_span(pipeline, queue_steps[1]) {
-            diag = diag.with_label(span, "second `Queue` step here");
+    let mut seen: Vec<ciac_ir::NodeId> = Vec::new();
+    for (idx, step) in pipeline.steps.iter().enumerate() {
+        let Step::Publish { stream } = step else {
+            continue;
+        };
+        if seen.contains(stream) {
+            let mut diag = Diagnostic::new(
+                ErrorCode::IncompatibleComposition,
+                format!(
+                    "pipeline `{}` publishes to the same stream more than once",
+                    pipeline.name
+                ),
+            )
+            .with_help("each stream may be published to at most once per pipeline");
+            if let Some(span) = step_span(pipeline, idx) {
+                diag = diag.with_label(span, "second publish to this stream here");
+            }
+            diags.push(diag);
+        } else {
+            seen.push(*stream);
         }
-        diags.push(diag);
     }
 }

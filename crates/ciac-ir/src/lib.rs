@@ -9,6 +9,7 @@
 
 mod component;
 mod graph;
+mod record;
 
 pub use component::{
     AuthScheme, CacheEngine, Component, DbEngine, LoggingProvider, MetricsProvider, NodeKind,
@@ -17,6 +18,7 @@ pub use component::{
 pub use graph::{
     Edge, EdgeId, EdgeKind, EventStream, Node, NodeId, Pipeline, Resource, Step, SystemGraph,
 };
+pub use record::{FieldType, Record, RecordField, RecordId};
 
 use serde::Serialize;
 

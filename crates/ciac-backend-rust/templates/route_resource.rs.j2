@@ -29,7 +29,7 @@ async fn create_{{ resource.snake }}(
 {%- endif %}
     Json(payload): Json<{{ resource.name }}In>,
 ) -> Result<(StatusCode, Json<{{ resource.name }}>), AppError> {
-    let entity = {{ resource.store_class }}::new(&state).create(payload.data).await?;
+    let entity = {{ resource.store_class }}::new(&state).create(payload).await?;
     Ok((StatusCode::CREATED, Json(entity)))
 }
 
@@ -64,7 +64,7 @@ async fn update_{{ resource.snake }}(
     Path(id): Path<String>,
     Json(payload): Json<{{ resource.name }}In>,
 ) -> Result<Json<{{ resource.name }}>, AppError> {
-    match {{ resource.store_class }}::new(&state).update(&id, payload.data).await? {
+    match {{ resource.store_class }}::new(&state).update(&id, payload).await? {
         Some(entity) => Ok(Json(entity)),
         None => Err(AppError::not_found()),
     }

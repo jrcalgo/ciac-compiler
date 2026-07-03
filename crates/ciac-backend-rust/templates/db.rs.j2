@@ -7,6 +7,16 @@
 /// needs to evolve in production.
 pub async fn ensure_schema(db: &sqlx::PgPool) -> anyhow::Result<()> {
 {%- for resource in c.resources %}
+{%- if resource.record %}
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS {{ resource.plural }} (
+            id TEXT PRIMARY KEY{% for field in resource.record.fields %}{% if field.name != "id" %},
+            {{ field.name }} {{ field.sql_type }} NOT NULL{% endif %}{% endfor %}
+        )",
+    )
+    .execute(db)
+    .await?;
+{%- else %}
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS {{ resource.plural }} (
             id TEXT PRIMARY KEY,
@@ -15,6 +25,7 @@ pub async fn ensure_schema(db: &sqlx::PgPool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+{%- endif %}
 {%- endfor %}
     Ok(())
 }

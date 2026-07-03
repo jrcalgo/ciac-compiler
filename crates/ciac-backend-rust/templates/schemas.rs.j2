@@ -10,6 +10,17 @@ pub enum {{ enum.name }} {
     {{ variant }},
 {%- endfor %}
 }
+
+impl {{ enum.name }} {
+    /// The wire/storage form of the variant.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+{%- for variant in enum.variants %}
+            {{ enum.name }}::{{ variant }} => "{{ variant }}",
+{%- endfor %}
+        }
+    }
+}
 {%- endfor %}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

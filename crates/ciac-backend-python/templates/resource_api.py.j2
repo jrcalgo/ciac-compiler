@@ -19,21 +19,31 @@ router = APIRouter(
     dependencies=[Depends(require_auth)],
 {%- endif %}
 )
-
+{% if resource.record %}
+{%- set to_out = "_out(entity)" %}
+{%- set store_arg = "payload" %}
+{%- else %}
+{%- set to_out = resource.name ~ "Out(id=entity.id, data=entity.data)" %}
+{%- set store_arg = "payload.data" %}
+{%- endif %}
 
 def _store(session: AsyncSession = Depends(get_session)) -> {{ resource.store_class }}:
     return {{ resource.store_class }}(
         session{% if resource.has_cache %}, cache=get_cache(){% endif %}
     )
 
+{% if resource.record %}
+def _out(entity: object) -> {{ resource.name }}Out:
+    return {{ resource.name }}Out.model_validate(entity, from_attributes=True)
 
+{% endif %}
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_{{ resource.snake }}(
     payload: {{ resource.name }}In,
     store: {{ resource.store_class }} = Depends(_store),
 ) -> {{ resource.name }}Out:
-    entity = await store.create(payload.data)
-    return {{ resource.name }}Out(id=entity.id, data=entity.data)
+    entity = await store.create({{ store_arg }})
+    return {{ to_out }}
 
 
 @router.get("")
@@ -41,7 +51,7 @@ async def list_{{ resource.plural }}(
     store: {{ resource.store_class }} = Depends(_store),
 ) -> list[{{ resource.name }}Out]:
     entities = await store.list()
-    return [{{ resource.name }}Out(id=e.id, data=e.data) for e in entities]
+    return [{% if resource.record %}_out(entity) for entity in entities{% else %}{{ resource.name }}Out(id=e.id, data=e.data) for e in entities{% endif %}]
 
 
 @router.get("/{entity_id}")
@@ -52,7 +62,7 @@ async def get_{{ resource.snake }}(
     entity = await store.get(entity_id)
     if entity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    return {{ resource.name }}Out(id=entity.id, data=entity.data)
+    return {{ to_out }}
 
 
 @router.put("/{entity_id}")
@@ -61,10 +71,10 @@ async def update_{{ resource.snake }}(
     payload: {{ resource.name }}In,
     store: {{ resource.store_class }} = Depends(_store),
 ) -> {{ resource.name }}Out:
-    entity = await store.update(entity_id, payload.data)
+    entity = await store.update(entity_id, {{ store_arg }})
     if entity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    return {{ resource.name }}Out(id=entity.id, data=entity.data)
+    return {{ to_out }}
 
 
 @router.delete("/{entity_id}", status_code=status.HTTP_204_NO_CONTENT)

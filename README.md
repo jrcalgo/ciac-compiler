@@ -38,6 +38,34 @@ ciac build video-platform.ciac --target rust --out ./video-platform-rs
 # → the same architecture as an Axum/SQLx/async-nats Cargo project.
 ```
 
+Since v0.2, payloads and message topology are typed and named:
+
+```text
+record Video {
+    id: Uuid;
+    title: String;
+    status: enum { Pending, Ready, Failed };
+}
+
+stream Uploaded: Video;              // a named, typed channel
+stream Transcoded: Video;
+
+api Upload: Video;                   // request body validated as Video
+worker Transcoder on Uploaded;       // consumes Uploaded
+worker Notifier on Transcoded;       // fan-out via a second stream
+
+pipeline Upload: Auth -> StoreVideo -> publish Uploaded -> Return;
+pipeline Transcoder: Transcode -> publish Transcoded;
+pipeline Notifier: Notify;
+
+crud Clip: Video;                    // real typed columns, not JSON blobs
+```
+
+The compiler checks every publish site against its stream's record
+(`CIAC0016`), rejects workers that republish to the stream they consume
+(`CIAC0006`), and generates pydantic/serde schemas so malformed payloads
+are rejected at the boundary of the running system too.
+
 ## Why
 
 Most backend systems are the same dozen architectural patterns glued

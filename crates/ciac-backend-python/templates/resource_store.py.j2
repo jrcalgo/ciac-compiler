@@ -6,15 +6,22 @@ import uuid
 {%- else -%}
 import uuid
 {%- endif %}
+{% if not resource.record -%}
 from typing import Any
+
+{% endif -%}
 {% if resource.has_cache %}
 from redis.asyncio import Redis
 {%- endif %}
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import {{ resource.name }}
-
+from app.models import {{ resource.name }}{% if resource.record %}, {{ resource.name }}In{% endif %}
+{%- if resource.record %}
+{% set payload_type = resource.name ~ "In" %}
+{%- else %}
+{% set payload_type = "dict[str, Any]" %}
+{%- endif %}
 
 class {{ resource.store_class }}:
     """CRUD operations for {{ resource.name }}{% if resource.has_cache %} with read-through caching{% endif %}."""
@@ -31,8 +38,12 @@ class {{ resource.store_class }}:
         self.cache = cache
 {%- endif %}
 
-    async def create(self, data: dict[str, Any]) -> {{ resource.name }}:
-        entity = {{ resource.name }}(id=str(uuid.uuid4()), data=data)
+    async def create(self, payload: {{ payload_type }}) -> {{ resource.name }}:
+{%- if resource.record %}
+        entity = {{ resource.name }}(id=str(uuid.uuid4()), **payload.model_dump(mode="json"))
+{%- else %}
+        entity = {{ resource.name }}(id=str(uuid.uuid4()), data=payload)
+{%- endif %}
         self.session.add(entity)
         await self.session.commit()
         return entity
@@ -42,10 +53,14 @@ class {{ resource.store_class }}:
         if self.cache is not None:
             cached = await self.cache.get(self._key(entity_id))
             if cached is not None:
+{%- if resource.record %}
+                return {{ resource.name }}(id=entity_id, **json.loads(cached))
+{%- else %}
                 return {{ resource.name }}(id=entity_id, data=json.loads(cached))
+{%- endif %}
         entity = await self.session.get({{ resource.name }}, entity_id)
         if entity is not None and self.cache is not None:
-            await self.cache.set(self._key(entity_id), json.dumps(entity.data), ex=300)
+            await self.cache.set(self._key(entity_id), json.dumps(self._payload(entity)), ex=300)
         return entity
 {%- else %}
         return await self.session.get({{ resource.name }}, entity_id)
@@ -55,11 +70,16 @@ class {{ resource.store_class }}:
         result = await self.session.scalars(select({{ resource.name }}))
         return list(result)
 
-    async def update(self, entity_id: str, data: dict[str, Any]) -> {{ resource.name }} | None:
+    async def update(self, entity_id: str, payload: {{ payload_type }}) -> {{ resource.name }} | None:
         entity = await self.session.get({{ resource.name }}, entity_id)
         if entity is None:
             return None
-        entity.data = data
+{%- if resource.record %}
+        for field, value in payload.model_dump(mode="json").items():
+            setattr(entity, field, value)
+{%- else %}
+        entity.data = payload
+{%- endif %}
         await self.session.commit()
 {%- if resource.has_cache %}
         if self.cache is not None:
@@ -82,4 +102,18 @@ class {{ resource.store_class }}:
 
     def _key(self, entity_id: str) -> str:
         return "{{ resource.plural }}:" + entity_id
+
+    @staticmethod
+    def _payload(entity: {{ resource.name }}) -> dict:
+{%- if resource.record %}
+        return {
+{%- for field in resource.record.fields %}
+{%- if field.name != "id" %}
+            "{{ field.name }}": {% if field.py_type == "datetime" %}entity.{{ field.name }}.isoformat(){% else %}entity.{{ field.name }}{% endif %},
+{%- endif %}
+{%- endfor %}
+        }
+{%- else %}
+        return entity.data
+{%- endif %}
 {%- endif %}

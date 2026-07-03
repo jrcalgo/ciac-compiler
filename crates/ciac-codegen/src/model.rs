@@ -52,6 +52,15 @@ pub struct RecordCtx {
     /// Type name in both targets, e.g. `Video`.
     pub name: String,
     pub snake: String,
+    /// Whether the record declares its own `id` field. Typed CRUD always
+    /// stores a server-generated TEXT `id` primary key; when the record
+    /// has one it doubles as that key, otherwise one is synthesized.
+    pub has_id: bool,
+    /// Precomputed SQL fragments for typed CRUD, e.g.
+    /// `id, title, status` / `$1, $2, $3` / `title = $2, status = $3`.
+    pub select_cols: String,
+    pub insert_placeholders: String,
+    pub update_assignments: String,
     pub fields: Vec<FieldCtx>,
     /// Rust needs named enum types; one per inline-enum field.
     pub enums: Vec<EnumCtx>,
@@ -69,11 +78,17 @@ pub struct FieldCtx {
     pub name: String,
     /// Python annotation, e.g. `str`, `datetime`, `Literal["A", "B"]`.
     pub py_type: String,
+    /// Python annotation on the read path; enums come back from storage
+    /// as their text form, so `Literal[..]` widens to `str`.
+    pub py_out_type: String,
     /// Rust type, e.g. `String`, `chrono::DateTime<chrono::Utc>`, `VideoStatus`.
     pub rust_type: String,
+    /// Rust type as stored in the database (enums are TEXT → `String`).
+    pub db_rust_type: String,
     /// Postgres column type, e.g. `TEXT`, `BIGINT`, `JSONB`.
     pub sql_type: String,
     pub is_json: bool,
+    pub is_enum: bool,
 }
 
 /// The payload type a pipeline (and its handlers) carries.
@@ -456,17 +471,52 @@ fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
                 (format!("Literal[{literal}]"), enum_name, "TEXT")
             }
         };
+        let is_enum = matches!(field.ty, FieldType::Enum { .. });
         fields.push(FieldCtx {
             name: field.name.clone(),
             is_json: matches!(field.ty, FieldType::Json),
+            py_out_type: if is_enum {
+                "str".to_owned()
+            } else {
+                py_type.clone()
+            },
+            db_rust_type: if is_enum {
+                "String".to_owned()
+            } else {
+                rust_type.clone()
+            },
+            is_enum,
             py_type,
             rust_type,
             sql_type: sql_type.to_owned(),
         });
     }
+    let non_id: Vec<&str> = fields
+        .iter()
+        .filter(|f| f.name != "id")
+        .map(|f| f.name.as_str())
+        .collect();
+    let select_cols = std::iter::once("id")
+        .chain(non_id.iter().copied())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let insert_placeholders = (1..=non_id.len() + 1)
+        .map(|i| format!("${i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let update_assignments = non_id
+        .iter()
+        .enumerate()
+        .map(|(i, name)| format!("{name} = ${}", i + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
     RecordCtx {
         name: record.name.clone(),
         snake: record.name.to_snake_case(),
+        has_id: fields.iter().any(|f| f.name == "id"),
+        select_cols,
+        insert_placeholders,
+        update_assignments,
         fields,
         enums,
     }

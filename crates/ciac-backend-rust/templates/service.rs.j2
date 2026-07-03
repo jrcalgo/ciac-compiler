@@ -9,6 +9,13 @@ use crate::schemas::{{ service.payload.class_name }};
 use crate::state::AppState;
 {% set payload_type = service.payload.class_name if service.payload else "serde_json::Value" %}
 /// Business logic for the `{{ service.class_name }}` step.
+{% if service.bindings -%}
+///
+/// Capability bindings:
+{% for binding in service.bindings -%}
+/// - {{ binding.kind }}: {{ binding.name }}
+{% endfor -%}
+{% endif -%}
 #[derive(Debug)]
 pub struct {{ service.class_name }}{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {
 {%- if service.needs_db %}

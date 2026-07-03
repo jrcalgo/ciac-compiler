@@ -148,6 +148,16 @@ pub struct HandlerRef {
     pub module: String,
     pub needs_db: bool,
     pub needs_cache: bool,
+    pub bindings: Vec<BindingCtx>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BindingCtx {
+    pub kind: String,
+    pub name: String,
+    pub snake: String,
+    pub py_attr: String,
+    pub rust_field: String,
 }
 
 /// A declared worker with (or without) a processing pipeline.
@@ -190,6 +200,7 @@ pub struct ServiceCtx {
     pub payload: Option<PayloadRef>,
     pub needs_db: bool,
     pub needs_cache: bool,
+    pub bindings: Vec<BindingCtx>,
 }
 
 /// A CRUD resource from `crud <Name>;`.
@@ -356,6 +367,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 payload: payload_ref(handler_payloads.get(&service.id).copied().flatten()),
                 needs_db: touches(ir, service.id, NodeKind::Database),
                 needs_cache: touches(ir, service.id, NodeKind::Cache),
+                bindings: bindings_of(ir, service.id),
                 class_name: name,
             }
         })
@@ -505,6 +517,7 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
         class_name: name,
         needs_db: touches(ir, id, NodeKind::Database),
         needs_cache: touches(ir, id, NodeKind::Cache),
+        bindings: bindings_of(ir, id),
     }
 }
 
@@ -651,6 +664,43 @@ fn touches(ir: &NormalizedIr, node: NodeId, kind: NodeKind) -> bool {
     ir.edges_from(node)
         .filter(|e| e.kind == EdgeKind::DataFlow)
         .any(|e| ir.node(e.to).component.kind() == kind)
+}
+
+fn bindings_of(ir: &NormalizedIr, node: NodeId) -> Vec<BindingCtx> {
+    ir.edges_from(node)
+        .filter(|e| e.kind == EdgeKind::DataFlow)
+        .filter_map(|e| {
+            let component = &ir.node(e.to).component;
+            let kind = binding_kind(component.kind())?;
+            let name = component.name()?.to_owned();
+            let snake = name.to_snake_case();
+            Some(BindingCtx {
+                py_attr: format!("{}_{}", kind, snake),
+                rust_field: format!("{}_{}", kind, snake),
+                kind: kind.to_owned(),
+                name,
+                snake,
+            })
+        })
+        .collect()
+}
+
+fn binding_kind(kind: NodeKind) -> Option<&'static str> {
+    Some(match kind {
+        NodeKind::Database => "db",
+        NodeKind::Cache => "cache",
+        NodeKind::Queue => "queue",
+        NodeKind::Auth => "auth",
+        NodeKind::ObjectStore => "object_store",
+        NodeKind::Email => "email",
+        NodeKind::Search => "search",
+        NodeKind::ExternalHttp => "external_http",
+        NodeKind::Scheduler => "scheduler",
+        NodeKind::Realtime => "realtime",
+        NodeKind::Logging => "logging",
+        NodeKind::Metrics => "metrics",
+        NodeKind::Api | NodeKind::Service | NodeKind::Worker | NodeKind::Stream => return None,
+    })
 }
 
 /// Constant-style name for a subject, e.g. `media.uploaded` → `UPLOADED`.

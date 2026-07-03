@@ -20,7 +20,15 @@ from app.schemas import {{ service.payload.class_name }}
 {% set payload_type = service.payload.class_name if service.payload else "dict[str, Any]" %}
 
 class {{ service.class_name }}:
-    """Business logic for the `{{ service.class_name }}` step."""
+    """Business logic for the `{{ service.class_name }}` step.
+{%- if service.bindings %}
+
+    Capability bindings:
+{%- for binding in service.bindings %}
+    - {{ binding.kind }}: {{ binding.name }}
+{%- endfor %}
+{%- endif %}
+    """
 
     def __init__(
         self,

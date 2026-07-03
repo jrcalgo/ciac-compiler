@@ -24,7 +24,12 @@ expression: json
       "id": 3,
       "kind": "Api",
       "name": "Note",
-      "request": null
+      "request": null,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
     },
     {
       "id": 4,
@@ -65,7 +70,11 @@ expression: json
       "name": "Note",
       "api": 3,
       "service": 4,
-      "record": null
+      "record": null,
+      "config": {
+        "cache_ttl": 300,
+        "page_size": 100
+      }
     }
   ],
   "event_streams": []

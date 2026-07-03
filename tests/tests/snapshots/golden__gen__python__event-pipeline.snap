@@ -77,6 +77,7 @@ app/api/submit.py
 Pipeline: Validate -> publish ingest.events -> Return
 """
 
+
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -95,7 +96,11 @@ async def submit(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     result: dict[str, Any] = dict(payload)
-    result = await Validate(session=session).handle(result)
+
+    result = await Validate(
+    session=session
+    
+        ).handle(result)
     await publish("ingest.events", result)
     return {"status": "accepted", "data": result}
 ============================================================
@@ -396,6 +401,9 @@ Consumes `ingest.events` in queue group `processor`
 so replicas of this worker load-balance messages between them.
 """
 
+
+import asyncio
+import logging
 import json
 from typing import Any
 
@@ -408,22 +416,49 @@ from app.services.store import Store
 
 SUBJECT = "ingest.events"
 QUEUE_GROUP = "processor"
+CONCURRENCY = 1
+MAX_RETRIES = 0
+logger = logging.getLogger(__name__)
 
+
+
+async def handle_message_once(payload: dict[str, Any]) -> None:
+    result = dict(payload)
+    async with get_sessionmaker()() as session:
+
+        result = await Enrich(
+        session=session
+        
+                ).handle(result)
+        result = await Store(
+        session=session
+        
+                ).handle(result)
 
 
 async def handle_message(payload: dict[str, Any]) -> None:
-    result = dict(payload)
-    async with get_sessionmaker()() as session:
-        result = await Enrich(session=session).handle(result)
-        result = await Store(session=session).handle(result)
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            await handle_message_once(payload)
+            return
+        except Exception:
+            if attempt >= MAX_RETRIES:
+                logger.exception("message processing failed after retries")
+                return
+            logger.warning("message processing failed; retrying", exc_info=True)
+
+
+async def _consume(worker_index: int) -> None:
+    client = await nats.connect(get_settings().nats_url)
+    subscription = await client.subscribe(SUBJECT, queue=QUEUE_GROUP)
+    logger.info("worker Processor consumer %s subscribed", worker_index)
+    async for message in subscription.messages:
+        await handle_message(json.loads(message.data))
 
 
 async def run() -> None:
     """Subscribes and processes messages forever."""
-    client = await nats.connect(get_settings().nats_url)
-    subscription = await client.subscribe(SUBJECT, queue=QUEUE_GROUP)
-    async for message in subscription.messages:
-        await handle_message(json.loads(message.data))
+    await asyncio.gather(*(_consume(idx) for idx in range(CONCURRENCY)))
 ============================================================
 conftest.py
 ============================================================

@@ -142,6 +142,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{request::Parts, StatusCode};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Verified JWT claims of the current request.
@@ -152,6 +153,24 @@ impl Claims {
     /// The `sub` claim, if present.
     pub fn subject(&self) -> Option<&str> {
         self.0.get("sub").and_then(|v| v.as_str())
+    }
+
+    pub fn require_scope(&self, scope: &str) -> Result<(), AppError> {
+        let has_scope = self
+            .0
+            .get("scope")
+            .and_then(|value| value.as_str())
+            .is_some_and(|scopes| scopes.split_whitespace().any(|item| item == scope))
+            || self
+                .0
+                .get("scp")
+                .and_then(|value| value.as_array())
+                .is_some_and(|scopes| scopes.iter().any(|item| item.as_str() == Some(scope)));
+        if has_scope {
+            Ok(())
+        } else {
+            Err(AppError::forbidden())
+        }
     }
 }
 
@@ -249,6 +268,13 @@ impl AppError {
     pub fn not_found() -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            source: None,
+        }
+    }
+
+    pub fn forbidden() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             source: None,
         }
     }
@@ -350,6 +376,7 @@ src/routes/upload.rs
 //!
 //! Pipeline: Auth -> StoreVideo -> publish video_platform.events -> Return
 
+
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -378,6 +405,7 @@ async fn upload(
                 .unwrap_or(serde_json::Value::Null),
         );
     }
+
     let result = StoreVideo::new(&state).handle(result).await?;
     state
         .queue
@@ -531,6 +559,7 @@ src/workers/transcoder.rs
 //! so replicas of this worker load-balance messages between them.
 
 use futures::StreamExt;
+use futures::future::try_join_all;
 
 use crate::services::transcode::Transcode;
 use crate::services::save_result::SaveResult;
@@ -538,13 +567,26 @@ use crate::state::AppState;
 
 pub const SUBJECT: &str = "video_platform.events";
 pub const QUEUE_GROUP: &str = "transcoder";
+pub const CONCURRENCY: usize = 1;
+pub const MAX_RETRIES: u32 = 0;
 
 pub async fn run(state: AppState) -> anyhow::Result<()> {
+    let tasks = (0..CONCURRENCY).map(|worker_index| {
+        let state = state.clone();
+        tokio::spawn(async move { consume(state, worker_index).await })
+    });
+    for result in try_join_all(tasks).await? {
+        result?;
+    }
+    Ok(())
+}
+
+async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
     let mut subscription = state
         .queue
         .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
         .await?;
-    tracing::info!(subject = SUBJECT, "worker Transcoder consuming");
+    tracing::info!(subject = SUBJECT, worker_index, "worker Transcoder consuming");
     while let Some(message) = subscription.next().await {
         let payload: serde_json::Value = match serde_json::from_slice(&message.payload) {
             Ok(payload) => payload,
@@ -554,14 +596,30 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
             }
         };
         if let Err(err) = handle_message(&state, payload).await {
-            tracing::error!(?err, "message processing failed");
+            tracing::error!(?err, "message processing failed after retries");
         }
     }
     Ok(())
 }
 
+
+
 async fn handle_message(state: &AppState, payload: serde_json::Value) -> anyhow::Result<()> {
+    for attempt in 0..=MAX_RETRIES {
+        match handle_message_once(state, payload.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < MAX_RETRIES => {
+                tracing::warn!(?err, attempt, "message processing failed; retrying");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+async fn handle_message_once(state: &AppState, payload: serde_json::Value) -> anyhow::Result<()> {
     let result = payload;
+
     let result = Transcode::new(state).handle(result).await?;
     let result = SaveResult::new(state).handle(result).await?;
     let _ = result;

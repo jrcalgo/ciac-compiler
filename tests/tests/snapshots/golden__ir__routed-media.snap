@@ -3,7 +3,7 @@ source: tests/tests/golden.rs
 expression: json
 ---
 {
-  "name": "Media",
+  "name": "RoutedMedia",
   "nodes": [
     {
       "id": 0,
@@ -36,31 +36,38 @@ expression: json
       "id": 5,
       "kind": "Stream",
       "name": "Transcoded",
-      "subject": "media.transcoded",
+      "subject": "routed_media.transcoded",
       "record": 0
     },
     {
       "id": 6,
+      "kind": "Stream",
+      "name": "DeadLetters",
+      "subject": "routed_media.dead_letters",
+      "record": 0
+    },
+    {
+      "id": 7,
       "kind": "Api",
       "name": "Upload",
       "request": 0,
       "config": {
-        "method": "Post",
-        "path": null,
-        "scope": null
-      }
-    },
-    {
-      "id": 7,
-      "kind": "Worker",
-      "name": "Transcoder",
-      "config": {
-        "concurrency": 1,
-        "max_retries": 0
+        "method": "Put",
+        "path": "/videos",
+        "scope": "videos:write"
       }
     },
     {
       "id": 8,
+      "kind": "Worker",
+      "name": "Transcoder",
+      "config": {
+        "concurrency": 4,
+        "max_retries": 2
+      }
+    },
+    {
+      "id": 9,
       "kind": "Worker",
       "name": "Notifier",
       "config": {
@@ -69,7 +76,16 @@ expression: json
       }
     },
     {
-      "id": 9,
+      "id": 10,
+      "kind": "Worker",
+      "name": "DeadLetterSink",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 11,
       "kind": "Api",
       "name": "Clip",
       "request": 0,
@@ -80,24 +96,34 @@ expression: json
       }
     },
     {
-      "id": 10,
+      "id": 12,
       "kind": "Service",
       "name": "ClipStore"
     },
     {
-      "id": 11,
+      "id": 13,
       "kind": "Service",
       "name": "StoreVideo"
     },
     {
-      "id": 12,
+      "id": 14,
       "kind": "Service",
       "name": "Transcode"
     },
     {
-      "id": 13,
+      "id": 15,
       "kind": "Service",
       "name": "Notify"
+    },
+    {
+      "id": 16,
+      "kind": "Service",
+      "name": "SendNotification"
+    },
+    {
+      "id": 17,
+      "kind": "Service",
+      "name": "ArchiveFailure"
     }
   ],
   "edges": [
@@ -115,110 +141,164 @@ expression: json
     },
     {
       "id": 2,
-      "from": 4,
-      "to": 7,
-      "kind": "AsyncMessage"
+      "from": 6,
+      "to": 3,
+      "kind": "DependsOn"
     },
     {
       "id": 3,
-      "from": 5,
+      "from": 4,
       "to": 8,
       "kind": "AsyncMessage"
     },
     {
       "id": 4,
-      "from": 9,
+      "from": 5,
+      "to": 9,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 5,
+      "from": 6,
+      "to": 10,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 6,
+      "from": 11,
       "to": 0,
       "kind": "RequestFlow"
     },
     {
-      "id": 5,
+      "id": 7,
       "from": 0,
-      "to": 10,
+      "to": 12,
       "kind": "RequestFlow"
     },
     {
-      "id": 6,
-      "from": 10,
-      "to": 1,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 7,
-      "from": 10,
-      "to": 2,
-      "kind": "DataFlow"
-    },
-    {
       "id": 8,
-      "from": 11,
+      "from": 12,
       "to": 1,
       "kind": "DataFlow"
     },
     {
       "id": 9,
-      "from": 11,
+      "from": 12,
       "to": 2,
       "kind": "DataFlow"
     },
     {
       "id": 10,
-      "from": 6,
-      "to": 0,
-      "kind": "RequestFlow"
-    },
-    {
-      "id": 11,
-      "from": 0,
-      "to": 11,
-      "kind": "RequestFlow"
-    },
-    {
-      "id": 12,
-      "from": 11,
-      "to": 4,
-      "kind": "AsyncMessage"
-    },
-    {
-      "id": 13,
-      "from": 12,
+      "from": 13,
       "to": 1,
       "kind": "DataFlow"
     },
     {
-      "id": 14,
-      "from": 12,
+      "id": 11,
+      "from": 13,
       "to": 2,
       "kind": "DataFlow"
     },
     {
-      "id": 15,
+      "id": 12,
       "from": 7,
-      "to": 12,
+      "to": 0,
       "kind": "RequestFlow"
     },
     {
-      "id": 16,
-      "from": 12,
-      "to": 5,
+      "id": 13,
+      "from": 0,
+      "to": 13,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 14,
+      "from": 13,
+      "to": 4,
       "kind": "AsyncMessage"
     },
     {
+      "id": 15,
+      "from": 14,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 16,
+      "from": 14,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
       "id": 17,
-      "from": 13,
+      "from": 15,
       "to": 1,
       "kind": "DataFlow"
     },
     {
       "id": 18,
-      "from": 13,
+      "from": 15,
       "to": 2,
       "kind": "DataFlow"
     },
     {
       "id": 19,
       "from": 8,
-      "to": 13,
+      "to": 14,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 20,
+      "from": 14,
+      "to": 15,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 21,
+      "from": 15,
+      "to": 5,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 22,
+      "from": 14,
+      "to": 6,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 23,
+      "from": 16,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 24,
+      "from": 16,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 25,
+      "from": 9,
+      "to": 16,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 26,
+      "from": 17,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 27,
+      "from": 17,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 28,
+      "from": 10,
+      "to": 17,
       "kind": "RequestFlow"
     }
   ],
@@ -239,17 +319,10 @@ expression: json
           }
         },
         {
-          "name": "duration_s",
-          "ty": {
-            "type": "Int"
-          }
-        },
-        {
           "name": "status",
           "ty": {
             "type": "Enum",
             "variants": [
-              "Pending",
               "Ready",
               "Failed"
             ]
@@ -261,7 +334,7 @@ expression: json
   "pipelines": [
     {
       "name": "Upload",
-      "owner": 6,
+      "owner": 7,
       "payload": 0,
       "steps": [
         {
@@ -270,7 +343,7 @@ expression: json
         },
         {
           "step": "Handler",
-          "node": 11
+          "node": 13
         },
         {
           "step": "Publish",
@@ -283,27 +356,62 @@ expression: json
     },
     {
       "name": "Transcoder",
-      "owner": 7,
-      "payload": 0,
-      "steps": [
-        {
-          "step": "Handler",
-          "node": 12
-        },
-        {
-          "step": "Publish",
-          "stream": 5
-        }
-      ]
-    },
-    {
-      "name": "Notifier",
       "owner": 8,
       "payload": 0,
       "steps": [
         {
           "step": "Handler",
-          "node": 13
+          "node": 14
+        },
+        {
+          "step": "Match",
+          "field": "status",
+          "arms": [
+            {
+              "label": "Ready",
+              "steps": [
+                {
+                  "step": "Handler",
+                  "node": 15
+                },
+                {
+                  "step": "Publish",
+                  "stream": 5
+                }
+              ]
+            },
+            {
+              "label": "Failed",
+              "steps": [
+                {
+                  "step": "Publish",
+                  "stream": 6
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Notifier",
+      "owner": 9,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 16
+        }
+      ]
+    },
+    {
+      "name": "DeadLetterSink",
+      "owner": 10,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 17
         }
       ]
     }
@@ -311,12 +419,12 @@ expression: json
   "resources": [
     {
       "name": "Clip",
-      "api": 9,
-      "service": 10,
+      "api": 11,
+      "service": 12,
       "record": 0,
       "config": {
-        "cache_ttl": 300,
-        "page_size": 100
+        "cache_ttl": 60,
+        "page_size": 50
       }
     }
   ],

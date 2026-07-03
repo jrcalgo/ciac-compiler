@@ -29,12 +29,21 @@ expression: json
       "id": 4,
       "kind": "Api",
       "name": "Upload",
-      "request": null
+      "request": null,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
     },
     {
       "id": 5,
       "kind": "Worker",
-      "name": "Transcoder"
+      "name": "Transcoder",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
     },
     {
       "id": 6,
@@ -62,33 +71,33 @@ expression: json
   "edges": [
     {
       "id": 0,
-      "from": 4,
-      "to": 0,
-      "kind": "RequestFlow"
-    },
-    {
-      "id": 1,
       "from": 6,
       "to": 1,
       "kind": "DataFlow"
     },
     {
-      "id": 2,
+      "id": 1,
       "from": 6,
       "to": 2,
       "kind": "DataFlow"
     },
     {
+      "id": 2,
+      "from": 7,
+      "to": 3,
+      "kind": "DependsOn"
+    },
+    {
       "id": 3,
-      "from": 0,
-      "to": 6,
+      "from": 4,
+      "to": 0,
       "kind": "RequestFlow"
     },
     {
       "id": 4,
-      "from": 7,
-      "to": 3,
-      "kind": "DependsOn"
+      "from": 0,
+      "to": 6,
+      "kind": "RequestFlow"
     },
     {
       "id": 5,
@@ -116,21 +125,21 @@ expression: json
     },
     {
       "id": 9,
-      "from": 5,
-      "to": 8,
-      "kind": "RequestFlow"
-    },
-    {
-      "id": 10,
       "from": 9,
       "to": 1,
       "kind": "DataFlow"
     },
     {
-      "id": 11,
+      "id": 10,
       "from": 9,
       "to": 2,
       "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 5,
+      "to": 8,
+      "kind": "RequestFlow"
     },
     {
       "id": 12,

@@ -186,6 +186,13 @@ impl AppError {
             source: None,
         }
     }
+
+    pub fn forbidden() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            source: None,
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -283,6 +290,7 @@ src/routes/submit.rs
 //!
 //! Pipeline: Validate -> publish ingest.events -> Return
 
+
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -300,6 +308,7 @@ async fn submit(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = payload;
+
     let result = Validate::new(&state).handle(result).await?;
     state
         .queue
@@ -485,6 +494,7 @@ src/workers/processor.rs
 //! so replicas of this worker load-balance messages between them.
 
 use futures::StreamExt;
+use futures::future::try_join_all;
 
 use crate::services::enrich::Enrich;
 use crate::services::store::Store;
@@ -492,13 +502,26 @@ use crate::state::AppState;
 
 pub const SUBJECT: &str = "ingest.events";
 pub const QUEUE_GROUP: &str = "processor";
+pub const CONCURRENCY: usize = 1;
+pub const MAX_RETRIES: u32 = 0;
 
 pub async fn run(state: AppState) -> anyhow::Result<()> {
+    let tasks = (0..CONCURRENCY).map(|worker_index| {
+        let state = state.clone();
+        tokio::spawn(async move { consume(state, worker_index).await })
+    });
+    for result in try_join_all(tasks).await? {
+        result?;
+    }
+    Ok(())
+}
+
+async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
     let mut subscription = state
         .queue
         .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
         .await?;
-    tracing::info!(subject = SUBJECT, "worker Processor consuming");
+    tracing::info!(subject = SUBJECT, worker_index, "worker Processor consuming");
     while let Some(message) = subscription.next().await {
         let payload: serde_json::Value = match serde_json::from_slice(&message.payload) {
             Ok(payload) => payload,
@@ -508,14 +531,30 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
             }
         };
         if let Err(err) = handle_message(&state, payload).await {
-            tracing::error!(?err, "message processing failed");
+            tracing::error!(?err, "message processing failed after retries");
         }
     }
     Ok(())
 }
 
+
+
 async fn handle_message(state: &AppState, payload: serde_json::Value) -> anyhow::Result<()> {
+    for attempt in 0..=MAX_RETRIES {
+        match handle_message_once(state, payload.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < MAX_RETRIES => {
+                tracing::warn!(?err, attempt, "message processing failed; retrying");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+async fn handle_message_once(state: &AppState, payload: serde_json::Value) -> anyhow::Result<()> {
     let result = payload;
+
     let result = Enrich::new(state).handle(result).await?;
     let result = Store::new(state).handle(result).await?;
     let _ = result;

@@ -42,16 +42,12 @@ the compiler's observable behavior.
 
 ## Generated-output validation
 
-CI compiles the flagship example with both backends and checks the
-output (ruff + pytest for Python, `cargo check` for Rust). To reproduce
-locally:
+CI runs `ciac verify` over every example for both bundled backends. To
+reproduce locally:
 
 ```sh
-cargo run -p ciac -- build examples/video-platform.ciac --target python --out /tmp/gen-py
-(cd /tmp/gen-py && uv sync && uv run ruff check . && uv run pytest)
-
-cargo run -p ciac -- build examples/video-platform.ciac --target rust --out /tmp/gen-rs
-(cd /tmp/gen-rs && cargo check)
+cargo run -p ciac -- verify examples/video-platform.ciac --target python --out /tmp/gen-py
+cargo run -p ciac -- verify examples/video-platform.ciac --target rust --out /tmp/gen-rs
 ```
 
 ## Commit hygiene

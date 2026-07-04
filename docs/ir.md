@@ -33,6 +33,8 @@ service, one shared broker, per-service infrastructure) and README.
 | `Api` | name, optional request record, `ApiConfig` | `api X[: R];`, `crud X[: R];` |
 | `Service` | name | handler steps (implicit), `crud` (store) |
 | `Worker` | name, `WorkerConfig` | `worker X [on S];`, `events X;` (consumer) |
+| `Job` | name, `JobConfig` | `job X { schedule: ..; }` |
+| `Channel` | name, `ChannelConfig` | `channel X on Stream;` |
 | `Stream` | name, subject, optional record | `stream X: R;`, `events X;`, the default stream |
 | `Database` | name, engine (`Postgres`) | `use { db [name] .. }` |
 | `Cache` | name, engine (`Redis`) | `use { cache [name] .. }` |
@@ -64,6 +66,8 @@ Component attributes lower into typed config structs with defaults:
 
 - `ApiConfig { method, path, scope }`
 - `WorkerConfig { concurrency, max_retries }`
+- `JobConfig { schedule, catch_up }`
+- `ChannelConfig { path }`
 - `CrudConfig { cache_ttl, page_size }`
 
 Stream `subject` remains a plain field on `Component::Stream` after
@@ -79,21 +83,22 @@ surface binding metadata in generated handler stubs.
 |------------|---------|
 | `RequestFlow` | synchronous invocation (api → auth → handler → …) |
 | `DataFlow` | reads/writes of stored data (handler ↔ database/cache) |
-| `AsyncMessage` | publish (node → stream) and consume (stream → worker) |
+| `AsyncMessage` | publish (node → stream) and consume (stream → worker/channel) |
 | `ServiceCall` | synchronous typed call from one service pipeline to another service API |
 | `DependsOn` | provisioning dependency (stream → broker) |
 
 Because streams are nodes, message topology is explicit:
-`publisher →(AsyncMessage) stream →(AsyncMessage) worker`. Cycle
+`publisher →(AsyncMessage) stream →(AsyncMessage) worker/channel`. Cycle
 detection therefore works *per stream* — a worker republishing to the
 stream it consumes is a cycle, while publishing to a different stream
 (stage chaining) is not.
 
 ## Pipelines
 
-Each `Pipeline` records its owner (api or worker node), its **payload
-type** (`Option<RecordId>`: the api's request record or the consumed
-stream's record), and resolved recursive `Step`s. A step has an embedded
+Each `Pipeline` records its owner (api, worker, or job node), its
+**payload type** (`Option<RecordId>`: the api's request record, the
+consumed stream's record, or `None` for jobs), and resolved recursive
+`Step`s. A step has an embedded
 `StepKind` plus an optional source span (not serialized):
 
 - `Auth { node }`
@@ -121,10 +126,12 @@ may assume:
 1. All pipeline steps are resolved; every referenced node and record
    exists.
 2. Flow edges (`RequestFlow` + `AsyncMessage` + `DependsOn`) are acyclic.
-3. `Auth` steps and streams are backed by declared capabilities.
+3. `Auth` steps, streams, jobs, and channels are backed by declared
+   capabilities.
 4. `Auth` only appears first in api pipelines; `Return` only appears
-   terminally in api pipelines; each stream is published to at most once
-   per top-level path or match arm.
+   terminally in api pipelines; jobs have neither `Auth` nor `Return`;
+   each stream is published to at most once per top-level path or match
+   arm.
 5. Every `Publish` step's payload type equals the stream's record type
    (untyped streams accept any payload).
 6. Every `Match` is terminal, non-nested, branches on an enum payload

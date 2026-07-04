@@ -19,8 +19,10 @@ pub trait Backend {
   (`ciac_codegen::check_support`); unsupported constructs become the
   user-facing `CIAC0011`, never a template crash.
 - `GeneratedProject` is an in-memory file tree: relative paths only, no
-  traversal, no duplicate writes, sorted iteration. Determinism rules:
-  no timestamps, no randomness, iterate only ordered collections.
+  traversal, no duplicate writes, sorted iteration. Each file also has an
+  ownership role (`Owned` or `Seeded`) used by regeneration manifests.
+  Determinism rules: no timestamps, no randomness, iterate only ordered
+  collections.
 
 ## Recipe
 
@@ -33,9 +35,9 @@ pub trait Backend {
    service (emit each under `<ctx.dir>/`, skip per-service compose
    files, and render root system compose/README from the whole model).
    Each `Ctx` precomputes casing variants, per-pipeline steps,
-   capability instances, handler injection, and typed `call` client
-   targets. Add fields there (not in your backend) if every target
-   would need them.
+   capability instances, handler injection, scheduled jobs, realtime
+   channels, and typed `call` client targets. Add fields there (not in
+   your backend) if every target would need them.
 3. **Templates**: a flat `templates/*.j2` directory embedded with
    `include_dir!`. Build the environment with
    `ciac_codegen::template::environment(..)` — it installs `snake_case`
@@ -57,8 +59,8 @@ Both bundled backends hold the line the next target should match:
 - generated projects build/lint clean (`ruff` for Python, zero-warning
   `cargo check` for Rust) with **no infrastructure running** — clients
   connect lazily;
-- business logic lives in stub handler files that are documented as
-  user-owned; everything else is compiler-owned and regenerable;
+- business logic lives in stub handler files marked as `Seeded`
+  user-owned files; everything else is compiler-owned and regenerable;
 - a `docker-compose.yml` provisions exactly the declared capabilities;
-- structure mirrors the other targets (routers / services / workers /
-  config), because backends share the same model.
+- structure mirrors the other targets (routers / services / workers/jobs
+  / channels / config), because backends share the same model.

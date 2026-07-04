@@ -63,6 +63,23 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Verify an existing generated project still matches its CIaC source.
+    Verify {
+        /// Path to the `.ciac` source file.
+        file: PathBuf,
+        /// Code-generation target.
+        #[arg(short, long)]
+        target: String,
+        /// Output directory containing the generated project.
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Boot the generated service and probe `/health` (experimental).
+        #[arg(long)]
+        live: bool,
+        /// Override the generated project's name.
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Dump the validated system graph.
     Graph {
         /// Path to the `.ciac` source file.
@@ -109,6 +126,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             patch,
             name,
         } => commands::diff(&file, &target, &out, patch, name),
+        Command::Verify {
+            file,
+            target,
+            out,
+            live,
+            name,
+        } => commands::verify(&file, &target, &out, live, name),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::Explain { code } => commands::explain(&code),
         Command::Targets => commands::targets(),

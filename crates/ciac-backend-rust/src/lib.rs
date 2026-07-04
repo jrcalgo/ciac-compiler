@@ -57,127 +57,181 @@ impl Backend for RustBackend {
         ir: &NormalizedIr,
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
-        let ctx = context::build(ir, opts);
+        let model = context::build_system(ir, opts);
         let env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
             (
                 f.path().to_str().expect("template names are utf-8"),
                 f.contents_utf8().expect("templates are utf-8"),
             )
         }))?;
-        let base = minijinja::Value::from_serialize(&ctx);
-        let render = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
-            Ok(env
-                .get_template(name)?
-                .render(context! { c => base, ..extra })?)
-        };
 
         let mut project = GeneratedProject::new();
-        let empty = || context! {};
-
-        project.add_file("Cargo.toml", render("Cargo.toml.j2", empty())?);
-        project.add_file("README.md", render("README.md.j2", empty())?);
-        project.add_file("Dockerfile", render("Dockerfile.j2", empty())?);
-        project.add_file(
-            "docker-compose.yml",
-            render("docker-compose.yml.j2", empty())?,
-        );
-        project.add_file(".gitignore", "/target\n");
-        project.add_file("src/lib.rs", render("lib.rs.j2", empty())?);
-        project.add_file("src/main.rs", render("main.rs.j2", empty())?);
-        project.add_file("src/config.rs", render("config.rs.j2", empty())?);
-        project.add_file("src/state.rs", render("state.rs.j2", empty())?);
-        project.add_file("src/error.rs", render("error.rs.j2", empty())?);
-        project.add_file(
-            "src/observability.rs",
-            render("observability.rs.j2", empty())?,
-        );
-        if ctx.has_auth {
-            project.add_file("src/auth.rs", render("auth.rs.j2", empty())?);
-        }
-        if !ctx.resources.is_empty() {
-            project.add_file("src/db.rs", render("db.rs.j2", empty())?);
-            project.add_file("src/models.rs", render("models.rs.j2", empty())?);
-        }
-        if !ctx.records.is_empty() {
-            project.add_file("src/schemas.rs", render("schemas.rs.j2", empty())?);
-        }
-        if ctx.has_object_store {
-            project.add_file(
-                "src/object_store.rs",
-                render("object_store.rs.j2", empty())?,
-            );
-        }
-        if ctx.has_email {
-            project.add_file("src/email.rs", render("email.rs.j2", empty())?);
-        }
-        if ctx.has_search {
-            project.add_file("src/search.rs", render("search.rs.j2", empty())?);
-        }
-        if ctx.has_external_http {
-            project.add_file(
-                "src/http_clients.rs",
-                render("http_clients.rs.j2", empty())?,
-            );
+        for ctx in &model.services {
+            let prefix = if model.multi {
+                format!("{}/", ctx.dir)
+            } else {
+                String::new()
+            };
+            emit_service(&env, ctx, model.multi, &prefix, &mut project)?;
         }
 
-        project.add_file("src/routes/mod.rs", render("routes_mod.rs.j2", empty())?);
-        for api in &ctx.apis {
+        if model.multi {
+            let m = minijinja::Value::from_serialize(&model);
             project.add_file(
-                format!("src/routes/{}.rs", api.snake),
-                render("route_api.rs.j2", context! { api => api })?,
+                "docker-compose.yml",
+                env.get_template("system-compose.yml.j2")?
+                    .render(context! { m => m })?,
             );
-        }
-        for resource in &ctx.resources {
             project.add_file(
-                format!("src/routes/{}.rs", resource.snake),
-                render("route_resource.rs.j2", context! { resource => resource })?,
+                "README.md",
+                env.get_template("system-README.md.j2")?
+                    .render(context! { m => m })?,
             );
-        }
-
-        if !ctx.services.is_empty() || !ctx.resources.is_empty() {
-            project.add_file(
-                "src/services/mod.rs",
-                render("services_mod.rs.j2", empty())?,
+            project.notes.push(
+                "multi-service system: each directory is a complete project; \
+                 `docker compose up` runs them all together"
+                    .to_owned(),
             );
-        }
-        for service in &ctx.services {
-            project.add_file(
-                format!("src/services/{}.rs", service.module),
-                render("service.rs.j2", context! { service => service })?,
+        } else {
+            project.notes.push(
+                "run the API with `cargo run`, or `docker compose up` for the full stack"
+                    .to_owned(),
             );
-        }
-        for resource in &ctx.resources {
-            project.add_file(
-                format!("src/services/{}.rs", resource.store_module),
-                render("resource_store.rs.j2", context! { resource => resource })?,
-            );
-        }
-
-        if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
-            project.add_file("src/workers/mod.rs", render("workers_mod.rs.j2", empty())?);
-            project.add_file("src/bin/workers.rs", render("workers_bin.rs.j2", empty())?);
-        }
-        for worker in &ctx.workers {
-            project.add_file(
-                format!("src/workers/{}.rs", worker.snake),
-                render("worker.rs.j2", context! { worker => worker })?,
-            );
-        }
-        for consumer in &ctx.consumers {
-            project.add_file(
-                format!("src/workers/{}.rs", consumer.snake),
-                render("consumer.rs.j2", context! { consumer => consumer })?,
-            );
-        }
-
-        project.notes.push(
-            "run the API with `cargo run`, or `docker compose up` for the full stack".to_owned(),
-        );
-        if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
-            project
-                .notes
-                .push("start workers with `cargo run --bin workers`".to_owned());
+            let ctx = &model.services[0];
+            if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
+                project
+                    .notes
+                    .push("start workers with `cargo run --bin workers`".to_owned());
+            }
         }
         Ok(project)
     }
+}
+
+/// Emits one deployable crate (today's single-service layout) under
+/// `prefix`. Multi-service systems get their compose file at the root
+/// instead of per service.
+fn emit_service(
+    env: &minijinja::Environment<'_>,
+    ctx: &context::Ctx,
+    multi: bool,
+    prefix: &str,
+    project: &mut GeneratedProject,
+) -> Result<(), BackendError> {
+    let base = minijinja::Value::from_serialize(ctx);
+    let render = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
+        Ok(env
+            .get_template(name)?
+            .render(context! { c => base, ..extra })?)
+    };
+    let empty = || context! {};
+    let at = |path: &str| format!("{prefix}{path}");
+
+    project.add_file(at("Cargo.toml"), render("Cargo.toml.j2", empty())?);
+    project.add_file(at("README.md"), render("README.md.j2", empty())?);
+    project.add_file(at("Dockerfile"), render("Dockerfile.j2", empty())?);
+    if !multi {
+        project.add_file(
+            at("docker-compose.yml"),
+            render("docker-compose.yml.j2", empty())?,
+        );
+    }
+    project.add_file(at(".gitignore"), "/target\n");
+    project.add_file(at("src/lib.rs"), render("lib.rs.j2", empty())?);
+    project.add_file(at("src/main.rs"), render("main.rs.j2", empty())?);
+    project.add_file(at("src/config.rs"), render("config.rs.j2", empty())?);
+    project.add_file(at("src/state.rs"), render("state.rs.j2", empty())?);
+    project.add_file(at("src/error.rs"), render("error.rs.j2", empty())?);
+    project.add_file(
+        at("src/observability.rs"),
+        render("observability.rs.j2", empty())?,
+    );
+    if ctx.has_auth {
+        project.add_file(at("src/auth.rs"), render("auth.rs.j2", empty())?);
+    }
+    if !ctx.resources.is_empty() {
+        project.add_file(at("src/db.rs"), render("db.rs.j2", empty())?);
+        project.add_file(at("src/models.rs"), render("models.rs.j2", empty())?);
+    }
+    if !ctx.records.is_empty() {
+        project.add_file(at("src/schemas.rs"), render("schemas.rs.j2", empty())?);
+    }
+    if ctx.has_object_store {
+        project.add_file(
+            at("src/object_store.rs"),
+            render("object_store.rs.j2", empty())?,
+        );
+    }
+    if ctx.has_email {
+        project.add_file(at("src/email.rs"), render("email.rs.j2", empty())?);
+    }
+    if ctx.has_search {
+        project.add_file(at("src/search.rs"), render("search.rs.j2", empty())?);
+    }
+    if ctx.has_external_http {
+        project.add_file(
+            at("src/http_clients.rs"),
+            render("http_clients.rs.j2", empty())?,
+        );
+    }
+
+    project.add_file(
+        at("src/routes/mod.rs"),
+        render("routes_mod.rs.j2", empty())?,
+    );
+    for api in &ctx.apis {
+        project.add_file(
+            at(&format!("src/routes/{}.rs", api.snake)),
+            render("route_api.rs.j2", context! { api => api })?,
+        );
+    }
+    for resource in &ctx.resources {
+        project.add_file(
+            at(&format!("src/routes/{}.rs", resource.snake)),
+            render("route_resource.rs.j2", context! { resource => resource })?,
+        );
+    }
+
+    if !ctx.services.is_empty() || !ctx.resources.is_empty() {
+        project.add_file(
+            at("src/services/mod.rs"),
+            render("services_mod.rs.j2", empty())?,
+        );
+    }
+    for service in &ctx.services {
+        project.add_file(
+            at(&format!("src/services/{}.rs", service.module)),
+            render("service.rs.j2", context! { service => service })?,
+        );
+    }
+    for resource in &ctx.resources {
+        project.add_file(
+            at(&format!("src/services/{}.rs", resource.store_module)),
+            render("resource_store.rs.j2", context! { resource => resource })?,
+        );
+    }
+
+    if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
+        project.add_file(
+            at("src/workers/mod.rs"),
+            render("workers_mod.rs.j2", empty())?,
+        );
+        project.add_file(
+            at("src/bin/workers.rs"),
+            render("workers_bin.rs.j2", empty())?,
+        );
+    }
+    for worker in &ctx.workers {
+        project.add_file(
+            at(&format!("src/workers/{}.rs", worker.snake)),
+            render("worker.rs.j2", context! { worker => worker })?,
+        );
+    }
+    for consumer in &ctx.consumers {
+        project.add_file(
+            at(&format!("src/workers/{}.rs", consumer.snake)),
+            render("consumer.rs.j2", context! { consumer => consumer })?,
+        );
+    }
+    Ok(())
 }

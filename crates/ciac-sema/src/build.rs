@@ -96,6 +96,7 @@ impl<'d> Builder<'d> {
             }
         }
         self.register_services(program, has_service_blocks);
+        self.graph.multi_service = has_service_blocks;
         if has_service_blocks {
             for item in &program.items {
                 if let Item::Stream(decl) = item {

@@ -1,0 +1,159 @@
+services:
+{%- for c in m.services %}
+
+  {{ c.dir }}:
+    build: ./{{ c.dir }}
+    ports:
+      - "{{ c.host_port }}:8000"
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search %}
+    environment:
+{%- for inst in c.db_instances %}
+      {{ inst.env_var }}: postgresql+asyncpg://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+      {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
+{%- endfor %}
+{%- for inst in c.object_store_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
+      {{ f.env }}: {{ f.compose_value }}
+{%- endif %}{% endfor %}{% endfor %}
+{%- for inst in c.email_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
+      {{ f.env }}: {{ f.compose_value }}
+{%- endif %}{% endfor %}{% endfor %}
+{%- for inst in c.search_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
+      {{ f.env }}: {{ f.compose_value }}
+{%- endif %}{% endfor %}{% endfor %}
+{%- if c.has_queue %}
+      NATS_URL: nats://queue:4222
+{%- endif %}
+{%- if c.has_auth %}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+{%- endif %}
+{%- endif %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search %}
+    depends_on:
+{%- for inst in c.db_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.email_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.search_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- if c.has_queue %}
+      - queue
+{%- endif %}
+{%- endif %}
+{%- if c.workers or c.consumers %}
+
+  {{ c.dir }}-workers:
+    build: ./{{ c.dir }}
+    command: ["python", "-m", "app.workers"]
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search %}
+    environment:
+{%- for inst in c.db_instances %}
+      {{ inst.env_var }}: postgresql+asyncpg://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+      {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
+{%- endfor %}
+{%- for inst in c.object_store_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
+      {{ f.env }}: {{ f.compose_value }}
+{%- endif %}{% endfor %}{% endfor %}
+{%- for inst in c.email_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
+      {{ f.env }}: {{ f.compose_value }}
+{%- endif %}{% endfor %}{% endfor %}
+{%- for inst in c.search_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
+      {{ f.env }}: {{ f.compose_value }}
+{%- endif %}{% endfor %}{% endfor %}
+{%- if c.has_queue %}
+      NATS_URL: nats://queue:4222
+{%- endif %}
+    depends_on:
+{%- for inst in c.db_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.email_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- for inst in c.search_instances %}
+      - {{ inst.container }}
+{%- endfor %}
+{%- if c.has_queue %}
+      - queue
+{%- endif %}
+{%- endif %}
+{%- endif %}
+{%- endfor %}
+{%- for c in m.services %}
+{%- for inst in c.db_instances %}
+
+  {{ inst.container }}:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: {{ inst.db_name }}
+    volumes:
+      - {{ inst.container }}-data:/var/lib/postgresql/data
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+
+  {{ inst.container }}:
+    image: redis:7
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+
+  {{ inst.container }}:
+    image: minio/minio
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - {{ inst.container }}-data:/data
+{%- endfor %}
+{%- for inst in c.email_instances %}
+
+  {{ inst.container }}:
+    image: axllent/mailpit
+    ports:
+      - "{{ inst.host_port }}:8025"
+{%- endfor %}
+{%- for inst in c.search_instances %}
+
+  {{ inst.container }}:
+    image: opensearchproject/opensearch:2
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+{%- endfor %}
+{%- endfor %}
+{%- if m.has_queue %}
+
+  queue:
+    image: nats:2
+{%- endif %}
+{%- if m.has_db or m.has_object_store %}
+
+volumes:
+{%- for c in m.services %}
+{%- for inst in c.db_instances %}
+  {{ inst.container }}-data:
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+  {{ inst.container }}-data:
+{%- endfor %}
+{%- endfor %}
+{%- endif %}

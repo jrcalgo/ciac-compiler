@@ -9,13 +9,32 @@
 use crate::GenOptions;
 use ciac_ir::{
     Component, EdgeKind, FieldType, HttpMethod, NodeId, NodeKind, NormalizedIr, QueueEngine,
-    RecordId, Step, StepKind,
+    RecordId, ServiceId, Step, StepKind,
 };
 use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Root template context for the whole project.
+/// The generated system: one deployable project per declared service, or
+/// a single unprefixed project for single-service programs.
+#[derive(Debug, Serialize)]
+pub struct SystemModel {
+    /// System/project name, e.g. `media-system`.
+    pub project_name: String,
+    /// True when the program declares `service { .. }` blocks; the
+    /// backends then emit each service under `<dir>/` plus root
+    /// docker-compose/README files for the whole system.
+    pub multi: bool,
+    pub services: Vec<Ctx>,
+    /// Any service publishes/consumes streams (the system compose then
+    /// runs one shared broker every service's `nats_url` points at).
+    pub has_queue: bool,
+    /// Any service declares databases (drives the compose volume list).
+    pub has_db: bool,
+    pub has_object_store: bool,
+}
+
+/// Root template context for one deployable project.
 #[derive(Debug, Serialize)]
 pub struct Ctx {
     /// Original service name, e.g. `VideoPlatform`.
@@ -24,6 +43,11 @@ pub struct Ctx {
     pub package: String,
     /// Module/crate prefix, e.g. `video_platform`.
     pub module: String,
+    /// Output subdirectory (kebab service name) in multi-service
+    /// systems; empty for single-service programs.
+    pub dir: String,
+    /// Host port the system docker-compose maps to the app's port 8000.
+    pub host_port: u16,
     pub has_auth: bool,
     pub has_db: bool,
     pub has_cache: bool,
@@ -184,6 +208,9 @@ pub struct OntologyInstanceCtx {
     pub key_arg: String,
     /// Bucket name (object stores only).
     pub bucket: Option<String>,
+    /// Host port docker-compose maps for the instance's inspection UI
+    /// (email only: the Mailpit web interface).
+    pub host_port: Option<u16>,
     pub cfg: Vec<CfgFieldCtx>,
 }
 
@@ -398,11 +425,64 @@ pub struct ResourceCtx {
     pub rust_cache_field: Option<String>,
 }
 
-pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
-    let package = crate::project_name(ir, opts);
-    let module = ir.name.to_snake_case();
-    let has_db = ir.singleton(NodeKind::Database).is_some();
-    let has_cache = ir.singleton(NodeKind::Cache).is_some();
+/// Builds the whole system: one [`Ctx`] per declared service, or a single
+/// unscoped [`Ctx`] for single-service programs (unchanged output).
+pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
+    let project_name = crate::project_name(ir, opts);
+    let mut services = if ir.multi_service {
+        let declared: Vec<ciac_ir::Service> = ir.services().cloned().collect();
+        declared
+            .iter()
+            .enumerate()
+            .map(|(index, service)| build_scoped(ir, opts, Some(service), 8000 + index as u16))
+            .collect()
+    } else {
+        vec![build_scoped(ir, opts, None, 8000)]
+    };
+    // Mailpit UI host ports must be unique across the whole system.
+    let mut mail_port = 8025;
+    for ctx in &mut services {
+        for inst in &mut ctx.email_instances {
+            inst.host_port = Some(mail_port);
+            mail_port += 1;
+        }
+    }
+    SystemModel {
+        project_name,
+        multi: ir.multi_service,
+        has_queue: services.iter().any(|c| c.has_queue),
+        has_db: services.iter().any(|c| c.has_db),
+        has_object_store: services.iter().any(|c| c.has_object_store),
+        services,
+    }
+}
+
+fn build_scoped(
+    ir: &NormalizedIr,
+    opts: &GenOptions,
+    scope: Option<&ciac_ir::Service>,
+    host_port: u16,
+) -> Ctx {
+    let sid = scope.map(|s| s.id);
+    let base_name = scope.map_or_else(|| ir.name.clone(), |s| s.name.clone());
+    let dir = scope.map_or_else(String::new, |s| s.name.to_kebab_case());
+    let container_prefix = if dir.is_empty() {
+        String::new()
+    } else {
+        format!("{dir}-")
+    };
+    let package = if scope.is_some() {
+        dir.clone()
+    } else {
+        crate::project_name(ir, opts)
+    };
+    let module = base_name.to_snake_case();
+    let capability = |kind: NodeKind| {
+        ir.nodes_of_kind(kind)
+            .find(|node| infra_in_scope(node.service, sid))
+    };
+    let has_db = capability(NodeKind::Database).is_some();
+    let has_cache = capability(NodeKind::Cache).is_some();
 
     let resource_services: BTreeSet<NodeId> = ir.resources.iter().map(|r| r.service).collect();
     let consumer_workers: BTreeSet<NodeId> = ir.event_streams.iter().map(|s| s.worker).collect();
@@ -417,7 +497,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
     // Payload type per handler node: the single payload every pipeline
     // using it agrees on, else untyped.
     let mut handler_payloads: BTreeMap<NodeId, Option<RecordId>> = BTreeMap::new();
-    for pipeline in &ir.pipelines {
+    for pipeline in ir.pipelines.iter().filter(|p| owned_by(p.service, sid)) {
         for node in handler_nodes(&pipeline.steps) {
             handler_payloads
                 .entry(node)
@@ -432,7 +512,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
 
     let apis = ir
         .nodes_of_kind(NodeKind::Api)
-        .filter(|api| ir.pipeline_of(api.id).is_some())
+        .filter(|api| owned_by(api.service, sid) && ir.pipeline_of(api.id).is_some())
         .map(|api| {
             let name = api.component.name().unwrap_or_default().to_owned();
             let pipeline = ir
@@ -482,10 +562,12 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         })
         .collect();
 
-    let default_subject = format!("{module}.events");
+    // Matches the subject `ciac-sema` assigns to the default stream, which
+    // is always derived from the project/system name.
+    let default_subject = format!("{}.events", ir.name.to_snake_case());
     let workers = ir
         .nodes_of_kind(NodeKind::Worker)
-        .filter(|w| !consumer_workers.contains(&w.id))
+        .filter(|w| owned_by(w.service, sid) && !consumer_workers.contains(&w.id))
         .map(|worker| {
             let name = worker.component.name().unwrap_or_default().to_owned();
             let (steps, handlers) = steps_of(ir, worker.id);
@@ -534,6 +616,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
     let consumers = ir
         .event_streams
         .iter()
+        .filter(|stream| owned_by(stream.service_owner, sid))
         .map(|stream| {
             let name = ir
                 .node(stream.worker)
@@ -553,7 +636,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
 
     let services = ir
         .nodes_of_kind(NodeKind::Service)
-        .filter(|s| !resource_services.contains(&s.id))
+        .filter(|s| owned_by(s.service, sid) && !resource_services.contains(&s.id))
         .map(|service| {
             let name = service.component.name().unwrap_or_default().to_owned();
             let bindings = bindings_of(ir, service.id);
@@ -575,6 +658,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
     let resources: Vec<ResourceCtx> = ir
         .resources
         .iter()
+        .filter(|resource| owned_by(resource.service_owner, sid))
         .map(|resource| {
             let snake = resource.name.to_snake_case();
             let bindings = bindings_of(ir, resource.service);
@@ -585,7 +669,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 store_class: format!("{}Store", resource.name),
                 store_module: format!("{snake}_store"),
                 record: resource.record.map(record_ctx),
-                has_auth: ir.singleton(NodeKind::Auth).is_some(),
+                has_auth: capability(NodeKind::Auth).is_some(),
                 has_cache: access.cache_expr.is_some(),
                 cache_ttl: resource.config.cache_ttl,
                 page_size: resource.config.page_size,
@@ -604,12 +688,14 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         })
         .collect();
 
-    let db_instances = instances_of(ir, NodeKind::Database, &module);
-    let cache_instances = instances_of(ir, NodeKind::Cache, &module);
-    let object_store_instances = ontology_instances(ir, NodeKind::ObjectStore);
-    let email_instances = ontology_instances(ir, NodeKind::Email);
-    let search_instances = ontology_instances(ir, NodeKind::Search);
-    let external_http_instances = ontology_instances(ir, NodeKind::ExternalHttp);
+    let db_instances = instances_of(ir, NodeKind::Database, &module, sid, &container_prefix);
+    let cache_instances = instances_of(ir, NodeKind::Cache, &module, sid, &container_prefix);
+    let object_store_instances =
+        ontology_instances(ir, NodeKind::ObjectStore, sid, &container_prefix);
+    let email_instances = ontology_instances(ir, NodeKind::Email, sid, &container_prefix);
+    let search_instances = ontology_instances(ir, NodeKind::Search, sid, &container_prefix);
+    let external_http_instances =
+        ontology_instances(ir, NodeKind::ExternalHttp, sid, &container_prefix);
 
     let records: Vec<RecordCtx> = ir.records().map(|(id, _)| build_record(ir, id)).collect();
     let all_fields = |records: &[RecordCtx]| -> Vec<String> {
@@ -621,9 +707,11 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
     let field_types = all_fields(&records);
 
     Ctx {
-        service_name: ir.name.clone(),
+        service_name: base_name,
         package,
-        has_auth: ir.singleton(NodeKind::Auth).is_some(),
+        dir,
+        host_port,
+        has_auth: capability(NodeKind::Auth).is_some(),
         has_db,
         has_cache,
         schema_key_args: {
@@ -654,10 +742,10 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         email_instances,
         search_instances,
         external_http_instances,
-        has_queue: ir.singleton(NodeKind::Queue).is_some(),
-        has_logging: ir.singleton(NodeKind::Logging).is_some(),
-        has_metrics: ir.singleton(NodeKind::Metrics).is_some(),
-        queue_engine: ir.singleton(NodeKind::Queue).map(|n| match n.component {
+        has_queue: capability(NodeKind::Queue).is_some(),
+        has_logging: capability(NodeKind::Logging).is_some(),
+        has_metrics: capability(NodeKind::Metrics).is_some(),
+        queue_engine: capability(NodeKind::Queue).map(|n| match n.component {
             Component::Queue {
                 engine: QueueEngine::Nats,
                 ..
@@ -690,7 +778,13 @@ fn suffixed(base: &str, sep: &str, snake: &str, is_default: bool) -> String {
     }
 }
 
-fn instance_ctx(kind: NodeKind, module: &str, name: &str, index: u32) -> InstanceCtx {
+fn instance_ctx(
+    kind: NodeKind,
+    module: &str,
+    container_prefix: &str,
+    name: &str,
+    index: u32,
+) -> InstanceCtx {
     let snake = name.to_snake_case();
     let is_default = name == "default";
     let (url_base, container_base, state_base) = match kind {
@@ -701,7 +795,10 @@ fn instance_ctx(kind: NodeKind, module: &str, name: &str, index: u32) -> Instanc
     let url_field = suffixed(url_base, "_", &snake, is_default);
     InstanceCtx {
         env_var: url_field.to_shouty_snake_case(),
-        container: suffixed(container_base, "-", &name.to_kebab_case(), is_default),
+        container: format!(
+            "{container_prefix}{}",
+            suffixed(container_base, "-", &name.to_kebab_case(), is_default)
+        ),
         state_field: suffixed(state_base, "_", &snake, is_default),
         db_name: suffixed(module, "_", &snake, is_default),
         session_dep: suffixed("get_session", "_", &snake, is_default),
@@ -719,13 +816,40 @@ fn instance_ctx(kind: NodeKind, module: &str, name: &str, index: u32) -> Instanc
     }
 }
 
-fn instances_of(ir: &NormalizedIr, kind: NodeKind, module: &str) -> Vec<InstanceCtx> {
+/// A node is deliverable code of the scoped service (apis, workers,
+/// handlers): unscoped builds take everything, scoped builds only the
+/// service's own declarations.
+fn owned_by(node_service: Option<ServiceId>, scope: Option<ServiceId>) -> bool {
+    match scope {
+        None => true,
+        Some(id) => node_service == Some(id),
+    }
+}
+
+/// A capability node is available to the scoped service: its own
+/// declarations plus top-level (shared) ones.
+fn infra_in_scope(node_service: Option<ServiceId>, scope: Option<ServiceId>) -> bool {
+    match scope {
+        None => true,
+        Some(id) => node_service.is_none() || node_service == Some(id),
+    }
+}
+
+fn instances_of(
+    ir: &NormalizedIr,
+    kind: NodeKind,
+    module: &str,
+    scope: Option<ServiceId>,
+    container_prefix: &str,
+) -> Vec<InstanceCtx> {
     ir.nodes_of_kind(kind)
+        .filter(|node| infra_in_scope(node.service, scope))
         .enumerate()
         .map(|(index, node)| {
             instance_ctx(
                 kind,
                 module,
+                container_prefix,
                 node.component.name().unwrap_or("default"),
                 index as u32,
             )
@@ -744,12 +868,21 @@ fn cfg(field: String, py_ann: &str, py_default: &str, rust_default: &str) -> Cfg
     }
 }
 
-fn ontology_instance(ir: &NormalizedIr, node: &ciac_ir::Node) -> OntologyInstanceCtx {
-    let _ = ir;
+fn ontology_instance(
+    node: &ciac_ir::Node,
+    container_prefix: &str,
+    index: usize,
+) -> OntologyInstanceCtx {
     let name = node.component.name().unwrap_or("default").to_owned();
     let snake = name.to_snake_case();
     let is_default = name == "default";
     let sfx = |base: &str| suffixed(base, "_", &snake, is_default);
+    let container = |base: &str| {
+        format!(
+            "{container_prefix}{}",
+            suffixed(base, "-", &name.to_kebab_case(), is_default)
+        )
+    };
     match &node.component {
         Component::ObjectStore {
             provider, bucket, ..
@@ -772,17 +905,15 @@ fn ontology_instance(ir: &NormalizedIr, node: &ciac_ir::Node) -> OntologyInstanc
                 ),
                 cfg(sfx("s3_region"), "str", "\"us-east-1\"", "us-east-1"),
             ];
-            fields[0].compose_value = Some(format!(
-                "http://{}:9000",
-                suffixed("minio", "-", &name.to_kebab_case(), is_default)
-            ));
+            fields[0].compose_value = Some(format!("http://{}:9000", container("minio")));
             OntologyInstanceCtx {
                 kind: "object_store".to_owned(),
                 provider: Some(format!("{provider:?}")),
-                container: Some(suffixed("minio", "-", &name.to_kebab_case(), is_default)),
+                container: Some(container("minio")),
                 state_field: sfx("object_store"),
                 key_arg: key_arg(&snake, is_default),
                 bucket: Some(bucket_name),
+                host_port: None,
                 cfg: fields,
                 name,
                 snake,
@@ -803,15 +934,15 @@ fn ontology_instance(ir: &NormalizedIr, node: &ciac_ir::Node) -> OntologyInstanc
                 ),
                 cfg(sfx("smtp_use_tls"), "bool", "False", "false"),
             ];
-            fields[0].compose_value =
-                Some(suffixed("mailpit", "-", &name.to_kebab_case(), is_default));
+            fields[0].compose_value = Some(container("mailpit"));
             OntologyInstanceCtx {
                 kind: "email".to_owned(),
                 provider: Some(format!("{provider:?}")),
-                container: Some(suffixed("mailpit", "-", &name.to_kebab_case(), is_default)),
+                container: Some(container("mailpit")),
                 state_field: sfx("email"),
                 key_arg: key_arg(&snake, is_default),
                 bucket: None,
+                host_port: Some(8025 + index as u16),
                 cfg: fields,
                 name,
                 snake,
@@ -825,17 +956,15 @@ fn ontology_instance(ir: &NormalizedIr, node: &ciac_ir::Node) -> OntologyInstanc
                 "\"http://localhost:9200\"",
                 "http://localhost:9200",
             )];
-            fields[0].compose_value = Some(format!(
-                "http://{}:9200",
-                suffixed("search", "-", &name.to_kebab_case(), is_default)
-            ));
+            fields[0].compose_value = Some(format!("http://{}:9200", container("search")));
             OntologyInstanceCtx {
                 kind: "search".to_owned(),
                 provider: Some(format!("{provider:?}")),
-                container: Some(suffixed("search", "-", &name.to_kebab_case(), is_default)),
+                container: Some(container("search")),
                 state_field: sfx("search"),
                 key_arg: key_arg(&snake, is_default),
                 bucket: None,
+                host_port: None,
                 cfg: fields,
                 name,
                 snake,
@@ -849,6 +978,7 @@ fn ontology_instance(ir: &NormalizedIr, node: &ciac_ir::Node) -> OntologyInstanc
             state_field: format!("http_{snake}"),
             key_arg: format!("\"{snake}\""),
             bucket: None,
+            host_port: None,
             cfg: vec![cfg(
                 format!("http_base_url_{snake}"),
                 "str",
@@ -871,9 +1001,16 @@ fn key_arg(snake: &str, is_default: bool) -> String {
     }
 }
 
-fn ontology_instances(ir: &NormalizedIr, kind: NodeKind) -> Vec<OntologyInstanceCtx> {
+fn ontology_instances(
+    ir: &NormalizedIr,
+    kind: NodeKind,
+    scope: Option<ServiceId>,
+    container_prefix: &str,
+) -> Vec<OntologyInstanceCtx> {
     ir.nodes_of_kind(kind)
-        .map(|node| ontology_instance(ir, node))
+        .filter(|node| infra_in_scope(node.service, scope))
+        .enumerate()
+        .map(|(index, node)| ontology_instance(node, container_prefix, index))
         .collect()
 }
 

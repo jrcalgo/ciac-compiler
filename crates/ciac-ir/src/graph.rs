@@ -146,6 +146,11 @@ pub struct EventStream {
 pub struct SystemGraph {
     /// The system name from the `service <Name>;` declaration.
     pub name: String,
+    /// True when the program used `service { .. }` blocks (the
+    /// multi-service surface form): each service is then a separate
+    /// deployable. A single `service <Name>;` declaration also registers
+    /// one [`Service`] for ownership tracking but stays single-deployable.
+    pub multi_service: bool,
     services: Vec<Service>,
     nodes: Vec<Node>,
     edges: Vec<Edge>,

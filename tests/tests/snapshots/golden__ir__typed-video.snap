@@ -4,6 +4,7 @@ expression: json
 ---
 {
   "name": "Media",
+  "multi_service": false,
   "services": [
     {
       "id": 0,

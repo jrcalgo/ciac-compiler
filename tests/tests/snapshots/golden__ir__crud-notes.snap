@@ -4,6 +4,7 @@ expression: json
 ---
 {
   "name": "Notes",
+  "multi_service": false,
   "services": [
     {
       "id": 0,

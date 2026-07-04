@@ -3,6 +3,9 @@
 {% for api in c.apis -%}
 pub mod {{ api.snake }};
 {% endfor -%}
+{% for channel in c.channels -%}
+pub mod channel_{{ channel.snake }};
+{% endfor -%}
 {% for resource in c.resources -%}
 pub mod {{ resource.snake }};
 {% endfor %}
@@ -16,6 +19,9 @@ pub fn router() -> Router<AppState> {
         .route("/health", get(health))
 {%- for api in c.apis %}
         .merge({{ api.snake }}::router())
+{%- endfor %}
+{%- for channel in c.channels %}
+        .merge(channel_{{ channel.snake }}::router())
 {%- endfor %}
 {%- for resource in c.resources %}
         .merge({{ resource.snake }}::router())

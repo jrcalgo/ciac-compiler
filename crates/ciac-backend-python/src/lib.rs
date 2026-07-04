@@ -39,14 +39,13 @@ impl Backend for PythonBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet; realtime waits for its v0.6 language
-        // construct (`ciac check` accepts it, build gates).
+        // Kafka has no generator yet.
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
                 ..
-            } | Component::Realtime { .. }
+            }
         )
     }
 
@@ -200,13 +199,19 @@ fn emit_service(
         project.add_file(at("app/models.py"), render("models.py.j2", empty())?);
     }
 
-    if !ctx.apis.is_empty() || !ctx.resources.is_empty() {
+    if !ctx.apis.is_empty() || !ctx.channels.is_empty() || !ctx.resources.is_empty() {
         project.add_file(at("app/api/__init__.py"), "\"\"\"HTTP routers.\"\"\"\n");
     }
     for api in &ctx.apis {
         project.add_file(
             at(&format!("app/api/{}.py", api.snake)),
             render("api.py.j2", context! { api => api })?,
+        );
+    }
+    for channel in &ctx.channels {
+        project.add_file(
+            at(&format!("app/api/channel_{}.py", channel.snake)),
+            render("channel.py.j2", context! { channel => channel })?,
         );
     }
     for resource in &ctx.resources {

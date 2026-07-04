@@ -40,14 +40,13 @@ impl Backend for RustBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet; realtime waits for its v0.6 language
-        // construct (`ciac check` accepts it, build gates).
+        // Kafka has no generator yet.
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
                 ..
-            } | Component::Realtime { .. }
+            }
         )
     }
 
@@ -194,6 +193,12 @@ fn emit_service(
         project.add_file(
             at(&format!("src/routes/{}.rs", api.snake)),
             render("route_api.rs.j2", context! { api => api })?,
+        );
+    }
+    for channel in &ctx.channels {
+        project.add_file(
+            at(&format!("src/routes/channel_{}.rs", channel.snake)),
+            render("channel.rs.j2", context! { channel => channel })?,
         );
     }
     for resource in &ctx.resources {

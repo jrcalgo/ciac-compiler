@@ -13,11 +13,13 @@
 //! * backends must not embed timestamps, absolute paths, or randomness;
 //! * IR iteration order is itself deterministic (declaration order).
 
+pub mod manifest;
 pub mod model;
 mod project;
+pub mod regen;
 pub mod template;
 
-pub use project::GeneratedProject;
+pub use project::{FileRole, GeneratedProject};
 
 use ciac_ir::{Component, NormalizedIr};
 

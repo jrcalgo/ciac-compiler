@@ -38,6 +38,27 @@ enum Command {
         /// Allow writing into a non-empty output directory.
         #[arg(long)]
         force: bool,
+        /// Adopt a pre-v0.6 output tree by preserving existing files and
+        /// writing sidecars for generated content that would replace them.
+        #[arg(long)]
+        adopt: bool,
+        /// Override the generated project's name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Show what regeneration would change without writing files.
+    Diff {
+        /// Path to the `.ciac` source file.
+        file: PathBuf,
+        /// Code-generation target.
+        #[arg(short, long)]
+        target: String,
+        /// Output directory to compare against.
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Print unified diffs for changed/conflicting files.
+        #[arg(long)]
+        patch: bool,
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
@@ -78,8 +99,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
             target,
             out,
             force,
+            adopt,
             name,
-        } => commands::build(&file, &target, &out, force, name),
+        } => commands::build(&file, &target, &out, force, adopt, name),
+        Command::Diff {
+            file,
+            target,
+            out,
+            patch,
+            name,
+        } => commands::diff(&file, &target, &out, patch, name),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::Explain { code } => commands::explain(&code),
         Command::Targets => commands::targets(),

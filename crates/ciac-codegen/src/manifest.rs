@@ -1,0 +1,100 @@
+use crate::{FileRole, GeneratedProject};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::io;
+use std::path::Path;
+
+pub const MANIFEST_REL_PATH: &str = ".ciac/manifest.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manifest {
+    pub compiler_version: String,
+    pub source_hash: String,
+    pub target: String,
+    pub files: BTreeMap<String, ManifestFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestFile {
+    pub role: FileRole,
+    pub hash: String,
+}
+
+pub fn hash_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
+}
+
+pub fn hash_content(content: &str) -> String {
+    hash_bytes(content.as_bytes())
+}
+
+pub fn build_manifest(
+    project: &GeneratedProject,
+    compiler_version: impl Into<String>,
+    source_hash: impl Into<String>,
+    target: impl Into<String>,
+) -> Manifest {
+    let files = project
+        .files_with_roles()
+        .map(|(path, content, role)| {
+            (
+                path.to_owned(),
+                ManifestFile {
+                    role,
+                    hash: hash_content(content),
+                },
+            )
+        })
+        .collect();
+    Manifest {
+        compiler_version: compiler_version.into(),
+        source_hash: source_hash.into(),
+        target: target.into(),
+        files,
+    }
+}
+
+pub fn manifest_path(root: &Path) -> std::path::PathBuf {
+    root.join(MANIFEST_REL_PATH)
+}
+
+pub fn load_manifest(root: &Path) -> io::Result<Manifest> {
+    let bytes = std::fs::read(manifest_path(root))?;
+    serde_json::from_slice(&bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
+
+pub fn write_manifest(root: &Path, manifest: &Manifest) -> io::Result<()> {
+    let path = manifest_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    std::fs::write(path, [bytes, b"\n".to_vec()].concat())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_is_sorted_and_stable() {
+        let mut project = GeneratedProject::new();
+        project.add_file("b.txt", "b");
+        project.add_seeded_file("a.txt", "a");
+        let manifest = build_manifest(&project, "0.6.0", "src", "python");
+        let json = serde_json::to_string_pretty(&manifest).expect("serialize");
+        let again = serde_json::to_string_pretty(&manifest).expect("serialize");
+        assert_eq!(json, again);
+        assert!(json.find("\"a.txt\"").unwrap() < json.find("\"b.txt\"").unwrap());
+    }
+}

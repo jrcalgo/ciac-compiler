@@ -224,7 +224,7 @@ fn emit_service(
         );
     }
     for service in &ctx.services {
-        project.add_file(
+        project.add_seeded_file(
             at(&format!("app/services/{}.py", service.module)),
             render("service.py.j2", context! { service => service })?,
         );

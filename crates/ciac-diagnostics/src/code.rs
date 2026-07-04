@@ -300,6 +300,41 @@ error_codes! {
         "A `call` step is malformed or targets a construct that cannot be \
          invoked as a typed service api."
     ),
+    RegenerationConflict = (
+        "CIAC0033",
+        Error,
+        "regeneration conflict",
+        "A compiler-owned file in the output directory was modified since \
+         the previous build. CIaC preserves the file, writes the newly \
+         generated content to a `.ciac-new` sidecar, and refuses to claim the \
+         project was regenerated cleanly until the conflict is reconciled."
+    ),
+    SeededFileDrift = (
+        "CIAC0034",
+        Warning,
+        "seeded file drifted",
+        "A user-owned seeded file already exists, but the seed CIaC would \
+         generate has changed. CIaC preserves the user file and writes the \
+         new seed to a `.ciac-new` sidecar for manual reconciliation."
+    ),
+    OrphanedGeneratedFile = (
+        "CIAC0035",
+        Warning,
+        "orphaned generated file",
+        "A file recorded in the regeneration manifest is no longer produced \
+         by the current source. CIaC deletes untouched compiler-owned \
+         orphans, but leaves modified or user-owned orphans in place and \
+         reports them."
+    ),
+    MissingManifest = (
+        "CIAC0036",
+        Error,
+        "output directory has no manifest",
+        "The output directory is non-empty but does not contain a CIaC \
+         regeneration manifest. Build into a clean directory, use `--force` \
+         to replace it, or use `--adopt` to preserve existing files and \
+         create a manifest."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

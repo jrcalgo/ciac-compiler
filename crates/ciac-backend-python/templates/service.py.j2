@@ -6,6 +6,11 @@ pipelines, and you implement the business logic in `handle`.
 {% if not service.payload %}
 from typing import Any
 {%- endif %}
+{%- for extra in service.extras %}
+{%- if extra.kind == "external_http" %}
+import httpx
+{%- endif %}
+{%- endfor %}
 {%- if service.needs_cache %}
 
 from redis.asyncio import Redis
@@ -13,6 +18,11 @@ from redis.asyncio import Redis
 {%- if service.needs_db %}
 from sqlalchemy.ext.asyncio import AsyncSession
 {%- endif %}
+{%- for extra in service.extras %}
+{%- if extra.kind != "external_http" %}
+from app.{{ extra.py_module }} import {{ extra.py_type }}
+{%- endif %}
+{%- endfor %}
 {%- if service.payload %}
 from app.schemas import {{ service.payload.class_name }}
 {%- endif %}
@@ -38,6 +48,9 @@ class {{ service.class_name }}:
 {%- if service.needs_cache %}
         cache: Redis | None = None,
 {%- endif %}
+{%- for extra in service.extras %}
+        {{ extra.param }}: {{ extra.py_type }} | None = None,
+{%- endfor %}
     ) -> None:
 {%- if service.needs_db %}
         self.session = session
@@ -45,7 +58,10 @@ class {{ service.class_name }}:
 {%- if service.needs_cache %}
         self.cache = cache
 {%- endif %}
-{%- if not service.needs_db and not service.needs_cache %}
+{%- for extra in service.extras %}
+        self.{{ extra.param }} = {{ extra.param }}
+{%- endfor %}
+{%- if not service.needs_db and not service.needs_cache and not service.extras %}
         pass
 {%- endif %}
 

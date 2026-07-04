@@ -40,12 +40,15 @@ impl Backend for RustBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
+        // Kafka has no generator yet; scheduler/realtime wait for their
+        // v0.6 language constructs (`ciac check` accepts them, build gates).
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
                 ..
-            }
+            } | Component::Scheduler { .. }
+                | Component::Realtime { .. }
         )
     }
 
@@ -97,6 +100,24 @@ impl Backend for RustBackend {
         }
         if !ctx.records.is_empty() {
             project.add_file("src/schemas.rs", render("schemas.rs.j2", empty())?);
+        }
+        if ctx.has_object_store {
+            project.add_file(
+                "src/object_store.rs",
+                render("object_store.rs.j2", empty())?,
+            );
+        }
+        if ctx.has_email {
+            project.add_file("src/email.rs", render("email.rs.j2", empty())?);
+        }
+        if ctx.has_search {
+            project.add_file("src/search.rs", render("search.rs.j2", empty())?);
+        }
+        if ctx.has_external_http {
+            project.add_file(
+                "src/http_clients.rs",
+                render("http_clients.rs.j2", empty())?,
+            );
         }
 
         project.add_file("src/routes/mod.rs", render("routes_mod.rs.j2", empty())?);

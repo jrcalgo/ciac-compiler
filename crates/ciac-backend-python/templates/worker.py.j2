@@ -46,6 +46,9 @@ from app.cache import get_cache
 {%- if worker.needs_db %}
 from app.db import get_sessionmaker
 {%- endif %}
+{%- for imp in worker.extra_imports %}
+from app.{{ imp.py_module }} import {{ imp.py_getter }}
+{%- endfor %}
 {%- if worker.has_publish_step %}
 from app.queue import publish
 {%- endif %}

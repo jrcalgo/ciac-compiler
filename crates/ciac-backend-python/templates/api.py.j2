@@ -50,6 +50,9 @@ from app.cache import get_cache
 {%- if api.needs_db %}
 from app.db import {{ api.db_imports }}
 {%- endif %}
+{%- for imp in api.extra_imports %}
+from app.{{ imp.py_module }} import {{ imp.py_getter }}
+{%- endfor %}
 {%- if api.has_publish_step %}
 from app.queue import publish
 {%- endif %}

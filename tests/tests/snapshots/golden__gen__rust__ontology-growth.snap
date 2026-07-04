@@ -27,6 +27,10 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json"
 redis = { version = "0.27", features = ["tokio-comp"] }
 async-nats = "0.38"
 futures = "0.3"
+rust-s3 = "0.35"
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+opensearch = "2"
+reqwest = { version = "0.12", features = ["json"] }
 ============================================================
 Dockerfile
 ============================================================
@@ -91,11 +95,17 @@ services:
       DATABASE_URL_MAIN: postgres://postgres:postgres@db-main:5432/media_ops_main
       DATABASE_URL_ANALYTICS: postgres://postgres:postgres@db-analytics:5432/media_ops_analytics
       REDIS_URL_HOT: redis://cache-hot:6379/0
+      S3_ENDPOINT_MEDIA: http://minio-media:9000
+      SMTP_HOST_TRANSACTIONAL: mailpit-transactional
+      SEARCH_URL_CATALOG: http://search-catalog:9200
       NATS_URL: nats://queue:4222
     depends_on:
       - db-main
       - db-analytics
       - cache-hot
+      - minio-media
+      - mailpit-transactional
+      - search-catalog
       - queue
 
   workers:
@@ -105,11 +115,17 @@ services:
       DATABASE_URL_MAIN: postgres://postgres:postgres@db-main:5432/media_ops_main
       DATABASE_URL_ANALYTICS: postgres://postgres:postgres@db-analytics:5432/media_ops_analytics
       REDIS_URL_HOT: redis://cache-hot:6379/0
+      S3_ENDPOINT_MEDIA: http://minio-media:9000
+      SMTP_HOST_TRANSACTIONAL: mailpit-transactional
+      SEARCH_URL_CATALOG: http://search-catalog:9200
       NATS_URL: nats://queue:4222
     depends_on:
       - db-main
       - db-analytics
       - cache-hot
+      - minio-media
+      - mailpit-transactional
+      - search-catalog
       - queue
 
   db-main:
@@ -131,12 +147,33 @@ services:
   cache-hot:
     image: redis:7
 
+  minio-media:
+    image: minio/minio
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-media-data:/data
+
+  mailpit-transactional:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025"
+
+  search-catalog:
+    image: opensearchproject/opensearch:2
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+
   queue:
     image: nats:2
 
 volumes:
   db-main-data:
   db-analytics-data:
+  minio-media-data:
 ============================================================
 src/bin/workers.rs
 ============================================================
@@ -168,6 +205,19 @@ pub struct Config {
     pub database_url_main: String,
     pub database_url_analytics: String,
     pub redis_url_hot: String,
+    pub s3_endpoint_media: String,
+    pub s3_access_key_media: String,
+    pub s3_secret_key_media: String,
+    pub s3_bucket_media: String,
+    pub s3_region_media: String,
+    pub smtp_host_transactional: String,
+    pub smtp_port_transactional: String,
+    pub smtp_username_transactional: String,
+    pub smtp_password_transactional: String,
+    pub smtp_from_transactional: String,
+    pub smtp_use_tls_transactional: String,
+    pub search_url_catalog: String,
+    pub http_base_url_billing: String,
     pub nats_url: String,
 }
 
@@ -183,6 +233,19 @@ impl Config {
                 "postgres://postgres:postgres@localhost:5432/media_ops_analytics",
             ),
             redis_url_hot: env_or("REDIS_URL_HOT", "redis://localhost:6379/0"),
+            s3_endpoint_media: env_or("S3_ENDPOINT_MEDIA", "http://localhost:9000"),
+            s3_access_key_media: env_or("S3_ACCESS_KEY_MEDIA", "minioadmin"),
+            s3_secret_key_media: env_or("S3_SECRET_KEY_MEDIA", "minioadmin"),
+            s3_bucket_media: env_or("S3_BUCKET_MEDIA", "videos"),
+            s3_region_media: env_or("S3_REGION_MEDIA", "us-east-1"),
+            smtp_host_transactional: env_or("SMTP_HOST_TRANSACTIONAL", "localhost"),
+            smtp_port_transactional: env_or("SMTP_PORT_TRANSACTIONAL", "1025"),
+            smtp_username_transactional: env_or("SMTP_USERNAME_TRANSACTIONAL", ""),
+            smtp_password_transactional: env_or("SMTP_PASSWORD_TRANSACTIONAL", ""),
+            smtp_from_transactional: env_or("SMTP_FROM_TRANSACTIONAL", "noreply@example.com"),
+            smtp_use_tls_transactional: env_or("SMTP_USE_TLS_TRANSACTIONAL", "false"),
+            search_url_catalog: env_or("SEARCH_URL_CATALOG", "http://localhost:9200"),
+            http_base_url_billing: env_or("HTTP_BASE_URL_BILLING", "https://billing.internal"),
             nats_url: env_or("NATS_URL", "nats://localhost:4222"),
         }
     }
@@ -190,6 +253,61 @@ impl Config {
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
+}
+============================================================
+src/email.rs
+============================================================
+//! SMTP email sender. Generated by CIaC.
+//!
+//! Both `SMTP` and `SES` providers send over SMTP; for SES, point the
+//! `SMTP_*` variables at your SES SMTP endpoint and credentials. Defaults
+//! target the Mailpit container from the generated docker-compose, so
+//! sent mail is inspectable at http://localhost:8025.
+
+use lettre::message::Mailbox;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+
+/// Async sender bound to one SMTP endpoint.
+///
+/// Holds configuration only; the transport is built per send, so the
+/// server starts (and compiles) without a running mail server.
+#[derive(Debug, Clone)]
+pub struct Email {
+    pub host: String,
+    pub port: String,
+    pub username: String,
+    pub password: String,
+    pub sender: String,
+    pub use_tls: String,
+}
+
+impl Email {
+    fn transport(&self) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
+        let mut builder = if self.use_tls == "true" {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&self.host)?
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&self.host)
+        };
+        builder = builder.port(self.port.parse()?);
+        if !self.username.is_empty() {
+            builder = builder.credentials(Credentials::new(
+                self.username.clone(),
+                self.password.clone(),
+            ));
+        }
+        Ok(builder.build())
+    }
+
+    pub async fn send(&self, to: &str, subject: &str, body: &str) -> anyhow::Result<()> {
+        let message = Message::builder()
+            .from(self.sender.parse::<Mailbox>()?)
+            .to(to.parse::<Mailbox>()?)
+            .subject(subject)
+            .body(body.to_owned())?;
+        self.transport()?.send(message).await?;
+        Ok(())
+    }
 }
 ============================================================
 src/error.rs
@@ -249,6 +367,48 @@ where
     }
 }
 ============================================================
+src/http_clients.rs
+============================================================
+//! External HTTP clients. Generated by CIaC.
+//!
+//! Each `external_http` instance gets a reqwest client bound to its
+//! configured base URL, so handlers call third-party APIs through a
+//! single managed client per upstream.
+
+/// One upstream HTTP API, addressed relative to its base URL.
+#[derive(Debug, Clone)]
+pub struct ExternalHttp {
+    pub base_url: String,
+    client: reqwest::Client,
+}
+
+impl ExternalHttp {
+    pub fn new(base_url: String) -> Self {
+        Self {
+            base_url,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    /// Builds a request for `path` relative to the instance base URL.
+    pub fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let url = format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        self.client.request(method, url)
+    }
+
+    pub fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::GET, path)
+    }
+
+    pub fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::POST, path)
+    }
+}
+============================================================
 src/lib.rs
 ============================================================
 //! MediaOps — generated by CIaC.
@@ -261,6 +421,10 @@ pub mod error;
 pub mod observability;
 pub mod routes;
 pub mod state;
+pub mod object_store;
+pub mod email;
+pub mod search;
+pub mod http_clients;
 pub mod schemas;
 pub mod services;
 pub mod workers;
@@ -279,6 +443,66 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("listening on 0.0.0.0:8000");
     axum::serve(listener, app).await?;
     Ok(())
+}
+============================================================
+src/object_store.rs
+============================================================
+//! S3 object storage client. Generated by CIaC.
+//!
+//! Each named `object_store` instance gets a client on `AppState`.
+//! Defaults target a local MinIO from the generated docker-compose; point
+//! the `S3_*` environment variables at real S3 in production.
+
+use s3::creds::Credentials;
+use s3::{Bucket, Region};
+
+/// One S3 bucket, addressed path-style so MinIO works out of the box.
+///
+/// Holds configuration only; the underlying client is built per call, so
+/// the server starts (and compiles) without a running object store.
+#[derive(Debug, Clone)]
+pub struct ObjectStore {
+    pub endpoint: String,
+    pub access_key: String,
+    pub secret_key: String,
+    pub bucket: String,
+    pub region: String,
+}
+
+impl ObjectStore {
+    fn bucket(&self) -> anyhow::Result<Box<Bucket>> {
+        let credentials = Credentials::new(
+            Some(&self.access_key),
+            Some(&self.secret_key),
+            None,
+            None,
+            None,
+        )?;
+        let region = Region::Custom {
+            region: self.region.clone(),
+            endpoint: self.endpoint.clone(),
+        };
+        Ok(Bucket::new(&self.bucket, region, credentials)?.with_path_style())
+    }
+
+    pub async fn put(&self, key: &str, body: &[u8]) -> anyhow::Result<()> {
+        self.bucket()?.put_object(key, body).await?;
+        Ok(())
+    }
+
+    pub async fn get(&self, key: &str) -> anyhow::Result<Vec<u8>> {
+        let response = self.bucket()?.get_object(key).await?;
+        Ok(response.to_vec())
+    }
+
+    pub async fn delete(&self, key: &str) -> anyhow::Result<()> {
+        self.bucket()?.delete_object(key).await?;
+        Ok(())
+    }
+
+    pub async fn presign_get(&self, key: &str, expires_s: u32) -> anyhow::Result<String> {
+        Ok(self.bucket()?.presign_get(key, expires_s, None).await?)
+    }
 }
 ============================================================
 src/observability.rs
@@ -380,6 +604,76 @@ pub struct Video {
 }
 
 ============================================================
+src/search.rs
+============================================================
+//! OpenSearch client. Generated by CIaC.
+//!
+//! Each named `search` instance gets a client on `AppState`. Defaults
+//! target the single-node OpenSearch container from the generated
+//! docker-compose.
+
+use opensearch::http::transport::Transport;
+use opensearch::{DeleteParts, IndexParts, OpenSearch, SearchParts};
+
+/// Async wrapper over one OpenSearch endpoint.
+///
+/// Holds configuration only; the underlying client is built per call, so
+/// the server starts (and compiles) without a running search cluster.
+#[derive(Debug, Clone)]
+pub struct Search {
+    pub url: String,
+}
+
+impl Search {
+    fn client(&self) -> anyhow::Result<OpenSearch> {
+        Ok(OpenSearch::new(Transport::single_node(&self.url)?))
+    }
+
+    pub async fn index(
+        &self,
+        index: &str,
+        doc_id: &str,
+        document: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        self.client()?
+            .index(IndexParts::IndexId(index, doc_id))
+            .body(document)
+            .send()
+            .await?
+            .error_for_status_code()?;
+        Ok(())
+    }
+
+    pub async fn search(
+        &self,
+        index: &str,
+        query: &serde_json::Value,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let response = self
+            .client()?
+            .search(SearchParts::Index(&[index]))
+            .body(query)
+            .send()
+            .await?
+            .error_for_status_code()?;
+        let body: serde_json::Value = response.json().await?;
+        let hits = body["hits"]["hits"]
+            .as_array()
+            .map(|hits| hits.iter().map(|hit| hit["_source"].clone()).collect())
+            .unwrap_or_default();
+        Ok(hits)
+    }
+
+    pub async fn delete(&self, index: &str, doc_id: &str) -> anyhow::Result<()> {
+        self.client()?
+            .delete(DeleteParts::IndexId(index, doc_id))
+            .send()
+            .await?
+            .error_for_status_code()?;
+        Ok(())
+    }
+}
+============================================================
 src/services/index_video.rs
 ============================================================
 //! Handler for the `IndexVideo` pipeline step. Generated by CIaC.
@@ -396,12 +690,17 @@ use crate::state::AppState;
 /// - search: catalog
 /// - external_http: billing
 #[derive(Debug)]
-pub struct IndexVideo {
+pub struct IndexVideo<'a> {
+    pub search: &'a crate::search::Search,
+    pub http: &'a crate::http_clients::ExternalHttp,
 }
 
-impl IndexVideo {
-    pub fn new(_state: &AppState) -> Self {
-        Self {}
+impl<'a> IndexVideo<'a> {
+    pub fn new(state: &'a AppState) -> Self {
+        Self {
+            search: &state.search_catalog,
+            http: &state.http_billing,
+        }
     }
 
     pub async fn handle(&self, payload: Video) -> anyhow::Result<Video> {
@@ -435,12 +734,15 @@ use crate::state::AppState;
 /// Capability bindings:
 /// - email: transactional
 #[derive(Debug)]
-pub struct NotifyUser {
+pub struct NotifyUser<'a> {
+    pub email: &'a crate::email::Email,
 }
 
-impl NotifyUser {
-    pub fn new(_state: &AppState) -> Self {
-        Self {}
+impl<'a> NotifyUser<'a> {
+    pub fn new(state: &'a AppState) -> Self {
+        Self {
+            email: &state.email_transactional,
+        }
     }
 
     pub async fn handle(&self, payload: Video) -> anyhow::Result<Video> {
@@ -501,6 +803,7 @@ use crate::state::AppState;
 pub struct StoreVideo<'a> {
     pub db: &'a sqlx::PgPool,
     pub cache: &'a redis::Client,
+    pub object_store: &'a crate::object_store::ObjectStore,
 }
 
 impl<'a> StoreVideo<'a> {
@@ -508,6 +811,7 @@ impl<'a> StoreVideo<'a> {
         Self {
             db: &state.db_main,
             cache: &state.cache_hot,
+            object_store: &state.object_store_media,
         }
     }
 
@@ -533,6 +837,10 @@ pub struct AppState {
     /// starts (and compiles) without a running database.
     pub db_analytics: sqlx::PgPool,
     pub cache_hot: redis::Client,
+    pub object_store_media: crate::object_store::ObjectStore,
+    pub email_transactional: crate::email::Email,
+    pub search_catalog: crate::search::Search,
+    pub http_billing: crate::http_clients::ExternalHttp,
     pub queue: async_nats::Client,
 }
 
@@ -543,12 +851,36 @@ impl AppState {
         let db_analytics =
             sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url_analytics)?;
         let cache_hot = redis::Client::open(config.redis_url_hot.as_str())?;
+        let object_store_media = crate::object_store::ObjectStore {
+            endpoint: config.s3_endpoint_media.clone(),
+            access_key: config.s3_access_key_media.clone(),
+            secret_key: config.s3_secret_key_media.clone(),
+            bucket: config.s3_bucket_media.clone(),
+            region: config.s3_region_media.clone(),
+        };
+        let email_transactional = crate::email::Email {
+            host: config.smtp_host_transactional.clone(),
+            port: config.smtp_port_transactional.clone(),
+            username: config.smtp_username_transactional.clone(),
+            password: config.smtp_password_transactional.clone(),
+            sender: config.smtp_from_transactional.clone(),
+            use_tls: config.smtp_use_tls_transactional.clone(),
+        };
+        let search_catalog = crate::search::Search {
+            url: config.search_url_catalog.clone(),
+        };
+        let http_billing =
+            crate::http_clients::ExternalHttp::new(config.http_base_url_billing.clone());
         let queue = async_nats::connect(&config.nats_url).await?;
         Ok(Self {
             config,
             db_main,
             db_analytics,
             cache_hot,
+            object_store_media,
+            email_transactional,
+            search_catalog,
+            http_billing,
             queue,
         })
     }

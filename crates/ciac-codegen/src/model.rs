@@ -30,6 +30,14 @@ pub struct Ctx {
     pub has_queue: bool,
     pub db_instances: Vec<InstanceCtx>,
     pub cache_instances: Vec<InstanceCtx>,
+    pub object_store_instances: Vec<OntologyInstanceCtx>,
+    pub email_instances: Vec<OntologyInstanceCtx>,
+    pub search_instances: Vec<OntologyInstanceCtx>,
+    pub external_http_instances: Vec<OntologyInstanceCtx>,
+    pub has_object_store: bool,
+    pub has_email: bool,
+    pub has_search: bool,
+    pub has_external_http: bool,
     /// Sessionmaker key args for instances that back CRUD resources
     /// (schema creation targets), e.g. [""] or ["\"main\""].
     pub schema_key_args: Vec<String>,
@@ -137,6 +145,71 @@ pub struct InstanceCtx {
     pub key_arg: String,
 }
 
+/// One typed configuration field of an ontology capability instance.
+#[derive(Debug, Clone, Serialize)]
+pub struct CfgFieldCtx {
+    /// Settings field name, e.g. `s3_endpoint_media`.
+    pub field: String,
+    /// Environment variable, e.g. `S3_ENDPOINT_MEDIA`.
+    pub env: String,
+    /// Python annotation: `str`, `int`, or `bool`.
+    pub py_ann: String,
+    /// Python default literal, e.g. `"http://localhost:9000"`, `1025`.
+    pub py_default: String,
+    /// Rust default literal (all ontology config is `String` in Rust;
+    /// numeric/bool values are parsed at the use site).
+    pub rust_default: String,
+    /// Value wired into docker-compose (container DNS), when it differs
+    /// from the development default.
+    pub compose_value: Option<String>,
+}
+
+/// One instance of an ontology capability (object_store/email/search/
+/// external_http) with its generated-client wiring.
+#[derive(Debug, Clone, Serialize)]
+pub struct OntologyInstanceCtx {
+    /// Instance name as declared, e.g. `default`, `media`.
+    pub name: String,
+    pub snake: String,
+    pub is_default: bool,
+    /// Capability kind: `object_store` | `email` | `search` | `external_http`.
+    pub kind: String,
+    /// Provider, e.g. `S3`, `SES`, `SMTP`, `OpenSearch`.
+    pub provider: Option<String>,
+    /// Compose container name, when a local-dev container exists.
+    pub container: Option<String>,
+    /// Rust `AppState` field, e.g. `object_store_media`.
+    pub state_field: String,
+    /// Python getter argument: empty for default, else `"media"` (quoted).
+    pub key_arg: String,
+    /// Bucket name (object stores only).
+    pub bucket: Option<String>,
+    pub cfg: Vec<CfgFieldCtx>,
+}
+
+/// A capability client a handler receives beyond db/cache.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExtraDepCtx {
+    /// Capability kind, e.g. `object_store`.
+    pub kind: String,
+    /// Constructor parameter name, e.g. `object_store`, `email`, `http`.
+    pub param: String,
+    /// Python parameter type, e.g. `ObjectStore`.
+    pub py_type: String,
+    /// Python module under `app.` providing the getter.
+    pub py_module: String,
+    /// Python getter expression, e.g. `get_object_store("media")`.
+    pub py_expr: String,
+    /// Python getter function name (for imports).
+    pub py_getter: String,
+    /// Rust type, e.g. `ObjectStore`.
+    pub rust_type: String,
+    /// Rust module providing the type, e.g. `object_store`.
+    pub rust_module: String,
+    /// Rust `AppState` field, e.g. `object_store_media`.
+    pub rust_state_field: String,
+}
+
 /// A database session a route/worker needs for its handlers.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SessionCtx {
@@ -171,8 +244,17 @@ pub struct ApiCtx {
     pub db_sessions: Vec<SessionCtx>,
     /// Comma-joined dependency names for the `from app.db import ..` line.
     pub db_imports: String,
+    /// Deduplicated ontology getters the route imports, per module.
+    pub extra_imports: Vec<ExtraImportCtx>,
     /// Deduplicated handlers, in invocation order, for imports.
     pub handlers: Vec<HandlerRef>,
+}
+
+/// One `from app.<module> import <getter>` line a route/worker needs.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExtraImportCtx {
+    pub py_module: String,
+    pub py_getter: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +301,9 @@ pub struct HandlerRef {
     pub rust_db_field: Option<String>,
     /// Rust `AppState` field for the bound cache, e.g. `cache_hot`.
     pub rust_cache_field: Option<String>,
+    /// Ontology clients this handler receives (object stores, email,
+    /// search, external HTTP), resolved to their bound instances.
+    pub extras: Vec<ExtraDepCtx>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -253,6 +338,8 @@ pub struct WorkerCtx {
     /// Pre-joined `async with` items, e.g.
     /// `get_sessionmaker()() as session, get_sessionmaker("main")() as session_main`.
     pub session_with: String,
+    /// Deduplicated ontology getters the worker imports, per module.
+    pub extra_imports: Vec<ExtraImportCtx>,
 }
 
 /// A consumer generated from `events <Name>;`.
@@ -279,6 +366,8 @@ pub struct ServiceCtx {
     /// Rust `AppState` fields for the bound db/cache instances.
     pub rust_db_field: Option<String>,
     pub rust_cache_field: Option<String>,
+    /// Ontology clients this handler receives.
+    pub extras: Vec<ExtraDepCtx>,
 }
 
 /// A CRUD resource from `crud <Name>;`.
@@ -370,12 +459,14 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 .map(|s| s.dep.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
+            let extra_imports = extra_imports_of(&handlers);
             ApiCtx {
                 route: path,
                 method_upper,
                 method_lower,
                 scope,
                 has_body,
+                extra_imports,
                 snake: name.to_snake_case(),
                 has_auth_step: steps.iter().any(|s| s.kind == "auth"),
                 has_publish_step: has_publish(&steps),
@@ -419,7 +510,9 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 .map(|s| format!("get_sessionmaker({})() as {}", s.key_arg, s.param))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let extra_imports = extra_imports_of(&handlers);
             WorkerCtx {
+                extra_imports,
                 snake: name.to_snake_case(),
                 queue_group: name.to_snake_case(),
                 needs_db: handlers.iter().any(|h| h.needs_db),
@@ -472,6 +565,7 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
                 needs_cache: access.cache_expr.is_some(),
                 rust_db_field: access.rust_db_field,
                 rust_cache_field: access.rust_cache_field,
+                extras: extras_of(&bindings),
                 bindings,
                 class_name: name,
             }
@@ -512,6 +606,10 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
 
     let db_instances = instances_of(ir, NodeKind::Database, &module);
     let cache_instances = instances_of(ir, NodeKind::Cache, &module);
+    let object_store_instances = ontology_instances(ir, NodeKind::ObjectStore);
+    let email_instances = ontology_instances(ir, NodeKind::Email);
+    let search_instances = ontology_instances(ir, NodeKind::Search);
+    let external_http_instances = ontology_instances(ir, NodeKind::ExternalHttp);
 
     let records: Vec<RecordCtx> = ir.records().map(|(id, _)| build_record(ir, id)).collect();
     let all_fields = |records: &[RecordCtx]| -> Vec<String> {
@@ -548,6 +646,14 @@ pub fn build(ir: &NormalizedIr, opts: &GenOptions) -> Ctx {
         },
         db_instances,
         cache_instances,
+        has_object_store: !object_store_instances.is_empty(),
+        has_email: !email_instances.is_empty(),
+        has_search: !search_instances.is_empty(),
+        has_external_http: !external_http_instances.is_empty(),
+        object_store_instances,
+        email_instances,
+        search_instances,
+        external_http_instances,
         has_queue: ir.singleton(NodeKind::Queue).is_some(),
         has_logging: ir.singleton(NodeKind::Logging).is_some(),
         has_metrics: ir.singleton(NodeKind::Metrics).is_some(),
@@ -625,6 +731,235 @@ fn instances_of(ir: &NormalizedIr, kind: NodeKind, module: &str) -> Vec<Instance
             )
         })
         .collect()
+}
+
+fn cfg(field: String, py_ann: &str, py_default: &str, rust_default: &str) -> CfgFieldCtx {
+    CfgFieldCtx {
+        env: field.to_shouty_snake_case(),
+        py_ann: py_ann.to_owned(),
+        py_default: py_default.to_owned(),
+        rust_default: rust_default.to_owned(),
+        compose_value: None,
+        field,
+    }
+}
+
+fn ontology_instance(ir: &NormalizedIr, node: &ciac_ir::Node) -> OntologyInstanceCtx {
+    let _ = ir;
+    let name = node.component.name().unwrap_or("default").to_owned();
+    let snake = name.to_snake_case();
+    let is_default = name == "default";
+    let sfx = |base: &str| suffixed(base, "_", &snake, is_default);
+    match &node.component {
+        Component::ObjectStore {
+            provider, bucket, ..
+        } => {
+            let bucket_name = bucket.clone().unwrap_or_else(|| snake.clone());
+            let mut fields = vec![
+                cfg(
+                    sfx("s3_endpoint"),
+                    "str",
+                    "\"http://localhost:9000\"",
+                    "http://localhost:9000",
+                ),
+                cfg(sfx("s3_access_key"), "str", "\"minioadmin\"", "minioadmin"),
+                cfg(sfx("s3_secret_key"), "str", "\"minioadmin\"", "minioadmin"),
+                cfg(
+                    sfx("s3_bucket"),
+                    "str",
+                    &format!("\"{bucket_name}\""),
+                    &bucket_name,
+                ),
+                cfg(sfx("s3_region"), "str", "\"us-east-1\"", "us-east-1"),
+            ];
+            fields[0].compose_value = Some(format!(
+                "http://{}:9000",
+                suffixed("minio", "-", &name.to_kebab_case(), is_default)
+            ));
+            OntologyInstanceCtx {
+                kind: "object_store".to_owned(),
+                provider: Some(format!("{provider:?}")),
+                container: Some(suffixed("minio", "-", &name.to_kebab_case(), is_default)),
+                state_field: sfx("object_store"),
+                key_arg: key_arg(&snake, is_default),
+                bucket: Some(bucket_name),
+                cfg: fields,
+                name,
+                snake,
+                is_default,
+            }
+        }
+        Component::Email { provider, .. } => {
+            let mut fields = vec![
+                cfg(sfx("smtp_host"), "str", "\"localhost\"", "localhost"),
+                cfg(sfx("smtp_port"), "int", "1025", "1025"),
+                cfg(sfx("smtp_username"), "str", "\"\"", ""),
+                cfg(sfx("smtp_password"), "str", "\"\"", ""),
+                cfg(
+                    sfx("smtp_from"),
+                    "str",
+                    "\"noreply@example.com\"",
+                    "noreply@example.com",
+                ),
+                cfg(sfx("smtp_use_tls"), "bool", "False", "false"),
+            ];
+            fields[0].compose_value =
+                Some(suffixed("mailpit", "-", &name.to_kebab_case(), is_default));
+            OntologyInstanceCtx {
+                kind: "email".to_owned(),
+                provider: Some(format!("{provider:?}")),
+                container: Some(suffixed("mailpit", "-", &name.to_kebab_case(), is_default)),
+                state_field: sfx("email"),
+                key_arg: key_arg(&snake, is_default),
+                bucket: None,
+                cfg: fields,
+                name,
+                snake,
+                is_default,
+            }
+        }
+        Component::Search { provider, .. } => {
+            let mut fields = vec![cfg(
+                sfx("search_url"),
+                "str",
+                "\"http://localhost:9200\"",
+                "http://localhost:9200",
+            )];
+            fields[0].compose_value = Some(format!(
+                "http://{}:9200",
+                suffixed("search", "-", &name.to_kebab_case(), is_default)
+            ));
+            OntologyInstanceCtx {
+                kind: "search".to_owned(),
+                provider: Some(format!("{provider:?}")),
+                container: Some(suffixed("search", "-", &name.to_kebab_case(), is_default)),
+                state_field: sfx("search"),
+                key_arg: key_arg(&snake, is_default),
+                bucket: None,
+                cfg: fields,
+                name,
+                snake,
+                is_default,
+            }
+        }
+        Component::ExternalHttp { base_url, .. } => OntologyInstanceCtx {
+            kind: "external_http".to_owned(),
+            provider: None,
+            container: None,
+            state_field: format!("http_{snake}"),
+            key_arg: format!("\"{snake}\""),
+            bucket: None,
+            cfg: vec![cfg(
+                format!("http_base_url_{snake}"),
+                "str",
+                &format!("\"{base_url}\""),
+                base_url,
+            )],
+            name,
+            snake,
+            is_default,
+        },
+        other => unreachable!("not an ontology capability: {other:?}"),
+    }
+}
+
+fn key_arg(snake: &str, is_default: bool) -> String {
+    if is_default {
+        String::new()
+    } else {
+        format!("\"{snake}\"")
+    }
+}
+
+fn ontology_instances(ir: &NormalizedIr, kind: NodeKind) -> Vec<OntologyInstanceCtx> {
+    ir.nodes_of_kind(kind)
+        .map(|node| ontology_instance(ir, node))
+        .collect()
+}
+
+fn extra_dep(binding: &BindingCtx) -> Option<ExtraDepCtx> {
+    let is_default = binding.name == "default";
+    let (param, py_type, py_module, py_getter, rust_type, rust_module, state_base) =
+        match binding.kind.as_str() {
+            "object_store" => (
+                "object_store",
+                "ObjectStore",
+                "object_store",
+                "get_object_store",
+                "ObjectStore",
+                "object_store",
+                "object_store",
+            ),
+            "email" => (
+                "email",
+                "Email",
+                "email",
+                "get_email",
+                "Email",
+                "email",
+                "email",
+            ),
+            "search" => (
+                "search",
+                "Search",
+                "search",
+                "get_search",
+                "Search",
+                "search",
+                "search",
+            ),
+            "external_http" => (
+                "http",
+                "httpx.AsyncClient",
+                "http_clients",
+                "get_http_client",
+                "ExternalHttp",
+                "http_clients",
+                "http",
+            ),
+            _ => return None,
+        };
+    let key = if binding.kind == "external_http" {
+        format!("\"{}\"", binding.snake)
+    } else {
+        key_arg(&binding.snake, is_default)
+    };
+    let state_field = if binding.kind == "external_http" {
+        format!("http_{}", binding.snake)
+    } else {
+        suffixed(state_base, "_", &binding.snake, is_default)
+    };
+    Some(ExtraDepCtx {
+        kind: binding.kind.clone(),
+        param: param.to_owned(),
+        py_type: py_type.to_owned(),
+        py_module: py_module.to_owned(),
+        py_expr: format!("{py_getter}({key})"),
+        py_getter: py_getter.to_owned(),
+        rust_type: rust_type.to_owned(),
+        rust_module: rust_module.to_owned(),
+        rust_state_field: state_field,
+    })
+}
+
+fn extras_of(bindings: &[BindingCtx]) -> Vec<ExtraDepCtx> {
+    bindings.iter().filter_map(extra_dep).collect()
+}
+
+fn extra_imports_of(handlers: &[HandlerRef]) -> Vec<ExtraImportCtx> {
+    let mut imports: Vec<ExtraImportCtx> = Vec::new();
+    for handler in handlers {
+        for extra in &handler.extras {
+            let import = ExtraImportCtx {
+                py_module: extra.py_module.clone(),
+                py_getter: extra.py_getter.clone(),
+            };
+            if !imports.contains(&import) {
+                imports.push(import);
+            }
+        }
+    }
+    imports
 }
 
 /// Resolved capability access for a handler/resource, derived from its
@@ -769,12 +1104,16 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     let name = node.component.name().unwrap_or_default().to_owned();
     let bindings = bindings_of(ir, id);
     let access = access_of(&bindings);
+    let extras = extras_of(&bindings);
     let mut args = Vec::new();
     if let Some(session) = &access.db {
         args.push(format!("session={}", session.param));
     }
     if let Some(cache_expr) = &access.cache_expr {
         args.push(format!("cache={cache_expr}"));
+    }
+    for extra in &extras {
+        args.push(format!("{}={}", extra.param, extra.py_expr));
     }
     HandlerRef {
         module: name.to_snake_case(),
@@ -784,6 +1123,7 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
         db_session: access.db,
         rust_db_field: access.rust_db_field,
         rust_cache_field: access.rust_cache_field,
+        extras,
         bindings,
         py_args: args.join(", "),
     }

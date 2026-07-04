@@ -16,18 +16,22 @@ use crate::state::AppState;
 /// - {{ binding.kind }}: {{ binding.name }}
 {% endfor -%}
 {% endif -%}
+{%- set borrows = service.needs_db or service.needs_cache or service.extras -%}
 #[derive(Debug)]
-pub struct {{ service.class_name }}{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {
+pub struct {{ service.class_name }}{% if borrows %}<'a>{% endif %} {
 {%- if service.needs_db %}
     pub db: &'a sqlx::PgPool,
 {%- endif %}
 {%- if service.needs_cache %}
     pub cache: &'a redis::Client,
 {%- endif %}
+{%- for extra in service.extras %}
+    pub {{ extra.param }}: &'a crate::{{ extra.rust_module }}::{{ extra.rust_type }},
+{%- endfor %}
 }
 
-impl{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {{ service.class_name }}{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {
-{%- if service.needs_db or service.needs_cache %}
+impl{% if borrows %}<'a>{% endif %} {{ service.class_name }}{% if borrows %}<'a>{% endif %} {
+{%- if borrows %}
     pub fn new(state: &'a AppState) -> Self {
         Self {
 {%- if service.needs_db %}
@@ -36,6 +40,9 @@ impl{% if service.needs_db or service.needs_cache %}<'a>{% endif %} {{ service.c
 {%- if service.needs_cache %}
             cache: &state.{{ service.rust_cache_field }},
 {%- endif %}
+{%- for extra in service.extras %}
+            {{ extra.param }}: &state.{{ extra.rust_state_field }},
+{%- endfor %}
         }
     }
 {%- else %}

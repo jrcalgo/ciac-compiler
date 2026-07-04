@@ -15,6 +15,18 @@ pub mod auth;
 pub mod db;
 pub mod models;
 {%- endif %}
+{%- if c.has_object_store %}
+pub mod object_store;
+{%- endif %}
+{%- if c.has_email %}
+pub mod email;
+{%- endif %}
+{%- if c.has_search %}
+pub mod search;
+{%- endif %}
+{%- if c.has_external_http %}
+pub mod http_clients;
+{%- endif %}
 {%- if c.records %}
 pub mod schemas;
 {%- endif %}

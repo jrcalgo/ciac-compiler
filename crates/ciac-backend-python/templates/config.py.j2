@@ -23,6 +23,26 @@ class Settings(BaseSettings):
     {{ inst.url_field }}: str = "redis://localhost:6379/{{ inst.redis_db }}"
 {%- endfor %}
 {%- endif %}
+{%- for inst in c.object_store_instances %}
+{% for f in inst.cfg %}
+    {{ f.field }}: {{ f.py_ann }} = {{ f.py_default }}
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.email_instances %}
+{% for f in inst.cfg %}
+    {{ f.field }}: {{ f.py_ann }} = {{ f.py_default }}
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.search_instances %}
+{% for f in inst.cfg %}
+    {{ f.field }}: {{ f.py_ann }} = {{ f.py_default }}
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+{% for f in inst.cfg %}
+    {{ f.field }}: {{ f.py_ann }} = {{ f.py_default }}
+{%- endfor %}
+{%- endfor %}
 {%- if c.has_queue %}
 
     nats_url: str = "nats://localhost:4222"

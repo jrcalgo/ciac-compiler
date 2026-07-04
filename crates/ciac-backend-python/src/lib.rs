@@ -39,13 +39,15 @@ impl Backend for PythonBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet; everything else is implemented.
+        // Kafka has no generator yet; scheduler/realtime wait for their
+        // v0.6 language constructs (`ciac check` accepts them, build gates).
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
                 ..
-            }
+            } | Component::Scheduler { .. }
+                | Component::Realtime { .. }
         )
     }
 
@@ -99,6 +101,24 @@ impl Backend for PythonBackend {
         }
         if ctx.has_queue {
             project.add_file("app/queue.py", render("queue.py.j2", empty())?);
+        }
+        if ctx.has_object_store {
+            project.add_file(
+                "app/object_store.py",
+                render("object_store.py.j2", empty())?,
+            );
+        }
+        if ctx.has_email {
+            project.add_file("app/email.py", render("email.py.j2", empty())?);
+        }
+        if ctx.has_search {
+            project.add_file("app/search.py", render("search.py.j2", empty())?);
+        }
+        if ctx.has_external_http {
+            project.add_file(
+                "app/http_clients.py",
+                render("http_clients.py.j2", empty())?,
+            );
         }
         if ctx.has_logging || ctx.has_metrics {
             project.add_file(

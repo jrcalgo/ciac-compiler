@@ -11,6 +11,26 @@ pub struct Config {
 {%- for inst in c.cache_instances %}
     pub {{ inst.url_field }}: String,
 {%- endfor %}
+{%- for inst in c.object_store_instances %}
+{%- for f in inst.cfg %}
+    pub {{ f.field }}: String,
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.email_instances %}
+{%- for f in inst.cfg %}
+    pub {{ f.field }}: String,
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.search_instances %}
+{%- for f in inst.cfg %}
+    pub {{ f.field }}: String,
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+{%- for f in inst.cfg %}
+    pub {{ f.field }}: String,
+{%- endfor %}
+{%- endfor %}
 {%- if c.has_queue %}
     pub nats_url: String,
 {%- endif %}
@@ -31,6 +51,26 @@ impl Config {
 {%- for inst in c.cache_instances %}
             {{ inst.url_field }}: env_or("{{ inst.env_var }}", "redis://localhost:6379/{{ inst.redis_db }}"),
 {%- endfor %}
+{%- for inst in c.object_store_instances %}
+{%- for f in inst.cfg %}
+            {{ f.field }}: env_or("{{ f.env }}", "{{ f.rust_default }}"),
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.email_instances %}
+{%- for f in inst.cfg %}
+            {{ f.field }}: env_or("{{ f.env }}", "{{ f.rust_default }}"),
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.search_instances %}
+{%- for f in inst.cfg %}
+            {{ f.field }}: env_or("{{ f.env }}", "{{ f.rust_default }}"),
+{%- endfor %}
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+{%- for f in inst.cfg %}
+            {{ f.field }}: env_or("{{ f.env }}", "{{ f.rust_default }}"),
+{%- endfor %}
+{%- endfor %}
 {%- if c.has_queue %}
             nats_url: env_or("NATS_URL", "nats://localhost:4222"),
 {%- endif %}
@@ -41,7 +81,7 @@ impl Config {
     }
 }
 
-{% if c.has_db or c.has_cache or c.has_queue or c.has_auth -%}
+{% if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.has_external_http -%}
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }

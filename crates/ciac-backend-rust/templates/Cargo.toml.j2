@@ -32,6 +32,18 @@ futures = "0.3"
 {%- if c.has_auth %}
 jsonwebtoken = "9"
 {%- endif %}
+{%- if c.has_object_store %}
+rust-s3 = "0.35"
+{%- endif %}
+{%- if c.has_email %}
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+{%- endif %}
+{%- if c.has_search %}
+opensearch = "2"
+{%- endif %}
+{%- if c.has_external_http %}
+reqwest = { version = "0.12", features = ["json"] }
+{%- endif %}
 {%- if c.resources %}
 uuid = { version = "1", features = ["v4"] }
 {%- endif %}

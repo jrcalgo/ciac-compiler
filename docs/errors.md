@@ -39,6 +39,10 @@ test.
 | CIAC0030 | error | invalid service scope |
 | CIAC0031 | error | invalid shared stream topology |
 | CIAC0032 | error | invalid call |
+| CIAC0033 | error | regeneration conflict |
+| CIAC0034 | warning | seeded file drifted |
+| CIAC0035 | warning | orphaned generated file |
+| CIAC0036 | error | output directory has no manifest |
 
 ## Notes
 
@@ -88,3 +92,10 @@ test.
   service-local declarations.
 - **CIAC0031** is reserved for invalid shared-stream topologies.
 - **CIAC0032** means a `call` target is malformed, e.g. not `Service.Api`.
+- **CIAC0033** means a compiler-owned file was edited after the last
+  build; CIaC wrote the newly generated content to a `.ciac-new` sidecar.
+- **CIAC0034** means a user-owned seeded file exists but the generated
+  seed changed; reconcile the `.ciac-new` sidecar manually.
+- **CIAC0035** means a previously generated file is no longer produced.
+- **CIAC0036** means a non-empty output directory has no regeneration
+  manifest; use a clean directory, `--force`, or `--adopt`.

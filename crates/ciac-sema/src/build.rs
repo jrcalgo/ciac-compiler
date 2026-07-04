@@ -1792,7 +1792,7 @@ mod attrs {
     }
 
     fn valid_cron_part(part: &str, min: u32, max: u32) -> bool {
-        let (base, step) = match part.split_once('/') {
+        let base = match part.split_once('/') {
             Some((base, step)) => {
                 let Ok(step) = step.parse::<u32>() else {
                     return false;
@@ -1800,9 +1800,9 @@ mod attrs {
                 if step == 0 {
                     return false;
                 }
-                (base, Some(step))
+                base
             }
-            None => (part, None),
+            None => part,
         };
         let base_valid = if base == "*" {
             true
@@ -1817,6 +1817,6 @@ mod attrs {
                 Err(_) => false,
             }
         };
-        base_valid && step.is_some_or(|_| true)
+        base_valid
     }
 }

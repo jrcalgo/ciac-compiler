@@ -11,7 +11,7 @@ use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
 use ciac_ir::NormalizedIr;
 use std::io::IsTerminal;
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 /// All registered code-generation backends, in stable order.
 /// Adding a target is one line here plus the backend crate itself.
@@ -182,6 +182,65 @@ pub fn diff(
     }
 }
 
+pub fn verify(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    live: bool,
+    name: Option<String>,
+) -> Result<ExitCode> {
+    let (backend, project, source_hash) = generate(file, target, name)?;
+    if live {
+        eprintln!("warning: --live health probing is not implemented yet; running static verify");
+    }
+
+    if !output_dir_nonempty(out)? {
+        project
+            .write_to(out)
+            .with_context(|| format!("cannot write initial project to {}", out.display()))?;
+        let manifest = build_manifest(
+            &project,
+            env!("CARGO_PKG_VERSION"),
+            source_hash,
+            backend.id(),
+        );
+        write_manifest(out, &manifest)
+            .with_context(|| format!("cannot write manifest in {}", out.display()))?;
+    } else {
+        let manifest_file = manifest_path(out);
+        if !manifest_file.exists() {
+            eprintln!(
+                "error[{}]: output directory {} has no regeneration manifest",
+                ErrorCode::MissingManifest,
+                out.display()
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+        let manifest = load_manifest(out).with_context(|| {
+            format!(
+                "cannot read regeneration manifest {}",
+                manifest_file.display()
+            )
+        })?;
+        let plan = plan_regeneration(&project, out, Some(&manifest), RegenMode::Normal)
+            .with_context(|| format!("cannot compare generated files with {}", out.display()))?;
+        report_regen_plan(&plan, false);
+        let drift: Vec<_> = plan
+            .entries
+            .iter()
+            .filter(|entry| entry.status != RegenStatus::Unchanged)
+            .collect();
+        if !drift.is_empty() {
+            for entry in drift {
+                eprintln!("drift: {} {}", entry.status.as_str(), entry.path);
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+
+    validate_generated(out, backend.id())
+}
+
 pub fn graph(file: &Path, format: &str) -> Result<ExitCode> {
     let (ir, has_errors) = front_end(file)?;
     let Some(ir) = ir.filter(|_| !has_errors) else {
@@ -322,4 +381,96 @@ fn list_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     walk(root, &mut files)?;
     files.sort();
     Ok(files)
+}
+
+fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
+    let marker = match target {
+        "python" => "pyproject.toml",
+        "rust" => "Cargo.toml",
+        other => bail!("cannot verify unknown generated target `{other}`"),
+    };
+    let projects = find_project_dirs(root, marker)?;
+    if projects.is_empty() {
+        bail!(
+            "no generated {target} project found under {}",
+            root.display()
+        );
+    }
+    for project in projects {
+        match target {
+            "python" => validate_python_project(&project)?,
+            "rust" => validate_rust_project(&project)?,
+            _ => unreachable!("matched above"),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn validate_python_project(project: &Path) -> Result<()> {
+    run_in(project, "uv", &["sync", "-q"])?;
+    run_in(project, "uv", &["run", "ruff", "check", "."])?;
+    run_in(project, "uv", &["run", "pytest", "-q"])
+}
+
+fn validate_rust_project(project: &Path) -> Result<()> {
+    let status = Command::new("cargo")
+        .arg("check")
+        .env("RUSTFLAGS", "-D warnings")
+        .current_dir(project)
+        .status()
+        .with_context(|| format!("failed to run cargo check in {}", project.display()))?;
+    if !status.success() {
+        bail!("cargo check failed in {}", project.display());
+    }
+    Ok(())
+}
+
+fn run_in(project: &Path, program: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(project)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run `{program} {}` in {}",
+                args.join(" "),
+                project.display()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "`{program} {}` failed in {}",
+            args.join(" "),
+            project.display()
+        );
+    }
+    Ok(())
+}
+
+fn find_project_dirs(root: &Path, marker: &str) -> Result<Vec<std::path::PathBuf>> {
+    fn walk(path: &Path, marker: &str, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
+        if path.join(marker).is_file() {
+            out.push(path.to_path_buf());
+            return Ok(());
+        }
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path)
+                .with_context(|| format!("cannot read {}", path.display()))?
+            {
+                let entry = entry?;
+                let child = entry.path();
+                if child.file_name().is_some_and(|name| {
+                    name == ".git" || name == "target" || name == ".venv" || name == "__pycache__"
+                }) {
+                    continue;
+                }
+                walk(&child, marker, out)?;
+            }
+        }
+        Ok(())
+    }
+    let mut projects = Vec::new();
+    walk(root, marker, &mut projects)?;
+    projects.sort();
+    Ok(projects)
 }

@@ -29,16 +29,20 @@ fn check_steps(
     for (idx, step) in steps.iter().enumerate() {
         match &step.kind {
             StepKind::Auth { .. } => {
-                if owner_kind == NodeKind::Worker {
+                if matches!(owner_kind, NodeKind::Worker | NodeKind::Job) {
                     let mut diag = Diagnostic::new(
                         ErrorCode::InvalidAuthPlacement,
-                        format!("worker pipeline `{pipeline_name}` cannot contain an `Auth` step"),
+                        format!(
+                            "{} pipeline `{pipeline_name}` cannot contain an `Auth` step",
+                            owner_kind_noun(owner_kind)
+                        ),
                     )
-                    .with_help(
-                        "workers process queue messages; there is no request to authenticate",
-                    );
+                    .with_help("workers and jobs do not receive an HTTP request to authenticate");
                     if let Some(span) = step.span {
-                        diag = diag.with_label(span, "`Auth` used in a worker pipeline");
+                        diag = diag.with_label(
+                            span,
+                            format!("`Auth` used in a {} pipeline", owner_kind_noun(owner_kind)),
+                        );
                     }
                     diags.push(diag);
                 } else if !top_level || idx != 0 {
@@ -63,5 +67,13 @@ fn check_steps(
             | StepKind::Handler { .. }
             | StepKind::Call { .. } => {}
         }
+    }
+}
+
+fn owner_kind_noun(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Job => "job",
+        NodeKind::Worker => "worker",
+        _ => "api",
     }
 }

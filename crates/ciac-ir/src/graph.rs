@@ -95,13 +95,13 @@ pub struct MatchArm {
     pub steps: Vec<Step>,
 }
 
-/// An ordered execution chain owned by an api (request flow) or a worker
-/// (asynchronous processing chain).
+/// An ordered execution chain owned by an api (request flow), worker
+/// (asynchronous processing chain), or job (scheduled trigger).
 #[derive(Debug, Clone, Serialize)]
 pub struct Pipeline {
     pub name: String,
     pub service: Option<ServiceId>,
-    /// The api or worker node this pipeline belongs to.
+    /// The api, worker, or job node this pipeline belongs to.
     pub owner: NodeId,
     /// The payload record every step handles: the api's request type or
     /// the consumed stream's record. `None` = untyped JSON.
@@ -326,6 +326,7 @@ impl SystemGraph {
                 NodeKind::Api => "rarrow",
                 NodeKind::Service => "box",
                 NodeKind::Worker => "component",
+                NodeKind::Job => "egg",
                 NodeKind::Database | NodeKind::Cache => "cylinder",
                 NodeKind::Queue => "cds",
                 NodeKind::Stream => "parallelogram",

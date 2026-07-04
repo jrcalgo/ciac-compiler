@@ -13,8 +13,8 @@ mod record;
 
 pub use component::{
     ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EmailProvider, HttpMethod,
-    LoggingProvider, MetricsProvider, NodeKind, ObjectStoreProvider, QueueEngine, RealtimeProvider,
-    SchedulerProvider, SearchProvider, WorkerConfig,
+    JobConfig, LoggingProvider, MetricsProvider, NodeKind, ObjectStoreProvider, QueueEngine,
+    RealtimeProvider, SchedulerProvider, SearchProvider, WorkerConfig,
 };
 pub use graph::{
     Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Service,

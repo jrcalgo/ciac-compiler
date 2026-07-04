@@ -43,6 +43,7 @@ test.
 | CIAC0034 | warning | seeded file drifted |
 | CIAC0035 | warning | orphaned generated file |
 | CIAC0036 | error | output directory has no manifest |
+| CIAC0037 | error | invalid cron expression |
 
 ## Notes
 
@@ -99,3 +100,5 @@ test.
 - **CIAC0035** means a previously generated file is no longer produced.
 - **CIAC0036** means a non-empty output directory has no regeneration
   manifest; use a clean directory, `--force`, or `--adopt`.
+- **CIAC0037** means a job schedule is not a valid five-field cron
+  expression.

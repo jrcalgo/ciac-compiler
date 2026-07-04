@@ -100,6 +100,7 @@ impl Parser<'_> {
                 | TokenKind::Handler
                 | TokenKind::Api
                 | TokenKind::Worker
+                | TokenKind::Job
                 | TokenKind::Pipeline
                 | TokenKind::Crud
                 | TokenKind::Events => return,
@@ -131,13 +132,14 @@ impl Parser<'_> {
             TokenKind::Handler => self.handler_decl(),
             TokenKind::Api => self.api_decl(),
             TokenKind::Worker => self.worker_decl(),
+            TokenKind::Job => self.job_decl(),
             TokenKind::Crud => self.crud_decl(),
             TokenKind::Events => self.component_decl(Item::Events),
             TokenKind::Pipeline => self.pipeline_decl(),
             _ => {
                 self.error_expected(
                     "a declaration (`project`, `service`, `use`, `record`, `stream`, \
-                     `handler`, `api`, `worker`, `crud`, `events`, or `pipeline`)",
+                     `handler`, `api`, `worker`, `job`, `crud`, `events`, or `pipeline`)",
                 );
                 None
             }
@@ -183,6 +185,11 @@ impl Parser<'_> {
                         items.push(ServiceItem::Worker(item));
                     }
                 }
+                TokenKind::Job => {
+                    if let Some(Item::Job(item)) = self.job_decl() {
+                        items.push(ServiceItem::Job(item));
+                    }
+                }
                 TokenKind::Crud => {
                     if let Some(Item::Crud(item)) = self.crud_decl() {
                         items.push(ServiceItem::Crud(item));
@@ -205,7 +212,7 @@ impl Parser<'_> {
                 }
                 _ => {
                     self.error_expected(
-                        "a service item (`use`, `api`, `worker`, `crud`, `events`, \
+                        "a service item (`use`, `api`, `worker`, `job`, `crud`, `events`, \
                          `handler`, `pipeline`) or `}`",
                     );
                     self.recover_inside_block();
@@ -260,6 +267,18 @@ impl Parser<'_> {
             span: kw.span.to(end),
             name,
             stream,
+            attrs,
+        }))
+    }
+
+    /// `job <Name> { schedule: "..."; }`
+    fn job_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        let (attrs, end) = self.decl_tail()?;
+        Some(Item::Job(JobDecl {
+            span: kw.span.to(end),
+            name,
             attrs,
         }))
     }
@@ -781,6 +800,7 @@ mod tests {
             r#"stream Uploaded: Video { subject: "media.uploaded"; }
                api Upload: Video { method: PUT; path: "/videos"; scope: "videos:write"; }
                worker Transcoder on Uploaded { concurrency: 4; max_retries: 2; }
+               job Cleanup { schedule: "0 3 * * *"; catch_up: false; }
                crud Clip: Video { cache_ttl: 60; page_size: 50; }"#,
         );
         assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
@@ -798,6 +818,13 @@ mod tests {
             &worker.attrs[0].value,
             AttrValue::Number { value: 4, .. }
         ));
+        let Item::Job(job) = &program.items[3] else {
+            panic!("expected job");
+        };
+        assert_eq!(job.attrs.len(), 2);
+        assert!(
+            matches!(&job.attrs[0].value, AttrValue::Str { value, .. } if value == "0 3 * * *")
+        );
     }
 
     #[test]

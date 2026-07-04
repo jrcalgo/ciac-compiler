@@ -61,7 +61,9 @@ async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
 {{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?.into())
 {{ indent }}    .await?;
 {%- elif step.kind == "call" %}
-{{ indent }}// TODO: call {{ step.call.service }}.{{ step.call.api }} with result.
+{{ indent }}let result = crate::clients::{{ step.call.module }}::{{ step.call.class_name }}::new(state)
+{{ indent }}    .{{ step.call.method }}(result)
+{{ indent }}    .await?;
 {%- elif step.kind == "match" %}
 {{ indent }}let result = match result.{{ step.field }} {
 {%- for arm in step.arms %}

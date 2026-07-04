@@ -31,6 +31,9 @@ pub struct Config {
     pub {{ f.field }}: String,
 {%- endfor %}
 {%- endfor %}
+{%- for t in c.call_targets %}
+    pub {{ t.url_field }}: String,
+{%- endfor %}
 {%- if c.has_queue %}
     pub nats_url: String,
 {%- endif %}
@@ -71,6 +74,9 @@ impl Config {
             {{ f.field }}: env_or("{{ f.env }}", "{{ f.rust_default }}"),
 {%- endfor %}
 {%- endfor %}
+{%- for t in c.call_targets %}
+            {{ t.url_field }}: env_or("{{ t.env_var }}", "{{ t.default_url }}"),
+{%- endfor %}
 {%- if c.has_queue %}
             nats_url: env_or("NATS_URL", "nats://localhost:4222"),
 {%- endif %}
@@ -81,7 +87,7 @@ impl Config {
     }
 }
 
-{% if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.has_external_http -%}
+{% if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.call_targets -%}
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }

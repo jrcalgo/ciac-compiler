@@ -84,6 +84,8 @@ pub struct Ctx {
     pub consumers: Vec<ConsumerCtx>,
     pub services: Vec<ServiceCtx>,
     pub resources: Vec<ResourceCtx>,
+    /// Downstream services invoked via `call`, one typed client each.
+    pub call_targets: Vec<CallTargetCtx>,
 }
 
 /// A resolved record type.
@@ -273,6 +275,8 @@ pub struct ApiCtx {
     pub db_imports: String,
     /// Deduplicated ontology getters the route imports, per module.
     pub extra_imports: Vec<ExtraImportCtx>,
+    /// Deduplicated service clients the route invokes, for imports.
+    pub call_imports: Vec<CallCtx>,
     /// Deduplicated handlers, in invocation order, for imports.
     pub handlers: Vec<HandlerRef>,
 }
@@ -300,6 +304,53 @@ pub struct StepCtx {
 pub struct CallCtx {
     pub service: String,
     pub api: String,
+    /// Client module under `app/clients` / `src/clients`, e.g. `billing`.
+    pub module: String,
+    /// Client class/struct name, e.g. `BillingClient`.
+    pub class_name: String,
+    /// Client method, e.g. `charge`.
+    pub method: String,
+}
+
+/// A downstream service this service invokes via `call <Service>.<Api>`:
+/// the compiler generates one typed HTTP client per target.
+#[derive(Debug, Serialize)]
+pub struct CallTargetCtx {
+    /// Target service name, e.g. `Billing`.
+    pub service: String,
+    /// Client module, e.g. `billing`.
+    pub module: String,
+    /// Compose DNS name of the target's app container, e.g. `billing`.
+    pub kebab: String,
+    /// Client class/struct, e.g. `BillingClient`.
+    pub class_name: String,
+    /// Settings/Config field holding the base URL, e.g. `billing_url`.
+    pub url_field: String,
+    /// Environment variable, e.g. `BILLING_URL`.
+    pub env_var: String,
+    /// Development default: the target's host port from the system
+    /// compose mapping, e.g. `http://localhost:8000`.
+    pub default_url: String,
+    /// Record class names the client file imports.
+    pub schema_imports: Vec<String>,
+    /// Any called api lacks a typed payload (drives dict/Any signatures).
+    pub needs_any: bool,
+    pub apis: Vec<CallApiCtx>,
+}
+
+/// One api of a call target, generated as a client method.
+#[derive(Debug, Serialize)]
+pub struct CallApiCtx {
+    /// Api name, e.g. `Charge`.
+    pub name: String,
+    /// Client method name, e.g. `charge`.
+    pub method: String,
+    /// HTTP method for the request, e.g. `post`.
+    pub http_method_lower: String,
+    /// Route path, e.g. `/charge`.
+    pub path: String,
+    pub has_body: bool,
+    pub payload: Option<PayloadRef>,
 }
 
 #[derive(Debug, Serialize)]
@@ -367,6 +418,8 @@ pub struct WorkerCtx {
     pub session_with: String,
     /// Deduplicated ontology getters the worker imports, per module.
     pub extra_imports: Vec<ExtraImportCtx>,
+    /// Deduplicated service clients the worker invokes, for imports.
+    pub call_imports: Vec<CallCtx>,
 }
 
 /// A consumer generated from `events <Name>;`.
@@ -540,6 +593,7 @@ fn build_scoped(
                 .collect::<Vec<_>>()
                 .join(", ");
             let extra_imports = extra_imports_of(&handlers);
+            let call_imports = call_imports_of(&steps);
             ApiCtx {
                 route: path,
                 method_upper,
@@ -547,6 +601,7 @@ fn build_scoped(
                 scope,
                 has_body,
                 extra_imports,
+                call_imports,
                 snake: name.to_snake_case(),
                 has_auth_step: steps.iter().any(|s| s.kind == "auth"),
                 has_publish_step: has_publish(&steps),
@@ -593,8 +648,10 @@ fn build_scoped(
                 .collect::<Vec<_>>()
                 .join(", ");
             let extra_imports = extra_imports_of(&handlers);
+            let call_imports = call_imports_of(&steps);
             WorkerCtx {
                 extra_imports,
+                call_imports,
                 snake: name.to_snake_case(),
                 queue_group: name.to_snake_case(),
                 needs_db: handlers.iter().any(|h| h.needs_db),
@@ -688,6 +745,75 @@ fn build_scoped(
         })
         .collect();
 
+    // One typed HTTP client per downstream service this service `call`s.
+    let mut call_targets: Vec<CallTargetCtx> = Vec::new();
+    for pipeline in ir.pipelines.iter().filter(|p| owned_by(p.service, sid)) {
+        for target in call_nodes(&pipeline.steps) {
+            let node = ir.node(target);
+            let Some(owner) = node.service else { continue };
+            let Component::Api { config, .. } = &node.component else {
+                continue;
+            };
+            let target_service = ir.service(owner).name.clone();
+            let api_name = node.component.name().unwrap_or_default().to_owned();
+            let path = config
+                .path
+                .clone()
+                .unwrap_or_else(|| format!("/{}", api_name.to_kebab_case()));
+            let entry_index = match call_targets
+                .iter()
+                .position(|t| t.service == target_service)
+            {
+                Some(index) => index,
+                None => {
+                    let position = ir
+                        .services()
+                        .position(|s| s.id == owner)
+                        .unwrap_or_default();
+                    let url_field = format!("{}_url", target_service.to_snake_case());
+                    call_targets.push(CallTargetCtx {
+                        module: target_service.to_snake_case(),
+                        kebab: target_service.to_kebab_case(),
+                        class_name: format!("{}Client", target_service.to_pascal_case()),
+                        env_var: url_field.to_shouty_snake_case(),
+                        url_field,
+                        default_url: format!("http://localhost:{}", 8000 + position),
+                        schema_imports: Vec::new(),
+                        needs_any: false,
+                        apis: Vec::new(),
+                        service: target_service.clone(),
+                    });
+                    call_targets.len() - 1
+                }
+            };
+            let entry = &mut call_targets[entry_index];
+            if entry.apis.iter().any(|a| a.name == api_name) {
+                continue;
+            }
+            let payload = ir.pipeline_of(target).and_then(|p| payload_ref(p.payload));
+            entry.apis.push(CallApiCtx {
+                method: api_name.to_snake_case(),
+                http_method_lower: config.method.as_str().to_ascii_lowercase(),
+                has_body: !matches!(config.method, HttpMethod::Get | HttpMethod::Delete),
+                path,
+                payload,
+                name: api_name,
+            });
+        }
+    }
+    for target in &mut call_targets {
+        for api in &target.apis {
+            match &api.payload {
+                Some(payload) => {
+                    if !target.schema_imports.contains(&payload.class_name) {
+                        target.schema_imports.push(payload.class_name.clone());
+                    }
+                }
+                None => target.needs_any = true,
+            }
+        }
+    }
+
     let db_instances = instances_of(ir, NodeKind::Database, &module, sid, &container_prefix);
     let cache_instances = instances_of(ir, NodeKind::Cache, &module, sid, &container_prefix);
     let object_store_instances =
@@ -766,6 +892,7 @@ fn build_scoped(
         consumers,
         services,
         resources,
+        call_targets,
         module,
     }
 }
@@ -1279,10 +1406,54 @@ fn call_ctx(ir: &NormalizedIr, target: NodeId) -> CallCtx {
         .service
         .map(|id| ir.service(id).name.clone())
         .unwrap_or_else(|| "Project".to_owned());
+    let api = node.component.name().unwrap_or_default().to_owned();
     CallCtx {
+        module: service.to_snake_case(),
+        class_name: format!("{}Client", service.to_pascal_case()),
+        method: api.to_snake_case(),
         service,
-        api: node.component.name().unwrap_or_default().to_owned(),
+        api,
     }
+}
+
+/// Call targets reachable from a step list, in invocation order.
+fn call_nodes(steps: &[Step]) -> Vec<NodeId> {
+    let mut nodes = Vec::new();
+    for step in steps {
+        match &step.kind {
+            StepKind::Call { target } => nodes.push(*target),
+            StepKind::Match { arms, .. } => {
+                for arm in arms {
+                    nodes.extend(call_nodes(&arm.steps));
+                }
+            }
+            StepKind::Auth { .. }
+            | StepKind::Publish { .. }
+            | StepKind::Return
+            | StepKind::Handler { .. } => {}
+        }
+    }
+    nodes
+}
+
+/// Deduplicated client references a route/worker imports, in invocation
+/// order.
+fn call_imports_of(steps: &[StepCtx]) -> Vec<CallCtx> {
+    fn walk(steps: &[StepCtx], imports: &mut Vec<CallCtx>) {
+        for step in steps {
+            if let Some(call) = &step.call {
+                if !imports.iter().any(|c| c.class_name == call.class_name) {
+                    imports.push(call.clone());
+                }
+            }
+            for arm in &step.arms {
+                walk(&arm.steps, imports);
+            }
+        }
+    }
+    let mut imports = Vec::new();
+    walk(steps, &mut imports);
+    imports
 }
 
 fn handler_nodes(steps: &[Step]) -> Vec<NodeId> {

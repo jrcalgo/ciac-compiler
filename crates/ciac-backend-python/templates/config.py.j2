@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     {{ f.field }}: {{ f.py_ann }} = {{ f.py_default }}
 {%- endfor %}
 {%- endfor %}
+{%- if c.call_targets %}
+{% for t in c.call_targets %}
+    {{ t.url_field }}: str = "{{ t.default_url }}"
+{%- endfor %}
+{%- endif %}
 {%- if c.has_queue %}
 
     nats_url: str = "nats://localhost:4222"

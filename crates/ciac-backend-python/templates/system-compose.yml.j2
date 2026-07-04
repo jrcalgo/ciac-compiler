@@ -5,7 +5,7 @@ services:
     build: ./{{ c.dir }}
     ports:
       - "{{ c.host_port }}:8000"
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
       {{ inst.env_var }}: postgresql+asyncpg://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
@@ -22,6 +22,9 @@ services:
 {%- for inst in c.search_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
       {{ f.env }}: {{ f.compose_value }}
 {%- endif %}{% endfor %}{% endfor %}
+{%- for t in c.call_targets %}
+      {{ t.env_var }}: http://{{ t.kebab }}:8000
+{%- endfor %}
 {%- if c.has_queue %}
       NATS_URL: nats://queue:4222
 {%- endif %}
@@ -55,7 +58,7 @@ services:
   {{ c.dir }}-workers:
     build: ./{{ c.dir }}
     command: ["python", "-m", "app.workers"]
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
       {{ inst.env_var }}: postgresql+asyncpg://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
@@ -72,6 +75,9 @@ services:
 {%- for inst in c.search_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
       {{ f.env }}: {{ f.compose_value }}
 {%- endif %}{% endfor %}{% endfor %}
+{%- for t in c.call_targets %}
+      {{ t.env_var }}: http://{{ t.kebab }}:8000
+{%- endfor %}
 {%- if c.has_queue %}
       NATS_URL: nats://queue:4222
 {%- endif %}

@@ -14,7 +14,7 @@ so replicas of this worker load-balance messages between them.
 {{ indent }}await publish("{{ step.subject }}", result)
 {%- endif %}
 {%- elif step.kind == "call" %}
-{{ indent }}# TODO: call {{ step.call.service }}.{{ step.call.api }} with result.
+{{ indent }}result = await {{ step.call.class_name }}().{{ step.call.method }}(result)
 {%- elif step.kind == "match" %}
 {%- for arm in step.arms %}
 {%- if loop.first and arm.label %}
@@ -43,6 +43,9 @@ from app.config import get_settings
 {%- if worker.needs_cache %}
 from app.cache import get_cache
 {%- endif %}
+{%- for call in worker.call_imports %}
+from app.clients.{{ call.module }} import {{ call.class_name }}
+{%- endfor %}
 {%- if worker.needs_db %}
 from app.db import get_sessionmaker
 {%- endif %}

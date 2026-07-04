@@ -27,6 +27,9 @@ pub mod search;
 {%- if c.has_external_http %}
 pub mod http_clients;
 {%- endif %}
+{%- if c.call_targets %}
+pub mod clients;
+{%- endif %}
 {%- if c.records %}
 pub mod schemas;
 {%- endif %}

@@ -176,6 +176,18 @@ fn emit_service(
             render("http_clients.py.j2", empty())?,
         );
     }
+    if !ctx.call_targets.is_empty() {
+        project.add_file(
+            at("app/clients/__init__.py"),
+            "\"\"\"Typed HTTP clients for the services this service calls.\"\"\"\n",
+        );
+        for target in &ctx.call_targets {
+            project.add_file(
+                at(&format!("app/clients/{}.py", target.module)),
+                render("client.py.j2", context! { t => target })?,
+            );
+        }
+    }
     if ctx.has_logging || ctx.has_metrics {
         project.add_file(
             at("app/observability.py"),

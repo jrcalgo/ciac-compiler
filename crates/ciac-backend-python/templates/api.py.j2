@@ -13,7 +13,7 @@ Pipeline: {% for step in api.steps %}{% if step.kind == "handler" %}{{ step.hand
 {{ indent }}await publish("{{ step.subject }}", result)
 {%- endif %}
 {%- elif step.kind == "call" %}
-{{ indent }}# TODO: call {{ step.call.service }}.{{ step.call.api }} with result.
+{{ indent }}result = await {{ step.call.class_name }}().{{ step.call.method }}(result)
 {%- elif step.kind == "match" %}
 {%- for arm in step.arms %}
 {%- if loop.first and arm.label %}
@@ -47,6 +47,9 @@ from app.auth import require_auth
 {%- if api.needs_cache %}
 from app.cache import get_cache
 {%- endif %}
+{%- for call in api.call_imports %}
+from app.clients.{{ call.module }} import {{ call.class_name }}
+{%- endfor %}
 {%- if api.needs_db %}
 from app.db import {{ api.db_imports }}
 {%- endif %}

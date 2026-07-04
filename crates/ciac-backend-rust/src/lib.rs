@@ -174,6 +174,18 @@ fn emit_service(
             render("http_clients.rs.j2", empty())?,
         );
     }
+    if !ctx.call_targets.is_empty() {
+        project.add_file(
+            at("src/clients/mod.rs"),
+            render("clients_mod.rs.j2", empty())?,
+        );
+        for target in &ctx.call_targets {
+            project.add_file(
+                at(&format!("src/clients/{}.rs", target.module)),
+                render("client.rs.j2", context! { t => target })?,
+            );
+        }
+    }
 
     project.add_file(
         at("src/routes/mod.rs"),

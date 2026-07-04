@@ -41,7 +41,7 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "h
 {%- if c.has_search %}
 opensearch = "2"
 {%- endif %}
-{%- if c.has_external_http %}
+{%- if c.has_external_http or c.call_targets %}
 reqwest = { version = "0.12", features = ["json"] }
 {%- endif %}
 {%- if c.resources %}

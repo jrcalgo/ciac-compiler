@@ -40,15 +40,14 @@ impl Backend for RustBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet; scheduler/realtime wait for their
-        // v0.6 language constructs (`ciac check` accepts them, build gates).
+        // Kafka has no generator yet; realtime waits for its v0.6 language
+        // construct (`ciac check` accepts it, build gates).
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
                 ..
-            } | Component::Scheduler { .. }
-                | Component::Realtime { .. }
+            } | Component::Realtime { .. }
         )
     }
 
@@ -98,10 +97,10 @@ impl Backend for RustBackend {
                     .to_owned(),
             );
             let ctx = &model.services[0];
-            if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
+            if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {
                 project
                     .notes
-                    .push("start workers with `cargo run --bin workers`".to_owned());
+                    .push("start workers/jobs with `cargo run --bin workers`".to_owned());
             }
         }
         Ok(project)
@@ -223,7 +222,7 @@ fn emit_service(
         );
     }
 
-    if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
+    if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {
         project.add_file(
             at("src/workers/mod.rs"),
             render("workers_mod.rs.j2", empty())?,
@@ -237,6 +236,12 @@ fn emit_service(
         project.add_file(
             at(&format!("src/workers/{}.rs", worker.snake)),
             render("worker.rs.j2", context! { worker => worker })?,
+        );
+    }
+    for job in &ctx.jobs {
+        project.add_file(
+            at(&format!("src/workers/{}.rs", job.snake)),
+            render("job.rs.j2", context! { job => job })?,
         );
     }
     for consumer in &ctx.consumers {

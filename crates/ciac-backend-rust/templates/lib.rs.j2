@@ -36,6 +36,6 @@ pub mod schemas;
 {%- if c.services or c.resources %}
 pub mod services;
 {%- endif %}
-{%- if c.workers or c.consumers %}
+{%- if c.workers or c.jobs or c.consumers %}
 pub mod workers;
 {%- endif %}

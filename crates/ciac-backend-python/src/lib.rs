@@ -39,15 +39,14 @@ impl Backend for PythonBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet; scheduler/realtime wait for their
-        // v0.6 language constructs (`ciac check` accepts them, build gates).
+        // Kafka has no generator yet; realtime waits for its v0.6 language
+        // construct (`ciac check` accepts it, build gates).
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
                 ..
-            } | Component::Scheduler { .. }
-                | Component::Realtime { .. }
+            } | Component::Realtime { .. }
         )
     }
 
@@ -98,10 +97,10 @@ impl Backend for PythonBackend {
                     .to_owned(),
             );
             let ctx = &model.services[0];
-            if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
+            if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {
                 project
                     .notes
-                    .push("start workers with `uv run python -m app.workers`".to_owned());
+                    .push("start workers/jobs with `uv run python -m app.workers`".to_owned());
             }
         }
         Ok(project)
@@ -236,10 +235,10 @@ fn emit_service(
         );
     }
 
-    if !ctx.workers.is_empty() || !ctx.consumers.is_empty() {
+    if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {
         project.add_file(
             at("app/workers/__init__.py"),
-            "\"\"\"Queue-driven workers. Run them all with `python -m app.workers`.\"\"\"\n",
+            "\"\"\"Queue-driven workers and scheduled jobs. Run them all with `python -m app.workers`.\"\"\"\n",
         );
         project.add_file(
             at("app/workers/__main__.py"),
@@ -250,6 +249,12 @@ fn emit_service(
         project.add_file(
             at(&format!("app/workers/{}.py", worker.snake)),
             render("worker.py.j2", context! { worker => worker })?,
+        );
+    }
+    for job in &ctx.jobs {
+        project.add_file(
+            at(&format!("app/workers/{}.py", job.snake)),
+            render("job.py.j2", context! { job => job })?,
         );
     }
     for consumer in &ctx.consumers {

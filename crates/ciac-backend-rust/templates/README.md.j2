@@ -9,16 +9,16 @@ instead. Business logic lives in `src/services/`, which is yours.
 ```sh
 cargo run
 ```
-{%- if c.workers or c.consumers %}
+{%- if c.workers or c.jobs or c.consumers %}
 
-Workers run separately:
+Workers and scheduled jobs run separately:
 
 ```sh
 cargo run --bin workers
 ```
 {%- endif %}
 
-Or bring up the full stack (API{% if c.workers or c.consumers %}, workers{% endif %}{% if c.has_db %}, Postgres{% endif %}{% if c.has_cache %}, Redis{% endif %}{% if c.has_queue %}, NATS{% endif %}):
+Or bring up the full stack (API{% if c.workers or c.jobs or c.consumers %}, workers/jobs{% endif %}{% if c.has_db %}, Postgres{% endif %}{% if c.has_cache %}, Redis{% endif %}{% if c.has_queue %}, NATS{% endif %}):
 
 ```sh
 docker compose up --build
@@ -31,7 +31,7 @@ docker compose up --build
 | `src/main.rs` | Application assembly | compiler |
 | `src/routes/` | HTTP routers (one per api) | compiler |
 | `src/services/` | Business-logic handlers | **you** |
-| `src/workers/` | Queue consumers | compiler |
+| `src/workers/` | Queue consumers and scheduled jobs | compiler |
 | `src/config.rs` | Environment-driven settings | compiler |
 {%- if c.has_auth %}
 

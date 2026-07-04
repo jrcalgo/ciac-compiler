@@ -87,4 +87,5 @@ spans are at hand.
 | Golden | `tests/tests/golden.rs` | IR JSON, DOT, and full generated trees per example × backend (insta) |
 | Negative | `tests/ui/*.ciac` | invalid programs annotated with `// expect: CIACnnnn` |
 | Determinism | `tests/tests/determinism.rs` | double-generation byte equality |
-| Generated-output | CI | `ruff` + `pytest` on the Python output; `cargo check` on the Rust output |
+| Regeneration | `tests/tests/regen.rs` | manifest stability, conflicts, seeded drift, orphans, adoption |
+| Generated-output | `ciac verify` / CI | regeneration drift check plus `ruff` + `pytest` on Python output or `cargo check` on Rust output |

@@ -78,3 +78,12 @@ service Notifier {
     pipeline DeadLetterSink:
         ArchiveFailure;
 }
+
+service ProgressFeed {
+    use {
+        queue bus NATS;
+        realtime live WebSocket;
+    }
+
+    channel Progress on Transcoded;
+}

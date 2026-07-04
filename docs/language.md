@@ -1,4 +1,4 @@
-# The CIaC Language (v0.5.1)
+# The CIaC Language (v0.6.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -16,8 +16,6 @@ ahead) and fail `ciac build` with `CIAC0011`:
 |-----------|--------------|--------------|
 | Everything below, unless listed | accepted | generated, working code |
 | `queue .. Kafka` | accepted | gated (`CIAC0011`) |
-| `scheduler` | accepted | gated until its v0.6 scheduled-job constructs |
-| `realtime` | accepted | gated until its v0.6 channel constructs |
 
 ## Grammar
 
@@ -25,14 +23,15 @@ ahead) and fail `ciac build` with `CIAC0011`:
 program        = { item } ;
 item           = project-decl | service-decl | service-block
                | use-block | record-decl | stream-decl | handler-decl
-               | api-decl | worker-decl | crud-decl | events-decl
-               | pipeline-decl ;
+               | api-decl | worker-decl | job-decl | channel-decl
+               | crud-decl | events-decl | pipeline-decl ;
 
 project-decl   = "project" IDENT ";" ;
 service-decl   = "service" IDENT ";" ;
 service-block  = "service" IDENT "{" { service-item } "}" ;
-service-item   = use-block | api-decl | worker-decl | crud-decl
-               | events-decl | handler-decl | pipeline-decl ;
+service-item   = use-block | api-decl | worker-decl | job-decl
+               | channel-decl | crud-decl | events-decl | handler-decl
+               | pipeline-decl ;
 use-block      = "use" "{" { use-entry } "}" ;
 use-entry      = IDENT IDENT ";"              (* capability provider *)
                | IDENT IDENT IDENT ";"        (* capability name provider *)
@@ -48,6 +47,8 @@ handler-decl   = "handler" IDENT "{" { binding } "}" ;
 binding        = IDENT ":" IDENT ";" ;
 api-decl       = "api" IDENT [ ":" IDENT ] decl-tail ;
 worker-decl    = "worker" IDENT [ "on" IDENT ] decl-tail ;
+job-decl       = "job" IDENT decl-tail ;
+channel-decl   = "channel" IDENT "on" IDENT decl-tail ;
 crud-decl      = "crud" IDENT [ ":" IDENT ] decl-tail ;
 events-decl    = "events" IDENT ";" ;
 pipeline-decl  = "pipeline" IDENT ":" step { "->" step } ";" ;
@@ -139,8 +140,8 @@ pairs (`CIAC0013` otherwise):
 | `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender (+ Mailpit in compose) |
 | `search` | `OpenSearch` | opensearch-py client / opensearch client (+ single-node container) |
 | `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance |
-| `scheduler` | `Cron` | *build-gated* (`CIAC0011`) until v0.6 |
-| `realtime` | `WebSocket`, `SSE` | *build-gated* (`CIAC0011`) until v0.6 |
+| `scheduler` | `Cron` | in-process scheduled jobs |
+| `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
 
 \* `Kafka` is accepted by the language but not yet implemented by the
 bundled backends (`CIAC0011` at build time).
@@ -161,7 +162,7 @@ stored as text.
 
 ### Attributes
 
-`api`, `worker`, `stream`, and `crud` declarations may end in an
+`api`, `worker`, `job`, `channel`, `stream`, and `crud` declarations may end in an
 attribute block instead of `;`. Attributes are validated from a closed
 registry; unknown names are `CIAC0018`, invalid values or unmet
 preconditions are `CIAC0019`.
@@ -173,6 +174,9 @@ preconditions are `CIAC0019`.
 | `api` | `scope` | string | none | pipeline must start with `Auth` |
 | `worker` | `concurrency` | integer >= 1 | `1` | |
 | `worker` | `max_retries` | integer >= 0 | `0` | |
+| `job` | `schedule` | five-field cron string | required | invalid cron is `CIAC0037` |
+| `job` | `catch_up` | `true`/`false` | `false` | |
+| `channel` | `path` | string starting with `/` | `/channels/<kebab-name>` | duplicate channel paths are `CIAC0003` |
 | `stream` | `subject` | string | `<service>.<stream>` | duplicate subjects are `CIAC0003` |
 | `crud` | `cache_ttl` | integer >= 1 | `300` | requires `cache` |
 | `crud` | `page_size` | integer >= 1 | `100` | |
@@ -190,14 +194,46 @@ Subjects follow `<service>.<stream>` in snake_case by default, e.g. stream
 `Uploaded` in service `Media` uses `media.uploaded`. Each worker
 consumes in a queue group named after it, so replicas load-balance.
 
-### `api <Name>[: <Record>];` and `worker <Name> [on <Stream>];`
+### `api <Name>[: <Record>];`, `worker <Name> [on <Stream>];`, and `job <Name> { ... }`
 
 Declare an HTTP API surface and an asynchronous consumer. A typed api
 validates its request body against the record; an untyped one accepts
 any JSON object. A worker with `on` consumes that stream (`CIAC0017` if
 undeclared); without `on` it consumes the service's *default stream*
 (see `Queue` below). Behavior is attached with a pipeline of the same
-name; an api or worker without one is reported unreachable (`CIAC0007`).
+name; an api, worker, or job without one is reported unreachable (`CIAC0007`).
+
+Jobs require `scheduler Cron` and a `schedule` cron expression:
+
+```ciac
+use { scheduler jobs Cron; }
+
+job Cleanup {
+    schedule: "0 3 * * *";
+}
+
+pipeline Cleanup: PruneExpired;
+```
+
+Job pipelines start with an untyped JSON payload. They may invoke
+handlers, calls, and publishes, but cannot use `Auth` or `Return`.
+
+### `channel <Name> on <Stream>;`
+
+Exposes a stream through the declared realtime provider. Channels require
+`realtime` and the referenced stream must exist (`CIAC0017`):
+
+```ciac
+use { queue NATS; realtime live WebSocket; }
+
+stream Progress: Video;
+channel LiveProgress on Progress {
+    path: "/live/progress";
+}
+```
+
+Channels count as stream consumers for reachability. Typed streams are
+serialized through their generated schema; untyped streams flow as JSON.
 
 ### `handler <Name> { ... }`
 
@@ -220,20 +256,20 @@ unsupported kind is `CIAC0024`.
 
 ### `pipeline <Name>: Step -> Step -> ..;`
 
-Attaches an execution chain to the api or worker named `<Name>`
-(`CIAC0004` if neither exists, `CIAC0003` for a second pipeline on the
-same component).
+Attaches an execution chain to the api, worker, or job named `<Name>`
+(`CIAC0004` if none exists, `CIAC0003` for a second pipeline on the same
+component).
 
 **Payload typing.** Each pipeline carries one payload type end-to-end:
-the api's request record, or the consumed stream's record for workers
-(untyped JSON when neither is typed). Every handler in the pipeline
-takes and returns that type.
+the api's request record, the consumed stream's record for workers, or
+untyped JSON for jobs. Every handler in the pipeline takes and returns
+that type.
 
 Steps are:
 
 - **`Auth`** — authenticate the request. Requires the `auth` capability
   (`CIAC0005`). Must be the first step of an api pipeline and may not
-  appear in worker pipelines (`CIAC0008`).
+  appear in worker or job pipelines (`CIAC0008`).
 - **`publish <Stream>`** — publish the current payload to a named
   stream (`CIAC0017` if undeclared). The payload type must match the
   stream's record (`CIAC0016`). Publishing is fire-and-forget; at most
@@ -269,7 +305,8 @@ Steps are:
   (business-logic unit) invoked at that point. Handlers are created on
   first reference, shared by name across pipelines, and provisioned
   with the declared `db`/`cache` capabilities. Referencing a declared
-  api, worker, or stream as a step is an error (`CIAC0009`).
+  api, worker, job, channel, or stream as a step is an error
+  (`CIAC0009`).
 
 ### `crud <Name>[: <Record>];`
 

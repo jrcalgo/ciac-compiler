@@ -1,0 +1,17 @@
+service Maintenance;
+
+use {
+    scheduler jobs Cron;
+    db Postgres;
+}
+
+job Cleanup {
+    schedule: "0 3 * * *";
+}
+
+handler PruneExpired {
+    db: default;
+}
+
+pipeline Cleanup:
+    PruneExpired;

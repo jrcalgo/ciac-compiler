@@ -43,17 +43,14 @@ jobs:
           python-version: "3.12"
       - name: Build the compiler
         run: cargo build -p ciac
-      - name: Generate, lint, and test every example
+      - name: Verify every example
         run: |
           set -euo pipefail
           for src in examples/*.ciac; do
             name="$(basename "$src" .ciac)"
             out="/tmp/gen-py-$name"
             echo "::group::$name"
-            cargo run -q -p ciac -- build "$src" --target python --out "$out"
-            for project in $(find "$out" -name pyproject.toml -exec dirname {} \;); do
-              (cd "$project" && uv sync -q && uv run ruff check . && uv run pytest -q)
-            done
+            cargo run -q -p ciac -- verify "$src" --target python --out "$out"
             echo "::endgroup::"
           done
 
@@ -66,17 +63,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build the compiler
         run: cargo build -p ciac
-      - name: Generate and type-check every example
+      - name: Verify every example
         run: |
           set -euo pipefail
           for src in examples/*.ciac; do
             name="$(basename "$src" .ciac)"
             out="/tmp/gen-rs-$name"
             echo "::group::$name"
-            cargo run -q -p ciac -- build "$src" --target rust --out "$out"
-            for project in $(find "$out" -name Cargo.toml -exec dirname {} \;); do
-              (cd "$project" && cargo check 2>&1 | tee /tmp/check.log \
-                && [ "$(grep -cE '^(error|warning)' /tmp/check.log)" = "0" ])
-            done
+            cargo run -q -p ciac -- verify "$src" --target rust --out "$out"
             echo "::endgroup::"
           done

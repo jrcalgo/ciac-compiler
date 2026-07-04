@@ -153,10 +153,9 @@ media-system/
 target api's real method and path, fails the pipeline on non-2xx, and
 validates the response envelope back into the `Video` record.
 
-Constructs the language accepts but no backend implements yet
-(`Kafka`, `scheduler`, `realtime`) pass `ciac check` and are refused by
-`ciac build` with `CIAC0011` — if it builds, the generated system
-actually does it.
+Constructs the language accepts but no backend implements yet (`Kafka`)
+pass `ciac check` and are refused by `ciac build` with `CIAC0011` — if
+it builds, the generated system actually does it.
 
 ## Why
 
@@ -170,6 +169,18 @@ Because compilation is deterministic — identical input produces
 byte-identical output — generated projects can be reviewed, diffed, and
 regenerated safely. Business logic lives in generated handler stubs that
 are yours to edit; the wiring stays compiler-owned.
+
+Regeneration is manifest-aware:
+
+```sh
+ciac build app.ciac --target python --out ./app
+# edit ./app/app/services/*.py
+ciac diff app.ciac --target python --out ./app --patch
+ciac verify app.ciac --target python --out ./app
+```
+
+Compiler-owned edits produce `.ciac-new` sidecars instead of overwriting
+work. See [docs/regeneration.md](docs/regeneration.md).
 
 ## How it works
 
@@ -197,6 +208,8 @@ never touches the language or its guarantees. See
 | API          | FastAPI router | Axum router |
 | Service      | async class stub (yours) | async struct stub (yours) |
 | Worker       | NATS queue-group subscriber | async-nats + Tokio |
+| Job          | croniter task in workers process | cron + Tokio task |
+| Channel      | FastAPI WebSocket/SSE route | Axum WebSocket/SSE route |
 | Database     | SQLAlchemy + asyncpg | SQLx (Postgres) |
 | Cache        | redis-py | redis |
 | Queue        | nats-py | async-nats |
@@ -208,6 +221,8 @@ never touches the language or its guarantees. See
 |---------|---------|
 | `ciac check file.ciac` | Parse + validate, print diagnostics |
 | `ciac build file.ciac --target python\|rust --out DIR` | Generate a project |
+| `ciac diff file.ciac --target python\|rust --out DIR` | Preview regeneration drift |
+| `ciac verify file.ciac --target python\|rust --out DIR` | Check regeneration drift and generated project validity |
 | `ciac graph file.ciac --format json\|dot` | Dump the system graph |
 | `ciac explain CIAC0005` | Explain an error code |
 | `ciac targets` | List code-generation targets |
@@ -234,7 +249,7 @@ cargo run -p ciac -- check examples/video-platform.ciac
 | `crates/ciac-backend-rust` | Axum target |
 | `examples/` | valid example programs |
 | `tests/` | golden snapshots, negative suite, determinism tests |
-| `docs/` | [language](docs/language.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [errors](docs/errors.md) |
+| `docs/` | [language](docs/language.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [regeneration](docs/regeneration.md) · [errors](docs/errors.md) |
 
 ## License
 

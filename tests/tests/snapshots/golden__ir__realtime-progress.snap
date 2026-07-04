@@ -1,0 +1,127 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "ProgressFeed",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "ProgressFeed"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Realtime",
+      "name": "live",
+      "provider": "WebSocket"
+    },
+    {
+      "id": 2,
+      "service": null,
+      "kind": "Stream",
+      "name": "Transcoded",
+      "subject": "progress_feed.transcoded",
+      "record": 0
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Api",
+      "name": "Complete",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/complete",
+        "scope": null
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Channel",
+      "name": "Progress",
+      "config": {
+        "path": "/channels/progress"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 2,
+      "to": 0,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 2,
+      "to": 4,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 2,
+      "from": 4,
+      "to": 1,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 3,
+      "from": 3,
+      "to": 2,
+      "kind": "AsyncMessage"
+    }
+  ],
+  "records": [
+    {
+      "name": "Video",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "status",
+          "ty": {
+            "type": "Enum",
+            "variants": [
+              "Ready",
+              "Failed"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "Complete",
+      "service": 0,
+      "owner": 3,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Publish",
+          "stream": 2
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

@@ -32,13 +32,13 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
-Workers run separately:
+Workers and scheduled jobs run separately:
 
 ```sh
 uv run python -m app.workers
 ```
 
-Or bring up the full stack (API, workers, Postgres, Redis, NATS):
+Or bring up the full stack (API, workers/jobs, Postgres, Redis, NATS):
 
 ```sh
 docker compose up --build
@@ -58,7 +58,7 @@ uv run ruff check .
 | `app/main.py` | Application assembly | compiler |
 | `app/api/` | HTTP routers (one per api) | compiler |
 | `app/services/` | Business-logic handlers | **you** |
-| `app/workers/` | Queue consumers | compiler |
+| `app/workers/` | Queue consumers and scheduled jobs | compiler |
 | `app/config.py` | Environment-driven settings | compiler |
 
 Requests to protected routes need a bearer token signed with
@@ -756,7 +756,7 @@ class Transcode:
 ============================================================
 app/workers/__init__.py
 ============================================================
-"""Queue-driven workers. Run them all with `python -m app.workers`."""
+"""Queue-driven workers and scheduled jobs. Run them all with `python -m app.workers`."""
 ============================================================
 app/workers/__main__.py
 ============================================================

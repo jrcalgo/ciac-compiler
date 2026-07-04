@@ -52,7 +52,7 @@ uv run ruff check .
 | `app/main.py` | Application assembly | compiler |
 | `app/api/` | HTTP routers (one per api) | compiler |
 | `app/services/` | Business-logic handlers | **you** |
-| `app/workers/` | Queue consumers | compiler |
+| `app/workers/` | Queue consumers and scheduled jobs | compiler |
 | `app/config.py` | Environment-driven settings | compiler |
 
 Requests to protected routes need a bearer token signed with

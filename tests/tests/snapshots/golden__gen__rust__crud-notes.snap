@@ -70,7 +70,7 @@ docker compose up --build
 | `src/main.rs` | Application assembly | compiler |
 | `src/routes/` | HTTP routers (one per api) | compiler |
 | `src/services/` | Business-logic handlers | **you** |
-| `src/workers/` | Queue consumers | compiler |
+| `src/workers/` | Queue consumers and scheduled jobs | compiler |
 | `src/config.rs` | Environment-driven settings | compiler |
 
 Requests to protected routes need a bearer token signed with

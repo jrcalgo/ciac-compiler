@@ -21,6 +21,10 @@ expression: json
     {
       "id": 3,
       "name": "Notifier"
+    },
+    {
+      "id": 4,
+      "name": "ProgressFeed"
     }
   ],
   "nodes": [
@@ -140,30 +144,53 @@ expression: json
     },
     {
       "id": 13,
+      "service": 4,
+      "kind": "Queue",
+      "name": "bus",
+      "engine": "Nats"
+    },
+    {
+      "id": 14,
+      "service": 4,
+      "kind": "Realtime",
+      "name": "live",
+      "provider": "WebSocket"
+    },
+    {
+      "id": 15,
+      "service": 4,
+      "kind": "Channel",
+      "name": "Progress",
+      "config": {
+        "path": "/channels/progress"
+      }
+    },
+    {
+      "id": 16,
       "service": 0,
       "kind": "Service",
       "name": "CapturePayment"
     },
     {
-      "id": 14,
+      "id": 17,
       "service": 1,
       "kind": "Service",
       "name": "StoreVideo"
     },
     {
-      "id": 15,
+      "id": 18,
       "service": 2,
       "kind": "Service",
       "name": "TranscodeVideo"
     },
     {
-      "id": 16,
+      "id": 19,
       "service": 3,
       "kind": "Service",
       "name": "SendNotification"
     },
     {
-      "id": 17,
+      "id": 20,
       "service": 3,
       "kind": "Service",
       "name": "ArchiveFailure"
@@ -208,86 +235,98 @@ expression: json
     },
     {
       "id": 6,
-      "from": 3,
-      "to": 13,
-      "kind": "RequestFlow"
+      "from": 1,
+      "to": 15,
+      "kind": "AsyncMessage"
     },
     {
       "id": 7,
+      "from": 15,
+      "to": 14,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 8,
+      "from": 3,
+      "to": 16,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 9,
       "from": 0,
       "to": 4,
       "kind": "DependsOn"
     },
     {
-      "id": 8,
+      "id": 10,
       "from": 5,
       "to": 3,
       "kind": "ServiceCall"
     },
     {
-      "id": 9,
+      "id": 11,
       "from": 5,
-      "to": 14,
+      "to": 17,
       "kind": "RequestFlow"
     },
     {
-      "id": 10,
-      "from": 14,
+      "id": 12,
+      "from": 17,
       "to": 0,
       "kind": "AsyncMessage"
     },
     {
-      "id": 11,
-      "from": 15,
+      "id": 13,
+      "from": 18,
       "to": 7,
       "kind": "DataFlow"
     },
     {
-      "id": 12,
+      "id": 14,
       "from": 1,
       "to": 6,
       "kind": "DependsOn"
     },
     {
-      "id": 13,
+      "id": 15,
       "from": 2,
       "to": 6,
       "kind": "DependsOn"
     },
     {
-      "id": 14,
+      "id": 16,
       "from": 8,
-      "to": 15,
+      "to": 18,
       "kind": "RequestFlow"
     },
     {
-      "id": 15,
-      "from": 15,
+      "id": 17,
+      "from": 18,
       "to": 1,
       "kind": "AsyncMessage"
     },
     {
-      "id": 16,
-      "from": 15,
+      "id": 18,
+      "from": 18,
       "to": 2,
       "kind": "AsyncMessage"
     },
     {
-      "id": 17,
-      "from": 16,
+      "id": 19,
+      "from": 19,
       "to": 10,
       "kind": "DataFlow"
     },
     {
-      "id": 18,
+      "id": 20,
       "from": 11,
-      "to": 16,
+      "to": 19,
       "kind": "RequestFlow"
     },
     {
-      "id": 19,
+      "id": 21,
       "from": 12,
-      "to": 17,
+      "to": 20,
       "kind": "RequestFlow"
     }
   ],
@@ -329,7 +368,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 13
+          "node": 16
         },
         {
           "step": "Return"
@@ -348,7 +387,7 @@ expression: json
         },
         {
           "step": "Handler",
-          "node": 14
+          "node": 17
         },
         {
           "step": "Publish",
@@ -367,7 +406,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 15
+          "node": 18
         },
         {
           "step": "Match",
@@ -403,7 +442,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 16
+          "node": 19
         }
       ]
     },
@@ -415,7 +454,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 17
+          "node": 20
         }
       ]
     }

@@ -1,0 +1,83 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "Maintenance",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "Maintenance"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Scheduler",
+      "name": "jobs",
+      "provider": "Cron"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Job",
+      "name": "Cleanup",
+      "config": {
+        "schedule": "0 3 * * *",
+        "catch_up": false
+      }
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Service",
+      "name": "PruneExpired"
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 2,
+      "to": 0,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 3,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 2,
+      "to": 3,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [],
+  "pipelines": [
+    {
+      "name": "Cleanup",
+      "service": 0,
+      "owner": 2,
+      "payload": null,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 3
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

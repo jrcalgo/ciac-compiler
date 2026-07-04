@@ -59,13 +59,13 @@ instead. Business logic lives in `src/services/`, which is yours.
 cargo run
 ```
 
-Workers run separately:
+Workers and scheduled jobs run separately:
 
 ```sh
 cargo run --bin workers
 ```
 
-Or bring up the full stack (API, workers, Postgres, Redis, NATS):
+Or bring up the full stack (API, workers/jobs, Postgres, Redis, NATS):
 
 ```sh
 docker compose up --build
@@ -78,7 +78,7 @@ docker compose up --build
 | `src/main.rs` | Application assembly | compiler |
 | `src/routes/` | HTTP routers (one per api) | compiler |
 | `src/services/` | Business-logic handlers | **you** |
-| `src/workers/` | Queue consumers | compiler |
+| `src/workers/` | Queue consumers and scheduled jobs | compiler |
 | `src/config.rs` | Environment-driven settings | compiler |
 
 Requests to protected routes need a bearer token signed with

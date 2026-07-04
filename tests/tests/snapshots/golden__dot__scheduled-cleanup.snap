@@ -1,0 +1,14 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph Maintenance {
+    rankdir=LR;
+    n0 [label="scheduler jobs Cron", shape=oval];
+    n1 [label="database default Postgres", shape=cylinder];
+    n2 [label="job Cleanup", shape=egg];
+    n3 [label="service PruneExpired", shape=box];
+    n2 -> n0 [label="DependsOn", style=dotted];
+    n3 -> n1 [label="DataFlow", style=bold];
+    n2 -> n3 [label="RequestFlow", style=solid];
+}

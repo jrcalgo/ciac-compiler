@@ -56,6 +56,11 @@ pub struct JobConfig {
     pub catch_up: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChannelConfig {
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CrudConfig {
     pub cache_ttl: u32,
@@ -136,6 +141,7 @@ pub enum NodeKind {
     Service,
     Worker,
     Job,
+    Channel,
     Database,
     Cache,
     Queue,
@@ -176,6 +182,11 @@ pub enum Component {
     Job {
         name: String,
         config: JobConfig,
+    },
+    /// A realtime exposure of a stream.
+    Channel {
+        name: String,
+        config: ChannelConfig,
     },
     Database {
         name: String,
@@ -242,6 +253,7 @@ impl Component {
             Component::Service { .. } => NodeKind::Service,
             Component::Worker { .. } => NodeKind::Worker,
             Component::Job { .. } => NodeKind::Job,
+            Component::Channel { .. } => NodeKind::Channel,
             Component::Database { .. } => NodeKind::Database,
             Component::Cache { .. } => NodeKind::Cache,
             Component::Queue { .. } => NodeKind::Queue,
@@ -265,6 +277,7 @@ impl Component {
             | Component::Service { name }
             | Component::Worker { name, .. }
             | Component::Job { name, .. }
+            | Component::Channel { name, .. }
             | Component::Stream { name, .. }
             | Component::Database { name, .. }
             | Component::Cache { name, .. }
@@ -288,6 +301,7 @@ impl Component {
             Component::Service { name } => format!("service {name}"),
             Component::Worker { name, .. } => format!("worker {name}"),
             Component::Job { name, .. } => format!("job {name}"),
+            Component::Channel { name, .. } => format!("channel {name}"),
             Component::Database { name, engine } => format!("database {name} {engine:?}"),
             Component::Cache { name, engine } => format!("cache {name} {engine:?}"),
             Component::Queue { name, engine } => format!("queue {name} {engine:?}"),

@@ -41,6 +41,8 @@ pub enum Item {
     Worker(WorkerDecl),
     /// `job <Name> { schedule: "..."; }`
     Job(JobDecl),
+    /// `channel <Name> on <Stream>;`
+    Channel(ChannelDecl),
     /// `crud <Name>[: <Record>];` — expands to API + Auth + Service + Database.
     Crud(CrudDecl),
     /// `events <Name>;` — expands to Stream + Worker.
@@ -76,6 +78,7 @@ pub enum ServiceItem {
     Api(ApiDecl),
     Worker(WorkerDecl),
     Job(JobDecl),
+    Channel(ChannelDecl),
     Crud(CrudDecl),
     Events(ComponentDecl),
     Handler(HandlerDecl),
@@ -149,6 +152,14 @@ pub struct WorkerDecl {
 #[derive(Debug, Clone, Serialize)]
 pub struct JobDecl {
     pub name: Ident,
+    pub attrs: Vec<Attr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelDecl {
+    pub name: Ident,
+    pub stream: Ident,
     pub attrs: Vec<Attr>,
     pub span: Span,
 }

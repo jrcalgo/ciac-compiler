@@ -327,6 +327,7 @@ impl SystemGraph {
                 NodeKind::Service => "box",
                 NodeKind::Worker => "component",
                 NodeKind::Job => "egg",
+                NodeKind::Channel => "diamond",
                 NodeKind::Database | NodeKind::Cache => "cylinder",
                 NodeKind::Queue => "cds",
                 NodeKind::Stream => "parallelogram",

@@ -9,7 +9,7 @@
 use crate::GenOptions;
 use ciac_ir::{
     Component, EdgeKind, FieldType, HttpMethod, NodeId, NodeKind, NormalizedIr, QueueEngine,
-    RecordId, ServiceId, Step, StepKind,
+    RealtimeProvider, RecordId, ServiceId, Step, StepKind,
 };
 use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use serde::Serialize;
@@ -80,6 +80,7 @@ pub struct Ctx {
     /// Any record uses an inline enum (drives `Literal`/enum declarations).
     pub records_use_enum: bool,
     pub apis: Vec<ApiCtx>,
+    pub channels: Vec<ChannelCtx>,
     pub workers: Vec<WorkerCtx>,
     pub jobs: Vec<JobCtx>,
     pub consumers: Vec<ConsumerCtx>,
@@ -280,6 +281,17 @@ pub struct ApiCtx {
     pub call_imports: Vec<CallCtx>,
     /// Deduplicated handlers, in invocation order, for imports.
     pub handlers: Vec<HandlerRef>,
+}
+
+/// A realtime route exposing a stream over WebSocket or SSE.
+#[derive(Debug, Serialize)]
+pub struct ChannelCtx {
+    pub name: String,
+    pub snake: String,
+    pub path: String,
+    pub subject: String,
+    pub provider: String,
+    pub payload: Option<PayloadRef>,
 }
 
 /// One `from app.<module> import <getter>` line a route/worker needs.
@@ -641,6 +653,45 @@ fn build_scoped(
         })
         .collect();
 
+    let realtime_provider = capability(NodeKind::Realtime).and_then(|node| match &node.component {
+        Component::Realtime { provider, .. } => Some(match provider {
+            RealtimeProvider::WebSocket => "websocket".to_owned(),
+            RealtimeProvider::Sse => "sse".to_owned(),
+        }),
+        _ => None,
+    });
+    let channels = ir
+        .nodes_of_kind(NodeKind::Channel)
+        .filter(|channel| owned_by(channel.service, sid))
+        .filter_map(|channel| {
+            let name = channel.component.name().unwrap_or_default().to_owned();
+            let stream = ir
+                .edges_to(channel.id)
+                .find(|edge| edge.kind == EdgeKind::AsyncMessage)
+                .map(|edge| edge.from)?;
+            let (subject, payload) = match &ir.node(stream).component {
+                Component::Stream {
+                    subject, record, ..
+                } => (subject.clone(), payload_ref(*record)),
+                _ => return None,
+            };
+            let path = match &channel.component {
+                Component::Channel { config, .. } => config.path.clone(),
+                _ => unreachable!("channel node is a channel"),
+            };
+            Some(ChannelCtx {
+                snake: name.to_snake_case(),
+                provider: realtime_provider
+                    .clone()
+                    .unwrap_or_else(|| "websocket".to_owned()),
+                subject,
+                payload,
+                path,
+                name,
+            })
+        })
+        .collect();
+
     // Matches the subject `ciac-sema` assigns to the default stream, which
     // is always derived from the project/system name.
     let default_subject = format!("{}.events", ir.name.to_snake_case());
@@ -948,6 +999,7 @@ fn build_scoped(
         records_use_enum: field_types.iter().any(|t| t.starts_with("Literal")),
         records,
         apis,
+        channels,
         workers,
         jobs,
         consumers,

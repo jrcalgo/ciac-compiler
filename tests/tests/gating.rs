@@ -1,16 +1,15 @@
 //! Build-time capability gating: constructs the language accepts but no
 //! backend can generate yet must fail `ciac build` (CIAC0011 via
-//! `check_support`) while `ciac check` still passes. This is the
-//! discipline boundary — nothing compiles into a system that does not
-//! actually work.
+//! `check_support`) while `ciac check` still passes. After v0.6, Kafka is
+//! the only remaining gated construct.
 
 use ciac_integration_tests::{backends, compile};
 
-const REALTIME_GATED: &str = r#"
+const KAFKA_GATED: &str = r#"
 service GatedProbe;
 
 use {
-    realtime live WebSocket;
+    queue Kafka;
 }
 
 api Ping {
@@ -34,21 +33,21 @@ pipeline Cleanup: Prune;
 "#;
 
 #[test]
-fn realtime_passes_check_but_gates_at_build() {
-    let (ir, diags) = compile(REALTIME_GATED);
+fn kafka_passes_check_but_gates_at_build() {
+    let (ir, diags) = compile(KAFKA_GATED);
     assert!(
         !diags.has_errors(),
-        "check must accept realtime declarations: {:?}",
+        "check must accept kafka declarations: {:?}",
         diags.codes()
     );
     let ir = ir.expect("gated program still produces IR");
 
     for backend in backends() {
         let err = ciac_codegen::check_support(backend.as_ref(), &ir)
-            .expect_err(&format!("{} must gate realtime", backend.id()));
+            .expect_err(&format!("{} must gate Kafka", backend.id()));
         let message = err.to_string();
         assert!(
-            message.contains("realtime"),
+            message.contains("queue default Kafka"),
             "{} gating error should name the unsupported construct: {message}",
             backend.id()
         );
@@ -67,6 +66,35 @@ fn scheduler_jobs_are_supported() {
     for backend in backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir)
             .unwrap_or_else(|err| panic!("{} must support scheduler jobs: {err}", backend.id()));
+    }
+}
+
+#[test]
+fn realtime_channels_are_supported() {
+    let source = r#"
+service RealtimeProbe;
+
+use {
+    queue NATS;
+    realtime live WebSocket;
+}
+
+record Video { id: Uuid; }
+stream Progress: Video;
+channel LiveProgress on Progress;
+api Upload: Video;
+pipeline Upload: publish Progress -> Return;
+"#;
+    let (ir, diags) = compile(source);
+    assert!(
+        !diags.has_errors(),
+        "realtime probe compiles: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("probe produces IR");
+    for backend in backends() {
+        ciac_codegen::check_support(backend.as_ref(), &ir)
+            .unwrap_or_else(|err| panic!("{} must support realtime channels: {err}", backend.id()));
     }
 }
 

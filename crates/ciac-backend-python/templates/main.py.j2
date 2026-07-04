@@ -7,6 +7,9 @@ from fastapi import FastAPI
 {% for api in c.apis %}
 from app.api.{{ api.snake }} import router as {{ api.snake }}_router
 {%- endfor %}
+{%- for channel in c.channels %}
+from app.api.channel_{{ channel.snake }} import router as channel_{{ channel.snake }}_router
+{%- endfor %}
 {%- for resource in c.resources %}
 from app.api.{{ resource.snake }} import router as {{ resource.snake }}_router
 {%- endfor %}
@@ -48,6 +51,9 @@ async def health() -> dict[str, str]:
 
 {% for api in c.apis %}
 app.include_router({{ api.snake }}_router)
+{%- endfor %}
+{%- for channel in c.channels %}
+app.include_router(channel_{{ channel.snake }}_router)
 {%- endfor %}
 {%- for resource in c.resources %}
 app.include_router({{ resource.snake }}_router)

@@ -176,6 +176,60 @@ fn job_pipeline_cannot_auth_or_return() {
 }
 
 #[test]
+fn channel_requires_realtime_and_consumes_stream() {
+    let (ir, diags) = analyze(
+        "service T;\nuse { queue NATS; realtime live WebSocket; }\nrecord Video { id: Uuid; }\nstream Progress: Video;\nchannel LiveProgress on Progress { path: \"/live/progress\"; }\napi Upload: Video;\npipeline Upload: publish Progress -> Return;\n",
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        error_codes(&diags)
+    );
+    let ir = ir.expect("valid program");
+    let stream = ir.find_named(NodeKind::Stream, "Progress").expect("stream");
+    let channel = ir
+        .find_named(NodeKind::Channel, "LiveProgress")
+        .expect("channel");
+    let realtime = ir.singleton(NodeKind::Realtime).expect("realtime");
+    assert!(ir
+        .edges_from(stream.id)
+        .any(|e| e.to == channel.id && e.kind == EdgeKind::AsyncMessage));
+    assert!(ir
+        .edges_from(channel.id)
+        .any(|e| e.to == realtime.id && e.kind == EdgeKind::DependsOn));
+    let Component::Channel { config, .. } = &channel.component else {
+        panic!("expected channel component");
+    };
+    assert_eq!(config.path, "/live/progress");
+}
+
+#[test]
+fn channel_without_realtime_is_an_error() {
+    let (ir, diags) = analyze(
+        "service T;\nuse { queue NATS; }\nrecord Video { id: Uuid; }\nstream Progress: Video;\nchannel LiveProgress on Progress;\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::MissingCapability));
+}
+
+#[test]
+fn channel_unknown_stream_is_an_error() {
+    let (ir, diags) =
+        analyze("service T;\nuse { realtime live WebSocket; }\nchannel Live on Missing;\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::UnknownStream));
+}
+
+#[test]
+fn duplicate_channel_paths_are_rejected() {
+    let (ir, diags) = analyze(
+        "service T;\nuse { queue NATS; realtime live WebSocket; }\nrecord Video { id: Uuid; }\nstream Progress: Video;\nchannel One on Progress { path: \"/live\"; }\nchannel Two on Progress { path: \"/live\"; }\n",
+    );
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::DuplicateDeclaration));
+}
+
+#[test]
 fn missing_service_declaration_is_an_error() {
     let (ir, diags) = analyze("api Upload;\npipeline Upload: Work -> Return;\n");
     assert!(ir.is_none());

@@ -23,6 +23,8 @@ pub enum TokenKind {
     Worker,
     #[token("job")]
     Job,
+    #[token("channel")]
+    Channel,
     #[token("pipeline")]
     Pipeline,
     #[token("crud")]
@@ -82,6 +84,7 @@ impl TokenKind {
             TokenKind::Api => "`api`",
             TokenKind::Worker => "`worker`",
             TokenKind::Job => "`job`",
+            TokenKind::Channel => "`channel`",
             TokenKind::Pipeline => "`pipeline`",
             TokenKind::Crud => "`crud`",
             TokenKind::Events => "`events`",

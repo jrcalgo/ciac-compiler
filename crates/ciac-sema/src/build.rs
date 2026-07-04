@@ -12,16 +12,16 @@
 
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
 use ciac_ir::{
-    ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EdgeKind, EmailProvider,
-    EventStream, FieldType, HttpMethod, JobConfig, LoggingProvider, MatchArm, MetricsProvider,
-    NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine, RealtimeProvider, Record,
-    RecordField, RecordId, Resource, SchedulerProvider, SearchProvider, ServiceId, Step, StepKind,
-    SystemGraph,
+    ApiConfig, AuthScheme, CacheEngine, ChannelConfig, Component, CrudConfig, DbEngine, EdgeKind,
+    EmailProvider, EventStream, FieldType, HttpMethod, JobConfig, LoggingProvider, MatchArm,
+    MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine,
+    RealtimeProvider, Record, RecordField, RecordId, Resource, SchedulerProvider, SearchProvider,
+    ServiceId, Step, StepKind, SystemGraph,
 };
 use ciac_syntax::ast::{
-    ApiDecl, Attr, AttrValue, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item, JobDecl,
-    PipelineDecl, Program, RecordDecl, ServiceBlock, ServiceItem, StepExpr, StreamDecl, TypeExpr,
-    UseEntry, WorkerDecl,
+    ApiDecl, Attr, AttrValue, ChannelDecl, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item,
+    JobDecl, PipelineDecl, Program, RecordDecl, ServiceBlock, ServiceItem, StepExpr, StreamDecl,
+    TypeExpr, UseEntry, WorkerDecl,
 };
 use heck::{ToKebabCase, ToSnakeCase};
 use std::collections::{BTreeMap, HashMap};
@@ -52,6 +52,7 @@ struct Builder<'d> {
     worker_streams: HashMap<NodeId, NodeId>,
     /// Resolved API paths and stream subjects, for duplicate checks.
     route_paths: BTreeMap<String, Span>,
+    channel_paths: BTreeMap<String, Span>,
     stream_subjects: BTreeMap<String, Span>,
     /// Lazily-created default stream backing the legacy `Queue` step.
     default_stream: Option<NodeId>,
@@ -79,6 +80,7 @@ impl<'d> Builder<'d> {
             streams: HashMap::new(),
             worker_streams: HashMap::new(),
             route_paths: BTreeMap::new(),
+            channel_paths: BTreeMap::new(),
             stream_subjects: BTreeMap::new(),
             default_stream: None,
         }
@@ -110,6 +112,7 @@ impl<'d> Builder<'d> {
                     | Item::Api(_)
                     | Item::Worker(_)
                     | Item::Job(_)
+                    | Item::Channel(_)
                     | Item::Crud(_)
                     | Item::Events(_)
                     | Item::Handler(_)
@@ -274,6 +277,7 @@ impl<'d> Builder<'d> {
                 Item::Api(decl) => self.api(decl),
                 Item::Worker(decl) => self.worker(decl),
                 Item::Job(decl) => self.job(decl),
+                Item::Channel(decl) => self.channel(decl),
                 Item::Crud(decl) => self.crud(decl),
                 Item::Events(decl) => self.events(decl),
                 _ => {}
@@ -304,6 +308,7 @@ impl<'d> Builder<'d> {
                 ServiceItem::Api(decl) => self.api(decl),
                 ServiceItem::Worker(decl) => self.worker(decl),
                 ServiceItem::Job(decl) => self.job(decl),
+                ServiceItem::Channel(decl) => self.channel(decl),
                 ServiceItem::Crud(decl) => self.crud(decl),
                 ServiceItem::Events(decl) => self.events(decl),
                 ServiceItem::Use(_) | ServiceItem::Handler(_) | ServiceItem::Pipeline(_) => {}
@@ -832,6 +837,52 @@ impl<'d> Builder<'d> {
             return;
         };
         self.graph.add_edge(node, scheduler, EdgeKind::DependsOn);
+    }
+
+    fn channel(&mut self, decl: &ChannelDecl) {
+        if !self.register(&decl.name, NodeKind::Channel, decl.span) {
+            return;
+        }
+        let Some(stream) = self.resolve_stream(&decl.stream) else {
+            return;
+        };
+        let path = attrs::apply_channel_attrs(&decl.attrs, &decl.name.text, self.diags);
+        if let Some(first) = self.channel_paths.get(&path) {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::DuplicateDeclaration,
+                    format!("channel path `{path}` is used more than once"),
+                )
+                .with_label(decl.span, "duplicate channel path here")
+                .with_label(*first, "first channel path used here"),
+            );
+        } else {
+            self.channel_paths.insert(path.clone(), decl.span);
+        }
+        let node = self.add_node(
+            Component::Channel {
+                name: decl.name.text.clone(),
+                config: ChannelConfig { path },
+            },
+            Some(decl.span),
+        );
+        let Some(realtime) = self.default_capability(
+            NodeKind::Realtime,
+            &format!("channel `{}`", decl.name.text),
+            decl.span,
+        ) else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::MissingCapability,
+                    format!("channel `{}` requires a realtime capability", decl.name.text),
+                )
+                .with_label(decl.span, "declared here")
+                .with_help("add `realtime live WebSocket;` (or `realtime live SSE;`) to the `use { .. }` block"),
+            );
+            return;
+        };
+        self.graph.add_edge(stream, node, EdgeKind::AsyncMessage);
+        self.graph.add_edge(node, realtime, EdgeKind::DependsOn);
     }
 
     /// Expands `crud <Name>;` into API → (Auth) → Service → Database
@@ -1457,6 +1508,7 @@ fn kind_noun(kind: NodeKind) -> &'static str {
         NodeKind::Api => "api",
         NodeKind::Worker => "worker",
         NodeKind::Job => "job",
+        NodeKind::Channel => "channel",
         NodeKind::Service => "service",
         NodeKind::Stream => "stream",
         _ => "component",
@@ -1513,6 +1565,7 @@ fn item_span(item: &Item) -> Span {
         Item::Api(decl) => decl.span,
         Item::Worker(decl) => decl.span,
         Item::Job(decl) => decl.span,
+        Item::Channel(decl) => decl.span,
         Item::Crud(decl) => decl.span,
         Item::Events(decl) => decl.span,
         Item::Handler(decl) => decl.span,
@@ -1659,6 +1712,32 @@ mod attrs {
             }
         }
         subject
+    }
+
+    pub fn apply_channel_attrs(
+        attrs: &[Attr],
+        channel_name: &str,
+        diags: &mut Diagnostics,
+    ) -> String {
+        let mut path = format!("/channels/{}", channel_name.to_kebab_case());
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "path" => match string_value(attr) {
+                    Some(value) if value.starts_with('/') => path = value.to_owned(),
+                    Some(_) | None => invalid_value(
+                        attr,
+                        "channel `path` must be a string starting with `/`",
+                        diags,
+                    ),
+                },
+                _ => unknown_attr(attr, "channel", diags),
+            }
+        }
+        path
     }
 
     pub fn apply_crud_attrs(

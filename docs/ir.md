@@ -15,6 +15,15 @@ v0.5 adds deployable service ownership. `SystemGraph::services` contains
   and events owned by a service block or the legacy implicit service.
 - `None` for project-global nodes such as shared streams.
 
+`SystemGraph::multi_service` records the surface form: `true` when the
+program used `service { .. }` blocks. A lone `service <Name>;` also
+registers one `Service` (for ownership tracking) but stays a single
+deployable. Backends key their emission model on this flag (v0.5.1):
+single-service programs generate one project at the output root;
+multi-service programs generate one complete project per service under
+`<service-kebab>/` plus a root docker-compose (one app+workers pair per
+service, one shared broker, per-service infrastructure) and README.
+
 ## Nodes
 
 `Component` payloads, one per architectural component:

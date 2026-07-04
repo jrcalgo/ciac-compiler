@@ -1,8 +1,23 @@
-# The CIaC Language (v0.5)
+# The CIaC Language (v0.5.1)
 
-A CIaC program describes one deployable service as a set of declarations.
-Declaration order is free; the compiler resolves references after parsing
-the whole file.
+A CIaC program describes one deployable service — or, with `project` +
+`service { .. }` blocks, a system of services — as a set of
+declarations. Declaration order is free; the compiler resolves
+references after parsing the whole file.
+
+## Implementation status
+
+CIaC's contract is that **whatever `ciac build` accepts, the generated
+system actually does**. Constructs the language accepts but no backend
+implements yet still pass `ciac check` (so programs can be designed
+ahead) and fail `ciac build` with `CIAC0011`:
+
+| Construct | `ciac check` | `ciac build` |
+|-----------|--------------|--------------|
+| Everything below, unless listed | accepted | generated, working code |
+| `queue .. Kafka` | accepted | gated (`CIAC0011`) |
+| `scheduler` | accepted | gated until its v0.6 scheduled-job constructs |
+| `realtime` | accepted | gated until its v0.6 channel constructs |
 
 ## Grammar
 
@@ -112,23 +127,29 @@ Legacy entries lower to an implicit instance named `default`. Duplicate
 instances of the same capability kind/name are `CIAC0012`. Supported
 pairs (`CIAC0013` otherwise):
 
-| Capability | Providers |
-|------------|-----------|
-| `auth` | `JWT` |
-| `db` | `Postgres` |
-| `cache` | `Redis` |
-| `queue` | `NATS`, `Kafka`* |
-| `logging` | `Structured` |
-| `metrics` | `Prometheus` |
-| `object_store` | `S3` |
-| `email` | `SES`, `SMTP` |
-| `search` | `OpenSearch` |
-| `external_http` | providerless; requires `base_url` |
-| `scheduler` | `Cron` |
-| `realtime` | `WebSocket`, `SSE` |
+| Capability | Providers | Generated as (Python / Rust) |
+|------------|-----------|------------------------------|
+| `auth` | `JWT` | FastAPI dependency + PyJWT / axum extractor + jsonwebtoken |
+| `db` | `Postgres` | SQLAlchemy async engine per instance / SQLx pool per instance |
+| `cache` | `Redis` | redis-py client per instance / redis crate client per instance |
+| `queue` | `NATS`, `Kafka`* | nats-py / async-nats |
+| `logging` | `Structured` | structlog / tracing |
+| `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus |
+| `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper (+ MinIO in compose) |
+| `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender (+ Mailpit in compose) |
+| `search` | `OpenSearch` | opensearch-py client / opensearch client (+ single-node container) |
+| `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance |
+| `scheduler` | `Cron` | *build-gated* (`CIAC0011`) until v0.6 |
+| `realtime` | `WebSocket`, `SSE` | *build-gated* (`CIAC0011`) until v0.6 |
 
 \* `Kafka` is accepted by the language but not yet implemented by the
 bundled backends (`CIAC0011` at build time).
+
+Both `SES` and `SMTP` email providers send over SMTP — for SES, point
+the generated `SMTP_*` variables at your SES SMTP endpoint. Handlers
+receive their bound instances as typed constructor parameters; the
+generated docker-compose runs a local-dev container per instance
+(distinct databases, Redis clients, MinIO, Mailpit, OpenSearch).
 
 ### `record <Name> { field: Type; .. }`
 
@@ -228,6 +249,15 @@ Steps are:
   typed API. The target service and API must exist (`CIAC0027`/
   `CIAC0028`), and the caller payload type must match the target API's
   request record (`CIAC0029`). Malformed call targets are `CIAC0032`.
+  **HTTP contract:** the compiler generates a typed client per target
+  service (`app/clients/<service>.py` / `src/clients/<service>.rs`)
+  with one method per called api. It serializes the payload record,
+  sends the target api's real method and path, fails the pipeline on
+  any non-2xx response, and validates the response's `data` envelope
+  back into the record. The base URL comes from the `<SERVICE>_URL`
+  environment variable; the system docker-compose points it at the
+  target's container (`http://billing:8000`), and the development
+  default is the target's host port from the compose mapping.
 - **`match <field> { ... }`** — statically branch on an enum field of
   the pipeline payload. A match must be the final top-level step and may
   not be nested in v0.3 (`CIAC0020`). Arm labels must be declared enum

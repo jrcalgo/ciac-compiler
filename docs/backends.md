@@ -26,10 +26,16 @@ pub trait Backend {
 
 1. **Crate**: `crates/ciac-backend-<target>` depending on `ciac-codegen`,
    `ciac-ir`, `include_dir`, `minijinja`.
-2. **Model**: call `ciac_codegen::model::build(ir, opts)` — the shared,
-   language-neutral context: casing variants, per-pipeline steps,
-   capability flags, and which handlers need db/cache injection. Add
-   fields there (not in your backend) if every target would need them.
+2. **Model**: call `ciac_codegen::model::build_system(ir, opts)` — the
+   shared, language-neutral `SystemModel { project_name, multi,
+   services: Vec<Ctx> }`. Single-service programs yield one `Ctx`
+   (emit it at the output root); multi-service programs yield one per
+   service (emit each under `<ctx.dir>/`, skip per-service compose
+   files, and render root system compose/README from the whole model).
+   Each `Ctx` precomputes casing variants, per-pipeline steps,
+   capability instances, handler injection, and typed `call` client
+   targets. Add fields there (not in your backend) if every target
+   would need them.
 3. **Templates**: a flat `templates/*.j2` directory embedded with
    `include_dir!`. Build the environment with
    `ciac_codegen::template::environment(..)` — it installs `snake_case`

@@ -85,7 +85,11 @@ are rejected at the boundary of the running system too. `match` is
 checked for enum labels and exhaustiveness (`CIAC0020`/`CIAC0021`).
 
 v0.4 expands the ontology and lets handlers bind to named capability
-instances:
+instances. Every binding is real at runtime: each instance gets its own
+settings fields, container, and client, injected into the handler's
+constructor (S3 via aioboto3/rust-s3 with MinIO for local dev, SMTP via
+aiosmtplib/lettre with Mailpit, OpenSearch, per-instance httpx/reqwest
+clients):
 
 ```text
 use {
@@ -122,6 +126,7 @@ service Billing {
 }
 
 service UploadApi {
+    use { queue bus NATS; }
     api Upload: Video;
     pipeline Upload:
         call Billing.Charge
@@ -129,6 +134,29 @@ service UploadApi {
         -> Return;
 }
 ```
+
+Building a multi-service program emits a **system of deployables** —
+one complete project per service plus a root compose file that wires
+them together (one shared broker for the shared streams, per-service
+databases/caches/stores, container DNS for service calls):
+
+```text
+media-system/
+├── docker-compose.yml   # whole system: billing + upload-api + queue + ...
+├── README.md            # service/port table, run instructions
+├── billing/             # complete standalone project
+└── upload-api/          # BILLING_URL points at the billing container
+```
+
+`call Billing.Charge` compiles into a typed HTTP client
+(`app/clients/billing.py` / `src/clients/billing.rs`): it sends the
+target api's real method and path, fails the pipeline on non-2xx, and
+validates the response envelope back into the `Video` record.
+
+Constructs the language accepts but no backend implements yet
+(`Kafka`, `scheduler`, `realtime`) pass `ciac check` and are refused by
+`ciac build` with `CIAC0011` — if it builds, the generated system
+actually does it.
 
 ## Why
 

@@ -335,6 +335,14 @@ error_codes! {
          to replace it, or use `--adopt` to preserve existing files and \
          create a manifest."
     ),
+    InvalidCron = (
+        "CIAC0037",
+        Error,
+        "invalid cron expression",
+        "A scheduled job's `schedule` attribute must be a valid five-field \
+         cron expression. CIaC validates schedules during semantic analysis \
+         so generated runtimes agree on when jobs fire."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

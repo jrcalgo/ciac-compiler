@@ -37,6 +37,16 @@ impl Pass for Reachability {
                         );
                     }
                 }
+                NodeKind::Job => {
+                    if graph.pipeline_of(node.id).is_none() {
+                        warn(
+                            diags,
+                            node,
+                            "job has no pipeline",
+                            "attach one with `pipeline <Name>: ..;`",
+                        );
+                    }
+                }
                 NodeKind::Queue => {
                     let used = graph.edges_to(node.id).next().is_some()
                         || graph.edges_from(node.id).next().is_some();

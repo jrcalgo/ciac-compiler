@@ -13,14 +13,15 @@
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
 use ciac_ir::{
     ApiConfig, AuthScheme, CacheEngine, Component, CrudConfig, DbEngine, EdgeKind, EmailProvider,
-    EventStream, FieldType, HttpMethod, LoggingProvider, MatchArm, MetricsProvider, NodeId,
-    NodeKind, ObjectStoreProvider, Pipeline, QueueEngine, RealtimeProvider, Record, RecordField,
-    RecordId, Resource, SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph,
+    EventStream, FieldType, HttpMethod, JobConfig, LoggingProvider, MatchArm, MetricsProvider,
+    NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine, RealtimeProvider, Record,
+    RecordField, RecordId, Resource, SchedulerProvider, SearchProvider, ServiceId, Step, StepKind,
+    SystemGraph,
 };
 use ciac_syntax::ast::{
-    ApiDecl, Attr, AttrValue, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item, PipelineDecl,
-    Program, RecordDecl, ServiceBlock, ServiceItem, StepExpr, StreamDecl, TypeExpr, UseEntry,
-    WorkerDecl,
+    ApiDecl, Attr, AttrValue, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item, JobDecl,
+    PipelineDecl, Program, RecordDecl, ServiceBlock, ServiceItem, StepExpr, StreamDecl, TypeExpr,
+    UseEntry, WorkerDecl,
 };
 use heck::{ToKebabCase, ToSnakeCase};
 use std::collections::{BTreeMap, HashMap};
@@ -108,6 +109,7 @@ impl<'d> Builder<'d> {
                     Item::Use(_)
                     | Item::Api(_)
                     | Item::Worker(_)
+                    | Item::Job(_)
                     | Item::Crud(_)
                     | Item::Events(_)
                     | Item::Handler(_)
@@ -271,6 +273,7 @@ impl<'d> Builder<'d> {
             match item {
                 Item::Api(decl) => self.api(decl),
                 Item::Worker(decl) => self.worker(decl),
+                Item::Job(decl) => self.job(decl),
                 Item::Crud(decl) => self.crud(decl),
                 Item::Events(decl) => self.events(decl),
                 _ => {}
@@ -300,6 +303,7 @@ impl<'d> Builder<'d> {
             match item {
                 ServiceItem::Api(decl) => self.api(decl),
                 ServiceItem::Worker(decl) => self.worker(decl),
+                ServiceItem::Job(decl) => self.job(decl),
                 ServiceItem::Crud(decl) => self.crud(decl),
                 ServiceItem::Events(decl) => self.events(decl),
                 ServiceItem::Use(_) | ServiceItem::Handler(_) | ServiceItem::Pipeline(_) => {}
@@ -798,6 +802,38 @@ impl<'d> Builder<'d> {
         }
     }
 
+    fn job(&mut self, decl: &JobDecl) {
+        if !self.register(&decl.name, NodeKind::Job, decl.span) {
+            return;
+        }
+        let Some(config) = attrs::apply_job_attrs(&decl.attrs, self.diags) else {
+            return;
+        };
+        let node = self.add_node(
+            Component::Job {
+                name: decl.name.text.clone(),
+                config,
+            },
+            Some(decl.span),
+        );
+        let Some(scheduler) = self.default_capability(
+            NodeKind::Scheduler,
+            &format!("job `{}`", decl.name.text),
+            decl.span,
+        ) else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::MissingCapability,
+                    format!("job `{}` requires a scheduler capability", decl.name.text),
+                )
+                .with_label(decl.span, "declared here")
+                .with_help("add `scheduler Cron;` to the `use { .. }` block"),
+            );
+            return;
+        };
+        self.graph.add_edge(node, scheduler, EdgeKind::DependsOn);
+    }
+
     /// Expands `crud <Name>;` into API → (Auth) → Service → Database
     /// (+ Cache) and records the resource for CRUD-aware codegen.
     fn crud(&mut self, decl: &CrudDecl) {
@@ -913,7 +949,7 @@ impl<'d> Builder<'d> {
     }
 
     fn pipeline(&mut self, decl: &PipelineDecl) {
-        // The pipeline name must match a declared api or worker.
+        // The pipeline name must match a declared api, worker, or job.
         let owner = match self.current_service {
             Some(service) => self
                 .graph
@@ -922,11 +958,16 @@ impl<'d> Builder<'d> {
                     self.graph
                         .find_named_in_service(service, NodeKind::Worker, &decl.name.text)
                 })
+                .or_else(|| {
+                    self.graph
+                        .find_named_in_service(service, NodeKind::Job, &decl.name.text)
+                })
                 .map(|n| (n.id, n.component.clone())),
             None => self
                 .graph
                 .find_named(NodeKind::Api, &decl.name.text)
                 .or_else(|| self.graph.find_named(NodeKind::Worker, &decl.name.text))
+                .or_else(|| self.graph.find_named(NodeKind::Job, &decl.name.text))
                 .map(|n| (n.id, n.component.clone())),
         };
         let Some((owner, owner_component)) = owner else {
@@ -934,14 +975,14 @@ impl<'d> Builder<'d> {
                 Diagnostic::new(
                     ErrorCode::UnknownPipelineTarget,
                     format!(
-                        "pipeline `{}` does not match any declared api or worker",
+                        "pipeline `{}` does not match any declared api, worker, or job",
                         decl.name.text
                     ),
                 )
-                .with_label(decl.name.span, "no api or worker with this name")
+                .with_label(decl.name.span, "no api, worker, or job with this name")
                 .with_help(format!(
-                    "declare `api {};` or `worker {};`",
-                    decl.name.text, decl.name.text
+                    "declare `api {};`, `worker {};`, or `job {};`",
+                    decl.name.text, decl.name.text, decl.name.text
                 )),
             );
             return;
@@ -986,6 +1027,7 @@ impl<'d> Builder<'d> {
                     _ => None,
                 })
             }
+            Component::Job { .. } => None,
             _ => None,
         };
 
@@ -1414,6 +1456,7 @@ fn kind_noun(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Api => "api",
         NodeKind::Worker => "worker",
+        NodeKind::Job => "job",
         NodeKind::Service => "service",
         NodeKind::Stream => "stream",
         _ => "component",
@@ -1469,6 +1512,7 @@ fn item_span(item: &Item) -> Span {
         Item::Stream(decl) => decl.span,
         Item::Api(decl) => decl.span,
         Item::Worker(decl) => decl.span,
+        Item::Job(decl) => decl.span,
         Item::Crud(decl) => decl.span,
         Item::Events(decl) => decl.span,
         Item::Handler(decl) => decl.span,
@@ -1550,6 +1594,48 @@ mod attrs {
             }
         }
         config
+    }
+
+    pub fn apply_job_attrs(attrs: &[Attr], diags: &mut Diagnostics) -> Option<JobConfig> {
+        let mut schedule = None;
+        let mut catch_up = false;
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "schedule" => match string_value(attr) {
+                    Some(value) if valid_cron(value) => schedule = Some(value.to_owned()),
+                    Some(_) => diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidCron,
+                            "job `schedule` must be a valid five-field cron expression",
+                        )
+                        .with_label(attr.value.span(), "invalid cron expression"),
+                    ),
+                    None => invalid_value(attr, "job `schedule` must be a string", diags),
+                },
+                "catch_up" => match bool_value(attr) {
+                    Some(value) => catch_up = value,
+                    None => invalid_value(attr, "job `catch_up` must be `true` or `false`", diags),
+                },
+                _ => unknown_attr(attr, "job", diags),
+            }
+        }
+        match schedule {
+            Some(schedule) => Some(JobConfig { schedule, catch_up }),
+            None => {
+                diags.push(
+                    Diagnostic::new(
+                        ErrorCode::InvalidAttributeValue,
+                        "job requires a `schedule` attribute",
+                    )
+                    .with_help("write `job Name { schedule: \"0 3 * * *\"; }`"),
+                );
+                None
+            }
+        }
     }
 
     pub fn apply_stream_attrs(
@@ -1650,6 +1736,14 @@ mod attrs {
         }
     }
 
+    fn bool_value(attr: &Attr) -> Option<bool> {
+        match &attr.value {
+            AttrValue::Ident(ident) if ident.text == "true" => Some(true),
+            AttrValue::Ident(ident) if ident.text == "false" => Some(false),
+            _ => None,
+        }
+    }
+
     fn int_value(attr: &Attr) -> Option<u32> {
         match &attr.value {
             AttrValue::Number { value, .. } => u32::try_from(*value).ok(),
@@ -1672,5 +1766,57 @@ mod attrs {
             Diagnostic::new(ErrorCode::InvalidAttributeValue, message)
                 .with_label(attr.value.span(), "invalid value"),
         );
+    }
+
+    fn valid_cron(expr: &str) -> bool {
+        let fields: Vec<&str> = expr.split_whitespace().collect();
+        if fields.len() != 5 {
+            return false;
+        }
+        fields
+            .iter()
+            .enumerate()
+            .all(|(idx, field)| valid_cron_field(field, idx))
+    }
+
+    fn valid_cron_field(field: &str, idx: usize) -> bool {
+        let (min, max) = match idx {
+            0 => (0, 59),
+            1 => (0, 23),
+            2 => (1, 31),
+            3 => (1, 12),
+            4 => (0, 7),
+            _ => return false,
+        };
+        field.split(',').all(|part| valid_cron_part(part, min, max))
+    }
+
+    fn valid_cron_part(part: &str, min: u32, max: u32) -> bool {
+        let (base, step) = match part.split_once('/') {
+            Some((base, step)) => {
+                let Ok(step) = step.parse::<u32>() else {
+                    return false;
+                };
+                if step == 0 {
+                    return false;
+                }
+                (base, Some(step))
+            }
+            None => (part, None),
+        };
+        let base_valid = if base == "*" {
+            true
+        } else if let Some((start, end)) = base.split_once('-') {
+            match (start.parse::<u32>(), end.parse::<u32>()) {
+                (Ok(start), Ok(end)) => min <= start && start <= end && end <= max,
+                _ => false,
+            }
+        } else {
+            match base.parse::<u32>() {
+                Ok(value) => min <= value && value <= max,
+                Err(_) => false,
+            }
+        };
+        base_valid && step.is_some_or(|_| true)
     }
 }

@@ -39,6 +39,8 @@ pub enum Item {
     Api(ApiDecl),
     /// `worker <Name> [on <Stream>];`
     Worker(WorkerDecl),
+    /// `job <Name> { schedule: "..."; }`
+    Job(JobDecl),
     /// `crud <Name>[: <Record>];` — expands to API + Auth + Service + Database.
     Crud(CrudDecl),
     /// `events <Name>;` — expands to Stream + Worker.
@@ -73,6 +75,7 @@ pub enum ServiceItem {
     Use(UseBlock),
     Api(ApiDecl),
     Worker(WorkerDecl),
+    Job(JobDecl),
     Crud(CrudDecl),
     Events(ComponentDecl),
     Handler(HandlerDecl),
@@ -139,6 +142,13 @@ pub struct WorkerDecl {
     /// Stream the worker consumes; `None` means the service's default
     /// stream (v0.1 behavior).
     pub stream: Option<Ident>,
+    pub attrs: Vec<Attr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JobDecl {
+    pub name: Ident,
     pub attrs: Vec<Attr>,
     pub span: Span,
 }

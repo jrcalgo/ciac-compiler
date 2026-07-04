@@ -28,17 +28,21 @@ fn check_return(pipeline: &Pipeline, owner_kind: NodeKind, diags: &mut Diagnosti
             continue;
         }
         let last = idx + 1 == pipeline.steps.len();
-        if owner_kind == NodeKind::Worker {
+        if matches!(owner_kind, NodeKind::Worker | NodeKind::Job) {
             let mut diag = Diagnostic::new(
                 ErrorCode::IncompatibleComposition,
                 format!(
-                    "worker pipeline `{}` cannot contain `Return`",
+                    "{} pipeline `{}` cannot contain `Return`",
+                    owner_kind_noun(owner_kind),
                     pipeline.name
                 ),
             )
-            .with_help("workers have no caller to respond to");
+            .with_help("workers and jobs have no caller to respond to");
             if let Some(span) = step.span {
-                diag = diag.with_label(span, "`Return` in a worker pipeline");
+                diag = diag.with_label(
+                    span,
+                    format!("`Return` in a {} pipeline", owner_kind_noun(owner_kind)),
+                );
             }
             diags.push(diag);
         } else if !last {
@@ -55,6 +59,14 @@ fn check_return(pipeline: &Pipeline, owner_kind: NodeKind, diags: &mut Diagnosti
             }
             diags.push(diag);
         }
+    }
+}
+
+fn owner_kind_noun(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Job => "job",
+        NodeKind::Worker => "worker",
+        _ => "api",
     }
 }
 

@@ -50,6 +50,12 @@ impl Default for WorkerConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JobConfig {
+    pub schedule: String,
+    pub catch_up: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct CrudConfig {
     pub cache_ttl: u32,
@@ -129,6 +135,7 @@ pub enum NodeKind {
     Api,
     Service,
     Worker,
+    Job,
     Database,
     Cache,
     Queue,
@@ -164,6 +171,11 @@ pub enum Component {
     Worker {
         name: String,
         config: WorkerConfig,
+    },
+    /// A scheduled in-process pipeline trigger.
+    Job {
+        name: String,
+        config: JobConfig,
     },
     Database {
         name: String,
@@ -229,6 +241,7 @@ impl Component {
             Component::Api { .. } => NodeKind::Api,
             Component::Service { .. } => NodeKind::Service,
             Component::Worker { .. } => NodeKind::Worker,
+            Component::Job { .. } => NodeKind::Job,
             Component::Database { .. } => NodeKind::Database,
             Component::Cache { .. } => NodeKind::Cache,
             Component::Queue { .. } => NodeKind::Queue,
@@ -251,6 +264,7 @@ impl Component {
             Component::Api { name, .. }
             | Component::Service { name }
             | Component::Worker { name, .. }
+            | Component::Job { name, .. }
             | Component::Stream { name, .. }
             | Component::Database { name, .. }
             | Component::Cache { name, .. }
@@ -273,6 +287,7 @@ impl Component {
             Component::Api { name, .. } => format!("api {name}"),
             Component::Service { name } => format!("service {name}"),
             Component::Worker { name, .. } => format!("worker {name}"),
+            Component::Job { name, .. } => format!("job {name}"),
             Component::Database { name, engine } => format!("database {name} {engine:?}"),
             Component::Cache { name, engine } => format!("cache {name} {engine:?}"),
             Component::Queue { name, engine } => format!("queue {name} {engine:?}"),

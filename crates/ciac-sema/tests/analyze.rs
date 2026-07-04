@@ -130,6 +130,52 @@ fn events_expands_into_queue_and_worker() {
 }
 
 #[test]
+fn job_requires_scheduler_and_owns_untyped_pipeline() {
+    let (ir, diags) = analyze(
+        "service T;\nuse { scheduler Cron; queue NATS; }\nstream Done: Video;\nrecord Video { id: Uuid; }\njob Cleanup { schedule: \"0 3 * * *\"; }\npipeline Cleanup: Prune;\n",
+    );
+    assert!(
+        !diags.has_errors(),
+        "unexpected errors: {:?}",
+        error_codes(&diags)
+    );
+    let ir = ir.expect("valid program");
+    let job = ir.find_named(NodeKind::Job, "Cleanup").expect("job");
+    let scheduler = ir.singleton(NodeKind::Scheduler).expect("scheduler");
+    assert!(ir
+        .edges_from(job.id)
+        .any(|e| e.to == scheduler.id && e.kind == EdgeKind::DependsOn));
+    let pipeline = ir.pipeline_of(job.id).expect("job pipeline");
+    assert_eq!(pipeline.payload, None);
+}
+
+#[test]
+fn job_without_scheduler_is_an_error() {
+    let (ir, diags) = analyze("service T;\njob Cleanup { schedule: \"0 3 * * *\"; }\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::MissingCapability));
+}
+
+#[test]
+fn invalid_job_cron_is_an_error() {
+    let (ir, diags) =
+        analyze("service T;\nuse { scheduler Cron; }\njob Cleanup { schedule: \"not cron\"; }\n");
+    assert!(ir.is_none());
+    assert!(error_codes(&diags).contains(&ErrorCode::InvalidCron));
+}
+
+#[test]
+fn job_pipeline_cannot_auth_or_return() {
+    let (ir, diags) = analyze(
+        "service T;\nuse { scheduler Cron; auth JWT; }\njob Cleanup { schedule: \"0 3 * * *\"; }\npipeline Cleanup: Auth -> Return;\n",
+    );
+    assert!(ir.is_none());
+    let codes = error_codes(&diags);
+    assert!(codes.contains(&ErrorCode::InvalidAuthPlacement));
+    assert!(codes.contains(&ErrorCode::IncompatibleComposition));
+}
+
+#[test]
 fn missing_service_declaration_is_an_error() {
     let (ir, diags) = analyze("api Upload;\npipeline Upload: Work -> Return;\n");
     assert!(ir.is_none());

@@ -17,6 +17,9 @@ dependencies = [
 {%- if c.has_queue %}
     "nats-py>=2.7",
 {%- endif %}
+{%- if c.jobs %}
+    "croniter>=6.0",
+{%- endif %}
 {%- if c.has_object_store %}
     "aioboto3>=13.0",
 {%- endif %}

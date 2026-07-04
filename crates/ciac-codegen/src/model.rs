@@ -81,6 +81,7 @@ pub struct Ctx {
     pub records_use_enum: bool,
     pub apis: Vec<ApiCtx>,
     pub workers: Vec<WorkerCtx>,
+    pub jobs: Vec<JobCtx>,
     pub consumers: Vec<ConsumerCtx>,
     pub services: Vec<ServiceCtx>,
     pub resources: Vec<ResourceCtx>,
@@ -422,6 +423,29 @@ pub struct WorkerCtx {
     pub call_imports: Vec<CallCtx>,
 }
 
+/// A scheduled job with (or without) a processing pipeline.
+#[derive(Debug, Serialize)]
+pub struct JobCtx {
+    pub name: String,
+    pub snake: String,
+    pub schedule: String,
+    pub catch_up: bool,
+    pub has_publish_step: bool,
+    pub steps: Vec<StepCtx>,
+    pub handlers: Vec<HandlerRef>,
+    pub needs_db: bool,
+    pub needs_cache: bool,
+    /// Distinct database sessions the job opens per tick.
+    pub db_sessions: Vec<SessionCtx>,
+    /// Pre-joined `async with` items, e.g.
+    /// `get_sessionmaker()() as session, get_sessionmaker("main")() as session_main`.
+    pub session_with: String,
+    /// Deduplicated ontology getters the job imports, per module.
+    pub extra_imports: Vec<ExtraImportCtx>,
+    /// Deduplicated service clients the job invokes, for imports.
+    pub call_imports: Vec<CallCtx>,
+}
+
 /// A consumer generated from `events <Name>;`.
 #[derive(Debug, Serialize)]
 pub struct ConsumerCtx {
@@ -670,6 +694,42 @@ fn build_scoped(
         })
         .collect();
 
+    let jobs = ir
+        .nodes_of_kind(NodeKind::Job)
+        .filter(|job| owned_by(job.service, sid))
+        .map(|job| {
+            let name = job.component.name().unwrap_or_default().to_owned();
+            let (steps, handlers) = steps_of(ir, job.id);
+            let config = match &job.component {
+                Component::Job { config, .. } => config,
+                _ => unreachable!("job node is a job"),
+            };
+            let db_sessions = sessions_of(&handlers);
+            let session_with = db_sessions
+                .iter()
+                .map(|s| format!("get_sessionmaker({})() as {}", s.key_arg, s.param))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let extra_imports = extra_imports_of(&handlers);
+            let call_imports = call_imports_of(&steps);
+            JobCtx {
+                extra_imports,
+                call_imports,
+                snake: name.to_snake_case(),
+                needs_db: handlers.iter().any(|h| h.needs_db),
+                needs_cache: handlers.iter().any(|h| h.needs_cache),
+                has_publish_step: has_publish(&steps),
+                db_sessions,
+                session_with,
+                schedule: config.schedule.clone(),
+                catch_up: config.catch_up,
+                steps,
+                handlers,
+                name,
+            }
+        })
+        .collect();
+
     let consumers = ir
         .event_streams
         .iter()
@@ -889,6 +949,7 @@ fn build_scoped(
         records,
         apis,
         workers,
+        jobs,
         consumers,
         services,
         resources,

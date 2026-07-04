@@ -11,6 +11,9 @@ async fn main() -> anyhow::Result<()> {
 {%- for worker in c.workers %}
         workers::{{ worker.snake }}::run(state.clone()),
 {%- endfor %}
+{%- for job in c.jobs %}
+        workers::{{ job.snake }}::run(state.clone()),
+{%- endfor %}
 {%- for consumer in c.consumers %}
         workers::{{ consumer.snake }}::run(state.clone()),
 {%- endfor %}

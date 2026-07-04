@@ -53,7 +53,7 @@ services:
       - queue
 {%- endif %}
 {%- endif %}
-{%- if c.workers or c.consumers %}
+{%- if c.workers or c.jobs or c.consumers %}
 
   {{ c.dir }}-workers:
     build: ./{{ c.dir }}

@@ -6,6 +6,9 @@ from app.workers import (
 {%- for worker in c.workers %}
     {{ worker.snake }},
 {%- endfor %}
+{%- for job in c.jobs %}
+    {{ job.snake }},
+{%- endfor %}
 {%- for consumer in c.consumers %}
     {{ consumer.snake }},
 {%- endfor %}
@@ -16,6 +19,9 @@ async def main() -> None:
     await asyncio.gather(
 {%- for worker in c.workers %}
         {{ worker.snake }}.run(),
+{%- endfor %}
+{%- for job in c.jobs %}
+        {{ job.snake }}.run(),
 {%- endfor %}
 {%- for consumer in c.consumers %}
         {{ consumer.snake }}.run(),

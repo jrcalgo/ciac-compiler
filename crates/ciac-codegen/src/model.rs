@@ -1622,7 +1622,9 @@ fn binding_kind(kind: NodeKind) -> Option<&'static str> {
         NodeKind::Realtime => "realtime",
         NodeKind::Logging => "logging",
         NodeKind::Metrics => "metrics",
-        NodeKind::Api | NodeKind::Service | NodeKind::Worker | NodeKind::Stream => return None,
+        NodeKind::Api | NodeKind::Service | NodeKind::Worker | NodeKind::Job | NodeKind::Stream => {
+            return None
+        }
     })
 }
 

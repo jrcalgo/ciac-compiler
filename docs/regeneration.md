@@ -10,7 +10,7 @@ Every build writes `.ciac/manifest.json` at the output root:
 
 ```json
 {
-  "compiler_version": "0.6.0",
+  "compiler_version": "0.6.1",
   "source_hash": "sha256...",
   "target": "python",
   "files": {
@@ -48,6 +48,17 @@ current on-disk file, and the newly generated content.
 
 CIaC does not attempt textual merging in v0.6. Reconcile sidecars
 manually, then rebuild.
+
+### Failed builds are non-mutating
+
+If a plan has a `conflict` and `--adopt` wasn't passed, `ciac build` fails
+before touching the project: it writes only the `<file>.ciac-new` sidecars
+for the conflicting/drifted entries, leaves every other file (including
+ones that would otherwise be `update`d) untouched, and does **not** update
+the manifest. This means a failed build can never poison a later diff by
+making an untouched file look like it conflicts — the next `ciac build` or
+`ciac diff` still compares against the last manifest that actually matched
+disk.
 
 ## Commands
 

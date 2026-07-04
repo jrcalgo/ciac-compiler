@@ -3,7 +3,7 @@ use ciac_codegen::manifest::{
     build_manifest, hash_bytes, load_manifest, manifest_path, write_manifest,
 };
 use ciac_codegen::regen::{
-    apply_regeneration, plan_regeneration, RegenMode, RegenPlan, RegenStatus,
+    apply_regeneration, plan_regeneration, ApplyMode, RegenMode, RegenPlan, RegenStatus,
 };
 use ciac_codegen::{Backend, GenOptions, GeneratedProject};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
@@ -117,12 +117,16 @@ pub fn build(
         };
         let plan = plan_regeneration(&project, out, manifest.as_ref(), mode)
             .with_context(|| format!("cannot compare generated files with {}", out.display()))?;
-        apply_regeneration(&plan, out)
-            .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
-        report_regen_plan(&plan, adopt);
         if plan.has_errors() && !adopt {
+            apply_regeneration(&plan, out, ApplyMode::SidecarsOnly).with_context(|| {
+                format!("cannot write regeneration sidecars in {}", out.display())
+            })?;
+            report_regen_plan(&plan, adopt, true);
             return Ok(ExitCode::FAILURE);
         }
+        apply_regeneration(&plan, out, ApplyMode::Full)
+            .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
+        report_regen_plan(&plan, adopt, true);
         let manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
@@ -224,7 +228,7 @@ pub fn verify(
         })?;
         let plan = plan_regeneration(&project, out, Some(&manifest), RegenMode::Normal)
             .with_context(|| format!("cannot compare generated files with {}", out.display()))?;
-        report_regen_plan(&plan, false);
+        report_regen_plan(&plan, false, false);
         let drift: Vec<_> = plan
             .entries
             .iter()
@@ -311,31 +315,52 @@ fn output_dir_nonempty(out: &Path) -> Result<bool> {
         .is_some())
 }
 
-fn report_regen_plan(plan: &RegenPlan, adopt: bool) {
+/// Reports a regeneration plan. `sidecars_written` tells the truth about
+/// whether `.ciac-new` sidecars were actually written to disk for this
+/// call: `build` writes them (in both the successful and the failed-build
+/// path, see `ApplyMode`), but `verify` never writes anything.
+fn report_regen_plan(plan: &RegenPlan, adopt: bool, sidecars_written: bool) {
     for entry in &plan.entries {
+        let sidecar = entry.sidecar_path.as_deref().unwrap_or("<sidecar>");
         match entry.status {
             RegenStatus::Conflict if adopt => {
                 eprintln!(
                     "warning[{}]: preserving existing file {}; generated content written to {}",
                     ErrorCode::RegenerationConflict,
                     entry.path,
-                    entry.sidecar_path.as_deref().unwrap_or("<sidecar>")
+                    sidecar
                 );
             }
-            RegenStatus::Conflict => {
+            RegenStatus::Conflict if sidecars_written => {
                 eprintln!(
                     "error[{}]: compiler-owned file {} was modified; generated content written to {}",
                     ErrorCode::RegenerationConflict,
                     entry.path,
-                    entry.sidecar_path.as_deref().unwrap_or("<sidecar>")
+                    sidecar
                 );
             }
-            RegenStatus::SeededDrift => {
+            RegenStatus::Conflict => {
+                eprintln!(
+                    "error[{}]: compiler-owned file {} differs from the generated content; run `ciac build` to write {}",
+                    ErrorCode::RegenerationConflict,
+                    entry.path,
+                    sidecar
+                );
+            }
+            RegenStatus::SeededDrift if sidecars_written => {
                 eprintln!(
                     "warning[{}]: seeded file {} changed; generated seed written to {}",
                     ErrorCode::SeededFileDrift,
                     entry.path,
-                    entry.sidecar_path.as_deref().unwrap_or("<sidecar>")
+                    sidecar
+                );
+            }
+            RegenStatus::SeededDrift => {
+                eprintln!(
+                    "warning[{}]: seeded file {} changed; run `ciac build` to write the generated seed to {}",
+                    ErrorCode::SeededFileDrift,
+                    entry.path,
+                    sidecar
                 );
             }
             RegenStatus::OrphanLeft => {
@@ -422,7 +447,7 @@ fn validate_rust_project(project: &Path) -> Result<()> {
     if !status.success() {
         bail!("cargo check failed in {}", project.display());
     }
-    Ok(())
+    run_in(project, "cargo", &["test", "-q", "--lib"])
 }
 
 fn run_in(project: &Path, program: &str, args: &[&str]) -> Result<()> {

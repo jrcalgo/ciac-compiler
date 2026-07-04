@@ -1,5 +1,7 @@
 use ciac_codegen::manifest::{build_manifest, load_manifest, write_manifest};
-use ciac_codegen::regen::{apply_regeneration, plan_regeneration, RegenMode, RegenStatus};
+use ciac_codegen::regen::{
+    apply_regeneration, plan_regeneration, ApplyMode, RegenMode, RegenStatus,
+};
 use ciac_codegen::GeneratedProject;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +15,7 @@ fn clean_rebuild_is_noop() {
 
     let plan = plan_regeneration(&old, &dir, Some(&manifest), RegenMode::Normal).unwrap();
     assert_eq!(statuses(&plan), [RegenStatus::Unchanged]);
-    apply_regeneration(&plan, &dir).unwrap();
+    apply_regeneration(&plan, &dir, ApplyMode::Full).unwrap();
     let roundtrip = load_manifest(&dir).unwrap();
     assert_eq!(roundtrip, manifest);
     cleanup(&dir);
@@ -31,7 +33,7 @@ fn modified_owned_file_gets_conflict_sidecar() {
     let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();
     assert!(plan.has_errors());
     assert_eq!(statuses(&plan), [RegenStatus::Conflict]);
-    apply_regeneration(&plan, &dir).unwrap();
+    apply_regeneration(&plan, &dir, ApplyMode::Full).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.join("app/main.py")).unwrap(),
         "print('user')\n"
@@ -72,7 +74,7 @@ fn seeded_file_drift_gets_warning_sidecar() {
     assert!(!plan.has_errors());
     assert!(plan.has_warnings());
     assert_eq!(statuses(&plan), [RegenStatus::SeededDrift]);
-    apply_regeneration(&plan, &dir).unwrap();
+    apply_regeneration(&plan, &dir, ApplyMode::Full).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.join("app/services/store.py.ciac-new")).unwrap(),
         "async def run(payload, session):\n    pass\n"
@@ -90,7 +92,7 @@ fn untouched_owned_orphan_is_deleted() {
     let new = project([], []);
     let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();
     assert_eq!(statuses(&plan), [RegenStatus::OrphanDelete]);
-    apply_regeneration(&plan, &dir).unwrap();
+    apply_regeneration(&plan, &dir, ApplyMode::Full).unwrap();
     assert!(!dir.join("app/old.py").exists());
     cleanup(&dir);
 }
@@ -110,7 +112,7 @@ fn adopt_preserves_existing_files_and_writes_sidecars() {
     );
     let plan = plan_regeneration(&new, &dir, None, RegenMode::Adopt).unwrap();
     assert_eq!(statuses(&plan), [RegenStatus::Conflict, RegenStatus::New]);
-    apply_regeneration(&plan, &dir).unwrap();
+    apply_regeneration(&plan, &dir, ApplyMode::Full).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.join("app/main.py")).unwrap(),
         "print('user')\n"

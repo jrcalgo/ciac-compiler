@@ -56,3 +56,13 @@ async def test_{{ resource.plural }}_require_auth() -> None:
     assert response.status_code in (401, 403)
 {%- endif %}
 {%- endfor %}
+{%- if c.jobs %}
+
+def test_job_schedules_are_valid_cron() -> None:
+    from croniter import croniter
+{%- for job in c.jobs %}
+    from app.workers.{{ job.snake }} import SCHEDULE as {{ job.snake | upper }}_SCHEDULE
+
+    assert croniter.is_valid({{ job.snake | upper }}_SCHEDULE)
+{%- endfor %}
+{%- endif %}

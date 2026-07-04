@@ -97,7 +97,7 @@ pub fn plan_regeneration(
     for (rel, generated, role) in project.files_with_roles() {
         seen.insert(rel.to_owned());
         let disk = read_optional(root.join(rel))?;
-        let disk_hash = disk.as_deref().map(|bytes| hash_bytes(bytes));
+        let disk_hash = disk.as_deref().map(hash_bytes);
         let new_hash = hash_content(generated);
         let base = manifest.and_then(|m| m.files.get(rel));
         let base_hash = base.map(|entry| entry.hash.as_str());
@@ -231,7 +231,7 @@ pub fn plan_regeneration(
                     continue;
                 }
                 let disk = read_optional(root.join(rel))?;
-                let disk_hash = disk.as_deref().map(|bytes| hash_bytes(bytes));
+                let disk_hash = disk.as_deref().map(hash_bytes);
                 let old_content = disk
                     .as_deref()
                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
@@ -257,12 +257,27 @@ pub fn plan_regeneration(
     Ok(RegenPlan { entries })
 }
 
-pub fn apply_regeneration(plan: &RegenPlan, root: &Path) -> io::Result<()> {
+/// How much of a [`RegenPlan`] to write to disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyMode {
+    /// Write everything: new/updated files, orphan deletes, and sidecars.
+    /// Used when the plan has no conflicts.
+    Full,
+    /// Write only `.ciac-new` sidecars for `Conflict`/`SeededDrift` entries
+    /// and touch nothing else. Used when the plan has errors, so a failed
+    /// build doesn't silently rewrite unrelated files without recording the
+    /// result in the manifest (see D3 in the v0.6.1 review).
+    SidecarsOnly,
+}
+
+pub fn apply_regeneration(plan: &RegenPlan, root: &Path, mode: ApplyMode) -> io::Result<()> {
     for entry in &plan.entries {
         match entry.status {
             RegenStatus::New | RegenStatus::Update => {
-                if let Some(content) = &entry.new_content {
-                    write_rel(root, &entry.path, content)?;
+                if mode == ApplyMode::Full {
+                    if let Some(content) = &entry.new_content {
+                        write_rel(root, &entry.path, content)?;
+                    }
                 }
             }
             RegenStatus::Conflict | RegenStatus::SeededDrift => {
@@ -271,11 +286,13 @@ pub fn apply_regeneration(plan: &RegenPlan, root: &Path) -> io::Result<()> {
                 }
             }
             RegenStatus::OrphanDelete => {
-                let path = root.join(&entry.path);
-                match std::fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                    Err(err) => return Err(err),
+                if mode == ApplyMode::Full {
+                    let path = root.join(&entry.path);
+                    match std::fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                        Err(err) => return Err(err),
+                    }
                 }
             }
             RegenStatus::Unchanged | RegenStatus::OrphanLeft => {}
@@ -367,6 +384,103 @@ mod tests {
         let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();
         assert_eq!(plan.entries[0].status, RegenStatus::Conflict);
         assert!(plan.has_errors());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sidecars_only_writes_sidecars_but_nothing_else() {
+        let dir = temp_dir("sidecars-only-writes-sidecars-but-nothing-else");
+        let mut old = GeneratedProject::new();
+        old.add_file("a.txt", "old-a");
+        old.add_file("b.txt", "old-b");
+        old.write_to(&dir).unwrap();
+        let manifest = build_manifest(&old, "0.6.0", "src", "python");
+        std::fs::write(dir.join("a.txt"), "user-edit").unwrap();
+
+        let mut new = GeneratedProject::new();
+        new.add_file("a.txt", "new-a");
+        new.add_file("b.txt", "new-b");
+        new.add_file("c.txt", "new-c");
+        let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();
+        assert!(plan.has_errors());
+
+        apply_regeneration(&plan, &dir, ApplyMode::SidecarsOnly).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "user-edit",
+            "conflicting owned file must not be overwritten"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt.ciac-new")).unwrap(),
+            "new-a"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("b.txt")).unwrap(),
+            "old-b",
+            "unrelated update must not be applied on a failed build"
+        );
+        assert!(
+            !dir.join("c.txt").exists(),
+            "unrelated new file must not be written on a failed build"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn failed_build_does_not_poison_the_next_diff() {
+        let dir = temp_dir("failed-build-does-not-poison-the-next-diff");
+
+        let v1 = {
+            let mut p = GeneratedProject::new();
+            p.add_file("app/main.py", "v1-main");
+            p.add_file("app/schemas.py", "v1-schemas");
+            p
+        };
+        v1.write_to(&dir).unwrap();
+        let manifest_v1 = build_manifest(&v1, "0.6.0", "src-v1", "python");
+
+        // User edits one owned file.
+        std::fs::write(dir.join("app/main.py"), "user-edit").unwrap();
+
+        // v2 build conflicts on main.py; applied as SidecarsOnly, so the
+        // manifest is NOT rewritten and schemas.py is left untouched.
+        let v2 = {
+            let mut p = GeneratedProject::new();
+            p.add_file("app/main.py", "v2-main");
+            p.add_file("app/schemas.py", "v2-schemas");
+            p
+        };
+        let plan_v2 = plan_regeneration(&v2, &dir, Some(&manifest_v1), RegenMode::Normal).unwrap();
+        assert!(plan_v2.has_errors());
+        apply_regeneration(&plan_v2, &dir, ApplyMode::SidecarsOnly).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("app/schemas.py")).unwrap(),
+            "v1-schemas",
+            "schemas.py must be untouched by the failed v2 build"
+        );
+
+        // v3 diff, still against the v1 manifest (since v2 never wrote one),
+        // must report the untouched schemas.py as an update, not a false
+        // conflict.
+        let v3 = {
+            let mut p = GeneratedProject::new();
+            p.add_file("app/main.py", "v3-main");
+            p.add_file("app/schemas.py", "v3-schemas");
+            p
+        };
+        let plan_v3 = plan_regeneration(&v3, &dir, Some(&manifest_v1), RegenMode::Normal).unwrap();
+        let schemas_entry = plan_v3
+            .entries
+            .iter()
+            .find(|e| e.path == "app/schemas.py")
+            .unwrap();
+        assert_eq!(
+            schemas_entry.status,
+            RegenStatus::Update,
+            "schemas.py was never touched by a user and must not be reported as a conflict"
+        );
+
         std::fs::remove_dir_all(dir).ok();
     }
 

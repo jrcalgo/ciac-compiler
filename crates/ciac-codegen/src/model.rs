@@ -441,6 +441,14 @@ pub struct JobCtx {
     pub name: String,
     pub snake: String,
     pub schedule: String,
+    /// `schedule` translated to the `cron` crate's expectations: a leading
+    /// seconds field, and weekday `0` (CIaC's Sunday, matching POSIX cron)
+    /// rewritten as `7` (the crate only accepts 1-7). Ranges, lists, and
+    /// steps in the weekday field are expanded to an explicit list so the
+    /// rewrite stays correct across the 0-6/1-7 numbering gap. Rust-only;
+    /// other backends parse `schedule` with a library that already accepts
+    /// the 0-7 convention.
+    pub cron_crate_schedule: String,
     pub catch_up: bool,
     pub has_publish_step: bool,
     pub steps: Vec<StepCtx>,
@@ -772,6 +780,7 @@ fn build_scoped(
                 has_publish_step: has_publish(&steps),
                 db_sessions,
                 session_with,
+                cron_crate_schedule: cron_crate_schedule(&config.schedule),
                 schedule: config.schedule.clone(),
                 catch_up: config.catch_up,
                 steps,
@@ -1598,6 +1607,72 @@ fn has_publish(steps: &[StepCtx]) -> bool {
     })
 }
 
+/// Translates a sema-validated five-field cron expression (minute hour day
+/// month weekday, weekday `0`-`7` with both `0` and `7` meaning Sunday) into
+/// a six-field expression the Rust `cron` crate accepts (leading seconds
+/// field, weekday `1`-`7` only). The weekday field is expanded into an
+/// explicit list rather than reusing ranges/steps, because the 0-6 and 1-7
+/// numbering conventions disagree on which values are contiguous (e.g.
+/// `0-3` is Sun-Wed in the source convention but not a valid contiguous
+/// range once `0` becomes `7`).
+pub fn cron_crate_schedule(schedule: &str) -> String {
+    let fields: Vec<&str> = schedule.split_whitespace().collect();
+    debug_assert_eq!(fields.len(), 5, "sema guarantees a five-field schedule");
+    let weekday = fields.get(4).copied().unwrap_or("*");
+    let translated_weekday = translate_weekday_field(weekday);
+    format!(
+        "0 {} {} {} {} {}",
+        fields.first().copied().unwrap_or("*"),
+        fields.get(1).copied().unwrap_or("*"),
+        fields.get(2).copied().unwrap_or("*"),
+        fields.get(3).copied().unwrap_or("*"),
+        translated_weekday,
+    )
+}
+
+fn translate_weekday_field(field: &str) -> String {
+    if field == "*" {
+        return "*".to_owned();
+    }
+    let days: Vec<u32> = field
+        .split(',')
+        .flat_map(weekday_part_values)
+        .map(|day| if day == 0 { 7 } else { day })
+        .collect();
+    days.iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Expands one comma-separated weekday token (`*`, `n`, `a-b`, or `x/n`,
+/// optionally combined as `a-b/n`) into the individual day numbers (0-7)
+/// it selects, using the source 0-6 numbering.
+fn weekday_part_values(part: &str) -> Vec<u32> {
+    let (base, step) = match part.split_once('/') {
+        Some((base, step)) => (base, step.parse::<u32>().ok().filter(|s| *s > 0)),
+        None => (part, None),
+    };
+    let (start, end) = if base == "*" {
+        (0, 7)
+    } else if let Some((start, end)) = base.split_once('-') {
+        match (start.parse::<u32>(), end.parse::<u32>()) {
+            (Ok(start), Ok(end)) if start <= end => (start, end),
+            _ => return Vec::new(),
+        }
+    } else {
+        match base.parse::<u32>() {
+            // A bare `N/step` (no explicit range) steps from N to the
+            // field's max, same as cron's `N/step` convention.
+            Ok(day) if step.is_some() => (day, 7),
+            Ok(day) => (day, day),
+            Err(_) => return Vec::new(),
+        }
+    };
+    let step = step.unwrap_or(1);
+    (start..=end).step_by(step as usize).collect()
+}
+
 fn rust_variant(
     ir: &NormalizedIr,
     payload: Option<RecordId>,
@@ -1751,4 +1826,43 @@ pub fn subject_const(subject: &str) -> String {
         .next()
         .unwrap_or(subject)
         .to_shouty_snake_case()
+}
+
+#[cfg(test)]
+mod cron_crate_schedule_tests {
+    use super::cron_crate_schedule;
+
+    #[test]
+    fn passes_through_non_weekday_fields_with_a_seconds_prefix() {
+        assert_eq!(cron_crate_schedule("0 3 * * *"), "0 0 3 * * *");
+        assert_eq!(cron_crate_schedule("*/5 * * * *"), "0 */5 * * * *");
+    }
+
+    #[test]
+    fn rewrites_bare_sunday_zero_to_seven() {
+        assert_eq!(cron_crate_schedule("0 0 * * 0"), "0 0 0 * * 7");
+    }
+
+    #[test]
+    fn leaves_seven_and_wildcard_weekday_untouched() {
+        assert_eq!(cron_crate_schedule("0 0 * * 7"), "0 0 0 * * 7");
+        assert_eq!(cron_crate_schedule("0 0 * * *"), "0 0 0 * * *");
+    }
+
+    #[test]
+    fn expands_a_range_that_crosses_the_sunday_boundary() {
+        // Source "0-3" means Sun,Mon,Tue,Wed; a naive 0->7 rewrite would
+        // produce the invalid/reversed range "7-3", so it must expand.
+        assert_eq!(cron_crate_schedule("0 0 * * 0-3"), "0 0 0 * * 7,1,2,3");
+    }
+
+    #[test]
+    fn expands_a_list_containing_sunday() {
+        assert_eq!(cron_crate_schedule("0 0 * * 0,2,4"), "0 0 0 * * 7,2,4");
+    }
+
+    #[test]
+    fn expands_a_step_starting_at_sunday() {
+        assert_eq!(cron_crate_schedule("0 0 * * 0/2"), "0 0 0 * * 7,2,4,6");
+    }
 }

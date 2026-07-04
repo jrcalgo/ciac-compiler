@@ -10,11 +10,20 @@ use crate::services::{{ handler.module }}::{{ handler.class_name }};
 {% endfor -%}
 use crate::state::AppState;
 
+/// The source-level five-field cron expression (minute hour day month
+/// weekday), as written in the `.ciac` file.
 pub const SCHEDULE: &str = "{{ job.schedule }}";
+/// `SCHEDULE` translated for the `cron` crate: a leading seconds field, and
+/// weekday `0` rewritten as `7` (the crate accepts weekdays 1-7, not 0-7).
+const CRON_CRATE_SCHEDULE: &str = "{{ job.cron_crate_schedule }}";
 pub const CATCH_UP: bool = {{ "true" if job.catch_up else "false" }};
 
+pub fn schedule() -> anyhow::Result<Schedule> {
+    Ok(Schedule::from_str(CRON_CRATE_SCHEDULE)?)
+}
+
 pub async fn run(state: AppState) -> anyhow::Result<()> {
-    let schedule = Schedule::from_str(SCHEDULE)?;
+    let schedule = schedule()?;
     loop {
         sleep_until_next(&schedule).await?;
         if let Err(err) = handle_tick_once(&state).await {
@@ -73,4 +82,12 @@ async fn handle_tick_once(state: &AppState) -> anyhow::Result<()> {
     let _ = state;
 {%- endif %}
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn schedule_parses() {
+        super::schedule().expect("generated SCHEDULE must parse as a cron expression");
+    }
 }

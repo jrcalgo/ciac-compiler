@@ -386,3 +386,10 @@ async def test_health() -> None:
         response = await client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_job_schedules_are_valid_cron() -> None:
+    from croniter import croniter
+    from app.workers.cleanup import SCHEDULE as CLEANUP_SCHEDULE
+
+    assert croniter.is_valid(CLEANUP_SCHEDULE)

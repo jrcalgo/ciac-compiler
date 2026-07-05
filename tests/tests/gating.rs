@@ -129,11 +129,11 @@ pipeline Upload:
     -> Return;
 "#;
 
-/// v0.7 M3: a type-checked inline handler body passes `ciac check` and
-/// now *builds* on Python (M3 graduated the HIR→Python lowering); Rust
-/// still gates it exactly like Kafka until its own emitter lands (M4).
+/// v0.7 M3 graduated Python's HIR→Python lowering for typed inline
+/// handler bodies; M4 does the same for Rust. Neither backend gates a
+/// signature-bearing handler anymore — only Kafka still does.
 #[test]
-fn typed_handler_signature_builds_on_python_but_gates_on_rust() {
+fn typed_handler_signature_builds_on_both_backends() {
     let (ir, diags) = compile(TYPED_HANDLER_GATED);
     assert!(
         !diags.has_errors(),
@@ -143,21 +143,12 @@ fn typed_handler_signature_builds_on_python_but_gates_on_rust() {
     let ir = ir.expect("well-typed program produces IR");
 
     for backend in backends() {
-        let result = ciac_codegen::check_support(backend.as_ref(), &ir);
-        match backend.id() {
-            "python" => result.unwrap_or_else(|err| {
-                panic!("python must support a typed inline handler body: {err}")
-            }),
-            "rust" => {
-                let err = result.expect_err("rust must still gate a typed handler signature");
-                let message = err.to_string();
-                assert!(
-                    message.contains("StoreVideo"),
-                    "rust gating error should name the unsupported handler: {message}",
-                );
-            }
-            other => unreachable!("unexpected backend `{other}`"),
-        }
+        ciac_codegen::check_support(backend.as_ref(), &ir).unwrap_or_else(|err| {
+            panic!(
+                "{} must support a typed inline handler body: {err}",
+                backend.id()
+            )
+        });
     }
 }
 
@@ -181,10 +172,10 @@ pipeline Upload:
 "#;
 
 /// `extern handler` (a typed signature with no body) passes `ciac check`
-/// too; Python (M3) emits a typed stub the same way it seeds classic
-/// handlers, while Rust still gates it until M4.
+/// too, and both backends now emit a typed stub for it the same way
+/// they seed classic handlers.
 #[test]
-fn extern_handler_signature_builds_on_python_but_gates_on_rust() {
+fn extern_handler_signature_builds_on_both_backends() {
     let (ir, diags) = compile(EXTERN_HANDLER_GATED);
     assert!(
         !diags.has_errors(),
@@ -194,15 +185,12 @@ fn extern_handler_signature_builds_on_python_but_gates_on_rust() {
     let ir = ir.expect("well-typed program produces IR");
 
     for backend in backends() {
-        let result = ciac_codegen::check_support(backend.as_ref(), &ir);
-        match backend.id() {
-            "python" => result
-                .unwrap_or_else(|err| panic!("python must support an extern handler stub: {err}")),
-            "rust" => {
-                result.expect_err("rust must still gate an extern handler signature");
-            }
-            other => unreachable!("unexpected backend `{other}`"),
-        }
+        ciac_codegen::check_support(backend.as_ref(), &ir).unwrap_or_else(|err| {
+            panic!(
+                "{} must support an extern handler stub: {err}",
+                backend.id()
+            )
+        });
     }
 }
 

@@ -43,7 +43,7 @@ use crate::error::AppError;
 use crate::schemas::{{ api.payload.class_name }};
 {%- endif %}
 {%- for handler in api.handlers %}
-use crate::services::{{ handler.module }}::{{ handler.class_name }};
+use crate::{{ handler.handler_package }}::{{ handler.module }}::{{ handler.class_name }};
 {%- endfor %}
 use crate::state::AppState;
 

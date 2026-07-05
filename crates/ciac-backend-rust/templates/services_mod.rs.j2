@@ -7,3 +7,6 @@ pub mod {{ service.module }};
 {% for resource in c.resources -%}
 pub mod {{ resource.store_module }};
 {% endfor -%}
+{% for module in extern_handler_modules -%}
+pub mod {{ module }};
+{% endfor -%}

@@ -19,6 +19,8 @@
 //! comparable: routers per api, service handler stubs you own, queue-group
 //! workers, and a compose file for the declared infrastructure.
 
+mod lower;
+
 use ciac_codegen::model as context;
 use ciac_codegen::{Backend, BackendError, GenOptions, GeneratedProject};
 use ciac_ir::{Component, NormalizedIr};
@@ -40,16 +42,13 @@ impl Backend for RustBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet, and neither does a v0.7 typed
-        // handler signature (`extern` or inline body) — the typed HIR
-        // exists (v0.7 M2) but no emitter walks it yet (M3/M4).
+        // Kafka has no generator yet. v0.7 typed handler signatures
+        // (`extern` or inline body) graduated in M4 — `lower.rs` walks
+        // the HIR directly, same as the Python backend since M3.
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
-                ..
-            } | Component::Service {
-                signature: Some(_),
                 ..
             }
         )
@@ -75,7 +74,7 @@ impl Backend for RustBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
 
         if model.multi {
@@ -116,6 +115,7 @@ impl Backend for RustBackend {
 /// instead of per service.
 fn emit_service(
     env: &minijinja::Environment<'_>,
+    ir: &NormalizedIr,
     ctx: &context::Ctx,
     multi: bool,
     prefix: &str,
@@ -130,7 +130,42 @@ fn emit_service(
     let empty = || context! {};
     let at = |path: &str| format!("{prefix}{path}");
 
-    project.add_file(at("Cargo.toml"), render("Cargo.toml.j2", empty())?);
+    // v0.7 typed handlers (M4): the class shape (`class_name`, a
+    // `db`/`cache`/extras-borrowing `<'a>` constructor,
+    // `async fn handle(..) -> anyhow::Result<T>`) mirrors classic
+    // handlers so pipeline call sites need no changes beyond importing
+    // from the right package (see `HandlerRef::handler_package`).
+    // Inline bodies lower straight from the HIR and are compiler-owned;
+    // `extern` gets a stub in `src/services/`, the same "implement this
+    // yourself" contract classic handlers already have.
+    let typed_handlers: Vec<(String, &ciac_ir::HandlerBody)> = ctx
+        .typed_handlers
+        .iter()
+        .filter_map(|id| match &ir.node(*id).component {
+            Component::Service {
+                name,
+                signature: Some(hir),
+            } => Some((name.clone(), hir)),
+            _ => None,
+        })
+        .collect();
+    let has_extern_handler = typed_handlers.iter().any(|(_, hir)| hir.body.is_none());
+    let has_inline_handler = typed_handlers.iter().any(|(_, hir)| hir.body.is_some());
+    let needs_uuid_crate = typed_handlers
+        .iter()
+        .any(|(_, hir)| lower::scan(ir, hir).uuid);
+    let needs_chrono_crate = typed_handlers
+        .iter()
+        .any(|(_, hir)| lower::scan(ir, hir).datetime);
+    let needs_thiserror = ctx.records.iter().any(|r| r.is_error);
+
+    project.add_file(
+        at("Cargo.toml"),
+        render(
+            "Cargo.toml.j2",
+            context! { needs_uuid_crate, needs_chrono_crate, needs_thiserror },
+        )?,
+    );
     project.add_file(at("README.md"), render("README.md.j2", empty())?);
     project.add_file(at("Dockerfile"), render("Dockerfile.j2", empty())?);
     if !multi {
@@ -140,7 +175,13 @@ fn emit_service(
         );
     }
     project.add_file(at(".gitignore"), "/target\n");
-    project.add_file(at("src/lib.rs"), render("lib.rs.j2", empty())?);
+    project.add_file(
+        at("src/lib.rs"),
+        render(
+            "lib.rs.j2",
+            context! { has_inline_handler, has_extern_handler },
+        )?,
+    );
     project.add_file(at("src/main.rs"), render("main.rs.j2", empty())?);
     project.add_file(at("src/config.rs"), render("config.rs.j2", empty())?);
     project.add_file(at("src/state.rs"), render("state.rs.j2", empty())?);
@@ -152,7 +193,7 @@ fn emit_service(
     if ctx.has_auth {
         project.add_file(at("src/auth.rs"), render("auth.rs.j2", empty())?);
     }
-    if !ctx.resources.is_empty() {
+    if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
         project.add_file(at("src/db.rs"), render("db.rs.j2", empty())?);
         project.add_file(at("src/models.rs"), render("models.rs.j2", empty())?);
     }
@@ -213,10 +254,38 @@ fn emit_service(
         );
     }
 
-    if !ctx.services.is_empty() || !ctx.resources.is_empty() {
+    // Render each typed handler's file once, splitting into extern
+    // (seeded stub under `src/services/`) vs. inline (compiler-owned,
+    // `src/logic/`) so both `mod.rs` files can list exactly the right
+    // modules — Rust, unlike Python, needs every submodule declared
+    // explicitly.
+    let mut typed_handler_files: Vec<(String, bool, String)> = Vec::new();
+    for (name, hir) in &typed_handlers {
+        let handler = lower::render(ir, name, hir);
+        let content = render(
+            "logic.rs.j2",
+            context! { handler => minijinja::Value::from_serialize(&handler) },
+        )?;
+        typed_handler_files.push((handler.module.clone(), hir.body.is_none(), content));
+    }
+    let extern_modules: Vec<&str> = typed_handler_files
+        .iter()
+        .filter(|(_, is_extern, _)| *is_extern)
+        .map(|(m, _, _)| m.as_str())
+        .collect();
+    let inline_modules: Vec<&str> = typed_handler_files
+        .iter()
+        .filter(|(_, is_extern, _)| !*is_extern)
+        .map(|(m, _, _)| m.as_str())
+        .collect();
+
+    if !ctx.services.is_empty() || !ctx.resources.is_empty() || has_extern_handler {
         project.add_file(
             at("src/services/mod.rs"),
-            render("services_mod.rs.j2", empty())?,
+            render(
+                "services_mod.rs.j2",
+                context! { extern_handler_modules => extern_modules },
+            )?,
         );
     }
     for service in &ctx.services {
@@ -230,6 +299,22 @@ fn emit_service(
             at(&format!("src/services/{}.rs", resource.store_module)),
             render("resource_store.rs.j2", context! { resource => resource })?,
         );
+    }
+    if has_inline_handler {
+        project.add_file(
+            at("src/logic/mod.rs"),
+            render(
+                "logic_mod.rs.j2",
+                context! { inline_handler_modules => inline_modules },
+            )?,
+        );
+    }
+    for (module, is_extern, content) in typed_handler_files {
+        if is_extern {
+            project.add_seeded_file(at(&format!("src/services/{module}.rs")), content);
+        } else {
+            project.add_file(at(&format!("src/logic/{module}.rs")), content);
+        }
     }
 
     if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {

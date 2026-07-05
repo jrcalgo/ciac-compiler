@@ -11,7 +11,7 @@ pub mod state;
 {%- if c.has_auth %}
 pub mod auth;
 {%- endif %}
-{%- if c.resources %}
+{%- if c.resources or c.tables %}
 pub mod db;
 pub mod models;
 {%- endif %}
@@ -33,8 +33,11 @@ pub mod clients;
 {%- if c.records %}
 pub mod schemas;
 {%- endif %}
-{%- if c.services or c.resources %}
+{%- if c.services or c.resources or has_extern_handler %}
 pub mod services;
+{%- endif %}
+{%- if has_inline_handler %}
+pub mod logic;
 {%- endif %}
 {%- if c.workers or c.jobs or c.consumers %}
 pub mod workers;

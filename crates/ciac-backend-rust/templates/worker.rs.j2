@@ -10,7 +10,7 @@ use futures::future::try_join_all;
 use crate::schemas::{{ worker.payload.class_name }};
 {% endif -%}
 {% for handler in worker.handlers -%}
-use crate::services::{{ handler.module }}::{{ handler.class_name }};
+use crate::{{ handler.handler_package }}::{{ handler.module }}::{{ handler.class_name }};
 {% endfor -%}
 use crate::state::AppState;
 

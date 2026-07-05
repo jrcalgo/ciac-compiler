@@ -20,7 +20,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 {%- else %}
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 {%- endif %}
-{%- if c.records_use_datetime or c.jobs %}
+{%- if c.records_use_datetime or c.jobs or needs_chrono_crate %}
 chrono = { version = "0.4", features = ["serde"] }
 {%- endif %}
 {%- if c.jobs %}
@@ -54,9 +54,12 @@ opensearch = "2"
 {%- if c.has_external_http or c.call_targets %}
 reqwest = { version = "0.12", features = ["json"] }
 {%- endif %}
-{%- if c.resources %}
+{%- if c.resources or needs_uuid_crate %}
 uuid = { version = "1", features = ["v4"] }
 {%- endif %}
 {%- if c.has_metrics %}
 metrics-exporter-prometheus = "0.16"
+{%- endif %}
+{%- if needs_thiserror %}
+thiserror = "2"
 {%- endif %}

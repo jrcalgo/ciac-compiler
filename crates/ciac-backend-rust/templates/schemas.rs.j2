@@ -20,8 +20,30 @@ impl {{ enum.name }} {
 {%- endfor %}
         }
     }
+
+    /// The reverse of `as_str` — reconstructs the variant from a
+    /// database/wire string, e.g. after `db.get` reads a `table`'s
+    /// enum column back as plain text.
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+{%- for variant in enum.variants %}
+            "{{ variant }}" => Ok({{ enum.name }}::{{ variant }}),
+{%- endfor %}
+            other => Err(anyhow::anyhow!("invalid {{ enum.name }}: {other}")),
+        }
+    }
 }
 {%- endfor %}
+{%- if record.is_error %}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{{ record.name }}({% for field in record.fields %}{{ field.name }}={{ '{' }}{{ field.name }}:?{{ '}' }}{% if not loop.last %}, {% endif %}{% endfor %})")]
+pub struct {{ record.name }} {
+{%- for field in record.fields %}
+    pub {{ field.name }}: {{ field.rust_type }},
+{%- endfor %}
+}
+{%- else %}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct {{ record.name }} {
@@ -29,4 +51,5 @@ pub struct {{ record.name }} {
     pub {{ field.name }}: {{ field.rust_type }},
 {%- endfor %}
 }
+{%- endif %}
 {% endfor %}

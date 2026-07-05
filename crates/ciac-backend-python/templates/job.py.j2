@@ -45,7 +45,7 @@ from app.{{ imp.py_module }} import {{ imp.py_getter }}
 from app.queue import publish
 {%- endif %}
 {%- for handler in job.handlers %}
-from app.{{ handler.py_package }}.{{ handler.module }} import {{ handler.class_name }}
+from app.{{ handler.handler_package }}.{{ handler.module }} import {{ handler.class_name }}
 {%- endfor %}
 
 SCHEDULE = "{{ job.schedule }}"

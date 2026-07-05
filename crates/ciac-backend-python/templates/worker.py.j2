@@ -59,7 +59,7 @@ from app.queue import publish
 from app.schemas import {{ worker.payload.class_name }}
 {%- endif %}
 {%- for handler in worker.handlers %}
-from app.{{ handler.py_package }}.{{ handler.module }} import {{ handler.class_name }}
+from app.{{ handler.handler_package }}.{{ handler.module }} import {{ handler.class_name }}
 {%- endfor %}
 
 SUBJECT = "{{ worker.subject }}"

@@ -294,6 +294,17 @@ impl VideoStatus {
             VideoStatus::Failed => "Failed",
         }
     }
+
+    /// The reverse of `as_str` — reconstructs the variant from a
+    /// database/wire string, e.g. after `db.get` reads a `table`'s
+    /// enum column back as plain text.
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "Ready" => Ok(VideoStatus::Ready),
+            "Failed" => Ok(VideoStatus::Failed),
+            other => Err(anyhow::anyhow!("invalid VideoStatus: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -770,6 +781,17 @@ impl VideoStatus {
         match self {
             VideoStatus::Ready => "Ready",
             VideoStatus::Failed => "Failed",
+        }
+    }
+
+    /// The reverse of `as_str` — reconstructs the variant from a
+    /// database/wire string, e.g. after `db.get` reads a `table`'s
+    /// enum column back as plain text.
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "Ready" => Ok(VideoStatus::Ready),
+            "Failed" => Ok(VideoStatus::Failed),
+            other => Err(anyhow::anyhow!("invalid VideoStatus: {other}")),
         }
     }
 }
@@ -1316,6 +1338,17 @@ impl VideoStatus {
             VideoStatus::Failed => "Failed",
         }
     }
+
+    /// The reverse of `as_str` — reconstructs the variant from a
+    /// database/wire string, e.g. after `db.get` reads a `table`'s
+    /// enum column back as plain text.
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "Ready" => Ok(VideoStatus::Ready),
+            "Failed" => Ok(VideoStatus::Failed),
+            other => Err(anyhow::anyhow!("invalid VideoStatus: {other}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1674,6 +1707,17 @@ impl VideoStatus {
         match self {
             VideoStatus::Ready => "Ready",
             VideoStatus::Failed => "Failed",
+        }
+    }
+
+    /// The reverse of `as_str` — reconstructs the variant from a
+    /// database/wire string, e.g. after `db.get` reads a `table`'s
+    /// enum column back as plain text.
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "Ready" => Ok(VideoStatus::Ready),
+            "Failed" => Ok(VideoStatus::Failed),
+            other => Err(anyhow::anyhow!("invalid VideoStatus: {other}")),
         }
     }
 }
@@ -2169,6 +2213,17 @@ impl VideoStatus {
         match self {
             VideoStatus::Ready => "Ready",
             VideoStatus::Failed => "Failed",
+        }
+    }
+
+    /// The reverse of `as_str` — reconstructs the variant from a
+    /// database/wire string, e.g. after `db.get` reads a `table`'s
+    /// enum column back as plain text.
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "Ready" => Ok(VideoStatus::Ready),
+            "Failed" => Ok(VideoStatus::Failed),
+            other => Err(anyhow::anyhow!("invalid VideoStatus: {other}")),
         }
     }
 }

@@ -403,8 +403,9 @@ pub struct HandlerRef {
     pub module: String,
     /// Package the module lives under: `services` for classic/`extern`
     /// handlers (seeded, user-owned), `logic` for v0.7 inline typed
-    /// handlers (compiler-owned, lowered from the HIR).
-    pub py_package: &'static str,
+    /// handlers (compiler-owned, lowered from the HIR). Shared by both
+    /// backends (Python's `app.<package>`, Rust's `crate::<package>`).
+    pub handler_package: &'static str,
     pub needs_db: bool,
     pub needs_cache: bool,
     pub bindings: Vec<BindingCtx>,
@@ -1553,9 +1554,9 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     let name = node.component.name().unwrap_or_default().to_owned();
     // A v0.7 typed handler has no `DataFlow` binding edges — its
     // capability usage lives in the HIR's `VerbCall`s instead. An inline
-    // body lives under `app/logic/` (compiler-owned); `extern` gets a
-    // seeded stub under `app/services/`, same as classic handlers.
-    let (bindings, py_package) = match &node.component {
+    // body lives under `<app|src>/logic/` (compiler-owned); `extern` gets
+    // a seeded stub under `<app|src>/services/`, same as classic handlers.
+    let (bindings, handler_package) = match &node.component {
         Component::Service {
             signature: Some(hir),
             ..
@@ -1583,7 +1584,7 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     }
     HandlerRef {
         module: name.to_snake_case(),
-        py_package,
+        handler_package,
         class_name: name,
         needs_db: access.db.is_some(),
         needs_cache: access.cache_expr.is_some(),

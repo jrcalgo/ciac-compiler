@@ -1,3 +1,4 @@
+use crate::migrations::TableSchema;
 use crate::{FileRole, GeneratedProject};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -7,12 +8,25 @@ use std::path::Path;
 
 pub const MANIFEST_REL_PATH: &str = ".ciac/manifest.json";
 
+fn first_migration_seq() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub compiler_version: String,
     pub source_hash: String,
     pub target: String,
     pub files: BTreeMap<String, ManifestFile>,
+    /// v0.7 `table` schema as of the last migration, keyed by table
+    /// name — the "old" side `ciac-codegen::migrations::diff_schema`
+    /// diffs the current program's tables against on the next build.
+    /// Defaulted so manifests written before v0.7 M5 still deserialize.
+    #[serde(default)]
+    pub tables: BTreeMap<String, TableSchema>,
+    /// The next migration file's sequence number.
+    #[serde(default = "first_migration_seq")]
+    pub next_migration_seq: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +74,8 @@ pub fn build_manifest(
         source_hash: source_hash.into(),
         target: target.into(),
         files,
+        tables: BTreeMap::new(),
+        next_migration_seq: first_migration_seq(),
     }
 }
 

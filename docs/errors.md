@@ -52,6 +52,7 @@ test.
 | CIAC0043 | error | invalid capability verb call |
 | CIAC0044 | error | verb on unbound capability |
 | CIAC0045 | warning | unused let binding |
+| CIAC0046 | error | unsupported schema change |
 
 ## Notes
 
@@ -130,3 +131,7 @@ test.
 - **CIAC0044** means a verb is called on a capability kind with no bound
   instance in the enclosing service; add it to the `use { .. }` block.
 - **CIAC0045** means a `let` binding is never read; remove it.
+- **CIAC0046** means a `table`'s schema changed in a way the additive-only
+  migration differ can't express safely — a column was removed or
+  retyped, or the whole table was removed. Write a manual migration file
+  for the drop/retype, then rerun `ciac build`.

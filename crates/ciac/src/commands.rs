@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use ciac_codegen::manifest::{
     build_manifest, hash_bytes, load_manifest, manifest_path, write_manifest,
 };
+use ciac_codegen::migrations::{diff_schema, snapshot_schema, TableSchema};
 use ciac_codegen::regen::{
     apply_regeneration, plan_regeneration, ApplyMode, RegenMode, RegenPlan, RegenStatus,
 };
@@ -9,6 +10,7 @@ use ciac_codegen::{Backend, GenOptions, GeneratedProject};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
 use ciac_ir::NormalizedIr;
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -66,7 +68,13 @@ pub fn build(
         bail!("--force and --adopt cannot be used together");
     }
 
-    let (backend, project, source_hash) = generate(file, target, name)?;
+    let Generated {
+        backend,
+        project,
+        source_hash,
+        tables,
+        next_migration_seq,
+    } = generate(file, target, out, name)?;
 
     if force {
         if out.exists() {
@@ -80,12 +88,14 @@ pub fn build(
         project
             .write_to(out)
             .with_context(|| format!("cannot write to {}", out.display()))?;
-        let manifest = build_manifest(
+        let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
             source_hash,
             backend.id(),
         );
+        manifest.tables = tables;
+        manifest.next_migration_seq = next_migration_seq;
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     } else {
@@ -127,12 +137,14 @@ pub fn build(
         apply_regeneration(&plan, out, ApplyMode::Full)
             .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
         report_regen_plan(&plan, adopt, true);
-        let manifest = build_manifest(
+        let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
             source_hash,
             backend.id(),
         );
+        manifest.tables = tables;
+        manifest.next_migration_seq = next_migration_seq;
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     }
@@ -156,7 +168,7 @@ pub fn diff(
     patch: bool,
     name: Option<String>,
 ) -> Result<ExitCode> {
-    let (_backend, project, _source_hash) = generate(file, target, name)?;
+    let Generated { project, .. } = generate(file, target, out, name)?;
     let manifest_file = manifest_path(out);
     let manifest = if manifest_file.exists() {
         Some(load_manifest(out).with_context(|| {
@@ -193,7 +205,13 @@ pub fn verify(
     live: bool,
     name: Option<String>,
 ) -> Result<ExitCode> {
-    let (backend, project, source_hash) = generate(file, target, name)?;
+    let Generated {
+        backend,
+        project,
+        source_hash,
+        tables,
+        next_migration_seq,
+    } = generate(file, target, out, name)?;
     if live {
         eprintln!("warning: --live health probing is not implemented yet; running static verify");
     }
@@ -202,12 +220,14 @@ pub fn verify(
         project
             .write_to(out)
             .with_context(|| format!("cannot write initial project to {}", out.display()))?;
-        let manifest = build_manifest(
+        let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
             source_hash,
             backend.id(),
         );
+        manifest.tables = tables;
+        manifest.next_migration_seq = next_migration_seq;
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     } else {
@@ -232,7 +252,9 @@ pub fn verify(
         let drift: Vec<_> = plan
             .entries
             .iter()
-            .filter(|entry| entry.status != RegenStatus::Unchanged)
+            .filter(|entry| {
+                entry.status != RegenStatus::Unchanged && entry.status != RegenStatus::OrphanLeft
+            })
             .collect();
         if !drift.is_empty() {
             for entry in drift {
@@ -275,11 +297,19 @@ pub fn targets() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn generate(
-    file: &Path,
-    target: &str,
-    name: Option<String>,
-) -> Result<(Box<dyn Backend>, GeneratedProject, String)> {
+/// Result of [`generate`]: the backend used, the generated project (with
+/// any new migration file already injected), the source hash, and the
+/// table schema state callers must stamp onto the manifest they write
+/// (`tables` as of this build, `next_migration_seq` for the *next* one).
+struct Generated {
+    backend: Box<dyn Backend>,
+    project: GeneratedProject,
+    source_hash: String,
+    tables: BTreeMap<String, TableSchema>,
+    next_migration_seq: u32,
+}
+
+fn generate(file: &Path, target: &str, out: &Path, name: Option<String>) -> Result<Generated> {
     let all = backends();
     let Some(index) = all.iter().position(|b| b.id() == target) else {
         let known: Vec<&str> = all.iter().map(|b| b.id()).collect();
@@ -300,8 +330,83 @@ fn generate(
     }
 
     let opts = GenOptions { project_name: name };
-    let project = backend.generate(&ir, &opts)?;
-    Ok((backend, project, source_hash))
+    let mut project = backend.generate(&ir, &opts)?;
+
+    let manifest_file = manifest_path(out);
+    let previous = if manifest_file.exists() {
+        Some(load_manifest(out).with_context(|| {
+            format!(
+                "cannot read regeneration manifest {}",
+                manifest_file.display()
+            )
+        })?)
+    } else {
+        None
+    };
+    let old_tables = previous
+        .as_ref()
+        .map(|m| m.tables.clone())
+        .unwrap_or_default();
+    let next_migration_seq = previous.as_ref().map_or(1, |m| m.next_migration_seq);
+    let new_tables = snapshot_schema(&ir);
+
+    let next_migration_seq = match diff_schema(&old_tables, &new_tables) {
+        Ok(None) => next_migration_seq,
+        Ok(Some(sql)) => {
+            add_migration_files(&mut project, backend.id(), next_migration_seq, &sql);
+            next_migration_seq + 1
+        }
+        Err(change) => {
+            eprintln!("error[{}]: {change}", ErrorCode::UnsupportedSchemaChange);
+            bail!("unsupported schema change");
+        }
+    };
+
+    Ok(Generated {
+        backend,
+        project,
+        source_hash,
+        tables: new_tables,
+        next_migration_seq,
+    })
+}
+
+/// Adds the diffed migration SQL, under each generated deployable
+/// project's migration directory (there may be more than one in a
+/// multi-service system; every service context already carries the
+/// program's full table set, so each gets the same migration file).
+/// Migration files are seeded: once written, later builds that stop
+/// re-emitting a given sequence number leave the on-disk file alone
+/// (`RegenStatus::OrphanLeft`) rather than deleting it.
+fn add_migration_files(project: &mut GeneratedProject, target: &str, seq: u32, sql: &str) {
+    let filename = format!("{seq:04}_migration.sql");
+    let rel = match target {
+        "python" => format!("app/migrations/{filename}"),
+        _ => format!("migrations/{filename}"),
+    };
+    for prefix in service_roots(project, target) {
+        project.add_seeded_file(format!("{prefix}{rel}"), sql.to_owned());
+    }
+}
+
+/// The prefix (possibly empty) of each deployable project inside a
+/// generated tree, identified by its marker file (`pyproject.toml` /
+/// `Cargo.toml`) — one root for a single-service build, several for a
+/// multi-service system.
+fn service_roots(project: &GeneratedProject, target: &str) -> Vec<String> {
+    let marker = match target {
+        "python" => "pyproject.toml",
+        _ => "Cargo.toml",
+    };
+    let mut roots: Vec<String> = project
+        .files_with_roles()
+        .filter_map(|(path, _, _)| path.strip_suffix(marker).map(str::to_owned))
+        .collect();
+    if roots.is_empty() {
+        roots.push(String::new());
+    }
+    roots.sort();
+    roots
 }
 
 fn output_dir_nonempty(out: &Path) -> Result<bool> {

@@ -26,7 +26,11 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+{%- if c.tables %}
+    from app.db import create_schema, run_migrations
+{%- else %}
     from app.db import create_schema
+{%- endif %}
 
 {%- if c.schema_key_args %}
 {%- for key in c.schema_key_args %}
@@ -34,6 +38,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 {%- endfor %}
 {%- else %}
     await create_schema()
+{%- endif %}
+{%- if c.tables %}
+    await run_migrations()
 {%- endif %}
     yield
 

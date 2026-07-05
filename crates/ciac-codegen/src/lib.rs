@@ -14,6 +14,7 @@
 //! * IR iteration order is itself deterministic (declaration order).
 
 pub mod manifest;
+pub mod migrations;
 pub mod model;
 mod project;
 pub mod regen;

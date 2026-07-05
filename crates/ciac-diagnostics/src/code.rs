@@ -407,6 +407,18 @@ error_codes! {
         "A `let` binding in a handler body is never read by any later \
          statement. Remove it, or use the value if it was meant to be used."
     ),
+    UnsupportedSchemaChange = (
+        "CIAC0046",
+        Error,
+        "unsupported schema change",
+        "A `table` declaration's schema changed in a way the generated \
+         migration differ can't express safely (a column was removed, a \
+         column's type changed, or the whole table was removed). The \
+         differ is additive-only — it emits `CREATE TABLE`/`ALTER TABLE \
+         ... ADD COLUMN` for new tables and columns, but refuses to guess \
+         at a destructive or type-changing edit. Write a manual migration \
+         file for the drop/retype, then rerun `ciac build`."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

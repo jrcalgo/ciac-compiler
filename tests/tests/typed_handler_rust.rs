@@ -120,10 +120,15 @@ fn rust_emits_a_runnable_typed_handler() {
         models.contains("impl TryFrom<Videos> for Video"),
         "expected a row -> schema TryFrom conversion: {models}"
     );
+    // `table` schema is provisioned by `ciac build`'s migration differ
+    // (v0.7 M5), not the backend itself — `RustBackend::generate` alone
+    // (as called directly here) never sees the previous manifest, so
+    // `ensure_schema` in src/db.rs stays scoped to CRUD resources (none
+    // in this example) and emits no table-specific SQL.
     let db = project.get("src/db.rs").expect("src/db.rs is generated");
     assert!(
-        db.contains("CREATE TABLE IF NOT EXISTS videos"),
-        "expected the table's own name, not the record's: {db}"
+        !db.contains("CREATE TABLE"),
+        "table schema now comes from generated migrations, not ensure_schema: {db}"
     );
 
     // The error record becomes a raisable `std::error::Error`, not a

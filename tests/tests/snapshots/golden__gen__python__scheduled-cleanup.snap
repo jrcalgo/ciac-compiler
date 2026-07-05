@@ -149,13 +149,12 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def create_schema(instance: str = "default") -> None:
-    """Creates all tables on startup.
-
-    Replace with real migrations (e.g. Alembic) once the schema needs to
-    evolve in production.
+    """Creates CRUD-resource tables on startup. `table` declarations
+    (v0.7) are provisioned by `run_migrations` instead, since they carry
+    real incremental migrations rather than a create-if-absent call.
     """
-    async with get_engine(instance).begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    return
+
 ============================================================
 app/main.py
 ============================================================

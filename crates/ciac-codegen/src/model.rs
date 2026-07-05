@@ -86,10 +86,16 @@ pub struct Ctx {
     pub consumers: Vec<ConsumerCtx>,
     pub services: Vec<ServiceCtx>,
     pub resources: Vec<ResourceCtx>,
-    /// `table <Name>: <Record>;` declarations: one SQLAlchemy model per
-    /// entry, registered on the same `Base` as CRUD resources so
-    /// `create_schema()` picks it up with no migration-specific work.
+    /// `table <Name>: <Record>;` declarations: one SQLAlchemy/`FromRow`
+    /// model per entry. Schema is provisioned by the v0.7 M5 migration
+    /// differ (`ciac-codegen::migrations`), not `create_schema`/
+    /// `ensure_schema` — those stay scoped to CRUD resources.
     pub tables: Vec<TableCtx>,
+    /// Rust `AppState` field of the db instance migrations run against.
+    /// `table` declarations aren't bound to a named instance, so this is
+    /// always the `default` one; `None` when there is no db instance at
+    /// all (i.e. `tables` is also empty).
+    pub table_db_field: Option<String>,
     /// v0.7 typed handlers (inline body or `extern`) owned by this
     /// service, identified by node id — see the comment at their build
     /// site for why they aren't a `ServiceCtx`.
@@ -1005,6 +1011,11 @@ fn build_scoped(
             record: build_record(ir, table.record),
         })
         .collect();
+    let table_db_field = db_instances
+        .iter()
+        .find(|inst| inst.is_default)
+        .or_else(|| db_instances.first())
+        .map(|inst| inst.state_field.clone());
     let all_fields = |records: &[RecordCtx]| -> Vec<String> {
         records
             .iter()
@@ -1069,6 +1080,7 @@ fn build_scoped(
         records_use_enum: field_types.iter().any(|t| t.starts_with("Literal")),
         records,
         tables,
+        table_db_field,
         typed_handlers,
         apis,
         channels,
@@ -1773,27 +1785,37 @@ fn rust_variant(
     ))
 }
 
+/// Postgres column type for a field's declared `FieldType`. Shared by
+/// `build_record` (schema/model codegen) and `ciac-codegen::migrations`
+/// (the v0.7 table migration differ) so the two never drift apart.
+pub fn field_sql_type(ty: &FieldType) -> &'static str {
+    match ty {
+        FieldType::Str | FieldType::Uuid | FieldType::Enum { .. } => "TEXT",
+        FieldType::Int => "BIGINT",
+        FieldType::Float => "DOUBLE PRECISION",
+        FieldType::Bool => "BOOLEAN",
+        FieldType::Timestamp => "TIMESTAMPTZ",
+        FieldType::Json => "JSONB",
+    }
+}
+
 pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
     let record = ir.record(id);
     let mut fields = Vec::new();
     let mut enums = Vec::new();
     for field in &record.fields {
-        let (py_type, rust_type, sql_type) = match &field.ty {
-            FieldType::Str => ("str".to_owned(), "String".to_owned(), "TEXT"),
-            FieldType::Int => ("int".to_owned(), "i64".to_owned(), "BIGINT"),
-            FieldType::Float => ("float".to_owned(), "f64".to_owned(), "DOUBLE PRECISION"),
-            FieldType::Bool => ("bool".to_owned(), "bool".to_owned(), "BOOLEAN"),
-            FieldType::Uuid => ("str".to_owned(), "String".to_owned(), "TEXT"),
+        let sql_type = field_sql_type(&field.ty);
+        let (py_type, rust_type) = match &field.ty {
+            FieldType::Str => ("str".to_owned(), "String".to_owned()),
+            FieldType::Int => ("int".to_owned(), "i64".to_owned()),
+            FieldType::Float => ("float".to_owned(), "f64".to_owned()),
+            FieldType::Bool => ("bool".to_owned(), "bool".to_owned()),
+            FieldType::Uuid => ("str".to_owned(), "String".to_owned()),
             FieldType::Timestamp => (
                 "datetime".to_owned(),
                 "chrono::DateTime<chrono::Utc>".to_owned(),
-                "TIMESTAMPTZ",
             ),
-            FieldType::Json => (
-                "dict[str, Any]".to_owned(),
-                "serde_json::Value".to_owned(),
-                "JSONB",
-            ),
+            FieldType::Json => ("dict[str, Any]".to_owned(), "serde_json::Value".to_owned()),
             FieldType::Enum { variants } => {
                 let enum_name = format!("{}{}", record.name, field.name.to_pascal_case());
                 let literal = variants
@@ -1805,7 +1827,7 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
                     name: enum_name.clone(),
                     variants: variants.clone(),
                 });
-                (format!("Literal[{literal}]"), enum_name, "TEXT")
+                (format!("Literal[{literal}]"), enum_name)
             }
         };
         let is_enum = matches!(field.ty, FieldType::Enum { .. });

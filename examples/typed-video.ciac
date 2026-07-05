@@ -1,6 +1,8 @@
 // v0.2 flagship: typed records, named streams with fan-out, and a
 // typed CRUD resource. The compiler checks that every publish site
-// matches its stream's record type.
+// matches its stream's record type. `StoreVideo` (v0.7) is a typed
+// inline handler body, generated compiler-owned code rather than a
+// stub you fill in.
 service Media;
 
 use {
@@ -25,6 +27,11 @@ worker Transcoder on Uploaded;
 worker Notifier on Transcoded;
 
 crud Clip: Video;
+
+handler StoreVideo(v: Video) -> Video {
+    let stored = v { status: Pending };
+    return stored;
+}
 
 pipeline Upload:
     Auth

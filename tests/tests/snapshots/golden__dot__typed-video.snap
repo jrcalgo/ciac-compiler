@@ -26,8 +26,6 @@ digraph Media {
     n0 -> n10 [label="RequestFlow", style=solid];
     n10 -> n1 [label="DataFlow", style=bold];
     n10 -> n2 [label="DataFlow", style=bold];
-    n11 -> n1 [label="DataFlow", style=bold];
-    n11 -> n2 [label="DataFlow", style=bold];
     n6 -> n0 [label="RequestFlow", style=solid];
     n0 -> n11 [label="RequestFlow", style=solid];
     n11 -> n4 [label="AsyncMessage", style=dashed];

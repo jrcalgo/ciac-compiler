@@ -755,7 +755,17 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
         ctx.class_name
     ));
     lines.push("import pytest".to_owned());
-    lines.push("from unittest.mock import AsyncMock, MagicMock".to_owned());
+    // Only import what the mocked-dependency setup below actually uses —
+    // a handler with no capability calls (e.g. a pure transform) needs
+    // neither, and an unused import fails `ruff check`.
+    let needs_async_mock = ctx.needs_db || ctx.needs_cache || !ctx.extras.is_empty();
+    let needs_magic_mock = ctx.needs_db;
+    match (needs_async_mock, needs_magic_mock) {
+        (true, true) => lines.push("from unittest.mock import AsyncMock, MagicMock".to_owned()),
+        (true, false) => lines.push("from unittest.mock import AsyncMock".to_owned()),
+        (false, true) => lines.push("from unittest.mock import MagicMock".to_owned()),
+        (false, false) => {}
+    }
     lines.push(String::new());
 
     let mut uuid = false;

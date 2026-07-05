@@ -1,4 +1,4 @@
-# The CIaC Language (v0.6.1)
+# The CIaC Language (v0.7.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -22,9 +22,9 @@ ahead) and fail `ciac build` with `CIAC0011`:
 ```ebnf
 program        = { item } ;
 item           = project-decl | service-decl | service-block
-               | use-block | record-decl | stream-decl | handler-decl
-               | api-decl | worker-decl | job-decl | channel-decl
-               | crud-decl | events-decl | pipeline-decl ;
+               | use-block | record-decl | table-decl | stream-decl
+               | handler-decl | api-decl | worker-decl | job-decl
+               | channel-decl | crud-decl | events-decl | pipeline-decl ;
 
 project-decl   = "project" IDENT ";" ;
 service-decl   = "service" IDENT ";" ;
@@ -37,14 +37,19 @@ use-entry      = IDENT IDENT ";"              (* capability provider *)
                | IDENT IDENT IDENT ";"        (* capability name provider *)
                | IDENT IDENT attr-block       (* providerless named capability *)
                | IDENT IDENT IDENT attr-block ;
-record-decl    = "record" IDENT "{" { field } "}" ;
+record-decl    = ( "record" | "error" ) IDENT "{" { field } "}" ;
 field          = IDENT ":" type ";" ;
 type           = "String" | "Int" | "Float" | "Bool" | "Uuid"
                | "Timestamp" | "Json"
                | "enum" "{" IDENT { "," IDENT } "}" ;
+table-decl     = "table" IDENT ":" IDENT ";" ;
 stream-decl    = "stream" IDENT ":" IDENT decl-tail ;
-handler-decl   = "handler" IDENT "{" { binding } "}" ;
+handler-decl   = "handler" IDENT "{" { binding } "}"        (* classic *)
+               | [ "extern" ] "handler" IDENT
+                 "(" [ param { "," param } ] ")" "->" type
+                 ( ";" | "{" { stmt } "}" ) ;                (* v0.7 *)
 binding        = IDENT ":" IDENT ";" ;
+param          = IDENT ":" type ;
 api-decl       = "api" IDENT [ ":" IDENT ] decl-tail ;
 worker-decl    = "worker" IDENT [ "on" IDENT ] decl-tail ;
 job-decl       = "job" IDENT decl-tail ;
@@ -66,6 +71,11 @@ IDENT          = letter-or-underscore { letter-digit-underscore } ;
 NUMBER         = digit { digit } ;
 STRING         = '"' { char } '"' ;
 ```
+
+`stmt` (the `{ stmt }` inside a v0.7 inline handler body) is its own,
+larger grammar — `let`/`return`/`fail`/`publish` statements and an
+expression language with `if`/`match`, record construction, and a
+closed set of capability verbs. See `docs/expressions.md`.
 
 Comments: `// line` and `/* block */`.
 
@@ -160,6 +170,12 @@ fields are `CIAC0003`. Records compile to pydantic models (Python) and
 serde structs (Rust); enums become `Literal[..]` / Rust enums and are
 stored as text.
 
+`error <Name> { field: Type; .. }` (v0.7) is the same field grammar
+under a different keyword: it compiles to a raisable exception
+(Python) / `thiserror`-derived error type (Rust) instead of a plain
+data model, for use with `fail <Name>(..)` in a handler body — see
+`docs/expressions.md`.
+
 ### Attributes
 
 `api`, `worker`, `job`, `channel`, `stream`, and `crud` declarations may end in an
@@ -253,6 +269,49 @@ default `db`/`cache` instances when they exist. If multiple instances of a
 kind exist and none is named `default`, implicit binding is ambiguous
 (`CIAC0023`). Binding to a missing instance is `CIAC0022`; binding an
 unsupported kind is `CIAC0024`.
+
+### `handler <Name>(params) -> Type { .. }` and `extern handler <Name>(params) -> Type;`
+
+v0.7 gives a handler an optional typed signature, replacing the
+binding-only form's implicit capability wiring with real parameter and
+return types checked against the pipeline's payload (`CIAC0039`-
+`CIAC0046`). Two flavors share that signature:
+
+- **`extern handler`** — a typed stub, seeded once like a classic
+  handler: you implement `handle` yourself, and regeneration never
+  overwrites it.
+- **Inline body** (no `extern`) — the `{ .. }` block is CIaC source,
+  lowered straight to Python/Rust on every build. The generated file is
+  compiler-owned; there's no stub to fill in.
+
+```ciac
+extern handler Notify(v: Video) -> Video;
+
+handler StoreVideo(v: Video) -> Video {
+    let inserted = db.insert(Videos, v);
+    return inserted;
+}
+```
+
+The inline body language — statements, expressions, the closed
+capability-verb set, and builtins — is documented in full in
+`docs/expressions.md`.
+
+### `table <Name>: <Record>;`
+
+Declares a real database table backed by `<Record>` (requires `db`,
+`CIAC0005`; unknown record is `CIAC0015`), for `db.insert`/`db.get`
+calls in a handler body to target (`CIAC0042` for an unrecognized
+table). Unlike `crud`, a `table` has no REST surface of its own — it's
+plain storage a handler body reads and writes.
+
+Schema changes are additive-only, incremental SQL migrations: a new
+`table` or a new field on one produces a numbered migration file
+(`CREATE TABLE` / `ALTER TABLE ... ADD COLUMN`); a field being removed
+or retyped, or a table disappearing, is refused as `CIAC0046` rather
+than guessed at — write that change by hand. Migration files are
+`Seeded` (see `docs/regeneration.md`): once generated, later builds
+leave them alone.
 
 ### `pipeline <Name>: Step -> Step -> ..;`
 

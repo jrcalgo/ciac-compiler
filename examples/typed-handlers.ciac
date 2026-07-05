@@ -1,0 +1,46 @@
+// v0.7 flagship: typed inline handler bodies, `table` declarations
+// with generated migrations, and an `extern` handler side by side.
+// `StoreVideo`'s body is compiler-owned, lowered straight from this
+// source on both backends; `Notify` keeps today's seeded-stub contract
+// (you implement it once, regeneration never overwrites it).
+service VideoVault;
+
+use {
+    db Postgres;
+    object_store S3;
+}
+
+record Video {
+    id: Uuid;
+    title: String;
+    status: enum { Pending, Ready };
+}
+
+error NotFound {
+    id: Uuid;
+}
+
+table Videos: Video;
+
+handler StoreVideo(v: Video) -> Video {
+    object_store.put("videos/" + v.id, v);
+    let inserted = db.insert(Videos, v);
+    let ready = if inserted.status == Pending {
+        inserted { status: Ready }
+    } else {
+        inserted
+    };
+    return ready;
+}
+
+extern handler Notify(v: Video) -> Video;
+
+api Upload: Video {
+    method: POST;
+    path: "/videos";
+}
+
+pipeline Upload:
+    StoreVideo
+    -> Notify
+    -> Return;

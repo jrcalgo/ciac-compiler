@@ -10,13 +10,17 @@ Every build writes `.ciac/manifest.json` at the output root:
 
 ```json
 {
-  "compiler_version": "0.6.1",
+  "compiler_version": "0.7.0",
   "source_hash": "sha256...",
   "target": "python",
   "files": {
     "app/main.py": { "role": "owned", "hash": "sha256..." },
     "app/services/store.py": { "role": "seeded", "hash": "sha256..." }
-  }
+  },
+  "tables": {
+    "Videos": { "columns": [["id", "TEXT"], ["title", "TEXT"]] }
+  },
+  "next_migration_seq": 2
 }
 ```
 
@@ -30,7 +34,11 @@ sorted order so manifest bytes are deterministic.
   Regeneration rewrites them only when the on-disk file still matches the
   previous manifest hash.
 - **Seeded** files are generated once and then owned by the user. Handler
-  stubs in `app/services/` and `src/services/` are seeded.
+  stubs in `app/services/` and `src/services/` are seeded, as are
+  generated migration files (`app/migrations/`, `migrations/`, v0.7) —
+  once a migration is written, later builds never re-emit that exact
+  path, so it becomes `orphan` (left in place) rather than being
+  deleted the moment it stops appearing.
 
 ## Conflict workflow
 
@@ -44,7 +52,8 @@ current on-disk file, and the newly generated content.
 | `new` | generated file is missing and can be written |
 | `conflict` | owned file was edited; CIaC writes `<file>.ciac-new` and fails with `CIAC0033` |
 | `seeded-drift` | seeded file exists but the generated seed changed; CIaC writes `<file>.ciac-new` and warns with `CIAC0034` |
-| `orphan` | a previously generated file is no longer produced and was left in place (`CIAC0035`) |
+| `orphan` | a previously generated **seeded** (or hand-modified owned) file is no longer produced; left in place untouched (`CIAC0035`, warning) |
+| `orphan-delete` | a previously generated **owned**, unmodified file is no longer produced; deleted automatically |
 
 CIaC does not attempt textual merging in v0.6. Reconcile sidecars
 manually, then rebuild.

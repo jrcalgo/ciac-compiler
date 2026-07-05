@@ -1,0 +1,366 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "VideoVault",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "VideoVault"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "ObjectStore",
+      "name": "default",
+      "provider": "S3",
+      "bucket": null
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "Upload",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/videos",
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Service",
+      "name": "StoreVideo",
+      "signature": {
+        "params": [
+          [
+            "v",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          },
+          {
+            "Record": 0
+          },
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 1,
+                "verb": "ObjectStorePut",
+                "args": [
+                  {
+                    "Binary": {
+                      "op": "Add",
+                      "lhs": {
+                        "StrLit": "videos/"
+                      },
+                      "rhs": {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 0
+                              }
+                            }
+                          },
+                          "field": "id",
+                          "ty": "Uuid"
+                        }
+                      },
+                      "ty": "Str"
+                    }
+                  },
+                  {
+                    "Local": {
+                      "slot": 0,
+                      "ty": {
+                        "Record": 0
+                      }
+                    }
+                  }
+                ],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Let": {
+              "slot": 1,
+              "value": {
+                "VerbCall": {
+                  "capability": 0,
+                  "verb": {
+                    "DbInsert": 0
+                  },
+                  "args": [
+                    {
+                      "Local": {
+                        "slot": 0,
+                        "ty": {
+                          "Record": 0
+                        }
+                      }
+                    }
+                  ],
+                  "ty": {
+                    "Record": 0
+                  }
+                }
+              }
+            }
+          },
+          {
+            "Let": {
+              "slot": 2,
+              "value": {
+                "If": {
+                  "cond": {
+                    "Binary": {
+                      "op": "Eq",
+                      "lhs": {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 1,
+                              "ty": {
+                                "Record": 0
+                              }
+                            }
+                          },
+                          "field": "status",
+                          "ty": {
+                            "Enum": {
+                              "variants": [
+                                "Pending",
+                                "Ready"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      "rhs": {
+                        "EnumLit": {
+                          "variants": [
+                            "Pending",
+                            "Ready"
+                          ],
+                          "variant": "Pending"
+                        }
+                      },
+                      "ty": "Bool"
+                    }
+                  },
+                  "then_branch": [
+                    {
+                      "Expr": {
+                        "RecordCons": {
+                          "record": 0,
+                          "base_value": {
+                            "Local": {
+                              "slot": 1,
+                              "ty": {
+                                "Record": 0
+                              }
+                            }
+                          },
+                          "fields": [
+                            [
+                              "status",
+                              {
+                                "EnumLit": {
+                                  "variants": [
+                                    "Pending",
+                                    "Ready"
+                                  ],
+                                  "variant": "Ready"
+                                }
+                              }
+                            ]
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "else_branch": [
+                    {
+                      "Expr": {
+                        "Local": {
+                          "slot": 1,
+                          "ty": {
+                            "Record": 0
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "ty": {
+                    "Record": 0
+                  }
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 2,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Service",
+      "name": "Notify",
+      "signature": {
+        "params": [
+          [
+            "v",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": null
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 3,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 1,
+      "from": 3,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 2,
+      "to": 3,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 3,
+      "from": 3,
+      "to": 4,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Video",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "status",
+          "ty": {
+            "type": "Enum",
+            "variants": [
+              "Pending",
+              "Ready"
+            ]
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "NotFound",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        }
+      ],
+      "kind": "Error"
+    }
+  ],
+  "tables": [
+    {
+      "name": "Videos",
+      "record": 0
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "Upload",
+      "service": 0,
+      "owner": 2,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 3
+        },
+        {
+          "step": "Handler",
+          "node": 4
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

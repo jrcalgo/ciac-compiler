@@ -1316,7 +1316,13 @@ impl<'d> Builder<'d> {
                         // v0.7 M2: a type-checked signature takes its
                         // capability dependencies from verb resolution,
                         // not declared bindings, so it skips
-                        // `wire_handler_bindings` entirely.
+                        // `wire_handler_bindings` entirely — instead, it
+                        // gets the same `DataFlow` edges classic bindings
+                        // get, wired below from the HIR's own record of
+                        // which capability instances it touched (there's
+                        // no node to attach an edge to at type-check
+                        // time, since the handler node is only created
+                        // here, on first pipeline reference).
                         let signature = self.handler_signatures.get(&handler_key).cloned();
                         let id = self.add_node(
                             Component::Service {
@@ -1325,8 +1331,13 @@ impl<'d> Builder<'d> {
                             },
                             Some(ident.span),
                         );
-                        if signature.is_none() {
-                            self.wire_handler_bindings(name, id, ident.span);
+                        match &signature {
+                            None => self.wire_handler_bindings(name, id, ident.span),
+                            Some(hir) => {
+                                for capability in hir.capability_nodes() {
+                                    self.graph.add_edge(id, capability, EdgeKind::DataFlow);
+                                }
+                            }
                         }
                         self.handlers.insert(handler_key, id);
                         id

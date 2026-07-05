@@ -260,3 +260,97 @@ pub struct HandlerBody {
     /// `None` for `extern handler` — a checked signature with no body.
     pub body: Option<Vec<HirStmt>>,
 }
+
+impl HandlerBody {
+    /// Every capability instance node a `VerbCall` in this body resolves
+    /// to, deduplicated in first-use order. There are no `DataFlow`
+    /// edges from a typed handler's (not-yet-existent, at type-check
+    /// time) node to these instances the way classic handler bindings
+    /// get one, so both the reachability pass (is a capability ever
+    /// used?) and codegen's shared model (does this handler need a
+    /// `session`/`cache`/...?) walk the HIR directly instead.
+    pub fn capability_nodes(&self) -> Vec<crate::NodeId> {
+        let mut nodes = Vec::new();
+        if let Some(stmts) = &self.body {
+            capability_nodes_block(stmts, &mut nodes);
+        }
+        nodes
+    }
+}
+
+fn capability_nodes_block(stmts: &[HirStmt], out: &mut Vec<crate::NodeId>) {
+    for stmt in stmts {
+        match stmt {
+            HirStmt::Let { value, .. } | HirStmt::Expr(value) => capability_nodes_expr(value, out),
+            HirStmt::Return(Some(value)) => capability_nodes_expr(value, out),
+            HirStmt::Return(None) => {}
+            HirStmt::Fail { args, .. } => {
+                for arg in args {
+                    capability_nodes_expr(arg, out);
+                }
+            }
+            HirStmt::Publish { value, .. } => capability_nodes_expr(value, out),
+        }
+    }
+}
+
+fn capability_nodes_expr(expr: &HirExpr, out: &mut Vec<crate::NodeId>) {
+    match expr {
+        HirExpr::VerbCall {
+            capability, args, ..
+        } => {
+            if !out.contains(capability) {
+                out.push(*capability);
+            }
+            for arg in args {
+                capability_nodes_expr(arg, out);
+            }
+        }
+        HirExpr::FieldAccess { base, .. } | HirExpr::Unary { expr: base, .. } => {
+            capability_nodes_expr(base, out)
+        }
+        HirExpr::Index { base, index } => {
+            capability_nodes_expr(base, out);
+            capability_nodes_expr(index, out);
+        }
+        HirExpr::RecordCons {
+            base_value, fields, ..
+        } => {
+            if let Some(base) = base_value {
+                capability_nodes_expr(base, out);
+            }
+            for (_, value) in fields {
+                capability_nodes_expr(value, out);
+            }
+        }
+        HirExpr::Binary { lhs, rhs, .. } => {
+            capability_nodes_expr(lhs, out);
+            capability_nodes_expr(rhs, out);
+        }
+        HirExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            capability_nodes_expr(cond, out);
+            capability_nodes_block(then_branch, out);
+            capability_nodes_block(else_branch, out);
+        }
+        HirExpr::Match {
+            scrutinee, arms, ..
+        } => {
+            capability_nodes_expr(scrutinee, out);
+            for arm in arms {
+                capability_nodes_block(&arm.body, out);
+            }
+        }
+        HirExpr::Local { .. }
+        | HirExpr::IntLit(_)
+        | HirExpr::FloatLit(_)
+        | HirExpr::StrLit(_)
+        | HirExpr::BoolLit(_)
+        | HirExpr::BuiltinCall(_)
+        | HirExpr::EnumLit { .. } => {}
+    }
+}

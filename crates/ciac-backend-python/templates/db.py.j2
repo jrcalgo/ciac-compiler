@@ -61,7 +61,7 @@ async def create_schema(instance: str = "default") -> None:
     Replace with real migrations (e.g. Alembic) once the schema needs to
     evolve in production.
     """
-{%- if c.resources %}
+{%- if c.resources or c.tables %}
     from app import models  # noqa: F401  (registers models on Base)
 
 {% endif %}

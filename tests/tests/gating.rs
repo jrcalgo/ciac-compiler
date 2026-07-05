@@ -129,30 +129,35 @@ pipeline Upload:
     -> Return;
 "#;
 
-/// v0.7 M2: a type-checked handler signature (inline body or `extern`)
-/// passes `ciac check` fully but is build-gated exactly like Kafka —
-/// the typed HIR exists, but no backend emitter walks it yet (M3/M4).
+/// v0.7 M3: a type-checked inline handler body passes `ciac check` and
+/// now *builds* on Python (M3 graduated the HIR→Python lowering); Rust
+/// still gates it exactly like Kafka until its own emitter lands (M4).
 #[test]
-fn typed_handler_signature_passes_check_but_gates_at_build() {
+fn typed_handler_signature_builds_on_python_but_gates_on_rust() {
     let (ir, diags) = compile(TYPED_HANDLER_GATED);
     assert!(
         !diags.has_errors(),
         "a well-typed handler body must pass check: {:?}",
         diags.codes()
     );
-    let ir = ir.expect("gated program still produces IR");
+    let ir = ir.expect("well-typed program produces IR");
 
     for backend in backends() {
-        let err = ciac_codegen::check_support(backend.as_ref(), &ir).expect_err(&format!(
-            "{} must gate a typed handler signature",
-            backend.id()
-        ));
-        let message = err.to_string();
-        assert!(
-            message.contains("StoreVideo"),
-            "{} gating error should name the unsupported handler: {message}",
-            backend.id()
-        );
+        let result = ciac_codegen::check_support(backend.as_ref(), &ir);
+        match backend.id() {
+            "python" => result.unwrap_or_else(|err| {
+                panic!("python must support a typed inline handler body: {err}")
+            }),
+            "rust" => {
+                let err = result.expect_err("rust must still gate a typed handler signature");
+                let message = err.to_string();
+                assert!(
+                    message.contains("StoreVideo"),
+                    "rust gating error should name the unsupported handler: {message}",
+                );
+            }
+            other => unreachable!("unexpected backend `{other}`"),
+        }
     }
 }
 
@@ -176,23 +181,28 @@ pipeline Upload:
 "#;
 
 /// `extern handler` (a typed signature with no body) passes `ciac check`
-/// too and is gated the same way as an inline body — a real backend
-/// would still need to emit the typed seeded-file signature (M3/M4).
+/// too; Python (M3) emits a typed stub the same way it seeds classic
+/// handlers, while Rust still gates it until M4.
 #[test]
-fn extern_handler_signature_passes_check_but_gates_at_build() {
+fn extern_handler_signature_builds_on_python_but_gates_on_rust() {
     let (ir, diags) = compile(EXTERN_HANDLER_GATED);
     assert!(
         !diags.has_errors(),
         "a well-typed extern handler must pass check: {:?}",
         diags.codes()
     );
-    let ir = ir.expect("gated program still produces IR");
+    let ir = ir.expect("well-typed program produces IR");
 
     for backend in backends() {
-        ciac_codegen::check_support(backend.as_ref(), &ir).expect_err(&format!(
-            "{} must gate an extern handler signature",
-            backend.id()
-        ));
+        let result = ciac_codegen::check_support(backend.as_ref(), &ir);
+        match backend.id() {
+            "python" => result
+                .unwrap_or_else(|err| panic!("python must support an extern handler stub: {err}")),
+            "rust" => {
+                result.expect_err("rust must still gate an extern handler signature");
+            }
+            other => unreachable!("unexpected backend `{other}`"),
+        }
     }
 }
 

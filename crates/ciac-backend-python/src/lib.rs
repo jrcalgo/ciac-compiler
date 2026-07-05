@@ -18,6 +18,8 @@
 //! running: database, cache, and queue clients are created lazily, so the
 //! generated smoke tests pass on a bare checkout.
 
+mod lower;
+
 use ciac_codegen::model as context;
 use ciac_codegen::{Backend, BackendError, GenOptions, GeneratedProject};
 use ciac_ir::{Component, NormalizedIr};
@@ -39,16 +41,13 @@ impl Backend for PythonBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet, and neither does a v0.7 typed
-        // handler signature (`extern` or inline body) — the typed HIR
-        // exists (v0.7 M2) but no emitter walks it yet (M3/M4).
+        // Kafka has no generator yet. v0.7 typed handler signatures
+        // (`extern` or inline body) graduated in M3 — `lower.rs` walks
+        // the HIR directly; Rust's own gate for them stays until M4.
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
-                ..
-            } | Component::Service {
-                signature: Some(_),
                 ..
             }
         )
@@ -74,7 +73,7 @@ impl Backend for PythonBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
 
         if model.multi {
@@ -116,6 +115,7 @@ impl Backend for PythonBackend {
 /// instead of per service.
 fn emit_service(
     env: &minijinja::Environment<'_>,
+    ir: &NormalizedIr,
     ctx: &context::Ctx,
     multi: bool,
     prefix: &str,
@@ -200,7 +200,7 @@ fn emit_service(
     if !ctx.records.is_empty() {
         project.add_file(at("app/schemas.py"), render("schemas.py.j2", empty())?);
     }
-    if !ctx.resources.is_empty() {
+    if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
         project.add_file(at("app/models.py"), render("models.py.j2", empty())?);
     }
 
@@ -226,7 +226,27 @@ fn emit_service(
         );
     }
 
-    if !ctx.services.is_empty() || !ctx.resources.is_empty() {
+    // v0.7 typed handlers (M3): the class shape (`class_name`, a
+    // `session`/`cache`/extras constructor, `async def handle(..)`)
+    // mirrors classic handlers so pipeline call sites need no changes.
+    // Inline bodies lower straight from the HIR and are compiler-owned;
+    // `extern` gets a typed stub in `app/services/` like classic
+    // handlers, since it's the same "implement this yourself" contract.
+    let typed_handlers: Vec<(String, &ciac_ir::HandlerBody)> = ctx
+        .typed_handlers
+        .iter()
+        .filter_map(|id| match &ir.node(*id).component {
+            Component::Service {
+                name,
+                signature: Some(hir),
+            } => Some((name.clone(), hir)),
+            _ => None,
+        })
+        .collect();
+    let has_extern_handler = typed_handlers.iter().any(|(_, hir)| hir.body.is_none());
+    let has_inline_handler = typed_handlers.iter().any(|(_, hir)| hir.body.is_some());
+
+    if !ctx.services.is_empty() || !ctx.resources.is_empty() || has_extern_handler {
         project.add_file(
             at("app/services/__init__.py"),
             "\"\"\"Business-logic handlers. This is where your code goes.\"\"\"\n",
@@ -243,6 +263,29 @@ fn emit_service(
             at(&format!("app/services/{}.py", resource.store_module)),
             render("resource_store.py.j2", context! { resource => resource })?,
         );
+    }
+    if has_inline_handler {
+        project.add_file(
+            at("app/logic/__init__.py"),
+            "\"\"\"Compiler-owned typed-handler logic, lowered from `.ciac` handler \
+             bodies. Regenerated on every build; business logic lives in the \
+             `.ciac` source, not here.\"\"\"\n",
+        );
+    }
+    for (name, hir) in &typed_handlers {
+        let handler = lower::render(ir, name, hir);
+        let content = render(
+            "logic.py.j2",
+            context! { handler => minijinja::Value::from_serialize(&handler) },
+        )?;
+        if hir.body.is_some() {
+            project.add_file(at(&format!("app/logic/{}.py", handler.module)), content);
+            if let Some(test) = lower::render_test(ir, hir, &handler) {
+                project.add_file(at(&format!("tests/test_logic_{}.py", handler.module)), test);
+            }
+        } else {
+            project.add_seeded_file(at(&format!("app/services/{}.py", handler.module)), content);
+        }
     }
 
     if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {

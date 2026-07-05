@@ -86,8 +86,27 @@ pub struct Ctx {
     pub consumers: Vec<ConsumerCtx>,
     pub services: Vec<ServiceCtx>,
     pub resources: Vec<ResourceCtx>,
+    /// `table <Name>: <Record>;` declarations: one SQLAlchemy model per
+    /// entry, registered on the same `Base` as CRUD resources so
+    /// `create_schema()` picks it up with no migration-specific work.
+    pub tables: Vec<TableCtx>,
+    /// v0.7 typed handlers (inline body or `extern`) owned by this
+    /// service, identified by node id — see the comment at their build
+    /// site for why they aren't a `ServiceCtx`.
+    pub typed_handlers: Vec<NodeId>,
     /// Downstream services invoked via `call`, one typed client each.
     pub call_targets: Vec<CallTargetCtx>,
+}
+
+/// A resolved `table <Name>: <Record>;` declaration, ready for a
+/// SQLAlchemy model: same field data as [`RecordCtx`], named after the
+/// table (not the record) so a record reused under several table names
+/// doesn't collide.
+#[derive(Debug, Serialize)]
+pub struct TableCtx {
+    pub class_name: String,
+    pub snake: String,
+    pub record: RecordCtx,
 }
 
 /// A resolved record type.
@@ -100,6 +119,9 @@ pub struct RecordCtx {
     /// stores a server-generated TEXT `id` primary key; when the record
     /// has one it doubles as that key, otherwise one is synthesized.
     pub has_id: bool,
+    /// `error` (v0.7) vs. plain `record`: an error record generates a
+    /// raisable exception type instead of a `BaseModel`.
+    pub is_error: bool,
     /// Precomputed SQL fragments for typed CRUD, e.g.
     /// `id, title, status` / `$1, $2, $3` / `title = $2, status = $3`.
     pub select_cols: String,
@@ -379,6 +401,10 @@ pub struct HandlerRef {
     pub class_name: String,
     /// Module name, e.g. `store_video`.
     pub module: String,
+    /// Package the module lives under: `services` for classic/`extern`
+    /// handlers (seeded, user-owned), `logic` for v0.7 inline typed
+    /// handlers (compiler-owned, lowered from the HIR).
+    pub py_package: &'static str,
     pub needs_db: bool,
     pub needs_cache: bool,
     pub bindings: Vec<BindingCtx>,
@@ -811,9 +837,23 @@ fn build_scoped(
         })
         .collect();
 
+    let is_typed_handler = |component: &Component| {
+        matches!(
+            component,
+            Component::Service {
+                signature: Some(_),
+                ..
+            }
+        )
+    };
+
     let services = ir
         .nodes_of_kind(NodeKind::Service)
-        .filter(|s| owned_by(s.service, sid) && !resource_services.contains(&s.id))
+        .filter(|s| {
+            owned_by(s.service, sid)
+                && !resource_services.contains(&s.id)
+                && !is_typed_handler(&s.component)
+        })
         .map(|service| {
             let name = service.component.name().unwrap_or_default().to_owned();
             let bindings = bindings_of(ir, service.id);
@@ -830,6 +870,18 @@ fn build_scoped(
                 class_name: name,
             }
         })
+        .collect();
+
+    // v0.7 typed handlers (inline body or `extern`): the classic
+    // `ServiceCtx` shape doesn't fit a real param/return signature, so
+    // backends that support them (Python, M3) lower the raw HIR
+    // themselves via this node list; backends that don't (Rust, until
+    // M4) never see them here since `check_support` gates the build
+    // first.
+    let typed_handlers: Vec<NodeId> = ir
+        .nodes_of_kind(NodeKind::Service)
+        .filter(|s| owned_by(s.service, sid) && is_typed_handler(&s.component))
+        .map(|s| s.id)
         .collect();
 
     let resources: Vec<ResourceCtx> = ir
@@ -944,6 +996,14 @@ fn build_scoped(
         ontology_instances(ir, NodeKind::ExternalHttp, sid, &container_prefix);
 
     let records: Vec<RecordCtx> = ir.records().map(|(id, _)| build_record(ir, id)).collect();
+    let tables: Vec<TableCtx> = ir
+        .tables()
+        .map(|(_, table)| TableCtx {
+            class_name: table.name.clone(),
+            snake: table.name.to_snake_case(),
+            record: build_record(ir, table.record),
+        })
+        .collect();
     let all_fields = |records: &[RecordCtx]| -> Vec<String> {
         records
             .iter()
@@ -1007,6 +1067,8 @@ fn build_scoped(
         records_use_json: field_types.iter().any(|t| t.contains("Any")),
         records_use_enum: field_types.iter().any(|t| t.starts_with("Literal")),
         records,
+        tables,
+        typed_handlers,
         apis,
         channels,
         workers,
@@ -1328,7 +1390,7 @@ fn extra_dep(binding: &BindingCtx) -> Option<ExtraDepCtx> {
     })
 }
 
-fn extras_of(bindings: &[BindingCtx]) -> Vec<ExtraDepCtx> {
+pub fn extras_of(bindings: &[BindingCtx]) -> Vec<ExtraDepCtx> {
     bindings.iter().filter_map(extra_dep).collect()
 }
 
@@ -1350,14 +1412,15 @@ fn extra_imports_of(handlers: &[HandlerRef]) -> Vec<ExtraImportCtx> {
 
 /// Resolved capability access for a handler/resource, derived from its
 /// binding edges.
-struct Access {
-    db: Option<SessionCtx>,
-    cache_expr: Option<String>,
-    rust_db_field: Option<String>,
-    rust_cache_field: Option<String>,
+#[derive(Debug)]
+pub struct Access {
+    pub db: Option<SessionCtx>,
+    pub cache_expr: Option<String>,
+    pub rust_db_field: Option<String>,
+    pub rust_cache_field: Option<String>,
 }
 
-fn access_of(bindings: &[BindingCtx]) -> Access {
+pub fn access_of(bindings: &[BindingCtx]) -> Access {
     let find = |kind: &str| bindings.iter().find(|b| b.kind == kind);
     let db = find("db").map(|b| {
         let is_default = b.name == "default";
@@ -1488,7 +1551,24 @@ fn step_ctxs(
 fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     let node = ir.node(id);
     let name = node.component.name().unwrap_or_default().to_owned();
-    let bindings = bindings_of(ir, id);
+    // A v0.7 typed handler has no `DataFlow` binding edges — its
+    // capability usage lives in the HIR's `VerbCall`s instead. An inline
+    // body lives under `app/logic/` (compiler-owned); `extern` gets a
+    // seeded stub under `app/services/`, same as classic handlers.
+    let (bindings, py_package) = match &node.component {
+        Component::Service {
+            signature: Some(hir),
+            ..
+        } => (
+            hir_bindings(ir, hir),
+            if hir.body.is_some() {
+                "logic"
+            } else {
+                "services"
+            },
+        ),
+        _ => (bindings_of(ir, id), "services"),
+    };
     let access = access_of(&bindings);
     let extras = extras_of(&bindings);
     let mut args = Vec::new();
@@ -1503,6 +1583,7 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     }
     HandlerRef {
         module: name.to_snake_case(),
+        py_package,
         class_name: name,
         needs_db: access.db.is_some(),
         needs_cache: access.cache_expr.is_some(),
@@ -1691,7 +1772,7 @@ fn rust_variant(
     ))
 }
 
-fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
+pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
     let record = ir.record(id);
     let mut fields = Vec::new();
     let mut enums = Vec::new();
@@ -1769,6 +1850,7 @@ fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
         name: record.name.clone(),
         snake: record.name.to_snake_case(),
         has_id: fields.iter().any(|f| f.name == "id"),
+        is_error: record.kind == ciac_ir::RecordKind::Error,
         select_cols,
         insert_placeholders,
         update_assignments,
@@ -1780,19 +1862,33 @@ fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
 fn bindings_of(ir: &NormalizedIr, node: NodeId) -> Vec<BindingCtx> {
     ir.edges_from(node)
         .filter(|e| e.kind == EdgeKind::DataFlow)
-        .filter_map(|e| {
-            let component = &ir.node(e.to).component;
-            let kind = binding_kind(component.kind())?;
-            let name = component.name()?.to_owned();
-            let snake = name.to_snake_case();
-            Some(BindingCtx {
-                py_attr: format!("{}_{}", kind, snake),
-                rust_field: format!("{}_{}", kind, snake),
-                kind: kind.to_owned(),
-                name,
-                snake,
-            })
-        })
+        .filter_map(|e| binding_ctx_for(&ir.node(e.to).component))
+        .collect()
+}
+
+fn binding_ctx_for(component: &Component) -> Option<BindingCtx> {
+    let kind = binding_kind(component.kind())?;
+    let name = component.name()?.to_owned();
+    let snake = name.to_snake_case();
+    Some(BindingCtx {
+        py_attr: format!("{}_{}", kind, snake),
+        rust_field: format!("{}_{}", kind, snake),
+        kind: kind.to_owned(),
+        name,
+        snake,
+    })
+}
+
+/// The same shape as [`bindings_of`], but for a v0.7 typed handler: since
+/// the HIR has no `DataFlow` edges (verb calls resolve straight to a
+/// capability instance node during type-checking), the bindings are
+/// derived by walking the body for `VerbCall`s instead of the graph for
+/// edges. Feeding the result through [`access_of`]/[`extras_of`] as usual
+/// means typed and classic handlers share every downstream naming rule.
+pub fn hir_bindings(ir: &NormalizedIr, body: &ciac_ir::HandlerBody) -> Vec<BindingCtx> {
+    body.capability_nodes()
+        .iter()
+        .filter_map(|id| binding_ctx_for(&ir.node(*id).component))
         .collect()
 }
 

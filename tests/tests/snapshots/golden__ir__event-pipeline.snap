@@ -70,7 +70,8 @@ expression: json
       "id": 6,
       "service": 0,
       "kind": "Service",
-      "name": "Validate"
+      "name": "Validate",
+      "signature": null
     },
     {
       "id": 7,
@@ -84,13 +85,15 @@ expression: json
       "id": 8,
       "service": 0,
       "kind": "Service",
-      "name": "Enrich"
+      "name": "Enrich",
+      "signature": null
     },
     {
       "id": 9,
       "service": 0,
       "kind": "Service",
-      "name": "Store"
+      "name": "Store",
+      "signature": null
     }
   ],
   "edges": [
@@ -168,6 +171,7 @@ expression: json
     }
   ],
   "records": [],
+  "tables": [],
   "pipelines": [
     {
       "name": "Submit",

@@ -1,0 +1,15 @@
+// expect: CIAC0043
+service X;
+
+use {
+    cache Redis;
+}
+
+record Video {
+    id: Uuid;
+}
+
+handler F(v: Video) -> Video {
+    cache.delete("key");
+    return v;
+}

@@ -1,0 +1,14 @@
+// expect: CIAC0021
+service X;
+
+record Video {
+    id: Uuid;
+    status: enum { Pending, Ready, Failed };
+}
+
+handler F(v: Video) -> Video {
+    let described = match v.status {
+        Ready -> { return v; }
+    };
+    return described;
+}

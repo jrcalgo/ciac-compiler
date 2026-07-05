@@ -15,6 +15,7 @@
 
 mod build;
 pub mod passes;
+mod typeck;
 
 use ciac_diagnostics::Diagnostics;
 use ciac_ir::NormalizedIr;

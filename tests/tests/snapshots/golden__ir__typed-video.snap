@@ -104,25 +104,29 @@ expression: json
       "id": 10,
       "service": 0,
       "kind": "Service",
-      "name": "ClipStore"
+      "name": "ClipStore",
+      "signature": null
     },
     {
       "id": 11,
       "service": 0,
       "kind": "Service",
-      "name": "StoreVideo"
+      "name": "StoreVideo",
+      "signature": null
     },
     {
       "id": 12,
       "service": 0,
       "kind": "Service",
-      "name": "Transcode"
+      "name": "Transcode",
+      "signature": null
     },
     {
       "id": 13,
       "service": 0,
       "kind": "Service",
-      "name": "Notify"
+      "name": "Notify",
+      "signature": null
     }
   ],
   "edges": [
@@ -280,9 +284,11 @@ expression: json
             ]
           }
         }
-      ]
+      ],
+      "kind": "Data"
     }
   ],
+  "tables": [],
   "pipelines": [
     {
       "name": "Upload",

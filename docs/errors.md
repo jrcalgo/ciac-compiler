@@ -45,6 +45,13 @@ test.
 | CIAC0036 | error | output directory has no manifest |
 | CIAC0037 | error | invalid cron expression |
 | CIAC0038 | error | inline handler bodies are not implemented yet |
+| CIAC0039 | error | unknown name in handler body |
+| CIAC0040 | error | type mismatch in handler body |
+| CIAC0041 | error | unknown record field |
+| CIAC0042 | error | unknown table |
+| CIAC0043 | error | invalid capability verb call |
+| CIAC0044 | error | verb on unbound capability |
+| CIAC0045 | warning | unused let binding |
 
 ## Notes
 
@@ -103,8 +110,23 @@ test.
   manifest; use a clean directory, `--force`, or `--adopt`.
 - **CIAC0037** means a job schedule is not a valid five-field cron
   expression.
-- **CIAC0038** means a handler uses the v0.7 typed signature or inline
-  body syntax (`handler Name(..) -> Type { .. }` or
-  `extern handler Name(..) -> Type;`); only the classic
-  `handler Name { capability: instance; .. }` binding form is implemented
-  so far — the typed HIR and emitters land in a later v0.7 milestone.
+- **CIAC0038** was v0.7 M1's blanket "not implemented yet" gate for every
+  typed-signature or inline-body handler. Superseded by real type
+  checking as of M2 (CIAC0039-CIAC0045) — a handler that type-checks now
+  passes `ciac check`; this code no longer triggers for well-formed
+  programs, but stays published per the append-only rule.
+- **CIAC0039** means an identifier in a handler body doesn't resolve to a
+  parameter or an in-scope `let` binding.
+- **CIAC0040** means an expression's type doesn't match what's required:
+  mismatched operator operands, disagreeing `if`/`match` branches, a
+  `return` that doesn't match the declared return type, or a wrongly
+  typed record field value.
+- **CIAC0041** means a field access, record construction, or functional
+  update names a field the record doesn't have.
+- **CIAC0042** means a `db.*` verb's table argument isn't a declared
+  `table <Name>: <Record>;`.
+- **CIAC0043** means a capability verb call isn't in that capability's
+  closed verb set, or is called with the wrong arity/argument types.
+- **CIAC0044** means a verb is called on a capability kind with no bound
+  instance in the enclosing service; add it to the `use { .. }` block.
+- **CIAC0045** means a `let` binding is never read; remove it.

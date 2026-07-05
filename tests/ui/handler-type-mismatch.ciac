@@ -1,0 +1,11 @@
+// expect: CIAC0040
+service X;
+
+record Video {
+    id: Uuid;
+    title: String;
+}
+
+handler F(v: Video) -> Video {
+    return v.title;
+}

@@ -102,9 +102,11 @@ expression: json
             ]
           }
         }
-      ]
+      ],
+      "kind": "Data"
     }
   ],
+  "tables": [],
   "pipelines": [
     {
       "name": "Complete",

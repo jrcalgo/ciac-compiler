@@ -3,6 +3,7 @@
 //! so backends can match exhaustively and unsupported combinations are
 //! caught at compile time of the compiler itself.
 
+use crate::hir::HandlerBody;
 use crate::record::RecordId;
 use serde::Serialize;
 
@@ -159,7 +160,12 @@ pub enum NodeKind {
 
 /// A node payload: an architectural component with its resolved
 /// configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `Eq` is deliberately not derived: `Service.signature` can hold a
+/// `HandlerBody` containing `f64` literals (`FloatLit`), and `f64` has no
+/// total equality (`NaN != NaN`). `PartialEq` (used by tests and
+/// `assert_eq!`) is unaffected.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind")]
 pub enum Component {
     /// An HTTP API surface (one router / group of endpoints).
@@ -172,6 +178,14 @@ pub enum Component {
     /// A business-logic handler invoked from pipelines.
     Service {
         name: String,
+        /// `None` is the classic binding-only handler (v0.1-v0.6):
+        /// capability dependencies flow through `EdgeKind::DataFlow`
+        /// edges, unaffected by this field. `Some` is a v0.7 typed
+        /// handler — either `extern` (`HandlerBody::body: None`) or an
+        /// inline body that type-checked successfully. No backend
+        /// implements either yet (see `Backend::supports`), so this is
+        /// always build-gated with `CIAC0011` until a later milestone.
+        signature: Option<HandlerBody>,
     },
     /// An asynchronous consumer of queue messages.
     Worker {
@@ -274,7 +288,7 @@ impl Component {
     pub fn name(&self) -> Option<&str> {
         match self {
             Component::Api { name, .. }
-            | Component::Service { name }
+            | Component::Service { name, .. }
             | Component::Worker { name, .. }
             | Component::Job { name, .. }
             | Component::Channel { name, .. }
@@ -298,7 +312,7 @@ impl Component {
     pub fn label(&self) -> String {
         match self {
             Component::Api { name, .. } => format!("api {name}"),
-            Component::Service { name } => format!("service {name}"),
+            Component::Service { name, .. } => format!("service {name}"),
             Component::Worker { name, .. } => format!("worker {name}"),
             Component::Job { name, .. } => format!("job {name}"),
             Component::Channel { name, .. } => format!("channel {name}"),

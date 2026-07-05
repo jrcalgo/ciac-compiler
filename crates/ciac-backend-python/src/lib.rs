@@ -39,11 +39,16 @@ impl Backend for PythonBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet.
+        // Kafka has no generator yet, and neither does a v0.7 typed
+        // handler signature (`extern` or inline body) — the typed HIR
+        // exists (v0.7 M2) but no emitter walks it yet (M3/M4).
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
+                ..
+            } | Component::Service {
+                signature: Some(_),
                 ..
             }
         )

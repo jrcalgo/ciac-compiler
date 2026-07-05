@@ -359,12 +359,24 @@ pub enum Stmt {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `publish <Stream>(<value>);` — publish a value to a named stream
+    /// from inside a handler body (v0.7 M2), reusing the same stream
+    /// resolution and payload-type checking as the pipeline-level
+    /// `publish <Stream>` step.
+    Publish {
+        stream: Ident,
+        value: Expr,
+        span: Span,
+    },
 }
 
 impl Stmt {
     pub fn span(&self) -> Span {
         match self {
-            Stmt::Let { span, .. } | Stmt::Return { span, .. } | Stmt::Fail { span, .. } => *span,
+            Stmt::Let { span, .. }
+            | Stmt::Return { span, .. }
+            | Stmt::Fail { span, .. }
+            | Stmt::Publish { span, .. } => *span,
             Stmt::Expr(expr) => expr.span(),
         }
     }

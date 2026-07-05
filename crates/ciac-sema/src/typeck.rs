@@ -1,0 +1,1207 @@
+//! v0.7 M2: the handler-body expression type checker.
+//!
+//! Walks `ciac_syntax::ast::{Expr, Stmt}` (pure syntax, per that module's
+//! own contract: no name resolution, no types) and lowers it into
+//! `ciac_ir::hir` — every name resolved to a local slot, every verb
+//! resolved to `(capability instance, operation, table)`, every
+//! expression annotated with its type.
+//!
+//! Implemented as a second `impl Builder` block (see `build.rs`) so it
+//! reuses `resolve_record`/`resolve_stream`/`default_capability`/
+//! `check_match_labels`/etc. exactly as pipeline-step resolution does,
+//! instead of re-deriving capability and type resolution behind a
+//! narrower free-function API.
+//!
+//! Closed verb set for this milestone (07UpdatePlan.md's own stated
+//! risk: "scope creep is the failure mode"): `db.insert`/`db.get`,
+//! `cache.get`/`cache.set`, `object_store.put`/`object_store.get`, plus
+//! the niladic builtins `Uuid.new()`/`Timestamp.now()`. `email`/`search`/
+//! `external_http`/`query` are not implemented; adding one is a new arm
+//! in `check_verb_call`, not a redesign.
+//!
+//! Error recovery is deliberately simple: the first error inside a
+//! handler body aborts type checking for that handler (via `?`
+//! propagation) rather than attempting statement-level resynchronization
+//! like the parser does. Independent handlers/declarations are unaffected
+//! by one broken handler.
+
+use crate::build::Builder;
+use ciac_diagnostics::{Diagnostic, ErrorCode, Span};
+use ciac_ir::{
+    Builtin, EdgeKind, FieldType, HandlerBody, HirArm, HirExpr, HirStmt, HirType, NodeKind,
+    RecordId, RecordKind, Verb,
+};
+use ciac_syntax::ast::{self, ArmLabel, Expr, FieldInit, HandlerDecl, Ident, Stmt, TypeExpr};
+use std::collections::HashMap;
+
+/// Per-handler-body name resolution: a flat, monotonically-growing local
+/// table (indexed by slot, matching `HandlerBody::locals`) with a stack
+/// of block scopes for `let`'s block-scoping.
+struct Scope {
+    return_ty: HirType,
+    locals: Vec<HirType>,
+    names: Vec<String>,
+    spans: Vec<Span>,
+    is_let: Vec<bool>,
+    used: Vec<bool>,
+    frames: Vec<HashMap<String, u32>>,
+}
+
+impl Scope {
+    fn new(return_ty: HirType) -> Self {
+        Self {
+            return_ty,
+            locals: Vec::new(),
+            names: Vec::new(),
+            spans: Vec::new(),
+            is_let: Vec::new(),
+            used: Vec::new(),
+            frames: vec![HashMap::new()],
+        }
+    }
+
+    fn declare(&mut self, name: &str, ty: HirType, is_let: bool, span: Span) -> u32 {
+        let slot = self.locals.len() as u32;
+        self.locals.push(ty);
+        self.names.push(name.to_owned());
+        self.spans.push(span);
+        self.is_let.push(is_let);
+        self.used.push(false);
+        self.frames
+            .last_mut()
+            .expect("at least one frame")
+            .insert(name.to_owned(), slot);
+        slot
+    }
+
+    fn lookup(&mut self, name: &str) -> Option<(u32, HirType)> {
+        for frame in self.frames.iter().rev() {
+            if let Some(&slot) = frame.get(name) {
+                self.used[slot as usize] = true;
+                return Some((slot, self.locals[slot as usize].clone()));
+            }
+        }
+        None
+    }
+
+    fn push_frame(&mut self) {
+        self.frames.push(HashMap::new());
+    }
+
+    fn pop_frame(&mut self) {
+        self.frames.pop();
+    }
+}
+
+/// A value's type, as `FieldType` (the surface/record-field type set)
+/// mapped onto the HIR's superset.
+fn field_type_to_hir(ty: &FieldType) -> HirType {
+    match ty {
+        FieldType::Str => HirType::Str,
+        FieldType::Int => HirType::Int,
+        FieldType::Float => HirType::Float,
+        FieldType::Bool => HirType::Bool,
+        FieldType::Uuid => HirType::Uuid,
+        FieldType::Timestamp => HirType::Timestamp,
+        FieldType::Json => HirType::Json,
+        FieldType::Enum { variants } => HirType::Enum {
+            variants: variants.clone(),
+        },
+    }
+}
+
+/// Whether a type can appear on either side of `+` when the other side is
+/// `Str` (implicit stringification, e.g. `"videos/" + v.id`).
+fn is_stringifiable(ty: &HirType) -> bool {
+    matches!(
+        ty,
+        HirType::Str
+            | HirType::Int
+            | HirType::Float
+            | HirType::Bool
+            | HirType::Uuid
+            | HirType::Timestamp
+            | HirType::Enum { .. }
+    )
+}
+
+/// Whether executing `stmt` never falls through to whatever follows it —
+/// directly (`return`/`fail`) or because its own value already diverges
+/// (e.g. `let x = <match where every arm returns>;`).
+fn stmt_diverges(stmt: &HirStmt) -> bool {
+    match stmt {
+        HirStmt::Return(_) | HirStmt::Fail { .. } => true,
+        HirStmt::Let { value, .. } | HirStmt::Expr(value) => value.ty() == HirType::Never,
+        HirStmt::Publish { .. } => false,
+    }
+}
+
+impl Builder<'_> {
+    /// Type-checks a v0.7 handler declaration (inline body or `extern`)
+    /// into a [`HandlerBody`]. `decl.body.is_none() && !decl.is_extern`
+    /// (the classic binding-only form) must not reach this function.
+    pub(crate) fn check_handler_body(&mut self, decl: &HandlerDecl) -> Option<HandlerBody> {
+        let return_ty = match &decl.return_ty {
+            Some(ty) => self.resolve_hir_type(ty)?,
+            None => HirType::Unit,
+        };
+        let mut scope = Scope::new(return_ty.clone());
+        let mut params = Vec::with_capacity(decl.params.len());
+        for param in &decl.params {
+            let ty = self.resolve_hir_type(&param.ty)?;
+            params.push((param.name.text.clone(), ty.clone()));
+            scope.declare(&param.name.text, ty, false, param.span);
+        }
+        let body = match &decl.body {
+            None => None,
+            Some(stmts) => {
+                let (hir_stmts, _tail_ty) = self.check_block(stmts, &mut scope)?;
+                Some(hir_stmts)
+            }
+        };
+        for i in 0..scope.locals.len() {
+            if scope.is_let[i] && !scope.used[i] {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnusedLet,
+                        format!("`{}` is never read", scope.names[i]),
+                    )
+                    .with_label(scope.spans[i], "unused binding"),
+                );
+            }
+        }
+        Some(HandlerBody {
+            params,
+            return_ty,
+            locals: scope.locals,
+            body,
+        })
+    }
+
+    /// Resolves a surface `TypeExpr` (a param/return type) to a
+    /// [`HirType`]: a primitive, an inline enum, or a declared record.
+    fn resolve_hir_type(&mut self, ty: &TypeExpr) -> Option<HirType> {
+        match ty {
+            TypeExpr::Named(ident) => {
+                if let Some(ft) = FieldType::parse(&ident.text) {
+                    return Some(field_type_to_hir(&ft));
+                }
+                match self.graph.find_record(&ident.text) {
+                    Some(rid) => Some(HirType::Record(rid)),
+                    None => {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::UnknownType,
+                                format!("unknown type `{}`", ident.text),
+                            )
+                            .with_label(ident.span, "not a known type or record"),
+                        );
+                        None
+                    }
+                }
+            }
+            TypeExpr::Enum { variants, .. } => Some(HirType::Enum {
+                variants: variants.iter().map(|v| v.text.clone()).collect(),
+            }),
+        }
+    }
+
+    /// Type-checks a `{ <stmts> }` block. Returns the block's own value
+    /// type: `HirType::Never` means every path through it diverges
+    /// (`return`/`fail`, or a `let`/expression statement whose value
+    /// itself already diverges) — once any statement diverges, the rest
+    /// of the block is unreachable and doesn't affect the block's type.
+    fn check_block(
+        &mut self,
+        stmts: &[Stmt],
+        scope: &mut Scope,
+    ) -> Option<(Vec<HirStmt>, HirType)> {
+        let mut hir_stmts = Vec::with_capacity(stmts.len());
+        let mut diverges = false;
+        for stmt in stmts {
+            let hir_stmt = self.check_stmt(stmt, scope)?;
+            if stmt_diverges(&hir_stmt) {
+                diverges = true;
+            }
+            hir_stmts.push(hir_stmt);
+        }
+        let tail = if diverges {
+            HirType::Never
+        } else {
+            match hir_stmts.last() {
+                Some(HirStmt::Expr(e)) => e.ty(),
+                _ => HirType::Unit,
+            }
+        };
+        Some((hir_stmts, tail))
+    }
+
+    fn check_stmt(&mut self, stmt: &Stmt, scope: &mut Scope) -> Option<HirStmt> {
+        match stmt {
+            Stmt::Let { name, value, span } => {
+                let value = self.check_expr(value, scope)?;
+                let ty = value.ty();
+                let slot = scope.declare(&name.text, ty, true, *span);
+                Some(HirStmt::Let { slot, value })
+            }
+            Stmt::Expr(expr) => Some(HirStmt::Expr(self.check_expr(expr, scope)?)),
+            Stmt::Return { value: None, span } => {
+                if HirType::unify(scope.return_ty.clone(), HirType::Unit).is_err() {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "handler returns `{:?}` but this `return;` yields nothing",
+                                scope.return_ty
+                            ),
+                        )
+                        .with_label(*span, "bare return here"),
+                    );
+                    return None;
+                }
+                Some(HirStmt::Return(None))
+            }
+            Stmt::Return {
+                value: Some(expr),
+                span,
+            } => {
+                let hir = self.check_expr(expr, scope)?;
+                if HirType::unify(hir.ty(), scope.return_ty.clone()).is_err() {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`return` yields `{:?}` but the handler declares `{:?}`",
+                                hir.ty(),
+                                scope.return_ty
+                            ),
+                        )
+                        .with_label(*span, "mismatched return type"),
+                    );
+                    return None;
+                }
+                Some(HirStmt::Return(Some(hir)))
+            }
+            Stmt::Fail { error, args, span } => {
+                let record_id = self.resolve_record(error)?;
+                let record = self.graph.record(record_id);
+                if record.kind != RecordKind::Error {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`{}` is a `record`, not an `error` — `fail` requires an \
+                                 `error {{ .. }}` declaration",
+                                error.text
+                            ),
+                        )
+                        .with_label(error.span, "not an error record"),
+                    );
+                    return None;
+                }
+                let fields = record.fields.clone();
+                if args.len() != fields.len() {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`fail {}` takes {} argument(s), found {}",
+                                error.text,
+                                fields.len(),
+                                args.len()
+                            ),
+                        )
+                        .with_label(*span, "argument count mismatch"),
+                    );
+                    return None;
+                }
+                let mut hir_args = Vec::with_capacity(args.len());
+                for (arg, field) in args.iter().zip(&fields) {
+                    let hir_arg = self.check_expr(arg, scope)?;
+                    let expected = field_type_to_hir(&field.ty);
+                    if hir_arg.ty() != expected {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::HandlerExprTypeMismatch,
+                                format!(
+                                    "`fail {}` field `{}` expects `{expected:?}`, found `{:?}`",
+                                    error.text,
+                                    field.name,
+                                    hir_arg.ty()
+                                ),
+                            )
+                            .with_label(arg.span(), "mismatched argument type"),
+                        );
+                        return None;
+                    }
+                    hir_args.push(hir_arg);
+                }
+                Some(HirStmt::Fail {
+                    error: record_id,
+                    args: hir_args,
+                })
+            }
+            Stmt::Publish {
+                stream,
+                value,
+                span,
+            } => {
+                let stream_node = self.resolve_stream(stream)?;
+                if let Some(queue) =
+                    self.require_queue(&format!("publish `{}`", stream.text), *span)
+                {
+                    self.graph.add_edge(stream_node, queue, EdgeKind::DependsOn);
+                }
+                let hir_value = self.check_expr(value, scope)?;
+                let payload = match hir_value.ty() {
+                    HirType::Record(rid) => Some(rid),
+                    _ => None,
+                };
+                self.check_publish_type(stream_node, payload, *span);
+                Some(HirStmt::Publish {
+                    stream: stream_node,
+                    value: hir_value,
+                })
+            }
+        }
+    }
+
+    /// Checks `expr`, resolving a bare identifier as an enum-variant
+    /// literal when `expected` names an enum type and the identifier
+    /// matches one of its variants and isn't a bound local — otherwise
+    /// falls back to [`Self::check_expr`]. The only two call sites that
+    /// need this (comparison RHS, record field values) pass `expected`;
+    /// everywhere else a bare enum variant has no type to resolve against
+    /// and stays an `UnknownName` error, matching the doc's examples.
+    fn check_expr_expecting(
+        &mut self,
+        expr: &Expr,
+        expected: Option<&HirType>,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        if let (Expr::Ident(ident), Some(HirType::Enum { variants })) = (expr, expected) {
+            if scope.lookup(&ident.text).is_none() && variants.contains(&ident.text) {
+                return Some(HirExpr::EnumLit {
+                    variants: variants.clone(),
+                    variant: ident.text.clone(),
+                });
+            }
+        }
+        self.check_expr(expr, scope)
+    }
+
+    fn check_expr(&mut self, expr: &Expr, scope: &mut Scope) -> Option<HirExpr> {
+        match expr {
+            Expr::Ident(ident) => match scope.lookup(&ident.text) {
+                Some((slot, ty)) => Some(HirExpr::Local { slot, ty }),
+                None => {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::UnknownName,
+                            format!("unknown name `{}`", ident.text),
+                        )
+                        .with_label(ident.span, "not a parameter or `let` binding in scope"),
+                    );
+                    None
+                }
+            },
+            Expr::Number { text, span } => {
+                if text.contains('.') {
+                    match text.parse::<f64>() {
+                        Ok(v) => Some(HirExpr::FloatLit(v)),
+                        Err(_) => {
+                            self.diags.push(
+                                Diagnostic::new(
+                                    ErrorCode::HandlerExprTypeMismatch,
+                                    format!("`{text}` is not a valid float literal"),
+                                )
+                                .with_label(*span, "invalid number"),
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    match text.parse::<i64>() {
+                        Ok(v) => Some(HirExpr::IntLit(v)),
+                        Err(_) => {
+                            self.diags.push(
+                                Diagnostic::new(
+                                    ErrorCode::HandlerExprTypeMismatch,
+                                    format!("`{text}` is not a valid integer literal"),
+                                )
+                                .with_label(*span, "invalid number"),
+                            );
+                            None
+                        }
+                    }
+                }
+            }
+            Expr::Str { value, .. } => Some(HirExpr::StrLit(value.clone())),
+            Expr::Bool { value, .. } => Some(HirExpr::BoolLit(*value)),
+            Expr::FieldAccess { base, field, span } => {
+                let base_hir = self.check_expr(base, scope)?;
+                let HirType::Record(rid) = base_hir.ty() else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!("field access on a non-record value (`{:?}`)", base_hir.ty()),
+                        )
+                        .with_label(*span, "not a record"),
+                    );
+                    return None;
+                };
+                let record = self.graph.record(rid);
+                let Some(f) = record.fields.iter().find(|f| f.name == field.text) else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::UnknownRecordField,
+                            format!("record `{}` has no field `{}`", record.name, field.text),
+                        )
+                        .with_label(field.span, "unknown field"),
+                    );
+                    return None;
+                };
+                let ty = field_type_to_hir(&f.ty);
+                Some(HirExpr::FieldAccess {
+                    base: Box::new(base_hir),
+                    field: field.text.clone(),
+                    ty,
+                })
+            }
+            Expr::Index { base, index, span } => {
+                let base_hir = self.check_expr(base, scope)?;
+                if base_hir.ty() != HirType::Json {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            "`[..]` indexing is only valid on `Json` values",
+                        )
+                        .with_label(*span, "not a Json value"),
+                    );
+                    return None;
+                }
+                let index_hir = self.check_expr(index, scope)?;
+                if index_hir.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            "a `Json` index must be a string key",
+                        )
+                        .with_label(*span, "expected a string"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::Index {
+                    base: Box::new(base_hir),
+                    index: Box::new(index_hir),
+                })
+            }
+            Expr::Call { callee, args, span } => self.check_call(callee, args, *span, scope),
+            Expr::RecordCons { base, fields, span } => {
+                self.check_record_cons(base, fields, *span, scope)
+            }
+            Expr::Binary { op, lhs, rhs, span } => self.check_binary(*op, lhs, rhs, *span, scope),
+            Expr::Unary { op, expr, span } => self.check_unary(*op, expr, *span, scope),
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                span,
+            } => self.check_if(cond, then_branch, else_branch.as_deref(), *span, scope),
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.check_match_expr(scrutinee, arms, *span, scope),
+        }
+    }
+
+    /// `<callee>(<args>)`: either a capability verb call
+    /// (`db.insert(..)`) or a niladic builtin (`Uuid.new()`).
+    fn check_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        let Expr::FieldAccess { base, field, .. } = callee else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidVerbCall,
+                    "calls must be `receiver.method(..)`",
+                )
+                .with_label(span, "not a capability verb or builtin call"),
+            );
+            return None;
+        };
+        let Expr::Ident(recv) = base.as_ref() else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidVerbCall,
+                    "calls must be `receiver.method(..)`",
+                )
+                .with_label(span, "not a capability verb or builtin call"),
+            );
+            return None;
+        };
+        match (recv.text.as_str(), field.text.as_str()) {
+            ("Uuid", "new") if args.is_empty() => {
+                return Some(HirExpr::BuiltinCall(Builtin::UuidNew))
+            }
+            ("Timestamp", "now") if args.is_empty() => {
+                return Some(HirExpr::BuiltinCall(Builtin::TimestampNow))
+            }
+            ("Uuid", "new") | ("Timestamp", "now") => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::InvalidVerbCall,
+                        format!("`{}.{}` takes no arguments", recv.text, field.text),
+                    )
+                    .with_label(span, "unexpected arguments"),
+                );
+                return None;
+            }
+            _ => {}
+        }
+        let Some(kind) = crate::build::binding_kind(&recv.text) else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownName,
+                    format!("`{}` is not a capability or builtin", recv.text),
+                )
+                .with_label(recv.span, "unknown receiver"),
+            );
+            return None;
+        };
+        self.check_verb_call(kind, recv, field, args, span, scope)
+    }
+
+    /// Resolves and type-checks a capability verb call against this
+    /// milestone's closed verb set.
+    fn check_verb_call(
+        &mut self,
+        kind: NodeKind,
+        recv: &Ident,
+        verb_ident: &Ident,
+        args: &[Expr],
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        let Some(capability) =
+            self.default_capability(kind, &format!("`{}.{}`", recv.text, verb_ident.text), span)
+        else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::VerbOnUnboundCapability,
+                    format!(
+                        "`{}.{}` has no bound `{}` instance in this service",
+                        recv.text, verb_ident.text, recv.text
+                    ),
+                )
+                .with_label(span, "unbound capability")
+                .with_help(format!(
+                    "add `{} <Provider>;` to the `use {{ .. }}` block",
+                    recv.text
+                )),
+            );
+            return None;
+        };
+        let arity_error = |this: &mut Self, expected: usize| {
+            this.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidVerbCall,
+                    format!(
+                        "`{}.{}` takes {expected} argument(s), found {}",
+                        recv.text,
+                        verb_ident.text,
+                        args.len()
+                    ),
+                )
+                .with_label(span, "wrong argument count"),
+            );
+        };
+        match (kind, verb_ident.text.as_str()) {
+            (NodeKind::Database, "insert") => {
+                if args.len() != 2 {
+                    arity_error(self, 2);
+                    return None;
+                }
+                let Expr::Ident(table_ident) = &args[0] else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidVerbCall,
+                            "`db.insert` expects a table name",
+                        )
+                        .with_label(args[0].span(), "not a table name"),
+                    );
+                    return None;
+                };
+                let table_id = self.resolve_table(table_ident)?;
+                let record_id = self.graph.table(table_id).record;
+                let value = self.check_expr(&args[1], scope)?;
+                if value.ty() != HirType::Record(record_id) {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`db.insert` expects `{:?}`, found `{:?}`",
+                                HirType::Record(record_id),
+                                value.ty()
+                            ),
+                        )
+                        .with_label(args[1].span(), "mismatched value type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::DbInsert(table_id),
+                    args: vec![value],
+                    ty: HirType::Record(record_id),
+                })
+            }
+            (NodeKind::Database, "get") => {
+                if args.len() != 2 {
+                    arity_error(self, 2);
+                    return None;
+                }
+                let Expr::Ident(table_ident) = &args[0] else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidVerbCall,
+                            "`db.get` expects a table name",
+                        )
+                        .with_label(args[0].span(), "not a table name"),
+                    );
+                    return None;
+                };
+                let table_id = self.resolve_table(table_ident)?;
+                let record_id = self.graph.table(table_id).record;
+                let key = self.check_expr(&args[1], scope)?;
+                if key.ty() != HirType::Uuid {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!("`db.get` key must be `Uuid`, found `{:?}`", key.ty()),
+                        )
+                        .with_label(args[1].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::DbGet(table_id),
+                    args: vec![key],
+                    ty: HirType::Option(Box::new(HirType::Record(record_id))),
+                })
+            }
+            (NodeKind::Cache, "get") => {
+                if args.len() != 1 {
+                    arity_error(self, 1);
+                    return None;
+                }
+                let key = self.check_expr(&args[0], scope)?;
+                if key.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!("`cache.get` key must be a string, found `{:?}`", key.ty()),
+                        )
+                        .with_label(args[0].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::CacheGet,
+                    args: vec![key],
+                    ty: HirType::Option(Box::new(HirType::Json)),
+                })
+            }
+            (NodeKind::Cache, "set") => {
+                if args.len() != 2 {
+                    arity_error(self, 2);
+                    return None;
+                }
+                let key = self.check_expr(&args[0], scope)?;
+                if key.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!("`cache.set` key must be a string, found `{:?}`", key.ty()),
+                        )
+                        .with_label(args[0].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                let value = self.check_expr(&args[1], scope)?;
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::CacheSet,
+                    args: vec![key, value],
+                    ty: HirType::Unit,
+                })
+            }
+            (NodeKind::ObjectStore, "put") => {
+                if args.len() != 2 {
+                    arity_error(self, 2);
+                    return None;
+                }
+                let key = self.check_expr(&args[0], scope)?;
+                if key.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`object_store.put` key must be a string, found `{:?}`",
+                                key.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                let value = self.check_expr(&args[1], scope)?;
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::ObjectStorePut,
+                    args: vec![key, value],
+                    ty: HirType::Unit,
+                })
+            }
+            (NodeKind::ObjectStore, "get") => {
+                if args.len() != 1 {
+                    arity_error(self, 1);
+                    return None;
+                }
+                let key = self.check_expr(&args[0], scope)?;
+                if key.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`object_store.get` key must be a string, found `{:?}`",
+                                key.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::ObjectStoreGet,
+                    args: vec![key],
+                    ty: HirType::Option(Box::new(HirType::Json)),
+                })
+            }
+            _ => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::InvalidVerbCall,
+                        format!(
+                            "`{}` has no `{}` verb in this milestone's closed set",
+                            recv.text, verb_ident.text
+                        ),
+                    )
+                    .with_label(span, "unsupported verb"),
+                );
+                None
+            }
+        }
+    }
+
+    /// `<base> { field: value, .. }` — full construction if `base` names
+    /// a declared record type, or a functional update if `base` is a
+    /// record-typed local. See `Expr::RecordCons`'s doc comment: the
+    /// grammar can't tell these apart, so this is where it's decided.
+    fn check_record_cons(
+        &mut self,
+        base: &Expr,
+        fields: &[FieldInit],
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        let Expr::Ident(base_ident) = base else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::HandlerExprTypeMismatch,
+                    "record construction/update must start with a plain name",
+                )
+                .with_label(span, "expected a record type or variable name"),
+            );
+            return None;
+        };
+        if let Some((slot, ty)) = scope.lookup(&base_ident.text) {
+            let HirType::Record(rid) = ty else {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::HandlerExprTypeMismatch,
+                        format!(
+                            "functional update requires a record-typed variable, found `{ty:?}`"
+                        ),
+                    )
+                    .with_label(base_ident.span, "not a record value"),
+                );
+                return None;
+            };
+            let hir_fields = self.check_field_inits(rid, fields, scope, false, span)?;
+            return Some(HirExpr::RecordCons {
+                record: rid,
+                base_value: Some(Box::new(HirExpr::Local {
+                    slot,
+                    ty: HirType::Record(rid),
+                })),
+                fields: hir_fields,
+            });
+        }
+        let Some(rid) = self.graph.find_record(&base_ident.text) else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownName,
+                    format!(
+                        "`{}` is neither a declared record type nor a variable in scope",
+                        base_ident.text
+                    ),
+                )
+                .with_label(base_ident.span, "unknown name"),
+            );
+            return None;
+        };
+        let hir_fields = self.check_field_inits(rid, fields, scope, true, span)?;
+        Some(HirExpr::RecordCons {
+            record: rid,
+            base_value: None,
+            fields: hir_fields,
+        })
+    }
+
+    fn check_field_inits(
+        &mut self,
+        record: RecordId,
+        fields: &[FieldInit],
+        scope: &mut Scope,
+        require_all: bool,
+        span: Span,
+    ) -> Option<Vec<(String, HirExpr)>> {
+        let record_fields = self.graph.record(record).fields.clone();
+        let record_name = self.graph.record(record).name.clone();
+        let mut seen: HashMap<String, Span> = HashMap::new();
+        let mut hir_fields = Vec::with_capacity(fields.len());
+        for field in fields {
+            let Some(rf) = record_fields.iter().find(|f| f.name == field.name.text) else {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownRecordField,
+                        format!("record `{record_name}` has no field `{}`", field.name.text),
+                    )
+                    .with_label(field.name.span, "unknown field"),
+                );
+                return None;
+            };
+            if let Some(first) = seen.get(&field.name.text) {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::DuplicateDeclaration,
+                        format!("field `{}` is initialized more than once", field.name.text),
+                    )
+                    .with_label(field.name.span, "duplicate here")
+                    .with_label(*first, "first here"),
+                );
+                return None;
+            }
+            seen.insert(field.name.text.clone(), field.name.span);
+            let expected = field_type_to_hir(&rf.ty);
+            let value = self.check_expr_expecting(&field.value, Some(&expected), scope)?;
+            if value.ty() != expected {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::HandlerExprTypeMismatch,
+                        format!(
+                            "field `{}` expects `{expected:?}`, found `{:?}`",
+                            field.name.text,
+                            value.ty()
+                        ),
+                    )
+                    .with_label(field.value.span(), "mismatched field value"),
+                );
+                return None;
+            }
+            hir_fields.push((field.name.text.clone(), value));
+        }
+        if require_all {
+            let missing: Vec<&str> = record_fields
+                .iter()
+                .map(|f| f.name.as_str())
+                .filter(|name| !seen.contains_key(*name))
+                .collect();
+            if !missing.is_empty() {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::HandlerExprTypeMismatch,
+                        format!(
+                            "record construction for `{record_name}` is missing field(s): {}",
+                            missing.join(", ")
+                        ),
+                    )
+                    .with_label(span, "incomplete record construction"),
+                );
+                return None;
+            }
+        }
+        Some(hir_fields)
+    }
+
+    fn check_binary(
+        &mut self,
+        op: ast::BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        let lhs_hir = self.check_expr(lhs, scope)?;
+        let lty = lhs_hir.ty();
+        // `==`/`!=` against a bare enum variant (`v.status == Ready`) is
+        // the only place a literal needs its type from context — resolve
+        // it against the other side's type before falling back to the
+        // generic checker (which has no way to know which enum a bare
+        // name belongs to).
+        let expect_rhs = matches!(op, ast::BinOp::Eq | ast::BinOp::NotEq).then_some(&lty);
+        let rhs_hir = self.check_expr_expecting(rhs, expect_rhs, scope)?;
+        let rty = rhs_hir.ty();
+        let mismatch = |this: &mut Self| {
+            this.diags.push(
+                Diagnostic::new(
+                    ErrorCode::HandlerExprTypeMismatch,
+                    format!("`{op:?}` is not defined for `{lty:?}` and `{rty:?}`"),
+                )
+                .with_label(span, "mismatched operand types"),
+            );
+        };
+        use ciac_ir::BinOp as H;
+        let (hir_op, ty) = match op {
+            ast::BinOp::Add => {
+                if lty == HirType::Str || rty == HirType::Str {
+                    if is_stringifiable(&lty) && is_stringifiable(&rty) {
+                        (H::Add, HirType::Str)
+                    } else {
+                        mismatch(self);
+                        return None;
+                    }
+                } else if lty == HirType::Int && rty == HirType::Int {
+                    (H::Add, HirType::Int)
+                } else if lty == HirType::Float && rty == HirType::Float {
+                    (H::Add, HirType::Float)
+                } else {
+                    mismatch(self);
+                    return None;
+                }
+            }
+            ast::BinOp::Sub | ast::BinOp::Mul | ast::BinOp::Div => {
+                let hir_op = match op {
+                    ast::BinOp::Sub => H::Sub,
+                    ast::BinOp::Mul => H::Mul,
+                    ast::BinOp::Div => H::Div,
+                    _ => unreachable!(),
+                };
+                if lty == HirType::Int && rty == HirType::Int {
+                    (hir_op, HirType::Int)
+                } else if lty == HirType::Float && rty == HirType::Float {
+                    (hir_op, HirType::Float)
+                } else {
+                    mismatch(self);
+                    return None;
+                }
+            }
+            ast::BinOp::Eq | ast::BinOp::NotEq => {
+                if lty != rty {
+                    mismatch(self);
+                    return None;
+                }
+                (
+                    if op == ast::BinOp::Eq {
+                        H::Eq
+                    } else {
+                        H::NotEq
+                    },
+                    HirType::Bool,
+                )
+            }
+            ast::BinOp::Lt | ast::BinOp::LtEq | ast::BinOp::Gt | ast::BinOp::GtEq => {
+                let ok = (lty == HirType::Int && rty == HirType::Int)
+                    || (lty == HirType::Float && rty == HirType::Float);
+                if !ok {
+                    mismatch(self);
+                    return None;
+                }
+                let hir_op = match op {
+                    ast::BinOp::Lt => H::Lt,
+                    ast::BinOp::LtEq => H::LtEq,
+                    ast::BinOp::Gt => H::Gt,
+                    ast::BinOp::GtEq => H::GtEq,
+                    _ => unreachable!(),
+                };
+                (hir_op, HirType::Bool)
+            }
+            ast::BinOp::And | ast::BinOp::Or => {
+                if lty != HirType::Bool || rty != HirType::Bool {
+                    mismatch(self);
+                    return None;
+                }
+                (
+                    if op == ast::BinOp::And { H::And } else { H::Or },
+                    HirType::Bool,
+                )
+            }
+        };
+        Some(HirExpr::Binary {
+            op: hir_op,
+            lhs: Box::new(lhs_hir),
+            rhs: Box::new(rhs_hir),
+            ty,
+        })
+    }
+
+    fn check_unary(
+        &mut self,
+        op: ast::UnOp,
+        expr: &Expr,
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        let hir = self.check_expr(expr, scope)?;
+        let ty = hir.ty();
+        use ciac_ir::UnOp as H;
+        let (hir_op, result_ty) = match op {
+            ast::UnOp::Neg if ty == HirType::Int => (H::Neg, HirType::Int),
+            ast::UnOp::Neg if ty == HirType::Float => (H::Neg, HirType::Float),
+            ast::UnOp::Not if ty == HirType::Bool => (H::Not, HirType::Bool),
+            _ => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::HandlerExprTypeMismatch,
+                        format!("`{op:?}` is not defined for `{ty:?}`"),
+                    )
+                    .with_label(span, "mismatched operand type"),
+                );
+                return None;
+            }
+        };
+        Some(HirExpr::Unary {
+            op: hir_op,
+            expr: Box::new(hir),
+            ty: result_ty,
+        })
+    }
+
+    fn check_if(
+        &mut self,
+        cond: &Expr,
+        then_branch: &[Stmt],
+        else_branch: Option<&[Stmt]>,
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        let cond_hir = self.check_expr(cond, scope)?;
+        if cond_hir.ty() != HirType::Bool {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::HandlerExprTypeMismatch,
+                    format!("`if` condition must be `Bool`, found `{:?}`", cond_hir.ty()),
+                )
+                .with_label(cond.span(), "not a boolean"),
+            );
+            return None;
+        }
+        scope.push_frame();
+        let then_result = self.check_block(then_branch, scope);
+        scope.pop_frame();
+        let (then_stmts, then_ty) = then_result?;
+        let (else_stmts, else_ty) = match else_branch {
+            Some(stmts) => {
+                scope.push_frame();
+                let result = self.check_block(stmts, scope);
+                scope.pop_frame();
+                result?
+            }
+            None => (Vec::new(), HirType::Unit),
+        };
+        let ty = match HirType::unify(then_ty, else_ty) {
+            Ok(ty) => ty,
+            Err((t1, t2)) => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::HandlerExprTypeMismatch,
+                        format!("`if`/`else` branches disagree: `{t1:?}` vs `{t2:?}`"),
+                    )
+                    .with_label(span, "mismatched branch types"),
+                );
+                return None;
+            }
+        };
+        Some(HirExpr::If {
+            cond: Box::new(cond_hir),
+            then_branch: then_stmts,
+            else_branch: else_stmts,
+            ty,
+        })
+    }
+
+    fn check_match_expr(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[ast::ExprArm],
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirExpr> {
+        let scrutinee_hir = self.check_expr(scrutinee, scope)?;
+        let HirType::Enum { variants } = scrutinee_hir.ty() else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::HandlerExprTypeMismatch,
+                    format!(
+                        "`match` requires an enum-typed scrutinee, found `{:?}`",
+                        scrutinee_hir.ty()
+                    ),
+                )
+                .with_label(scrutinee.span(), "not an enum value"),
+            );
+            return None;
+        };
+        let labels: Vec<&ArmLabel> = arms.iter().map(|arm| &arm.label).collect();
+        let resolved_labels = self.check_match_labels(&variants, &labels, "match expression", span);
+        let mut hir_arms = Vec::with_capacity(arms.len());
+        let mut result_ty = HirType::Never;
+        for (arm, label) in arms.iter().zip(resolved_labels) {
+            scope.push_frame();
+            let result = self.check_block(&arm.body, scope);
+            scope.pop_frame();
+            let (body, arm_ty) = result?;
+            result_ty = match HirType::unify(result_ty, arm_ty) {
+                Ok(ty) => ty,
+                Err((t1, t2)) => {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!("match arms disagree: `{t1:?}` vs `{t2:?}`"),
+                        )
+                        .with_label(span, "mismatched arm types"),
+                    );
+                    return None;
+                }
+            };
+            hir_arms.push(HirArm {
+                variant: label,
+                body,
+            });
+        }
+        let ty = result_ty;
+        Some(HirExpr::Match {
+            scrutinee: Box::new(scrutinee_hir),
+            arms: hir_arms,
+            ty,
+        })
+    }
+}

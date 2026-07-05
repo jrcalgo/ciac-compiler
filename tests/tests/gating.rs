@@ -98,6 +98,104 @@ pipeline Upload: publish Progress -> Return;
     }
 }
 
+const TYPED_HANDLER_GATED: &str = r#"
+service TypedHandlerProbe;
+
+use {
+    db Postgres;
+    object_store S3;
+}
+
+record Video {
+    id: Uuid;
+    title: String;
+}
+
+table Videos: Video;
+
+handler StoreVideo(v: Video) -> Video {
+    let key = "videos/" + v.id;
+    object_store.put(key, v);
+    return db.insert(Videos, v);
+}
+
+api Upload: Video {
+    method: POST;
+    path: "/videos";
+}
+
+pipeline Upload:
+    StoreVideo
+    -> Return;
+"#;
+
+/// v0.7 M2: a type-checked handler signature (inline body or `extern`)
+/// passes `ciac check` fully but is build-gated exactly like Kafka —
+/// the typed HIR exists, but no backend emitter walks it yet (M3/M4).
+#[test]
+fn typed_handler_signature_passes_check_but_gates_at_build() {
+    let (ir, diags) = compile(TYPED_HANDLER_GATED);
+    assert!(
+        !diags.has_errors(),
+        "a well-typed handler body must pass check: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("gated program still produces IR");
+
+    for backend in backends() {
+        let err = ciac_codegen::check_support(backend.as_ref(), &ir).expect_err(&format!(
+            "{} must gate a typed handler signature",
+            backend.id()
+        ));
+        let message = err.to_string();
+        assert!(
+            message.contains("StoreVideo"),
+            "{} gating error should name the unsupported handler: {message}",
+            backend.id()
+        );
+    }
+}
+
+const EXTERN_HANDLER_GATED: &str = r#"
+service ExternHandlerProbe;
+
+record Video {
+    id: Uuid;
+}
+
+extern handler StoreVideo(v: Video) -> Video;
+
+api Upload: Video {
+    method: POST;
+    path: "/videos";
+}
+
+pipeline Upload:
+    StoreVideo
+    -> Return;
+"#;
+
+/// `extern handler` (a typed signature with no body) passes `ciac check`
+/// too and is gated the same way as an inline body — a real backend
+/// would still need to emit the typed seeded-file signature (M3/M4).
+#[test]
+fn extern_handler_signature_passes_check_but_gates_at_build() {
+    let (ir, diags) = compile(EXTERN_HANDLER_GATED);
+    assert!(
+        !diags.has_errors(),
+        "a well-typed extern handler must pass check: {:?}",
+        diags.codes()
+    );
+    let ir = ir.expect("gated program still produces IR");
+
+    for backend in backends() {
+        ciac_codegen::check_support(backend.as_ref(), &ir).expect_err(&format!(
+            "{} must gate an extern handler signature",
+            backend.id()
+        ));
+    }
+}
+
 #[test]
 fn ontology_runtime_kinds_are_supported() {
     // The v0.4 ontology kinds generate real runtime code; they must not

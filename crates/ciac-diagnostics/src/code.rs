@@ -353,6 +353,60 @@ error_codes! {
          v0.7 milestones. Until then, write handlers with the classic \
          `handler Name { capability: instance; .. }` binding form."
     ),
+    UnknownName = (
+        "CIAC0039",
+        Error,
+        "unknown name in handler body",
+        "An identifier in a handler body's expression does not refer to a \
+         parameter or an earlier `let` binding in scope."
+    ),
+    HandlerExprTypeMismatch = (
+        "CIAC0040",
+        Error,
+        "type mismatch in handler body",
+        "An expression's type does not match what's required at that \
+         position: an operator's operand types disagree, an `if`/`match`'s \
+         branches produce different types, a `return` doesn't match the \
+         handler's declared return type, or a record field is initialized \
+         with the wrong type."
+    ),
+    UnknownRecordField = (
+        "CIAC0041",
+        Error,
+        "unknown record field",
+        "A field access, record construction, or functional update names a \
+         field that the resolved record type does not declare."
+    ),
+    UnknownTable = (
+        "CIAC0042",
+        Error,
+        "unknown table",
+        "A `db.*` verb's table argument does not name a declared \
+         `table <Name>: <Record>;`."
+    ),
+    InvalidVerbCall = (
+        "CIAC0043",
+        Error,
+        "invalid capability verb call",
+        "A capability verb call names an operation outside that \
+         capability's closed verb set, or calls a known verb with the \
+         wrong number or types of arguments."
+    ),
+    VerbOnUnboundCapability = (
+        "CIAC0044",
+        Error,
+        "verb on unbound capability",
+        "A handler body calls a verb on a capability kind (`db`, `cache`, \
+         `object_store`, ..) that has no bound instance in this service; \
+         add the capability to the `use { .. }` block."
+    ),
+    UnusedLet = (
+        "CIAC0045",
+        Warning,
+        "unused let binding",
+        "A `let` binding in a handler body is never read by any later \
+         statement. Remove it, or use the value if it was meant to be used."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

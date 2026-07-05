@@ -49,7 +49,8 @@ expression: json
       "id": 4,
       "service": 0,
       "kind": "Service",
-      "name": "NoteStore"
+      "name": "NoteStore",
+      "signature": null
     }
   ],
   "edges": [
@@ -79,6 +80,7 @@ expression: json
     }
   ],
   "records": [],
+  "tables": [],
   "pipelines": [],
   "resources": [
     {

@@ -1,0 +1,10 @@
+// expect: CIAC0039
+service X;
+
+record Video {
+    id: Uuid;
+}
+
+handler F(v: Video) -> Video {
+    return missing;
+}

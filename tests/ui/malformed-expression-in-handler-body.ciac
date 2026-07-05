@@ -1,5 +1,4 @@
 // expect: CIAC0002
-// expect: CIAC0038
 service X;
 
 record Video {

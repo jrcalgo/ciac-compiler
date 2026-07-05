@@ -66,7 +66,8 @@ expression: json
       "id": 6,
       "service": 0,
       "kind": "Service",
-      "name": "StoreVideo"
+      "name": "StoreVideo",
+      "signature": null
     },
     {
       "id": 7,
@@ -80,13 +81,15 @@ expression: json
       "id": 8,
       "service": 0,
       "kind": "Service",
-      "name": "Transcode"
+      "name": "Transcode",
+      "signature": null
     },
     {
       "id": 9,
       "service": 0,
       "kind": "Service",
-      "name": "SaveResult"
+      "name": "SaveResult",
+      "signature": null
     }
   ],
   "edges": [
@@ -170,6 +173,7 @@ expression: json
     }
   ],
   "records": [],
+  "tables": [],
   "pipelines": [
     {
       "name": "Upload",

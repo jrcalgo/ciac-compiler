@@ -40,7 +40,8 @@ expression: json
       "id": 3,
       "service": 0,
       "kind": "Service",
-      "name": "PruneExpired"
+      "name": "PruneExpired",
+      "signature": null
     }
   ],
   "edges": [
@@ -64,6 +65,7 @@ expression: json
     }
   ],
   "records": [],
+  "tables": [],
   "pipelines": [
     {
       "name": "Cleanup",

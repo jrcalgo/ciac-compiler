@@ -9,6 +9,7 @@
 
 mod component;
 mod graph;
+mod hir;
 mod record;
 
 pub use component::{
@@ -21,7 +22,10 @@ pub use graph::{
     Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Service,
     ServiceId, Step, StepKind, SystemGraph,
 };
-pub use record::{FieldType, Record, RecordField, RecordId};
+pub use hir::{
+    BinOp, Builtin, HandlerBody, HirArm, HirExpr, HirStmt, HirType, Table, TableId, UnOp, Verb,
+};
+pub use record::{FieldType, Record, RecordField, RecordId, RecordKind};
 
 use serde::Serialize;
 

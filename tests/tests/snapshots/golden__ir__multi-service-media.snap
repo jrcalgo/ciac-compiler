@@ -169,31 +169,36 @@ expression: json
       "id": 16,
       "service": 0,
       "kind": "Service",
-      "name": "CapturePayment"
+      "name": "CapturePayment",
+      "signature": null
     },
     {
       "id": 17,
       "service": 1,
       "kind": "Service",
-      "name": "StoreVideo"
+      "name": "StoreVideo",
+      "signature": null
     },
     {
       "id": 18,
       "service": 2,
       "kind": "Service",
-      "name": "TranscodeVideo"
+      "name": "TranscodeVideo",
+      "signature": null
     },
     {
       "id": 19,
       "service": 3,
       "kind": "Service",
-      "name": "SendNotification"
+      "name": "SendNotification",
+      "signature": null
     },
     {
       "id": 20,
       "service": 3,
       "kind": "Service",
-      "name": "ArchiveFailure"
+      "name": "ArchiveFailure",
+      "signature": null
     }
   ],
   "edges": [
@@ -356,9 +361,11 @@ expression: json
             ]
           }
         }
-      ]
+      ],
+      "kind": "Data"
     }
   ],
+  "tables": [],
   "pipelines": [
     {
       "name": "Charge",

@@ -122,37 +122,43 @@ expression: json
       "id": 12,
       "service": 0,
       "kind": "Service",
-      "name": "ClipStore"
+      "name": "ClipStore",
+      "signature": null
     },
     {
       "id": 13,
       "service": 0,
       "kind": "Service",
-      "name": "StoreVideo"
+      "name": "StoreVideo",
+      "signature": null
     },
     {
       "id": 14,
       "service": 0,
       "kind": "Service",
-      "name": "Transcode"
+      "name": "Transcode",
+      "signature": null
     },
     {
       "id": 15,
       "service": 0,
       "kind": "Service",
-      "name": "Notify"
+      "name": "Notify",
+      "signature": null
     },
     {
       "id": 16,
       "service": 0,
       "kind": "Service",
-      "name": "SendNotification"
+      "name": "SendNotification",
+      "signature": null
     },
     {
       "id": 17,
       "service": 0,
       "kind": "Service",
-      "name": "ArchiveFailure"
+      "name": "ArchiveFailure",
+      "signature": null
     }
   ],
   "edges": [
@@ -357,9 +363,11 @@ expression: json
             ]
           }
         }
-      ]
+      ],
+      "kind": "Data"
     }
   ],
+  "tables": [],
   "pipelines": [
     {
       "name": "Upload",

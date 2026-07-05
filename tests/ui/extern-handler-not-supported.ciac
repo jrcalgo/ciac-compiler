@@ -1,8 +1,0 @@
-// expect: CIAC0038
-service X;
-
-record Video {
-    id: Uuid;
-}
-
-extern handler StoreVideo(v: Video) -> Video;

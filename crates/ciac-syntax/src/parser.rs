@@ -627,6 +627,19 @@ impl Parser<'_> {
                     args,
                 })
             }
+            TokenKind::Publish => {
+                let kw = self.bump();
+                let stream = self.expect_ident()?;
+                self.expect(TokenKind::LParen)?;
+                let value = self.expr(0)?;
+                self.expect(TokenKind::RParen)?;
+                let semi = self.expect(TokenKind::Semi)?;
+                Some(Stmt::Publish {
+                    span: kw.span.to(semi.span),
+                    stream,
+                    value,
+                })
+            }
             _ => {
                 let expr = self.expr(0)?;
                 // A block's final statement may omit the `;` — it's the
@@ -1723,6 +1736,26 @@ mod tests {
         };
         assert_eq!(error.text, "NotFound");
         assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn parses_publish_statement() {
+        let (program, diags) = parse_src(
+            r#"handler F(v: Video) -> Video {
+                   publish Transcoded(v);
+                   return v;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let body = handler.body.as_ref().unwrap();
+        let Stmt::Publish { stream, value, .. } = &body[0] else {
+            panic!("expected publish statement");
+        };
+        assert_eq!(stream.text, "Transcoded");
+        assert!(matches!(value, Expr::Ident(id) if id.text == "v"));
     }
 
     #[test]

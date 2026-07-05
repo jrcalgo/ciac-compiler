@@ -47,11 +47,21 @@ pub struct RecordField {
     pub ty: FieldType,
 }
 
-/// A resolved `record` declaration.
+/// Distinguishes `record` (plain data) from `error` (v0.7) declarations,
+/// mirroring `ciac_syntax::ast::RecordKind` — the IR keeps its own copy
+/// rather than depending on the syntax crate's AST types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RecordKind {
+    Data,
+    Error,
+}
+
+/// A resolved `record` or `error` declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Record {
     pub name: String,
     pub fields: Vec<RecordField>,
+    pub kind: RecordKind,
 }
 
 #[cfg(test)]

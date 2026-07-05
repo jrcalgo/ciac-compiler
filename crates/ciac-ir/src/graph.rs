@@ -1,4 +1,5 @@
 use crate::component::{Component, CrudConfig, NodeKind};
+use crate::hir::{Table, TableId};
 use crate::record::{Record, RecordId};
 use ciac_diagnostics::Span;
 use serde::Serialize;
@@ -155,6 +156,7 @@ pub struct SystemGraph {
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     records: Vec<Record>,
+    tables: Vec<Table>,
     pub pipelines: Vec<Pipeline>,
     pub resources: Vec<Resource>,
     pub event_streams: Vec<EventStream>,
@@ -248,6 +250,30 @@ impl SystemGraph {
             .iter()
             .position(|r| r.name == name)
             .map(|i| RecordId(i as u32))
+    }
+
+    pub fn add_table(&mut self, table: Table) -> TableId {
+        let id = TableId(self.tables.len() as u32);
+        self.tables.push(table);
+        id
+    }
+
+    pub fn table(&self, id: TableId) -> &Table {
+        &self.tables[id.0 as usize]
+    }
+
+    pub fn tables(&self) -> impl Iterator<Item = (TableId, &Table)> {
+        self.tables
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (TableId(i as u32), t))
+    }
+
+    pub fn find_table(&self, name: &str) -> Option<TableId> {
+        self.tables
+            .iter()
+            .position(|t| t.name == name)
+            .map(|i| TableId(i as u32))
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
@@ -396,6 +422,7 @@ mod tests {
         let svc = g.add_node(
             Component::Service {
                 name: "Store".into(),
+                signature: None,
             },
             None,
         );

@@ -121,25 +121,29 @@ expression: json
       "id": 13,
       "service": 0,
       "kind": "Service",
-      "name": "StoreVideo"
+      "name": "StoreVideo",
+      "signature": null
     },
     {
       "id": 14,
       "service": 0,
       "kind": "Service",
-      "name": "RecordAnalytics"
+      "name": "RecordAnalytics",
+      "signature": null
     },
     {
       "id": 15,
       "service": 0,
       "kind": "Service",
-      "name": "IndexVideo"
+      "name": "IndexVideo",
+      "signature": null
     },
     {
       "id": 16,
       "service": 0,
       "kind": "Service",
-      "name": "NotifyUser"
+      "name": "NotifyUser",
+      "signature": null
     }
   ],
   "edges": [
@@ -272,9 +276,11 @@ expression: json
             ]
           }
         }
-      ]
+      ],
+      "kind": "Data"
     }
   ],
+  "tables": [],
   "pipelines": [
     {
       "name": "Upload",

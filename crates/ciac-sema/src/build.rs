@@ -13,15 +13,15 @@
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
 use ciac_ir::{
     ApiConfig, AuthScheme, CacheEngine, ChannelConfig, Component, CrudConfig, DbEngine, EdgeKind,
-    EmailProvider, EventStream, FieldType, HttpMethod, JobConfig, LoggingProvider, MatchArm,
-    MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine,
-    RealtimeProvider, Record, RecordField, RecordId, Resource, SchedulerProvider, SearchProvider,
-    ServiceId, Step, StepKind, SystemGraph,
+    EmailProvider, EventStream, FieldType, HandlerBody, HttpMethod, JobConfig, LoggingProvider,
+    MatchArm, MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine,
+    RealtimeProvider, Record, RecordField, RecordId, RecordKind as IrRecordKind, Resource,
+    SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph, Table, TableId,
 };
 use ciac_syntax::ast::{
     ApiDecl, Attr, AttrValue, ChannelDecl, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item,
-    JobDecl, PipelineDecl, Program, RecordDecl, ServiceBlock, ServiceItem, StepExpr, StreamDecl,
-    TypeExpr, UseEntry, WorkerDecl,
+    JobDecl, PipelineDecl, Program, RecordDecl, RecordKind, ServiceBlock, ServiceItem, StepExpr,
+    StreamDecl, TableDecl, TypeExpr, UseEntry, WorkerDecl,
 };
 use heck::{ToKebabCase, ToSnakeCase};
 use std::collections::{BTreeMap, HashMap};
@@ -30,21 +30,33 @@ pub fn build_graph(program: &Program, diags: &mut Diagnostics) -> SystemGraph {
     Builder::new(diags).build(program)
 }
 
-struct Builder<'d> {
-    diags: &'d mut Diagnostics,
-    graph: SystemGraph,
+// `pub(crate)` (struct + the fields `typeck.rs` touches directly): the
+// type checker is implemented as a second `impl Builder` block in that
+// file so it can reuse `resolve_record`/`resolve_stream`/
+// `default_capability`/etc. as-is instead of re-deriving capability and
+// type resolution behind a narrower free-function API.
+pub(crate) struct Builder<'d> {
+    pub(crate) diags: &'d mut Diagnostics,
+    pub(crate) graph: SystemGraph,
     /// Declared component names (apis, workers, streams, crud/events
     /// expansions) with their declaration spans, for duplicate detection
     /// and step resolution.
     declared: HashMap<String, (NodeKind, Span)>,
     service_ids: HashMap<String, (ServiceId, Span)>,
-    current_service: Option<ServiceId>,
+    pub(crate) current_service: Option<ServiceId>,
     /// Record names → ids (types live in their own namespace).
     records: HashMap<String, (RecordId, Span)>,
+    /// Table names → ids (v0.7 M2; own namespace, resolved after records).
+    tables: HashMap<String, (TableId, Span)>,
     /// Handler service nodes created implicitly from pipeline steps.
     handlers: HashMap<String, NodeId>,
     /// Handler declarations by name; missing entries keep legacy implicit bindings.
     handler_bindings: HashMap<String, Vec<BindingSpec>>,
+    /// Type-checked signatures for v0.7 handlers (inline body or
+    /// `extern`), attached to the node when/if it's created. Absent for
+    /// the classic binding-only form, which keeps using
+    /// `handler_bindings` above.
+    handler_signatures: HashMap<String, HandlerBody>,
     handler_decl_spans: HashMap<String, Span>,
     /// Stream name → node, for `publish`/`on` resolution.
     streams: HashMap<String, NodeId>,
@@ -74,8 +86,10 @@ impl<'d> Builder<'d> {
             service_ids: HashMap::new(),
             current_service: None,
             records: HashMap::new(),
+            tables: HashMap::new(),
             handlers: HashMap::new(),
             handler_bindings: HashMap::new(),
+            handler_signatures: HashMap::new(),
             handler_decl_spans: HashMap::new(),
             streams: HashMap::new(),
             worker_streams: HashMap::new(),
@@ -92,10 +106,17 @@ impl<'d> Builder<'d> {
             .iter()
             .any(|item| matches!(item, Item::ServiceBlock(_)));
         self.project_name(program, has_service_blocks);
-        // Types first: streams and components reference them.
+        // Types first: streams and components reference them. Tables
+        // resolve after records (a table's backing record must already be
+        // registered).
         for item in &program.items {
             if let Item::Record(decl) = item {
                 self.record(decl);
+            }
+        }
+        for item in &program.items {
+            if let Item::Table(decl) = item {
+                self.table(decl);
             }
         }
         self.register_services(program, has_service_blocks);
@@ -374,16 +395,21 @@ impl<'d> Builder<'d> {
                 ty,
             });
         }
+        let kind = match decl.kind {
+            RecordKind::Data => IrRecordKind::Data,
+            RecordKind::Error => IrRecordKind::Error,
+        };
         let id = self.graph.add_record(Record {
             name: decl.name.text.clone(),
             fields,
+            kind,
         });
         self.records.insert(decl.name.text.clone(), (id, decl.span));
     }
 
     /// Resolves an optional record reference, reporting `CIAC0015` when
     /// the name is not declared.
-    fn resolve_record(&mut self, name: &Ident) -> Option<RecordId> {
+    pub(crate) fn resolve_record(&mut self, name: &Ident) -> Option<RecordId> {
         match self.records.get(&name.text) {
             Some((id, _)) => Some(*id),
             None => {
@@ -394,6 +420,50 @@ impl<'d> Builder<'d> {
                     )
                     .with_label(name.span, "no record with this name")
                     .with_help(format!("declare it with `record {} {{ .. }}`", name.text)),
+                );
+                None
+            }
+        }
+    }
+
+    /// `table <Name>: <Record>;` (v0.7). Mirrors `record`/`stream`: tables
+    /// have their own namespace and resolve after records (a table's
+    /// backing record must already be registered).
+    fn table(&mut self, decl: &TableDecl) {
+        if let Some((_, first)) = self.tables.get(&decl.name.text) {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::DuplicateDeclaration,
+                    format!("table `{}` is declared more than once", decl.name.text),
+                )
+                .with_label(decl.span, "duplicate declaration here")
+                .with_label(*first, "first declared here"),
+            );
+            return;
+        }
+        let Some(record) = self.resolve_record(&decl.record) else {
+            return;
+        };
+        let id = self.graph.add_table(Table {
+            name: decl.name.text.clone(),
+            record,
+        });
+        self.tables.insert(decl.name.text.clone(), (id, decl.span));
+    }
+
+    /// Resolves a bare table name (e.g. the first argument of a `db.*`
+    /// verb call) reported as `UnknownTable` when absent.
+    pub(crate) fn resolve_table(&mut self, name: &Ident) -> Option<TableId> {
+        match self.tables.get(&name.text) {
+            Some((id, _)) => Some(*id),
+            None => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownTable,
+                        format!("unknown table `{}`", name.text),
+                    )
+                    .with_label(name.span, "no table with this name")
+                    .with_help(format!("declare it with `table {}: <Record>;`", name.text)),
                 );
                 None
             }
@@ -524,16 +594,17 @@ impl<'d> Builder<'d> {
             return;
         }
         if decl.body.is_some() || decl.is_extern {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::InlineHandlerBodyNotYetSupported,
-                    format!(
-                        "handler `{}` uses a typed signature or inline body",
-                        decl.name.text
-                    ),
-                )
-                .with_label(decl.span, "not implemented until a later v0.7 milestone"),
-            );
+            // v0.7 M2: type-check the signature/body into HIR. Capability
+            // dependencies come from verb resolution inside the body, not
+            // declared bindings, so this handler skips the binding
+            // bookkeeping below entirely. No backend implements either
+            // form yet (`Backend::supports` gates it at build time), so a
+            // handler that type-checks here still fails `ciac build` with
+            // CIAC0011 — the same pattern Kafka already uses.
+            if let Some(hir) = self.check_handler_body(decl) {
+                self.handler_decl_spans.insert(key.clone(), decl.span);
+                self.handler_signatures.insert(key, hir);
+            }
             return;
         }
         let mut bindings = Vec::new();
@@ -593,21 +664,21 @@ impl<'d> Builder<'d> {
         true
     }
 
-    fn scoped_key(&self, name: &str) -> String {
+    pub(crate) fn scoped_key(&self, name: &str) -> String {
         match self.current_service {
             Some(service) => format!("{}::{name}", service.0),
             None => name.to_owned(),
         }
     }
 
-    fn add_node(&mut self, component: Component, span: Option<Span>) -> NodeId {
+    pub(crate) fn add_node(&mut self, component: Component, span: Option<Span>) -> NodeId {
         self.graph
             .add_node_owned(self.current_service, component, span)
     }
 
     /// Requires the queue (broker) capability, reporting `CIAC0005` with
     /// the given context otherwise.
-    fn require_queue(&mut self, what: &str, span: Span) -> Option<NodeId> {
+    pub(crate) fn require_queue(&mut self, what: &str, span: Span) -> Option<NodeId> {
         match self.default_capability(NodeKind::Queue, what, span) {
             Some(queue) => Some(queue),
             None => {
@@ -624,7 +695,12 @@ impl<'d> Builder<'d> {
         }
     }
 
-    fn default_capability(&mut self, kind: NodeKind, what: &str, span: Span) -> Option<NodeId> {
+    pub(crate) fn default_capability(
+        &mut self,
+        kind: NodeKind,
+        what: &str,
+        span: Span,
+    ) -> Option<NodeId> {
         let nodes: Vec<_> = self
             .graph
             .nodes_of_kind(kind)
@@ -749,7 +825,7 @@ impl<'d> Builder<'d> {
     }
 
     /// Resolves a stream reference from `publish X` / `on X`.
-    fn resolve_stream(&mut self, name: &Ident) -> Option<NodeId> {
+    pub(crate) fn resolve_stream(&mut self, name: &Ident) -> Option<NodeId> {
         match self.streams.get(&name.text) {
             Some(node) => Some(*node),
             None => {
@@ -941,6 +1017,7 @@ impl<'d> Builder<'d> {
         let service = self.add_node(
             Component::Service {
                 name: format!("{name}Store"),
+                signature: None,
             },
             Some(decl.span),
         );
@@ -1119,7 +1196,12 @@ impl<'d> Builder<'d> {
 
     /// Checks that publishing the pipeline payload onto `stream` is
     /// type-correct (`CIAC0016`). Untyped streams accept any payload.
-    fn check_publish_type(&mut self, stream: NodeId, payload: Option<RecordId>, span: Span) {
+    pub(crate) fn check_publish_type(
+        &mut self,
+        stream: NodeId,
+        payload: Option<RecordId>,
+        span: Span,
+    ) {
         let Component::Stream {
             record: Some(expected),
             name,
@@ -1231,13 +1313,21 @@ impl<'d> Builder<'d> {
                 let node = match self.handlers.get(&handler_key) {
                     Some(id) => *id,
                     None => {
+                        // v0.7 M2: a type-checked signature takes its
+                        // capability dependencies from verb resolution,
+                        // not declared bindings, so it skips
+                        // `wire_handler_bindings` entirely.
+                        let signature = self.handler_signatures.get(&handler_key).cloned();
                         let id = self.add_node(
                             Component::Service {
                                 name: name.to_owned(),
+                                signature: signature.clone(),
                             },
                             Some(ident.span),
                         );
-                        self.wire_handler_bindings(name, id, ident.span);
+                        if signature.is_none() {
+                            self.wire_handler_bindings(name, id, ident.span);
+                        }
                         self.handlers.insert(handler_key, id);
                         id
                     }
@@ -1338,6 +1428,100 @@ impl<'d> Builder<'d> {
         }
     }
 
+    /// Validates match arm labels against `variants` — duplicate arms, a
+    /// wildcard (`_`) out of trailing position, unknown variants, and
+    /// (unless a wildcard covers the rest) missing variants
+    /// (`NonExhaustiveMatch`, CIAC0021). Returns one resolved label per
+    /// arm in input order (`None` = wildcard) for the caller to zip with
+    /// its own arm bodies. Shared by pipeline-level `match` steps
+    /// (`resolve_match`, above) and (v0.7) expression-level `match`
+    /// (`typeck.rs`) — 07UpdatePlan.md calls for exactly this reuse.
+    pub(crate) fn check_match_labels(
+        &mut self,
+        variants: &[String],
+        labels: &[&ciac_syntax::ast::ArmLabel],
+        scrutinee_desc: &str,
+        match_span: Span,
+    ) -> Vec<Option<String>> {
+        let mut seen: BTreeMap<String, Span> = BTreeMap::new();
+        let mut saw_wildcard = false;
+        let mut resolved = Vec::with_capacity(labels.len());
+        for (idx, label) in labels.iter().enumerate() {
+            resolved.push(match label {
+                ciac_syntax::ast::ArmLabel::Default(label_span) => {
+                    if saw_wildcard {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::DuplicateDeclaration,
+                                "match wildcard arm appears more than once",
+                            )
+                            .with_label(*label_span, "duplicate wildcard here"),
+                        );
+                    }
+                    if idx + 1 != labels.len() {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::InvalidMatch,
+                                "match wildcard arm must be last",
+                            )
+                            .with_label(*label_span, "`_` must be the trailing arm"),
+                        );
+                    }
+                    saw_wildcard = true;
+                    None
+                }
+                ciac_syntax::ast::ArmLabel::Variant(ident) => {
+                    if !variants.iter().any(|v| v == &ident.text) {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::InvalidMatch,
+                                format!(
+                                    "`{}` is not a variant of `{}`",
+                                    ident.text, scrutinee_desc
+                                ),
+                            )
+                            .with_label(ident.span, "unknown enum variant"),
+                        );
+                    }
+                    if let Some(first) = seen.get(&ident.text) {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::DuplicateDeclaration,
+                                format!("match arm `{}` appears more than once", ident.text),
+                            )
+                            .with_label(ident.span, "duplicate arm here")
+                            .with_label(*first, "first arm here"),
+                        );
+                    } else {
+                        seen.insert(ident.text.clone(), ident.span);
+                    }
+                    Some(ident.text.clone())
+                }
+            });
+        }
+        if !saw_wildcard {
+            let missing: Vec<&str> = variants
+                .iter()
+                .map(String::as_str)
+                .filter(|variant| !seen.contains_key(*variant))
+                .collect();
+            if !missing.is_empty() {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::NonExhaustiveMatch,
+                        format!(
+                            "match on `{}` does not cover {}",
+                            scrutinee_desc,
+                            missing.join(", ")
+                        ),
+                    )
+                    .with_label(match_span, "non-exhaustive match"),
+                );
+            }
+        }
+        resolved
+    }
+
     fn resolve_match(
         &mut self,
         field: &Ident,
@@ -1377,84 +1561,16 @@ impl<'d> Builder<'d> {
             return None;
         };
         let variants = variants.clone();
-        let mut seen: BTreeMap<String, Span> = BTreeMap::new();
-        let mut saw_wildcard = false;
+        let labels: Vec<&ciac_syntax::ast::ArmLabel> = arms.iter().map(|arm| &arm.label).collect();
+        let resolved_labels = self.check_match_labels(&variants, &labels, &field.text, span);
         let mut ir_arms = Vec::new();
-        for (idx, arm) in arms.iter().enumerate() {
-            let label = match &arm.label {
-                ciac_syntax::ast::ArmLabel::Default(label_span) => {
-                    if saw_wildcard {
-                        self.diags.push(
-                            Diagnostic::new(
-                                ErrorCode::DuplicateDeclaration,
-                                "match wildcard arm appears more than once",
-                            )
-                            .with_label(*label_span, "duplicate wildcard here"),
-                        );
-                    }
-                    if idx + 1 != arms.len() {
-                        self.diags.push(
-                            Diagnostic::new(
-                                ErrorCode::InvalidMatch,
-                                "match wildcard arm must be last",
-                            )
-                            .with_label(*label_span, "`_` must be the trailing arm"),
-                        );
-                    }
-                    saw_wildcard = true;
-                    None
-                }
-                ciac_syntax::ast::ArmLabel::Variant(ident) => {
-                    if !variants.iter().any(|v| v == &ident.text) {
-                        self.diags.push(
-                            Diagnostic::new(
-                                ErrorCode::InvalidMatch,
-                                format!("`{}` is not a variant of `{}`", ident.text, field.text),
-                            )
-                            .with_label(ident.span, "unknown enum variant"),
-                        );
-                    }
-                    if let Some(first) = seen.get(&ident.text) {
-                        self.diags.push(
-                            Diagnostic::new(
-                                ErrorCode::DuplicateDeclaration,
-                                format!("match arm `{}` appears more than once", ident.text),
-                            )
-                            .with_label(ident.span, "duplicate arm here")
-                            .with_label(*first, "first arm here"),
-                        );
-                    } else {
-                        seen.insert(ident.text.clone(), ident.span);
-                    }
-                    Some(ident.text.clone())
-                }
-            };
+        for (arm, label) in arms.iter().zip(resolved_labels) {
             let steps = arm
                 .steps
                 .iter()
                 .filter_map(|step| self.resolve_step(step, Some(payload)))
                 .collect();
             ir_arms.push(MatchArm { label, steps });
-        }
-        if !saw_wildcard {
-            let missing: Vec<&str> = variants
-                .iter()
-                .map(String::as_str)
-                .filter(|variant| !seen.contains_key(*variant))
-                .collect();
-            if !missing.is_empty() {
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::NonExhaustiveMatch,
-                        format!(
-                            "match on `{}` does not cover {}",
-                            field.text,
-                            missing.join(", ")
-                        ),
-                    )
-                    .with_label(span, "non-exhaustive match"),
-                );
-            }
         }
         Some(step(
             StepKind::Match {
@@ -1543,7 +1659,7 @@ fn default_subject(service: &str, name: &str) -> String {
     format!("{}.{}", service.to_snake_case(), name.to_snake_case())
 }
 
-fn binding_kind(capability: &str) -> Option<NodeKind> {
+pub(crate) fn binding_kind(capability: &str) -> Option<NodeKind> {
     Some(match capability {
         "auth" => NodeKind::Auth,
         "db" => NodeKind::Database,

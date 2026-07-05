@@ -15,6 +15,14 @@ pub enum TokenKind {
     #[token("import")]
     Import,
 
+    // v0.8 M2: parameterized architecture.
+    #[token("blueprint")]
+    Blueprint,
+    #[token("expand")]
+    Expand,
+    #[token("params")]
+    Params,
+
     #[token("project")]
     Project,
     #[token("service")]
@@ -143,6 +151,9 @@ impl TokenKind {
     pub fn describe(self) -> &'static str {
         match self {
             TokenKind::Import => "`import`",
+            TokenKind::Blueprint => "`blueprint`",
+            TokenKind::Expand => "`expand`",
+            TokenKind::Params => "`params`",
             TokenKind::Project => "`project`",
             TokenKind::Service => "`service`",
             TokenKind::Use => "`use`",

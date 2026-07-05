@@ -148,7 +148,8 @@ impl<'d> Builder<'d> {
                         ),
                     ),
                     Item::ServiceBlock(block) => self.build_service_block_decls(block),
-                    Item::Project(_)
+                    Item::Import(_)
+                    | Item::Project(_)
                     | Item::Service(_)
                     | Item::Record(_)
                     | Item::Stream(_)
@@ -1700,6 +1701,7 @@ fn attr_string(attrs: &[Attr], name: &str) -> Option<String> {
 
 fn item_span(item: &Item) -> Span {
     match item {
+        Item::Import(decl) => decl.span,
         Item::Project(decl) => decl.span,
         Item::Service(decl) => decl.span,
         Item::ServiceBlock(decl) => decl.span,

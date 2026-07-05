@@ -23,6 +23,11 @@ pub struct Program {
 /// A top-level declaration.
 #[derive(Debug, Clone, Serialize)]
 pub enum Item {
+    /// `import "path";` (v0.8) — textually splices another file's items
+    /// in at this position; resolved before semantic analysis ever sees
+    /// the program, so nothing downstream of the parser is aware
+    /// multi-file programs exist. See `crate::module`.
+    Import(ImportDecl),
     /// `project <Name>;` — names a multi-service project.
     Project(ProjectDecl),
     /// `service <Name>;` — names the system being described.
@@ -53,6 +58,14 @@ pub enum Item {
     Handler(HandlerDecl),
     /// `pipeline <Name>: Step -> Step -> ..;`
     Pipeline(PipelineDecl),
+}
+
+/// `import "path";` (v0.8). `path` is resolved relative to the
+/// importing file's own directory, not the entry file's.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportDecl {
+    pub path: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]

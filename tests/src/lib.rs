@@ -16,11 +16,17 @@ pub fn compile(src: &str) -> (Option<NormalizedIr>, Diagnostics) {
 }
 
 /// Compiles a `.ciac` file, panicking on invalid programs — for tests
-/// operating on the known-good examples.
+/// operating on the known-good examples. Resolves `import "path";`
+/// (v0.8 M1) the same way `ciac`'s CLI does, so an entry file's
+/// imported fragments are part of the compiled program, not silently
+/// dropped as unresolved `Item::Import`s.
 pub fn compile_file(path: &Path) -> NormalizedIr {
-    let src = std::fs::read_to_string(path)
+    let mut sources = SourceMap::new();
+    let mut diags = Diagnostics::new();
+    let program = ciac_syntax::load(path, &mut sources, &mut diags)
         .unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()));
-    let (ir, diags) = compile(&src);
+    let ir = ciac_sema::analyze(&program, &mut diags);
+    diags.sort();
     ir.unwrap_or_else(|| panic!("{} failed to compile: {:?}", path.display(), diags.codes()))
 }
 

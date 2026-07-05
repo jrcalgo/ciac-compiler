@@ -11,6 +11,10 @@ use logos::Logos;
 #[logos(skip r"//[^\n]*")]
 #[logos(skip r"/\*([^*]|\*[^/])*\*/")]
 pub enum TokenKind {
+    // v0.8 M1: multi-file programs.
+    #[token("import")]
+    Import,
+
     #[token("project")]
     Project,
     #[token("service")]
@@ -138,6 +142,7 @@ impl TokenKind {
     /// How the token kind is described in "expected X" messages.
     pub fn describe(self) -> &'static str {
         match self {
+            TokenKind::Import => "`import`",
             TokenKind::Project => "`project`",
             TokenKind::Service => "`service`",
             TokenKind::Use => "`use`",

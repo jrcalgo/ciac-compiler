@@ -60,33 +60,44 @@ impl Render for AriadneRenderer {
         sources: &SourceMap,
         out: &mut dyn Write,
     ) -> std::io::Result<()> {
-        use ariadne::{Config, Label, Report, ReportKind, Source};
+        use ariadne::{Config, Label, Report, ReportKind};
 
         let Some(primary) = diag.primary_span() else {
             // No span: fall back to the plain renderer.
             return PlainRenderer.render(diag, sources, out);
         };
-        let file = sources.file(primary.file);
+        let primary_name = sources.file(primary.file).name.clone();
         let kind = match diag.severity {
             Severity::Error => ReportKind::Error,
             Severity::Warning => ReportKind::Warning,
         };
 
-        let mut report = Report::build(kind, (file.name.as_str(), primary.range()))
+        let mut report = Report::build(kind, (primary_name, primary.range()))
             .with_config(Config::default().with_color(self.color))
             .with_code(diag.code.code())
             .with_message(&diag.message);
         for label in &diag.labels {
-            report = report.with_label(
-                Label::new((file.name.as_str(), label.span.range())).with_message(&label.message),
-            );
+            // A label's span may belong to a *different* file than the
+            // primary one (e.g. a cross-file duplicate declaration, v0.8
+            // M1) — each label must carry its own file's name, not the
+            // primary span's, or ariadne resolves the wrong file's byte
+            // offsets against the wrong source text.
+            let name = sources.file(label.span.file).name.clone();
+            report = report
+                .with_label(Label::new((name, label.span.range())).with_message(&label.message));
         }
         if let Some(help) = &diag.help {
             report = report.with_help(help);
         }
-        report
-            .finish()
-            .write((file.name.as_str(), Source::from(&file.src)), out)
+        // A multi-file cache: every registered file, keyed by name, so
+        // labels pointing at any of them resolve correctly — not just
+        // the primary span's file.
+        let cache = ariadne::sources(
+            sources
+                .files()
+                .map(|file| (file.name.clone(), file.src.clone())),
+        );
+        report.finish().write(cache, out)
     }
 }
 
@@ -120,6 +131,38 @@ mod tests {
         assert_eq!(
             text,
             "error[CIAC0002]: expected a name\n  --> main.ciac:1:9: found `;`\n  help: declarations look like `service VideoPlatform;`\n"
+        );
+    }
+
+    /// v0.8 M1 regression: a diagnostic whose labels span two different
+    /// files (e.g. a name declared once per file) must resolve each
+    /// label against *its own* file, not the primary span's file —
+    /// `AriadneRenderer` once reused the primary span's file name for
+    /// every label, misapplying another file's byte offsets to it.
+    #[test]
+    fn ariadne_renderer_resolves_labels_across_files() {
+        let mut sources = SourceMap::new();
+        let other = sources.add_file("other.ciac", "record Video {\n    id: Uuid;\n}\n");
+        let entry = sources.add_file(
+            "entry.ciac",
+            "service S;\nrecord Video {\n    id: Uuid;\n}\n",
+        );
+        let diag = Diagnostic::new(
+            ErrorCode::DuplicateDeclaration,
+            "record `Video` is declared more than once",
+        )
+        .with_label(Span::new(other, 0, 30), "first declared here")
+        .with_label(Span::new(entry, 11, 42), "duplicate declaration here");
+
+        let text = render_all([diag], &sources, &AriadneRenderer { color: false });
+
+        assert!(
+            text.contains("other.ciac"),
+            "expected the first-declaration label's own file to appear: {text}"
+        );
+        assert!(
+            text.contains("entry.ciac"),
+            "expected the duplicate label's own file to appear: {text}"
         );
     }
 }

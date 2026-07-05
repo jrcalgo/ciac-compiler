@@ -53,6 +53,7 @@ test.
 | CIAC0044 | error | verb on unbound capability |
 | CIAC0045 | warning | unused let binding |
 | CIAC0046 | error | unsupported schema change |
+| CIAC0047 | error | import cycle |
 
 ## Notes
 
@@ -135,3 +136,6 @@ test.
   migration differ can't express safely — a column was removed or
   retyped, or the whole table was removed. Write a manual migration file
   for the drop/retype, then rerun `ciac build`.
+- **CIAC0047** means a chain of `import "path";` declarations forms a
+  cycle; move the shared declarations into a third file both sides
+  import instead.

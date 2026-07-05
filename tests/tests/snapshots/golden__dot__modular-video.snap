@@ -1,0 +1,10 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph ModularVideo {
+    rankdir=LR;
+    n0 [label="api Upload", shape=rarrow];
+    n1 [label="service StoreVideo", shape=box];
+    n0 -> n1 [label="RequestFlow", style=solid];
+}

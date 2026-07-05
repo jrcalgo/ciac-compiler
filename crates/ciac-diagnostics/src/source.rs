@@ -96,6 +96,13 @@ impl SourceMap {
     pub fn snippet(&self, span: Span) -> &str {
         &self.source(span.file)[span.range()]
     }
+
+    /// Every registered file, in registration order (for a module-
+    /// resolved program, that's import resolution order — deterministic
+    /// and suitable for hashing the whole source set).
+    pub fn files(&self) -> impl Iterator<Item = &SourceFile> {
+        self.files.iter()
+    }
 }
 
 #[cfg(test)]

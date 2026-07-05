@@ -419,6 +419,17 @@ error_codes! {
          at a destructive or type-changing edit. Write a manual migration \
          file for the drop/retype, then rerun `ciac build`."
     ),
+    ImportCycle = (
+        "CIAC0047",
+        Error,
+        "import cycle",
+        "A chain of `import \"path\";` declarations forms a cycle (a file \
+         imports itself, directly or through other files). Imports are \
+         textual — resolving one requires the file it names to already \
+         be fully resolved, so a cycle has no well-defined order and \
+         can't be loaded. Break the cycle by moving the shared \
+         declarations into a third file both sides import instead."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

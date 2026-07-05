@@ -1,0 +1,10 @@
+// v0.8 M1 flagship: the same shape as any other example, but split
+// across files with `import "path";` — proving multi-file programs
+// resolve and merge correctly, not a new capability combination.
+// Declaration order after resolution is import order then file order:
+// records.ciac's `Video` is spliced in before service.ciac's
+// handler/api/pipeline, exactly as if this were one file written top
+// to bottom.
+service ModularVideo;
+import "modular-video/records.ciac";
+import "modular-video/service.ciac";

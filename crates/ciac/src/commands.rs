@@ -24,15 +24,16 @@ fn backends() -> Vec<Box<dyn Backend>> {
     ]
 }
 
-/// Runs the front-end (parse + analyze) on a source file, printing all
-/// diagnostics. Returns the IR when the program is valid.
-fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool)> {
-    let src =
-        std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
+/// Runs the front-end (module resolution + parse + analyze) on an entry
+/// source file, printing all diagnostics. Returns the IR when the
+/// program is valid, plus the full resolved [`SourceMap`] (every file
+/// `import "path";` pulled in, v0.8 M1) so callers that need the whole
+/// source set (e.g. hashing it for the manifest) don't re-resolve it.
+fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap)> {
     let mut sources = SourceMap::new();
-    let file_id = sources.add_file(file.display().to_string(), src.clone());
     let mut diags = Diagnostics::new();
-    let program = ciac_syntax::parse(&src, file_id, &mut diags);
+    let program = ciac_syntax::load(file, &mut sources, &mut diags)
+        .with_context(|| format!("cannot read {}", file.display()))?;
     let ir = ciac_sema::analyze(&program, &mut diags);
 
     diags.sort();
@@ -44,11 +45,11 @@ fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool)> {
     for diag in diags.iter() {
         renderer.render(diag, &sources, &mut stderr)?;
     }
-    Ok((ir, has_errors))
+    Ok((ir, has_errors, sources))
 }
 
 pub fn check(file: &Path) -> Result<ExitCode> {
-    let (ir, has_errors) = front_end(file)?;
+    let (ir, has_errors, _sources) = front_end(file)?;
     if has_errors || ir.is_none() {
         return Ok(ExitCode::FAILURE);
     }
@@ -268,7 +269,7 @@ pub fn verify(
 }
 
 pub fn graph(file: &Path, format: &str) -> Result<ExitCode> {
-    let (ir, has_errors) = front_end(file)?;
+    let (ir, has_errors, _sources) = front_end(file)?;
     let Some(ir) = ir.filter(|_| !has_errors) else {
         return Ok(ExitCode::FAILURE);
     };
@@ -317,11 +318,23 @@ fn generate(file: &Path, target: &str, out: &Path, name: Option<String>) -> Resu
     };
     let backend = all.into_iter().nth(index).expect("index was found");
 
-    let source = std::fs::read(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let source_hash = hash_bytes(&source);
-    let (ir, has_errors) = front_end(file)?;
+    let (ir, has_errors, sources) = front_end(file)?;
     let Some(ir) = ir.filter(|_| !has_errors) else {
         bail!("front-end failed");
+    };
+    // Hashes the whole resolved source set (entry file plus every
+    // transitively `import`ed file, v0.8 M1), not just the entry file's
+    // bytes — so the manifest's `source_hash` changes when an imported
+    // file changes too, even if the entry file itself didn't.
+    let source_hash = {
+        let mut buf = String::new();
+        for file in sources.files() {
+            buf.push_str(&file.name);
+            buf.push('\0');
+            buf.push_str(&file.src);
+            buf.push('\0');
+        }
+        hash_bytes(buf.as_bytes())
     };
 
     if let Err(err) = ciac_codegen::check_support(backend.as_ref(), &ir) {

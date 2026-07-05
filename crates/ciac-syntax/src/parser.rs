@@ -98,7 +98,8 @@ impl Parser<'_> {
                     self.bump();
                     return;
                 }
-                TokenKind::Project
+                TokenKind::Import
+                | TokenKind::Project
                 | TokenKind::Service
                 | TokenKind::Use
                 | TokenKind::Record
@@ -134,6 +135,7 @@ impl Parser<'_> {
 
     fn item(&mut self) -> Option<Item> {
         match self.peek().kind {
+            TokenKind::Import => self.import_decl(),
             TokenKind::Project => self.project_decl(),
             TokenKind::Service => self.service_item(),
             TokenKind::Use => self.use_block(),
@@ -356,6 +358,19 @@ impl Parser<'_> {
     }
 
     /// `table <Name>: <Record>;` (v0.7)
+    /// `import "path";` (v0.8) — the path itself is resolved later by
+    /// `crate::module`, not here; the parser only extracts the string.
+    fn import_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let tok = self.expect(TokenKind::Str)?;
+        let path = unquote(&self.src[tok.span.range()]);
+        let semi = self.expect(TokenKind::Semi)?;
+        Some(Item::Import(ImportDecl {
+            span: kw.span.to(semi.span),
+            path,
+        }))
+    }
+
     fn table_decl(&mut self) -> Option<Item> {
         let kw = self.bump();
         let name = self.expect_ident()?;
@@ -1492,6 +1507,16 @@ mod tests {
         };
         assert_eq!(table.name.text, "Videos");
         assert_eq!(table.record.text, "Video");
+    }
+
+    #[test]
+    fn parses_import_decl() {
+        let (program, diags) = parse_src(r#"import "records/video.ciac";"#);
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Import(import) = &program.items[0] else {
+            panic!("expected import decl");
+        };
+        assert_eq!(import.path, "records/video.ciac");
     }
 
     #[test]

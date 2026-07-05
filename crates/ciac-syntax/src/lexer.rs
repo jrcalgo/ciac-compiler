@@ -48,6 +48,28 @@ pub enum TokenKind {
     #[token("match")]
     Match,
 
+    // v0.7 M1: handler-body expression language keywords.
+    #[token("let")]
+    Let,
+    #[token("true")]
+    True,
+    #[token("false")]
+    False,
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
+    #[token("table")]
+    Table,
+    #[token("error")]
+    Error,
+    #[token("extern")]
+    Extern,
+    #[token("return")]
+    Return,
+    #[token("fail")]
+    Fail,
+
     #[token("{")]
     LBrace,
     #[token("}")]
@@ -63,7 +85,45 @@ pub enum TokenKind {
     #[token("->")]
     Arrow,
 
-    #[regex("[0-9]+")]
+    // v0.7 M1: expression operators and grouping.
+    #[token("(")]
+    LParen,
+    #[token(")")]
+    RParen,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("*")]
+    Star,
+    #[token("/")]
+    Slash,
+    #[token("=")]
+    Eq,
+    #[token("==")]
+    EqEq,
+    #[token("!=")]
+    NotEq,
+    #[token("<")]
+    Lt,
+    #[token("<=")]
+    LtEq,
+    #[token(">")]
+    Gt,
+    #[token(">=")]
+    GtEq,
+    #[token("&&")]
+    AndAnd,
+    #[token("||")]
+    OrOr,
+    #[token("!")]
+    Bang,
+
+    #[regex("[0-9]+(\\.[0-9]+)?")]
     Number,
     #[regex(r#""([^"\\]|\\.)*""#)]
     Str,
@@ -96,6 +156,16 @@ impl TokenKind {
             TokenKind::Call => "`call`",
             TokenKind::Enum => "`enum`",
             TokenKind::Match => "`match`",
+            TokenKind::Let => "`let`",
+            TokenKind::True => "`true`",
+            TokenKind::False => "`false`",
+            TokenKind::If => "`if`",
+            TokenKind::Else => "`else`",
+            TokenKind::Table => "`table`",
+            TokenKind::Error => "`error`",
+            TokenKind::Extern => "`extern`",
+            TokenKind::Return => "`return`",
+            TokenKind::Fail => "`fail`",
             TokenKind::LBrace => "`{`",
             TokenKind::RBrace => "`}`",
             TokenKind::Semi => "`;`",
@@ -103,6 +173,24 @@ impl TokenKind {
             TokenKind::Comma => "`,`",
             TokenKind::Dot => "`.`",
             TokenKind::Arrow => "`->`",
+            TokenKind::LParen => "`(`",
+            TokenKind::RParen => "`)`",
+            TokenKind::LBracket => "`[`",
+            TokenKind::RBracket => "`]`",
+            TokenKind::Plus => "`+`",
+            TokenKind::Minus => "`-`",
+            TokenKind::Star => "`*`",
+            TokenKind::Slash => "`/`",
+            TokenKind::Eq => "`=`",
+            TokenKind::EqEq => "`==`",
+            TokenKind::NotEq => "`!=`",
+            TokenKind::Lt => "`<`",
+            TokenKind::LtEq => "`<=`",
+            TokenKind::Gt => "`>`",
+            TokenKind::GtEq => "`>=`",
+            TokenKind::AndAnd => "`&&`",
+            TokenKind::OrOr => "`||`",
+            TokenKind::Bang => "`!`",
             TokenKind::Number => "a number",
             TokenKind::Str => "a string",
             TokenKind::Ident => "a name",
@@ -218,5 +306,127 @@ mod tests {
         assert!(kinds.contains(&TokenKind::Number));
         assert!(kinds.contains(&TokenKind::Str));
         assert!(kinds.contains(&TokenKind::Match));
+    }
+
+    #[test]
+    fn lexes_table_and_error_and_extern_keywords() {
+        let (kinds, diags) = lex_kinds("table Videos: Video; error NotFound { id: Uuid; } extern handler Foo(v: Video) -> Video;");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Table,
+                TokenKind::Ident,
+                TokenKind::Colon,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::Error,
+                TokenKind::Ident,
+                TokenKind::LBrace,
+                TokenKind::Ident,
+                TokenKind::Colon,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::RBrace,
+                TokenKind::Extern,
+                TokenKind::Handler,
+                TokenKind::Ident,
+                TokenKind::LParen,
+                TokenKind::Ident,
+                TokenKind::Colon,
+                TokenKind::Ident,
+                TokenKind::RParen,
+                TokenKind::Arrow,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_expression_operators() {
+        let (kinds, diags) =
+            lex_kinds(r#"let key = "x" + v.id; if a == b && c != d || !e { } else { }"#);
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Let,
+                TokenKind::Ident,
+                TokenKind::Eq,
+                TokenKind::Str,
+                TokenKind::Plus,
+                TokenKind::Ident,
+                TokenKind::Dot,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::If,
+                TokenKind::Ident,
+                TokenKind::EqEq,
+                TokenKind::Ident,
+                TokenKind::AndAnd,
+                TokenKind::Ident,
+                TokenKind::NotEq,
+                TokenKind::Ident,
+                TokenKind::OrOr,
+                TokenKind::Bang,
+                TokenKind::Ident,
+                TokenKind::LBrace,
+                TokenKind::RBrace,
+                TokenKind::Else,
+                TokenKind::LBrace,
+                TokenKind::RBrace,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_comparison_and_arithmetic_operators() {
+        let (kinds, diags) = lex_kinds("a <= b - 1 * 2 / 3 > c; return true; fail false;");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::LtEq,
+                TokenKind::Ident,
+                TokenKind::Minus,
+                TokenKind::Number,
+                TokenKind::Star,
+                TokenKind::Number,
+                TokenKind::Slash,
+                TokenKind::Number,
+                TokenKind::Gt,
+                TokenKind::Ident,
+                TokenKind::Semi,
+                TokenKind::Return,
+                TokenKind::True,
+                TokenKind::Semi,
+                TokenKind::Fail,
+                TokenKind::False,
+                TokenKind::Semi,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_decimal_number_and_brackets() {
+        let (kinds, diags) = lex_kinds("payload[\"key\"] == 3.14");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::LBracket,
+                TokenKind::Str,
+                TokenKind::RBracket,
+                TokenKind::EqEq,
+                TokenKind::Number,
+                TokenKind::Eof,
+            ]
+        );
     }
 }

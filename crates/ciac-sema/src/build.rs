@@ -127,7 +127,11 @@ impl<'d> Builder<'d> {
                         ),
                     ),
                     Item::ServiceBlock(block) => self.build_service_block_decls(block),
-                    Item::Project(_) | Item::Service(_) | Item::Record(_) | Item::Stream(_) => {}
+                    Item::Project(_)
+                    | Item::Service(_)
+                    | Item::Record(_)
+                    | Item::Stream(_)
+                    | Item::Table(_) => {}
                 }
             }
             for item in &program.items {
@@ -516,6 +520,19 @@ impl<'d> Builder<'d> {
                 )
                 .with_label(decl.span, "duplicate handler declaration here")
                 .with_label(*first, "first declared here"),
+            );
+            return;
+        }
+        if decl.body.is_some() || decl.is_extern {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InlineHandlerBodyNotYetSupported,
+                    format!(
+                        "handler `{}` uses a typed signature or inline body",
+                        decl.name.text
+                    ),
+                )
+                .with_label(decl.span, "not implemented until a later v0.7 milestone"),
             );
             return;
         }
@@ -1562,6 +1579,7 @@ fn item_span(item: &Item) -> Span {
         Item::Use(decl) => decl.span,
         Item::Record(decl) => decl.span,
         Item::Stream(decl) => decl.span,
+        Item::Table(decl) => decl.span,
         Item::Api(decl) => decl.span,
         Item::Worker(decl) => decl.span,
         Item::Job(decl) => decl.span,

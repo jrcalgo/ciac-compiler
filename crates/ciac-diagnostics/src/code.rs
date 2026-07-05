@@ -343,6 +343,16 @@ error_codes! {
          cron expression. CIaC validates schedules during semantic analysis \
          so generated runtimes agree on when jobs fire."
     ),
+    InlineHandlerBodyNotYetSupported = (
+        "CIAC0038",
+        Error,
+        "inline handler bodies are not implemented yet",
+        "v0.7 M1 parses `handler Name(..) -> Type { .. }` inline bodies and \
+         `extern handler Name(..) -> Type;` signatures, but the typed HIR \
+         and both backend emitters that give them meaning land in later \
+         v0.7 milestones. Until then, write handlers with the classic \
+         `handler Name { capability: instance; .. }` binding form."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

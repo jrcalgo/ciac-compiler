@@ -15,6 +15,7 @@ pub fn parse(src: &str, file: FileId, diags: &mut Diagnostics) -> Program {
         tokens,
         pos: 0,
         diags,
+        no_record_lit: false,
     }
     .program()
 }
@@ -24,6 +25,11 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     diags: &'a mut Diagnostics,
+    /// Suppresses the `{ field: value }` postfix in `expr_postfix` while
+    /// parsing an `if` condition or `match` scrutinee (v0.7), so `{`
+    /// there opens a block/arm-list rather than a record literal — the
+    /// same ambiguity Rust resolves the same way.
+    no_record_lit: bool,
 }
 
 impl Parser<'_> {
@@ -96,8 +102,11 @@ impl Parser<'_> {
                 | TokenKind::Service
                 | TokenKind::Use
                 | TokenKind::Record
+                | TokenKind::Error
                 | TokenKind::Stream
+                | TokenKind::Table
                 | TokenKind::Handler
+                | TokenKind::Extern
                 | TokenKind::Api
                 | TokenKind::Worker
                 | TokenKind::Job
@@ -128,9 +137,12 @@ impl Parser<'_> {
             TokenKind::Project => self.project_decl(),
             TokenKind::Service => self.service_item(),
             TokenKind::Use => self.use_block(),
-            TokenKind::Record => self.record_decl(),
+            TokenKind::Record => self.record_decl(RecordKind::Data),
+            TokenKind::Error => self.record_decl(RecordKind::Error),
             TokenKind::Stream => self.stream_decl(),
+            TokenKind::Table => self.table_decl(),
             TokenKind::Handler => self.handler_decl(),
+            TokenKind::Extern => self.extern_handler_decl(),
             TokenKind::Api => self.api_decl(),
             TokenKind::Worker => self.worker_decl(),
             TokenKind::Job => self.job_decl(),
@@ -140,8 +152,9 @@ impl Parser<'_> {
             TokenKind::Pipeline => self.pipeline_decl(),
             _ => {
                 self.error_expected(
-                    "a declaration (`project`, `service`, `use`, `record`, `stream`, \
-                     `handler`, `api`, `worker`, `job`, `channel`, `crud`, `events`, or `pipeline`)",
+                    "a declaration (`project`, `service`, `use`, `record`, `error`, `stream`, \
+                     `table`, `handler`, `extern`, `api`, `worker`, `job`, `channel`, `crud`, \
+                     `events`, or `pipeline`)",
                 );
                 None
             }
@@ -212,6 +225,11 @@ impl Parser<'_> {
                         items.push(ServiceItem::Handler(item));
                     }
                 }
+                TokenKind::Extern => {
+                    if let Some(Item::Handler(item)) = self.extern_handler_decl() {
+                        items.push(ServiceItem::Handler(item));
+                    }
+                }
                 TokenKind::Pipeline => {
                     if let Some(Item::Pipeline(item)) = self.pipeline_decl() {
                         items.push(ServiceItem::Pipeline(item));
@@ -220,7 +238,7 @@ impl Parser<'_> {
                 _ => {
                     self.error_expected(
                         "a service item (`use`, `api`, `worker`, `job`, `channel`, `crud`, `events`, \
-                         `handler`, `pipeline`) or `}`",
+                         `handler`, `extern`, `pipeline`) or `}`",
                     );
                     self.recover_inside_block();
                 }
@@ -337,6 +355,20 @@ impl Parser<'_> {
         }))
     }
 
+    /// `table <Name>: <Record>;` (v0.7)
+    fn table_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        let record = self.expect_ident()?;
+        let semi = self.expect(TokenKind::Semi)?;
+        Some(Item::Table(TableDecl {
+            span: kw.span.to(semi.span),
+            name,
+            record,
+        }))
+    }
+
     /// Shared declaration tail for attributed components: either `;` or
     /// `{ name: value; .. }`.
     fn decl_tail(&mut self) -> Option<(Vec<Attr>, ciac_diagnostics::Span)> {
@@ -381,6 +413,17 @@ impl Parser<'_> {
     fn attr_value(&mut self) -> Option<AttrValue> {
         match self.peek().kind {
             TokenKind::Ident => Some(AttrValue::Ident(self.expect_ident()?)),
+            // `true`/`false` are now reserved keywords (v0.7 expression
+            // grammar), but attribute values like `catch_up: false;`
+            // predate that and must keep parsing identically: represent
+            // them the same way a bare `Ident` always did.
+            TokenKind::True | TokenKind::False => {
+                let tok = self.bump();
+                Some(AttrValue::Ident(Ident {
+                    text: self.src[tok.span.range()].to_owned(),
+                    span: tok.span,
+                }))
+            }
             TokenKind::Number => {
                 let tok = self.bump();
                 let raw = &self.src[tok.span.range()];
@@ -405,10 +448,29 @@ impl Parser<'_> {
         }
     }
 
-    /// `handler <Name> { db: main; cache: hot; .. }`
+    /// `handler <Name> { db: main; cache: hot; .. }` (the classic
+    /// binding-only form, unchanged since v0.1) or, when `(` follows the
+    /// name, `handler <Name>(params) -> RetType { <stmts> }` (v0.7 inline
+    /// body). The two forms are disambiguated purely on whether `(`
+    /// follows the name — the binding form never had a parameter list.
     fn handler_decl(&mut self) -> Option<Item> {
         let kw = self.bump();
         let name = self.expect_ident()?;
+        if self.at(TokenKind::LParen) {
+            let params = self.param_list()?;
+            self.expect(TokenKind::Arrow)?;
+            let return_ty = self.type_expr()?;
+            let (body, close) = self.block()?;
+            return Some(Item::Handler(HandlerDecl {
+                span: kw.span.to(close),
+                name,
+                bindings: Vec::new(),
+                params,
+                return_ty: Some(return_ty),
+                body: Some(body),
+                is_extern: false,
+            }));
+        }
         self.expect(TokenKind::LBrace)?;
         let mut bindings = Vec::new();
         loop {
@@ -446,11 +508,411 @@ impl Parser<'_> {
             span: kw.span.to(close.span),
             name,
             bindings,
+            params: Vec::new(),
+            return_ty: None,
+            body: None,
+            is_extern: false,
         }))
     }
 
-    /// `record <Name> { field: Type; .. }`
-    fn record_decl(&mut self) -> Option<Item> {
+    /// `extern handler <Name>(params) -> RetType;` (v0.7) — a typed
+    /// signature with no body; sema treats it exactly like today's
+    /// binding-only stub handlers until typeck (M2) lands.
+    fn extern_handler_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        self.expect(TokenKind::Handler)?;
+        let name = self.expect_ident()?;
+        let params = self.param_list()?;
+        self.expect(TokenKind::Arrow)?;
+        let return_ty = self.type_expr()?;
+        let semi = self.expect(TokenKind::Semi)?;
+        Some(Item::Handler(HandlerDecl {
+            span: kw.span.to(semi.span),
+            name,
+            bindings: Vec::new(),
+            params,
+            return_ty: Some(return_ty),
+            body: None,
+            is_extern: true,
+        }))
+    }
+
+    /// `(name: Type, name: Type, ..)` (v0.7).
+    fn param_list(&mut self) -> Option<Vec<Param>> {
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        if !self.at(TokenKind::RParen) {
+            loop {
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let ty = self.type_expr()?;
+                let span = name.span.to(ty.span());
+                params.push(Param { name, ty, span });
+                if self.eat(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        Some(params)
+    }
+
+    /// `{ <stmt>* }` (v0.7). Returns the statements and the closing `}`'s
+    /// span; recovers at `;` boundaries within the block on a bad statement.
+    fn block(&mut self) -> Option<(Vec<Stmt>, ciac_diagnostics::Span)> {
+        self.expect(TokenKind::LBrace)?;
+        let mut stmts = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                _ => match self.stmt() {
+                    Some(stmt) => stmts.push(stmt),
+                    None => self.recover_inside_block(),
+                },
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some((stmts, close.span))
+    }
+
+    /// One statement inside a handler body (v0.7).
+    fn stmt(&mut self) -> Option<Stmt> {
+        match self.peek().kind {
+            TokenKind::Let => {
+                let kw = self.bump();
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Eq)?;
+                let value = self.expr(0)?;
+                let semi = self.expect(TokenKind::Semi)?;
+                Some(Stmt::Let {
+                    span: kw.span.to(semi.span),
+                    name,
+                    value,
+                })
+            }
+            TokenKind::Return => {
+                let kw = self.bump();
+                if let Some(semi) = self.eat(TokenKind::Semi) {
+                    return Some(Stmt::Return {
+                        value: None,
+                        span: kw.span.to(semi.span),
+                    });
+                }
+                let value = self.expr(0)?;
+                let semi = self.expect(TokenKind::Semi)?;
+                Some(Stmt::Return {
+                    value: Some(value),
+                    span: kw.span.to(semi.span),
+                })
+            }
+            TokenKind::Fail => {
+                let kw = self.bump();
+                let error = self.expect_ident()?;
+                let mut args = Vec::new();
+                if self.eat(TokenKind::LParen).is_some() {
+                    if !self.at(TokenKind::RParen) {
+                        loop {
+                            args.push(self.expr(0)?);
+                            if self.eat(TokenKind::Comma).is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(TokenKind::RParen)?;
+                }
+                let semi = self.expect(TokenKind::Semi)?;
+                Some(Stmt::Fail {
+                    span: kw.span.to(semi.span),
+                    error,
+                    args,
+                })
+            }
+            _ => {
+                let expr = self.expr(0)?;
+                // A block's final statement may omit the `;` — it's the
+                // block's tail value (needed for `if`/`match` used as
+                // expressions, e.g. `if cond { v } else { v }`). Anywhere
+                // else, the `;` is required.
+                if self.at(TokenKind::RBrace) {
+                    return Some(Stmt::Expr(expr));
+                }
+                self.expect(TokenKind::Semi)?;
+                Some(Stmt::Expr(expr))
+            }
+        }
+    }
+
+    /// Precedence-climbing (Pratt) expression parser. `min_bp` is the
+    /// minimum left binding power an infix operator must have to be
+    /// consumed at this call depth.
+    fn expr(&mut self, min_bp: u8) -> Option<Expr> {
+        let mut lhs = self.expr_prefix()?;
+        loop {
+            let (op, l_bp, r_bp) = match self.peek().kind {
+                TokenKind::OrOr => (BinOp::Or, 1, 2),
+                TokenKind::AndAnd => (BinOp::And, 3, 4),
+                TokenKind::EqEq => (BinOp::Eq, 5, 6),
+                TokenKind::NotEq => (BinOp::NotEq, 5, 6),
+                TokenKind::Lt => (BinOp::Lt, 5, 6),
+                TokenKind::LtEq => (BinOp::LtEq, 5, 6),
+                TokenKind::Gt => (BinOp::Gt, 5, 6),
+                TokenKind::GtEq => (BinOp::GtEq, 5, 6),
+                TokenKind::Plus => (BinOp::Add, 7, 8),
+                TokenKind::Minus => (BinOp::Sub, 7, 8),
+                TokenKind::Star => (BinOp::Mul, 9, 10),
+                TokenKind::Slash => (BinOp::Div, 9, 10),
+                _ => break,
+            };
+            if l_bp < min_bp {
+                break;
+            }
+            self.bump();
+            let rhs = self.expr(r_bp)?;
+            let span = lhs.span().to(rhs.span());
+            lhs = Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+        Some(lhs)
+    }
+
+    /// Unary prefix operators (`!`, `-`), then postfix chains.
+    fn expr_prefix(&mut self) -> Option<Expr> {
+        if let Some(tok) = self.eat(TokenKind::Bang) {
+            let expr = self.expr_prefix()?;
+            let span = tok.span.to(expr.span());
+            return Some(Expr::Unary {
+                op: UnOp::Not,
+                expr: Box::new(expr),
+                span,
+            });
+        }
+        if let Some(tok) = self.eat(TokenKind::Minus) {
+            let expr = self.expr_prefix()?;
+            let span = tok.span.to(expr.span());
+            return Some(Expr::Unary {
+                op: UnOp::Neg,
+                expr: Box::new(expr),
+                span,
+            });
+        }
+        self.expr_postfix()
+    }
+
+    /// Postfix chain on an atom: `.field`, `[index]`, `(args)`, and
+    /// `{ field: value }` record construction/update. The `{` suffix is
+    /// skipped when `self.no_record_lit` is set (inside an `if` condition
+    /// or `match` scrutinee), mirroring how Rust disambiguates struct
+    /// literals from block openers in the same positions.
+    fn expr_postfix(&mut self) -> Option<Expr> {
+        let mut expr = self.expr_atom()?;
+        loop {
+            match self.peek().kind {
+                TokenKind::Dot => {
+                    self.bump();
+                    let field = self.expect_ident()?;
+                    let span = expr.span().to(field.span);
+                    expr = Expr::FieldAccess {
+                        base: Box::new(expr),
+                        field,
+                        span,
+                    };
+                }
+                TokenKind::LBracket => {
+                    self.bump();
+                    let index = self.expr(0)?;
+                    let close = self.expect(TokenKind::RBracket)?;
+                    let span = expr.span().to(close.span);
+                    expr = Expr::Index {
+                        base: Box::new(expr),
+                        index: Box::new(index),
+                        span,
+                    };
+                }
+                TokenKind::LParen => {
+                    self.bump();
+                    let mut args = Vec::new();
+                    if !self.at(TokenKind::RParen) {
+                        loop {
+                            args.push(self.expr(0)?);
+                            if self.eat(TokenKind::Comma).is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    let close = self.expect(TokenKind::RParen)?;
+                    let span = expr.span().to(close.span);
+                    expr = Expr::Call {
+                        callee: Box::new(expr),
+                        args,
+                        span,
+                    };
+                }
+                TokenKind::LBrace if !self.no_record_lit => {
+                    let (fields, close) = self.field_init_list()?;
+                    let span = expr.span().to(close);
+                    expr = Expr::RecordCons {
+                        base: Box::new(expr),
+                        fields,
+                        span,
+                    };
+                }
+                _ => break,
+            }
+        }
+        Some(expr)
+    }
+
+    /// `{ name: value, .. }` — the field list of a record
+    /// construction/update (v0.7).
+    fn field_init_list(&mut self) -> Option<(Vec<FieldInit>, ciac_diagnostics::Span)> {
+        let open = self.expect(TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        if !self.at(TokenKind::RBrace) {
+            loop {
+                let name = self.expect_ident()?;
+                self.expect(TokenKind::Colon)?;
+                let value = self.expr(0)?;
+                let span = name.span.to(value.span());
+                fields.push(FieldInit { name, value, span });
+                if self.eat(TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some((fields, open.span.to(close.span)))
+    }
+
+    /// An atom: literal, identifier, parenthesized expression, `if`, or
+    /// `match`.
+    fn expr_atom(&mut self) -> Option<Expr> {
+        match self.peek().kind {
+            TokenKind::Number => {
+                let tok = self.bump();
+                Some(Expr::Number {
+                    text: self.src[tok.span.range()].to_owned(),
+                    span: tok.span,
+                })
+            }
+            TokenKind::Str => {
+                let tok = self.bump();
+                Some(Expr::Str {
+                    value: unquote(&self.src[tok.span.range()]),
+                    span: tok.span,
+                })
+            }
+            TokenKind::True => {
+                let tok = self.bump();
+                Some(Expr::Bool {
+                    value: true,
+                    span: tok.span,
+                })
+            }
+            TokenKind::False => {
+                let tok = self.bump();
+                Some(Expr::Bool {
+                    value: false,
+                    span: tok.span,
+                })
+            }
+            TokenKind::Ident => Some(Expr::Ident(self.expect_ident()?)),
+            TokenKind::LParen => {
+                self.bump();
+                let inner = self.expr(0)?;
+                self.expect(TokenKind::RParen)?;
+                Some(inner)
+            }
+            TokenKind::If => self.if_expr(),
+            TokenKind::Match => self.match_expr(),
+            _ => {
+                self.error_expected("an expression");
+                None
+            }
+        }
+    }
+
+    /// `if <cond> { <stmts> } [else { <stmts> }]` (v0.7). `cond` is parsed
+    /// with record-literal syntax suppressed (see `expr_postfix`).
+    fn if_expr(&mut self) -> Option<Expr> {
+        let kw = self.bump();
+        self.no_record_lit = true;
+        let cond = self.expr(0);
+        self.no_record_lit = false;
+        let cond = cond?;
+        let (then_branch, then_end) = self.block()?;
+        let mut end = then_end;
+        let else_branch = if self.eat(TokenKind::Else).is_some() {
+            let (stmts, close) = self.block()?;
+            end = close;
+            Some(stmts)
+        } else {
+            None
+        };
+        Some(Expr::If {
+            span: kw.span.to(end),
+            cond: Box::new(cond),
+            then_branch,
+            else_branch,
+        })
+    }
+
+    /// `match <scrutinee> { Variant -> { <stmts> } _ -> { <stmts> } }`
+    /// (v0.7), reusing [`ArmLabel`] from the pipeline `match` step.
+    /// `scrutinee` is parsed with record-literal syntax suppressed.
+    fn match_expr(&mut self) -> Option<Expr> {
+        let kw = self.bump();
+        self.no_record_lit = true;
+        let scrutinee = self.expr(0);
+        self.no_record_lit = false;
+        let scrutinee = scrutinee?;
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Ident => {
+                    let label_ident = self.expect_ident()?;
+                    let label = if label_ident.text == "_" {
+                        ArmLabel::Default(label_ident.span)
+                    } else {
+                        ArmLabel::Variant(label_ident)
+                    };
+                    if self.expect(TokenKind::Arrow).is_none() {
+                        self.recover_inside_block();
+                        continue;
+                    }
+                    let Some((body, close)) = self.block() else {
+                        self.recover_inside_block();
+                        continue;
+                    };
+                    arms.push(ExprArm {
+                        span: label.span().to(close),
+                        label,
+                        body,
+                    });
+                }
+                _ => {
+                    self.error_expected("a match arm like `Ready -> { .. }` or `}`");
+                    self.recover_inside_block();
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some(Expr::Match {
+            span: kw.span.to(close.span),
+            scrutinee: Box::new(scrutinee),
+            arms,
+        })
+    }
+
+    /// `record <Name> { field: Type; .. }` or, when `kind` is
+    /// `RecordKind::Error`, `error <Name> { field: Type; .. }` (v0.7) —
+    /// identical field grammar, distinguished only by the leading keyword.
+    fn record_decl(&mut self, kind: RecordKind) -> Option<Item> {
         let kw = self.bump();
         let name = self.expect_ident()?;
         self.expect(TokenKind::LBrace)?;
@@ -490,6 +952,7 @@ impl Parser<'_> {
             span: kw.span.to(close.span),
             name,
             fields,
+            kind,
         }))
     }
 
@@ -1001,5 +1464,277 @@ mod tests {
     fn reports_missing_pipeline_steps() {
         let (_, diags) = parse_src("pipeline Upload: ;");
         assert_eq!(diags.codes(), vec![ErrorCode::UnexpectedToken]);
+    }
+
+    // -------------------------------------------------------------
+    // v0.7 M1: table, error records, handler bodies, extern, expressions.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn parses_table_decl() {
+        let (program, diags) = parse_src("table Videos: Video;");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Table(table) = &program.items[0] else {
+            panic!("expected table decl");
+        };
+        assert_eq!(table.name.text, "Videos");
+        assert_eq!(table.record.text, "Video");
+    }
+
+    #[test]
+    fn parses_error_record() {
+        let (program, diags) = parse_src("error NotFound { id: Uuid; }");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Record(decl) = &program.items[0] else {
+            panic!("expected record decl");
+        };
+        assert_eq!(decl.kind, RecordKind::Error);
+        assert_eq!(decl.fields.len(), 1);
+    }
+
+    #[test]
+    fn parses_plain_record_as_data_kind() {
+        let (program, diags) = parse_src("record Video { id: Uuid; }");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Record(decl) = &program.items[0] else {
+            panic!("expected record decl");
+        };
+        assert_eq!(decl.kind, RecordKind::Data);
+    }
+
+    #[test]
+    fn parses_classic_binding_handler_unchanged() {
+        let (program, diags) = parse_src("handler StoreVideo { db: main; cache: hot; }");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        assert_eq!(handler.bindings.len(), 2);
+        assert!(handler.params.is_empty());
+        assert!(handler.return_ty.is_none());
+        assert!(handler.body.is_none());
+        assert!(!handler.is_extern);
+    }
+
+    #[test]
+    fn parses_inline_body_handler() {
+        let (program, diags) = parse_src(
+            r#"handler StoreVideo(v: Video) -> Video {
+                   let key = "videos/" + v.id;
+                   object_store.put(key, v);
+                   return v { status: Ready };
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        assert!(handler.bindings.is_empty());
+        assert!(!handler.is_extern);
+        assert_eq!(handler.params.len(), 1);
+        assert_eq!(handler.params[0].name.text, "v");
+        assert!(matches!(&handler.return_ty, Some(TypeExpr::Named(t)) if t.text == "Video"));
+        let body = handler.body.as_ref().expect("inline body");
+        assert_eq!(body.len(), 3);
+        assert!(matches!(body[0], Stmt::Let { .. }));
+        assert!(matches!(body[1], Stmt::Expr(Expr::Call { .. })));
+        let Stmt::Return {
+            value: Some(Expr::RecordCons { .. }),
+            ..
+        } = &body[2]
+        else {
+            panic!("expected `return v {{ .. }}`, got {:?}", body[2]);
+        };
+    }
+
+    #[test]
+    fn parses_extern_handler_decl() {
+        let (program, diags) = parse_src("extern handler StoreVideo(v: Video) -> Video;");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        assert!(handler.is_extern);
+        assert!(handler.body.is_none());
+        assert_eq!(handler.params.len(), 1);
+        assert!(handler.return_ty.is_some());
+    }
+
+    #[test]
+    fn parses_extern_handler_inside_service_block() {
+        let (program, diags) = parse_src(
+            "service X {\n\
+                 use { db Postgres; }\n\
+                 extern handler StoreVideo(v: Video) -> Video;\n\
+             }",
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::ServiceBlock(block) = &program.items[0] else {
+            panic!("expected service block");
+        };
+        assert!(matches!(
+            block.items.last(),
+            Some(ServiceItem::Handler(h)) if h.is_extern
+        ));
+    }
+
+    #[test]
+    fn parses_binary_precedence() {
+        let (program, diags) = parse_src(
+            r#"handler F(a: Int) -> Int {
+                   let x = 1 + 2 * 3 == 7 && !false;
+                   return x;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let Some(Stmt::Let {
+            value: Expr::Binary { op: BinOp::And, .. },
+            ..
+        }) = handler.body.as_ref().and_then(|b| b.first())
+        else {
+            panic!("expected top-level `&&`, got {:?}", handler.body);
+        };
+    }
+
+    #[test]
+    fn parses_field_access_index_and_call_chain() {
+        let (program, diags) = parse_src(
+            r#"handler F(v: Video) -> Video {
+                   let a = v.meta["key"].len();
+                   return v;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let Some(Stmt::Let {
+            value: Expr::Call { callee, args, .. },
+            ..
+        }) = handler.body.as_ref().and_then(|b| b.first())
+        else {
+            panic!("expected a call expression");
+        };
+        assert!(args.is_empty());
+        assert!(matches!(callee.as_ref(), Expr::FieldAccess { .. }));
+    }
+
+    #[test]
+    fn parses_if_else_expression_without_record_lit_ambiguity() {
+        // The `{` after `v.ready` must open the `if`'s block, not a
+        // record-update on `v.ready` — this is exactly the ambiguity
+        // `no_record_lit` exists to resolve.
+        let (program, diags) = parse_src(
+            r#"handler F(v: Video) -> Video {
+                   let r = if v.ready { v } else { v };
+                   return r;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        assert!(matches!(
+            handler.body.as_ref().and_then(|b| b.first()),
+            Some(Stmt::Let {
+                value: Expr::If { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_record_cons_and_update() {
+        let (program, diags) = parse_src(
+            r#"handler F(v: Video) -> Video {
+                   let a = Video { id: Uuid.new(), title: "x" };
+                   return v { status: Ready };
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let body = handler.body.as_ref().unwrap();
+        let Stmt::Let {
+            value: Expr::RecordCons { fields, .. },
+            ..
+        } = &body[0]
+        else {
+            panic!("expected record construction");
+        };
+        assert_eq!(fields.len(), 2);
+        let Stmt::Return {
+            value: Some(Expr::RecordCons { base, fields, .. }),
+            ..
+        } = &body[1]
+        else {
+            panic!("expected record update");
+        };
+        assert!(matches!(base.as_ref(), Expr::Ident(id) if id.text == "v"));
+        assert_eq!(fields.len(), 1);
+    }
+
+    #[test]
+    fn parses_match_expression() {
+        let (program, diags) = parse_src(
+            r#"handler F(v: Video) -> Video {
+                   let r = match v.status {
+                       Ready -> { return v; }
+                       _ -> { return v; }
+                   };
+                   return r;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let Some(Stmt::Let {
+            value: Expr::Match { arms, .. },
+            ..
+        }) = handler.body.as_ref().and_then(|b| b.first())
+        else {
+            panic!("expected match expression");
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].label, ArmLabel::Variant(_)));
+        assert!(matches!(arms[1].label, ArmLabel::Default(_)));
+    }
+
+    #[test]
+    fn parses_fail_statement() {
+        let (program, diags) = parse_src(
+            r#"handler F(v: Video) -> Video {
+                   fail NotFound(v.id);
+                   return v;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let body = handler.body.as_ref().unwrap();
+        let Stmt::Fail { error, args, .. } = &body[0] else {
+            panic!("expected fail statement");
+        };
+        assert_eq!(error.text, "NotFound");
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn recovers_across_malformed_expression_statement() {
+        let (program, diags) = parse_src(
+            r#"handler F(v: Video) -> Video {
+                   let x = + ;
+                   return v;
+               }
+               service Y;"#,
+        );
+        assert!(!diags.is_empty());
+        assert!(matches!(program.items.last(), Some(Item::Service(_))));
     }
 }

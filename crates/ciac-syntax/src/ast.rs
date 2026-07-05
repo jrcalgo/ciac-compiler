@@ -35,6 +35,8 @@ pub enum Item {
     Record(RecordDecl),
     /// `stream <Name>: <Record>;` — a named, typed message channel.
     Stream(StreamDecl),
+    /// `table <Name>: <Record>;` — a named, typed persistent table (v0.7).
+    Table(TableDecl),
     /// `api <Name>[: <Record>];`
     Api(ApiDecl),
     /// `worker <Name> [on <Stream>];`
@@ -95,7 +97,17 @@ pub struct ComponentDecl {
 pub struct RecordDecl {
     pub name: Ident,
     pub fields: Vec<Field>,
+    pub kind: RecordKind,
     pub span: Span,
+}
+
+/// Distinguishes `record` (plain data) from `error` (v0.7) declarations.
+/// Both share the same field grammar; `error` records additionally back
+/// the `fail <ErrorName>` control-flow construct in handler bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RecordKind {
+    Data,
+    Error,
 }
 
 /// One `name: Type;` line of a record body.
@@ -127,6 +139,15 @@ pub struct StreamDecl {
     pub name: Ident,
     pub record: Ident,
     pub attrs: Vec<Attr>,
+    pub span: Span,
+}
+
+/// `table <Name>: <Record>;` — a named, typed persistent table (v0.7).
+/// `db.*` verbs in handler bodies operate on tables, not raw records.
+#[derive(Debug, Clone, Serialize)]
+pub struct TableDecl {
+    pub name: Ident,
+    pub record: Ident,
     pub span: Span,
 }
 
@@ -218,6 +239,20 @@ pub struct UseEntry {
 pub struct HandlerDecl {
     pub name: Ident,
     pub bindings: Vec<HandlerBinding>,
+    /// Typed parameters, e.g. `(v: Video)` (v0.7). Empty for the classic
+    /// binding-only form, which has no signature.
+    pub params: Vec<Param>,
+    /// The `-> Type` return type (v0.7). `None` for the classic form.
+    pub return_ty: Option<TypeExpr>,
+    /// The inline `{ <stmts> }` body (v0.7). `None` means this handler is
+    /// implemented out-of-band (today's stub behavior, or `extern`) —
+    /// existing bare `handler Name { .. }` programs always have `None`
+    /// here, so they parse identically to before v0.7.
+    pub body: Option<Vec<Stmt>>,
+    /// Declared via `extern handler Name(..) -> Type;` (v0.7): a typed
+    /// signature with a seeded, user-implemented body. `false` for both
+    /// the classic binding form and the new inline-body form.
+    pub is_extern: bool,
     pub span: Span,
 }
 
@@ -225,6 +260,14 @@ pub struct HandlerDecl {
 pub struct HandlerBinding {
     pub capability: Ident,
     pub instance: Ident,
+    pub span: Span,
+}
+
+/// One `name: Type` entry of a handler's parameter list (v0.7).
+#[derive(Debug, Clone, Serialize)]
+pub struct Param {
+    pub name: Ident,
+    pub ty: TypeExpr,
     pub span: Span,
 }
 
@@ -288,4 +331,175 @@ pub struct PipelineDecl {
     pub name: Ident,
     pub steps: Vec<StepExpr>,
     pub span: Span,
+}
+
+// ---------------------------------------------------------------------
+// v0.7 M1: the handler-body expression language. Purely syntactic: no
+// name resolution, no typing — `ciac-sema` (M2+) resolves verbs, checks
+// types, and lowers this into the typed HIR. Everything below mirrors the
+// existing "spans, no validation" contract this file states up top.
+// ---------------------------------------------------------------------
+
+/// One statement inside a handler body.
+#[derive(Debug, Clone, Serialize)]
+pub enum Stmt {
+    /// `let <name> = <expr>;` — single-assignment, block-scoped.
+    Let {
+        name: Ident,
+        value: Expr,
+        span: Span,
+    },
+    /// A bare expression statement, e.g. a capability verb call.
+    Expr(Expr),
+    /// `return <expr>?;`
+    Return { value: Option<Expr>, span: Span },
+    /// `fail <ErrorName>(<args>);` — an early, typed error response.
+    Fail {
+        error: Ident,
+        args: Vec<Expr>,
+        span: Span,
+    },
+}
+
+impl Stmt {
+    pub fn span(&self) -> Span {
+        match self {
+            Stmt::Let { span, .. } | Stmt::Return { span, .. } | Stmt::Fail { span, .. } => *span,
+            Stmt::Expr(expr) => expr.span(),
+        }
+    }
+}
+
+/// An expression inside a handler body.
+#[derive(Debug, Clone, Serialize)]
+pub enum Expr {
+    Ident(Ident),
+    /// A numeric literal, kept as source text — int/float distinction is
+    /// a typing concern, not a parsing one.
+    Number {
+        text: String,
+        span: Span,
+    },
+    Str {
+        value: String,
+        span: Span,
+    },
+    Bool {
+        value: bool,
+        span: Span,
+    },
+    /// `<base>.<field>` — also the receiver half of a verb/method call,
+    /// e.g. the `object_store.put` in `object_store.put(key, v)`.
+    FieldAccess {
+        base: Box<Expr>,
+        field: Ident,
+        span: Span,
+    },
+    /// `<base>[<index>]` — `Json` field indexing.
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+        span: Span,
+    },
+    /// `<callee>(<args>)` — a capability verb, or a builtin like
+    /// `Uuid.new()`; `callee` is typically a `FieldAccess`.
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// `<base> { field: value, .. }` — either full construction
+    /// (`Video { .. }`, `base` names a record type) or a functional
+    /// update (`v { status: Ready }`, `base` is a record-valued
+    /// expression). The two are syntactically identical — `base` is a
+    /// bare identifier either way — so telling them apart requires a
+    /// symbol table and is deferred to typeck (M2), not decided here.
+    RecordCons {
+        base: Box<Expr>,
+        fields: Vec<FieldInit>,
+        span: Span,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        span: Span,
+    },
+    Unary {
+        op: UnOp,
+        expr: Box<Expr>,
+        span: Span,
+    },
+    /// `if <cond> { <stmts> } [else { <stmts> }]`, usable as an expression.
+    If {
+        cond: Box<Expr>,
+        then_branch: Vec<Stmt>,
+        else_branch: Option<Vec<Stmt>>,
+        span: Span,
+    },
+    /// `match <scrutinee> { Variant -> { <stmts> } _ -> { <stmts> } }`,
+    /// reusing the pipeline `match`'s [`ArmLabel`] and exhaustiveness
+    /// machinery.
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<ExprArm>,
+        span: Span,
+    },
+}
+
+impl Expr {
+    pub fn span(&self) -> Span {
+        match self {
+            Expr::Ident(ident) => ident.span,
+            Expr::Number { span, .. }
+            | Expr::Str { span, .. }
+            | Expr::Bool { span, .. }
+            | Expr::FieldAccess { span, .. }
+            | Expr::Index { span, .. }
+            | Expr::Call { span, .. }
+            | Expr::RecordCons { span, .. }
+            | Expr::Binary { span, .. }
+            | Expr::Unary { span, .. }
+            | Expr::If { span, .. }
+            | Expr::Match { span, .. } => *span,
+        }
+    }
+}
+
+/// One `name: value` entry of a record literal or functional update.
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldInit {
+    pub name: Ident,
+    pub value: Expr,
+    pub span: Span,
+}
+
+/// One arm of an expression-position `match`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExprArm {
+    pub label: ArmLabel,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    And,
+    Or,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum UnOp {
+    Neg,
+    Not,
 }

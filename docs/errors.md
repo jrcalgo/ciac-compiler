@@ -44,6 +44,7 @@ test.
 | CIAC0035 | warning | orphaned generated file |
 | CIAC0036 | error | output directory has no manifest |
 | CIAC0037 | error | invalid cron expression |
+| CIAC0038 | error | inline handler bodies are not implemented yet |
 
 ## Notes
 
@@ -102,3 +103,8 @@ test.
   manifest; use a clean directory, `--force`, or `--adopt`.
 - **CIAC0037** means a job schedule is not a valid five-field cron
   expression.
+- **CIAC0038** means a handler uses the v0.7 typed signature or inline
+  body syntax (`handler Name(..) -> Type { .. }` or
+  `extern handler Name(..) -> Type;`); only the classic
+  `handler Name { capability: instance; .. }` binding form is implemented
+  so far — the typed HIR and emitters land in a later v0.7 milestone.

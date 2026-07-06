@@ -42,6 +42,21 @@ enum Command {
         /// writing sidecars for generated content that would replace them.
         #[arg(long)]
         adopt: bool,
+        /// Also emit Kubernetes manifests under `k8s/` (only accepted
+        /// value today: `k8s`). Compose remains the dev default; this
+        /// is additive production deployment posture.
+        #[arg(long, value_name = "TARGET")]
+        deploy: Option<String>,
+        /// Image name prefix for `--deploy k8s` manifests (default: the
+        /// project name). Build and push `{prefix}[-<service>]:<tag>`
+        /// from the generated `Dockerfile` before applying the
+        /// manifests — `ciac` emits the deployment shape, not a
+        /// registry pipeline.
+        #[arg(long)]
+        image_prefix: Option<String>,
+        /// Image tag for `--deploy k8s` manifests.
+        #[arg(long, default_value = "latest")]
+        image_tag: String,
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
@@ -123,8 +138,23 @@ fn run(cli: Cli) -> Result<ExitCode> {
             out,
             force,
             adopt,
+            deploy,
+            image_prefix,
+            image_tag,
             name,
-        } => commands::build(&file, &target, &out, force, adopt, name),
+        } => commands::build(
+            &file,
+            &target,
+            &out,
+            force,
+            adopt,
+            commands::DeployOpts {
+                deploy,
+                image_prefix,
+                image_tag,
+            },
+            name,
+        ),
         Command::Diff {
             file,
             target,

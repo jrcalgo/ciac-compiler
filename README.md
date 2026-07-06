@@ -220,12 +220,18 @@ never touches the language or its guarantees. See
 | Command | Purpose |
 |---------|---------|
 | `ciac check file.ciac` | Parse + validate, print diagnostics |
-| `ciac build file.ciac --target python\|rust --out DIR` | Generate a project |
+| `ciac build file.ciac --target python\|rust --out DIR [--deploy k8s]` | Generate a project, optionally with Kubernetes manifests |
 | `ciac diff file.ciac --target python\|rust --out DIR` | Preview regeneration drift |
-| `ciac verify file.ciac --target python\|rust --out DIR` | Check regeneration drift and generated project validity |
+| `ciac verify file.ciac --target python\|rust --out DIR [--system]` | Check regeneration drift and generated project validity, optionally running compose-backed system tests |
 | `ciac graph file.ciac --format json\|dot` | Dump the system graph |
 | `ciac explain CIAC0005` | Explain an error code |
 | `ciac targets` | List code-generation targets |
+
+Multi-file programs (`import "path";`) and reusable `blueprint`/`expand`
+templates are both accepted directly by `file.ciac` above — see
+[docs/blueprints.md](docs/blueprints.md). Deployment (compose, k8s, and
+`ciac verify --system`) is covered end to end in
+[docs/deployment.md](docs/deployment.md).
 
 ## Building from source
 
@@ -249,7 +255,7 @@ cargo run -p ciac -- check examples/video-platform.ciac
 | `crates/ciac-backend-rust` | Axum target |
 | `examples/` | valid example programs |
 | `tests/` | golden snapshots, negative suite, determinism tests |
-| `docs/` | [language](docs/language.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [regeneration](docs/regeneration.md) · [errors](docs/errors.md) |
+| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [regeneration](docs/regeneration.md) · [deployment](docs/deployment.md) · [errors](docs/errors.md) |
 
 ## License
 

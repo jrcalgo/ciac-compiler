@@ -10,7 +10,7 @@ Every build writes `.ciac/manifest.json` at the output root:
 
 ```json
 {
-  "compiler_version": "0.7.0",
+  "compiler_version": "0.8.0",
   "source_hash": "sha256...",
   "target": "python",
   "files": {
@@ -20,12 +20,24 @@ Every build writes `.ciac/manifest.json` at the output root:
   "tables": {
     "Videos": { "columns": [["id", "TEXT"], ["title", "TEXT"]] }
   },
-  "next_migration_seq": 2
+  "next_migration_seq": 2,
+  "records": {
+    "Video": { "fields": [["id", "Uuid"], ["title", "Str"]] }
+  }
 }
 ```
 
 Hashes are over the generated file content. The map is serialized in
 sorted order so manifest bytes are deterministic.
+
+`records` (v0.8 M5) snapshots the field shape of every record used
+across a service boundary — a `call` payload, or a stream published in
+one service and consumed in another — as of the last build. The next
+build diffs the current program's boundary records against it and
+refuses (`CIAC0051`) a removed or retyped field a live consumer still
+depends on; a record that never crosses a boundary (every record in a
+single-service program included) is never tracked. See
+`docs/deployment.md` and `crates/ciac-codegen/src/evolution.rs`.
 
 ## File roles
 

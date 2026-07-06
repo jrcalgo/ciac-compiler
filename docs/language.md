@@ -1,4 +1,4 @@
-# The CIaC Language (v0.7.0)
+# The CIaC Language (v0.8.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -24,14 +24,21 @@ program        = { item } ;
 item           = project-decl | service-decl | service-block
                | use-block | record-decl | table-decl | stream-decl
                | handler-decl | api-decl | worker-decl | job-decl
-               | channel-decl | crud-decl | events-decl | pipeline-decl ;
+               | channel-decl | crud-decl | events-decl | pipeline-decl
+               | import-decl | blueprint-decl | expand-stmt ;         (* v0.8 *)
 
 project-decl   = "project" IDENT ";" ;
 service-decl   = "service" IDENT ";" ;
 service-block  = "service" IDENT "{" { service-item } "}" ;
 service-item   = use-block | api-decl | worker-decl | job-decl
                | channel-decl | crud-decl | events-decl | handler-decl
-               | pipeline-decl ;
+               | pipeline-decl | expand-stmt ;                        (* v0.8 *)
+import-decl    = "import" STRING ";" ;                                (* v0.8 *)
+blueprint-decl = "blueprint" IDENT "<" IDENT ":" "record" ">"
+                 "{" "params" "{" { field } "}"
+                     { blueprint-item } "}" ;                         (* v0.8 *)
+blueprint-item = use-block | crud-decl | stream-decl | handler-decl ; (* v0.8 *)
+expand-stmt    = "expand" IDENT "<" IDENT ">" decl-tail ;              (* v0.8 *)
 use-block      = "use" "{" { use-entry } "}" ;
 use-entry      = IDENT IDENT ";"              (* capability provider *)
                | IDENT IDENT IDENT ";"        (* capability name provider *)
@@ -112,6 +119,27 @@ service UploadApi {
 Records and streams are project-global. Service-local declarations must
 live inside a service block once any service block is used (`CIAC0030`).
 Service names are project-global (`CIAC0026`).
+
+### `import "path";` (v0.8)
+
+Splices another file's items in, in place, at the position of the
+`import` — literal textual composition, not a symbol-table merge (the
+same file reached through two different import paths loads exactly
+once; a cycle is `CIAC0047`). By the time semantic analysis runs, a
+multi-file program is indistinguishable from one big file. Paths are
+relative to the importing file, except the reserved `std/` prefix
+(`import "std/crud.ciac";`), which resolves against a small blueprint
+library embedded in the compiler itself rather than the filesystem.
+See `docs/blueprints.md`.
+
+### `blueprint <Name><<R: record>> { .. }` and `expand <Name><<Concrete>> { .. };` (v0.8)
+
+A blueprint is a checked template over one record type, expanded with
+hygienic naming at every `expand` site — the DRY mechanism for
+patterns (audited CRUD, a webhook receiver shape) that would otherwise
+mean hand-copying the same few declarations per service. Full grammar,
+the hygiene rule, generic constraint checking, and the embedded `std`
+library are documented in `docs/blueprints.md`.
 
 ### `use { capability Provider; .. }`
 

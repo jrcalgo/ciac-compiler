@@ -58,17 +58,31 @@ pub fn check(file: &Path) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `--deploy k8s` and its two image-naming knobs, bundled since they
+/// only ever travel together from `ciac build`'s CLI args.
+pub struct DeployOpts {
+    pub deploy: Option<String>,
+    pub image_prefix: Option<String>,
+    pub image_tag: String,
+}
+
 pub fn build(
     file: &Path,
     target: &str,
     out: &Path,
     force: bool,
     adopt: bool,
+    deploy: DeployOpts,
     name: Option<String>,
 ) -> Result<ExitCode> {
     if force && adopt {
         bail!("--force and --adopt cannot be used together");
     }
+    let k8s_image = match deploy.deploy.as_deref() {
+        Some("k8s") => Some((deploy.image_prefix.as_deref(), deploy.image_tag.as_str())),
+        Some(other) => bail!("unknown --deploy target `{other}`; available: k8s"),
+        None => None,
+    };
 
     let Generated {
         backend,
@@ -77,7 +91,7 @@ pub fn build(
         tables,
         next_migration_seq,
         records,
-    } = generate(file, target, out, name)?;
+    } = generate(file, target, out, name, k8s_image)?;
 
     if force {
         if out.exists() {
@@ -173,7 +187,7 @@ pub fn diff(
     patch: bool,
     name: Option<String>,
 ) -> Result<ExitCode> {
-    let Generated { project, .. } = generate(file, target, out, name)?;
+    let Generated { project, .. } = generate(file, target, out, name, None)?;
     let manifest_file = manifest_path(out);
     let manifest = if manifest_file.exists() {
         Some(load_manifest(out).with_context(|| {
@@ -218,7 +232,7 @@ pub fn verify(
         tables,
         next_migration_seq,
         records,
-    } = generate(file, target, out, name)?;
+    } = generate(file, target, out, name, None)?;
     if live {
         eprintln!("warning: --live health probing is not implemented yet; running static verify");
     }
@@ -369,7 +383,13 @@ struct Generated {
     records: BTreeMap<String, RecordSchema>,
 }
 
-fn generate(file: &Path, target: &str, out: &Path, name: Option<String>) -> Result<Generated> {
+fn generate(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    name: Option<String>,
+    k8s_image: Option<(Option<&str>, &str)>,
+) -> Result<Generated> {
     let all = backends();
     let Some(index) = all.iter().position(|b| b.id() == target) else {
         let known: Vec<&str> = all.iter().map(|b| b.id()).collect();
@@ -412,6 +432,15 @@ fn generate(file: &Path, target: &str, out: &Path, name: Option<String>) -> Resu
     if let Some(files) = ciac_codegen::system_tests::build(&ir) {
         for (path, content) in files {
             project.add_file(format!("tests/system/{path}"), content);
+        }
+    }
+
+    // v0.8 M6: opt-in Kubernetes manifests (`ciac build --deploy k8s`).
+    // Compose remains the dev default and is always emitted by each
+    // backend above; this is additive production deployment posture.
+    if let Some((image_prefix, image_tag)) = k8s_image {
+        for (path, content) in ciac_codegen::k8s::build(&ir, image_prefix, image_tag) {
+            project.add_file(path, content);
         }
     }
 

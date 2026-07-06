@@ -99,6 +99,8 @@ impl Parser<'_> {
                     return;
                 }
                 TokenKind::Import
+                | TokenKind::Blueprint
+                | TokenKind::Expand
                 | TokenKind::Project
                 | TokenKind::Service
                 | TokenKind::Use
@@ -136,6 +138,8 @@ impl Parser<'_> {
     fn item(&mut self) -> Option<Item> {
         match self.peek().kind {
             TokenKind::Import => self.import_decl(),
+            TokenKind::Blueprint => self.blueprint_decl(),
+            TokenKind::Expand => self.expand_stmt(),
             TokenKind::Project => self.project_decl(),
             TokenKind::Service => self.service_item(),
             TokenKind::Use => self.use_block(),
@@ -237,10 +241,15 @@ impl Parser<'_> {
                         items.push(ServiceItem::Pipeline(item));
                     }
                 }
+                TokenKind::Expand => {
+                    if let Some(Item::Expand(item)) = self.expand_stmt() {
+                        items.push(ServiceItem::Expand(item));
+                    }
+                }
                 _ => {
                     self.error_expected(
                         "a service item (`use`, `api`, `worker`, `job`, `channel`, `crud`, `events`, \
-                         `handler`, `extern`, `pipeline`) or `}`",
+                         `handler`, `extern`, `pipeline`, `expand`) or `}`",
                     );
                     self.recover_inside_block();
                 }
@@ -381,6 +390,115 @@ impl Parser<'_> {
             span: kw.span.to(semi.span),
             name,
             record,
+        }))
+    }
+
+    /// `expand <Blueprint><<Record>> { field: value; .. };` (v0.8).
+    fn expand_stmt(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let blueprint = self.expect_ident()?;
+        self.expect(TokenKind::Lt)?;
+        let type_arg = self.expect_ident()?;
+        self.expect(TokenKind::Gt)?;
+        let (args, end) = self.decl_tail()?;
+        Some(Item::Expand(ExpandStmt {
+            span: kw.span.to(end),
+            blueprint,
+            type_arg,
+            args,
+        }))
+    }
+
+    /// `blueprint <Name><<TypeParam>: record> { params { .. } <body> }`
+    /// (v0.8). `body` accepts only `use`/`crud`/`stream`/`handler`/
+    /// `pipeline` — a deliberately narrower set than a full program's
+    /// items (see `BlueprintItem`).
+    fn blueprint_decl(&mut self) -> Option<Item> {
+        let kw = self.bump();
+        let name = self.expect_ident()?;
+        self.expect(TokenKind::Lt)?;
+        let type_param = self.expect_ident()?;
+        self.expect(TokenKind::Colon)?;
+        self.expect(TokenKind::Record)?;
+        self.expect(TokenKind::Gt)?;
+        self.expect(TokenKind::LBrace)?;
+
+        let mut params = Vec::new();
+        if self.at(TokenKind::Params) {
+            self.bump();
+            self.expect(TokenKind::LBrace)?;
+            loop {
+                match self.peek().kind {
+                    TokenKind::RBrace | TokenKind::Eof => break,
+                    TokenKind::Ident => {
+                        let field_name = self.expect_ident()?;
+                        if self.expect(TokenKind::Colon).is_none() {
+                            self.recover_inside_block();
+                            continue;
+                        }
+                        let Some(ty) = self.type_expr() else {
+                            self.recover_inside_block();
+                            continue;
+                        };
+                        let span = field_name.span.to(self.peek().span);
+                        if self.expect(TokenKind::Semi).is_none() {
+                            self.recover_inside_block();
+                            continue;
+                        }
+                        params.push(Field {
+                            name: field_name,
+                            ty,
+                            span,
+                        });
+                    }
+                    _ => {
+                        self.error_expected("a param like `prefix: String;` or `}`");
+                        self.recover_inside_block();
+                    }
+                }
+            }
+            self.expect(TokenKind::RBrace)?;
+        }
+
+        let mut body = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::RBrace | TokenKind::Eof => break,
+                TokenKind::Use => {
+                    if let Some(Item::Use(item)) = self.use_block() {
+                        body.push(BlueprintItem::Use(item));
+                    }
+                }
+                TokenKind::Crud => {
+                    if let Some(Item::Crud(item)) = self.crud_decl() {
+                        body.push(BlueprintItem::Crud(item));
+                    }
+                }
+                TokenKind::Stream => {
+                    if let Some(Item::Stream(item)) = self.stream_decl() {
+                        body.push(BlueprintItem::Stream(item));
+                    }
+                }
+                TokenKind::Handler => {
+                    if let Some(Item::Handler(item)) = self.handler_decl() {
+                        body.push(BlueprintItem::Handler(item));
+                    }
+                }
+                _ => {
+                    self.error_expected(
+                        "a blueprint item (`use`, `crud`, `stream`, `handler`) or `}`",
+                    );
+                    self.recover_inside_block();
+                }
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Some(Item::Blueprint(BlueprintDecl {
+            span: kw.span.to(close.span),
+            name,
+            type_param,
+            params,
+            body,
         }))
     }
 
@@ -1517,6 +1635,59 @@ mod tests {
             panic!("expected import decl");
         };
         assert_eq!(import.path, "records/video.ciac");
+    }
+
+    #[test]
+    fn parses_blueprint_decl() {
+        let (program, diags) = parse_src(
+            r#"
+            blueprint AuditedCrud<R: record> {
+                params { prefix: String; }
+                use { db main Postgres; }
+                crud Resource: R;
+                stream Audited: AuditEvent;
+                handler AfterWrite(r: R) -> R {
+                    return r;
+                }
+            }
+            "#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Blueprint(bp) = &program.items[0] else {
+            panic!("expected blueprint decl");
+        };
+        assert_eq!(bp.name.text, "AuditedCrud");
+        assert_eq!(bp.type_param.text, "R");
+        assert_eq!(bp.params.len(), 1);
+        assert_eq!(bp.params[0].name.text, "prefix");
+        assert_eq!(bp.body.len(), 4);
+        assert!(matches!(bp.body[0], BlueprintItem::Use(_)));
+        assert!(matches!(bp.body[1], BlueprintItem::Crud(_)));
+        assert!(matches!(bp.body[2], BlueprintItem::Stream(_)));
+        assert!(matches!(bp.body[3], BlueprintItem::Handler(_)));
+    }
+
+    #[test]
+    fn parses_expand_stmt() {
+        let (program, diags) = parse_src(r#"expand AuditedCrud<Video> { prefix: "/v1"; }"#);
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Expand(expand) = &program.items[0] else {
+            panic!("expected expand stmt");
+        };
+        assert_eq!(expand.blueprint.text, "AuditedCrud");
+        assert_eq!(expand.type_arg.text, "Video");
+        assert_eq!(expand.args.len(), 1);
+        assert_eq!(expand.args[0].name.text, "prefix");
+    }
+
+    #[test]
+    fn parses_bare_expand_stmt() {
+        let (program, diags) = parse_src("expand AuditedCrud<Video>;");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Expand(expand) = &program.items[0] else {
+            panic!("expected expand stmt");
+        };
+        assert!(expand.args.is_empty());
     }
 
     #[test]

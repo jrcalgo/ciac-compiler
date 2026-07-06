@@ -54,6 +54,9 @@ test.
 | CIAC0045 | warning | unused let binding |
 | CIAC0046 | error | unsupported schema change |
 | CIAC0047 | error | import cycle |
+| CIAC0048 | error | unknown blueprint |
+| CIAC0049 | error | blueprint arity mismatch |
+| CIAC0050 | error | blueprint constraint violation |
 
 ## Notes
 
@@ -139,3 +142,11 @@ test.
 - **CIAC0047** means a chain of `import "path";` declarations forms a
   cycle; move the shared declarations into a third file both sides
   import instead.
+- **CIAC0048** means `expand` names a blueprint that isn't declared (or
+  isn't imported); check the spelling and `import`s.
+- **CIAC0049** means an `expand` site's params don't match the
+  blueprint's declared `params { .. }` block — missing, unknown, or
+  wrong-typed.
+- **CIAC0050** means `expand`'s type argument isn't a declared
+  `record`; every v0.8 blueprint's type parameter is constrained to
+  `record`.

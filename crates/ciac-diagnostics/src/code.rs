@@ -430,6 +430,34 @@ error_codes! {
          can't be loaded. Break the cycle by moving the shared \
          declarations into a third file both sides import instead."
     ),
+    UnknownBlueprint = (
+        "CIAC0048",
+        Error,
+        "unknown blueprint",
+        "An `expand <Name><<Record>> { .. };` statement names a \
+         blueprint no `blueprint <Name><<TypeParam>: record> { .. }` \
+         declares. Check the spelling, or that the file declaring it is \
+         `import`ed."
+    ),
+    BlueprintArityMismatch = (
+        "CIAC0049",
+        Error,
+        "blueprint arity mismatch",
+        "An `expand` site's params don't match the blueprint's declared \
+         `params { .. }` block: a required param is missing, an unknown \
+         param name was given, or a param's value doesn't match its \
+         declared type. List exactly the params the blueprint declares, \
+         with values of the declared types."
+    ),
+    BlueprintConstraintViolation = (
+        "CIAC0050",
+        Error,
+        "blueprint constraint violation",
+        "An `expand <Name><<Arg>> { .. };` site's type argument doesn't \
+         name a declared `record`. Every v0.8 blueprint's type parameter \
+         is constrained to `record` (`<R: record>`) — pass a record name, \
+         not a table, primitive type, or undeclared identifier."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

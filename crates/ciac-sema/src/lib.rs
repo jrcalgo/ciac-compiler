@@ -13,6 +13,7 @@
 //! Every problem is reported through [`ciac_diagnostics::Diagnostics`];
 //! analysis never panics on user input.
 
+mod blueprints;
 mod build;
 pub mod passes;
 mod typeck;
@@ -27,7 +28,8 @@ use ciac_syntax::ast::Program;
 /// valid (warnings allowed, errors not). On error the graph is withheld so
 /// no downstream consumer can generate code from an invalid architecture.
 pub fn analyze(program: &Program, diags: &mut Diagnostics) -> Option<NormalizedIr> {
-    let graph = build::build_graph(program, diags);
+    let program = blueprints::expand(program, diags);
+    let graph = build::build_graph(&program, diags);
     for pass in passes::default_passes() {
         pass.run(&graph, diags);
     }

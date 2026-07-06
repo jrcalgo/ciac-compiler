@@ -154,6 +154,14 @@ impl<'d> Builder<'d> {
                     | Item::Record(_)
                     | Item::Stream(_)
                     | Item::Table(_) => {}
+                    // `blueprints::expand` (v0.8 M2) always runs before
+                    // `build_graph` and eliminates every `Blueprint`/
+                    // `Expand` item from its output — unlike `Import`
+                    // (resolved by a separate, optional pre-pass), a
+                    // caller cannot reach `build_graph` without it.
+                    Item::Blueprint(_) | Item::Expand(_) => {
+                        unreachable!("blueprints::expand did not eliminate this item")
+                    }
                 }
             }
             for item in &program.items {
@@ -338,6 +346,9 @@ impl<'d> Builder<'d> {
                 ServiceItem::Crud(decl) => self.crud(decl),
                 ServiceItem::Events(decl) => self.events(decl),
                 ServiceItem::Use(_) | ServiceItem::Handler(_) | ServiceItem::Pipeline(_) => {}
+                ServiceItem::Expand(_) => {
+                    unreachable!("blueprints::expand did not eliminate this item")
+                }
             }
         }
     }
@@ -1702,6 +1713,8 @@ fn attr_string(attrs: &[Attr], name: &str) -> Option<String> {
 fn item_span(item: &Item) -> Span {
     match item {
         Item::Import(decl) => decl.span,
+        Item::Blueprint(decl) => decl.span,
+        Item::Expand(decl) => decl.span,
         Item::Project(decl) => decl.span,
         Item::Service(decl) => decl.span,
         Item::ServiceBlock(decl) => decl.span,

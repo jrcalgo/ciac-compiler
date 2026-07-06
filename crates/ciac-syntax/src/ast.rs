@@ -28,6 +28,15 @@ pub enum Item {
     /// the program, so nothing downstream of the parser is aware
     /// multi-file programs exist. See `crate::module`.
     Import(ImportDecl),
+    /// `blueprint <Name><<TypeParam>: record> { .. }` (v0.8) — a
+    /// parameterized template, expanded per `expand` site rather than
+    /// processed directly; never reaches `ciac-sema`'s graph builder.
+    /// See `ciac_sema::blueprints`.
+    Blueprint(BlueprintDecl),
+    /// `expand <Blueprint><<Record>> { param: value; .. };` (v0.8) — at
+    /// top level (single-service programs); see `ServiceItem::Expand`
+    /// for the form inside a `service { .. }` block.
+    Expand(ExpandStmt),
     /// `project <Name>;` — names a multi-service project.
     Project(ProjectDecl),
     /// `service <Name>;` — names the system being described.
@@ -98,6 +107,54 @@ pub enum ServiceItem {
     Events(ComponentDecl),
     Handler(HandlerDecl),
     Pipeline(PipelineDecl),
+    /// `expand <Blueprint><<Record>> { .. };` (v0.8) inside a service
+    /// block. See `Item::Expand`.
+    Expand(ExpandStmt),
+}
+
+/// `blueprint <Name><<TypeParam>: record> { params { .. } <body> }`
+/// (v0.8). `type_param`'s only supported constraint is `record`
+/// (checked at each `expand` site, not here); `body` is deliberately
+/// narrower than the full item grammar — see `BlueprintItem`.
+#[derive(Debug, Clone, Serialize)]
+pub struct BlueprintDecl {
+    pub name: Ident,
+    pub type_param: Ident,
+    /// `params { name: Type; .. }` — scalar-only (mirrors `AttrValue`'s
+    /// closed `Ident | Number | Str` set: only `String`/`Int` field
+    /// types are meaningful here).
+    pub params: Vec<Field>,
+    pub body: Vec<BlueprintItem>,
+    pub span: Span,
+}
+
+/// The closed set of declarations a `blueprint` body may contain
+/// (v0.8 M2). Not the full `Item`/`ServiceItem` grammar: no nested
+/// `record`/`table`/`api`/`worker`/`job`/`channel`/`events`/
+/// `blueprint`/`expand`/`import` — a deliberate scope limit, not an
+/// oversight. No `pipeline` either: a blueprint body declares no
+/// `api`/`worker`/`job` of its own for one to attach to (`crud`
+/// expands to a complete REST resource on its own, with no pipeline
+/// involved); a pipeline that attaches to something in the *enclosing*
+/// scope belongs there, not inside the template.
+#[derive(Debug, Clone, Serialize)]
+pub enum BlueprintItem {
+    Use(UseBlock),
+    Crud(CrudDecl),
+    Stream(StreamDecl),
+    Handler(HandlerDecl),
+}
+
+/// `expand <Blueprint><<Record>> { field: value; .. };` (v0.8).
+/// `args` reuses the same attribute grammar as `crud { .. }`/`api {
+/// .. }` attribute blocks (`decl_tail`), so a bare `;` means no
+/// params.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExpandStmt {
+    pub blueprint: Ident,
+    pub type_arg: Ident,
+    pub args: Vec<Attr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]

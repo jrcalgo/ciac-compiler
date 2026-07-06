@@ -204,6 +204,7 @@ pub fn verify(
     target: &str,
     out: &Path,
     live: bool,
+    system: bool,
     name: Option<String>,
 ) -> Result<ExitCode> {
     let Generated {
@@ -265,7 +266,57 @@ pub fn verify(
         }
     }
 
-    validate_generated(out, backend.id())
+    let static_result = validate_generated(out, backend.id())?;
+    if static_result != ExitCode::SUCCESS || !system {
+        return Ok(static_result);
+    }
+    verify_system(out)
+}
+
+/// v0.8 M4: runs the compose-backed `tests/system/` suite
+/// (`ciac_codegen::system_tests`) `ciac verify --system` asks for. A
+/// no-op success when the program had no whole-system edges to test
+/// (`tests/system/` was never generated). Teardown always runs,
+/// regardless of whether `up` or the test run itself failed, so a
+/// failing `--system` run never leaves containers behind.
+fn verify_system(out: &Path) -> Result<ExitCode> {
+    let system_dir = out.join("tests/system");
+    if !system_dir.exists() {
+        eprintln!("info: no system-level edges to test; `--system` is a no-op here");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let compose_file = out.join("docker-compose.yml");
+    let up_result = Command::new("docker")
+        .arg("compose")
+        .arg("-f")
+        .arg(&compose_file)
+        .args(["up", "-d", "--wait"])
+        .status();
+
+    let result: Result<()> = match up_result {
+        Ok(status) if status.success() => run_in(&system_dir, "uv", &["sync", "-q"])
+            .and_then(|_| run_in(&system_dir, "uv", &["run", "pytest", "-q"])),
+        Ok(status) => Err(anyhow::anyhow!("docker compose up failed ({status})")),
+        Err(err) => Err(anyhow::anyhow!(
+            "cannot run `docker compose` ({err}); `ciac verify --system` requires Docker"
+        )),
+    };
+
+    let _ = Command::new("docker")
+        .arg("compose")
+        .arg("-f")
+        .arg(&compose_file)
+        .args(["down", "-v", "--remove-orphans"])
+        .status();
+
+    match result {
+        Ok(()) => Ok(ExitCode::SUCCESS),
+        Err(err) => {
+            eprintln!("error: system verification failed: {err:#}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
 }
 
 pub fn graph(file: &Path, format: &str) -> Result<ExitCode> {
@@ -344,6 +395,17 @@ fn generate(file: &Path, target: &str, out: &Path, name: Option<String>) -> Resu
 
     let opts = GenOptions { project_name: name };
     let mut project = backend.generate(&ir, &opts)?;
+
+    // v0.8 M4: compose-backed system tests, added the same way regardless
+    // of target — they exercise wire-level contracts (HTTP/NATS/WS), not
+    // target-language ones, so there's exactly one generator, not one per
+    // backend. `ciac verify --system` runs them; plain `ciac verify` never
+    // does (see `find_project_dirs`'s exclusion of `tests/system`).
+    if let Some(files) = ciac_codegen::system_tests::build(&ir) {
+        for (path, content) in files {
+            project.add_file(format!("tests/system/{path}"), content);
+        }
+    }
 
     let manifest_file = manifest_path(out);
     let previous = if manifest_file.exists() {
@@ -605,6 +667,16 @@ fn find_project_dirs(root: &Path, marker: &str) -> Result<Vec<std::path::PathBuf
                 if child.file_name().is_some_and(|name| {
                     name == ".git" || name == "target" || name == ".venv" || name == "__pycache__"
                 }) {
+                    continue;
+                }
+                // v0.8 M4: `tests/system/` is a compose-backed project run
+                // only by `ciac verify --system`, never by plain `ciac
+                // verify`'s per-service walk (it has no infra during a
+                // normal build/verify run, so trying to run its own
+                // pytest suite here would always fail).
+                if child.file_name().is_some_and(|name| name == "system")
+                    && path.file_name().is_some_and(|name| name == "tests")
+                {
                     continue;
                 }
                 walk(&child, marker, out)?;

@@ -18,6 +18,7 @@ pub mod migrations;
 pub mod model;
 mod project;
 pub mod regen;
+pub mod system_tests;
 pub mod template;
 
 pub use project::{FileRole, GeneratedProject};

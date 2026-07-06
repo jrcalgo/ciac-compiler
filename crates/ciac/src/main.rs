@@ -76,6 +76,12 @@ enum Command {
         /// Boot the generated service and probe `/health` (experimental).
         #[arg(long)]
         live: bool,
+        /// Run the generated `tests/system/` suite over a `docker
+        /// compose`-booted stack, proving cross-service edges (calls,
+        /// broker delivery, channels) actually work. Requires Docker;
+        /// a no-op when the program has no whole-system edges.
+        #[arg(long)]
+        system: bool,
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
@@ -131,8 +137,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             target,
             out,
             live,
+            system,
             name,
-        } => commands::verify(&file, &target, &out, live, name),
+        } => commands::verify(&file, &target, &out, live, system, name),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::Explain { code } => commands::explain(&code),
         Command::Targets => commands::targets(),

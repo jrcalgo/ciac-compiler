@@ -16,6 +16,12 @@ use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The `std` blueprint library (v0.8 M3), embedded at compile time —
+/// `import "std/<name>.ciac";` resolves against this table instead of
+/// the filesystem, a reserved namespace independent of the user's own
+/// directory layout or working directory.
+const STD_BLUEPRINTS: &[(&str, &str)] = &[("std/crud.ciac", include_str!("../std/crud.ciac"))];
+
 /// Parses `entry` and recursively resolves every `import "path";` it
 /// (transitively) contains into one flat [`Program`], registering each
 /// file's source text in `sources` as it's read so diagnostics render
@@ -76,6 +82,9 @@ fn resolve_file(
     let mut items = Vec::with_capacity(program.items.len());
     for item in program.items {
         match item {
+            Item::Import(import) if import.path.starts_with("std/") => {
+                items.extend(resolve_std(&import.path, sources, diags, loaded, stack)?);
+            }
             Item::Import(import) => {
                 let imported = dir.join(&import.path);
                 items.extend(resolve_file(
@@ -92,6 +101,76 @@ fn resolve_file(
     }
     stack.pop();
     loaded.insert(canonical);
+    Ok(items)
+}
+
+/// Resolves a `std/` import against [`STD_BLUEPRINTS`] instead of the
+/// filesystem — never touches `std::fs`, so it works regardless of the
+/// caller's cwd or directory layout. The virtual path string itself
+/// (e.g. `"std/crud.ciac"`) is used as the `loaded`/`stack` dedup key;
+/// it can never collide with a real file's key since [`resolve_file`]
+/// always canonicalizes those to absolute paths first.
+fn resolve_std(
+    path: &str,
+    sources: &mut SourceMap,
+    diags: &mut Diagnostics,
+    loaded: &mut BTreeSet<PathBuf>,
+    stack: &mut Vec<PathBuf>,
+) -> io::Result<Vec<Item>> {
+    let key = PathBuf::from(path);
+
+    if loaded.contains(&key) {
+        return Ok(Vec::new());
+    }
+    if let Some(pos) = stack.iter().position(|p| p == &key) {
+        let cycle = stack[pos..]
+            .iter()
+            .chain(std::iter::once(&key))
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        diags.push(Diagnostic::new(
+            ErrorCode::ImportCycle,
+            format!("import cycle: {cycle}"),
+        ));
+        return Ok(Vec::new());
+    }
+
+    let src = STD_BLUEPRINTS
+        .iter()
+        .find(|(name, _)| *name == path)
+        .map(|(_, src)| *src)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no such std blueprint '{path}'"),
+            )
+        })?;
+
+    let file_id = sources.add_file(path.to_string(), src.to_string());
+    let program = parse(src, file_id, diags);
+
+    stack.push(key.clone());
+    let mut items = Vec::with_capacity(program.items.len());
+    for item in program.items {
+        match item {
+            Item::Import(import) if import.path.starts_with("std/") => {
+                items.extend(resolve_std(&import.path, sources, diags, loaded, stack)?);
+            }
+            Item::Import(import) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "std blueprint '{path}' cannot import a real file ({})",
+                        import.path
+                    ),
+                ));
+            }
+            other => items.push(other),
+        }
+    }
+    stack.pop();
+    loaded.insert(key);
     Ok(items)
 }
 
@@ -220,6 +299,46 @@ mod tests {
 
         assert!(program.items.is_empty());
         assert_eq!(diags.codes(), vec![ErrorCode::ImportCycle]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn std_import_resolves_without_touching_the_filesystem() {
+        let dir = tmp("std-import");
+        let entry = write(
+            &dir,
+            "entry.ciac",
+            "import \"std/crud.ciac\";\nrecord Video { id: Uuid; }\n",
+        );
+
+        let mut sources = SourceMap::new();
+        let mut diags = Diagnostics::new();
+        let program = load(&entry, &mut sources, &mut diags).expect("loads");
+
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert!(
+            program
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Blueprint(_))),
+            "std/crud.ciac's Crud blueprint should be spliced in"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unknown_std_blueprint_is_a_clear_error() {
+        let dir = tmp("unknown-std");
+        let entry = write(&dir, "entry.ciac", "import \"std/nope.ciac\";\n");
+
+        let mut sources = SourceMap::new();
+        let mut diags = Diagnostics::new();
+        let err = load(&entry, &mut sources, &mut diags).expect_err("no such std blueprint");
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("std/nope.ciac"), "{err}");
 
         std::fs::remove_dir_all(&dir).ok();
     }

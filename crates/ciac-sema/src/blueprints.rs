@@ -229,13 +229,19 @@ fn instantiate(
         .map(|(name, value)| (name.to_owned(), value.clone()))
         .collect();
 
-    // Hygiene: every name the blueprint body declares gets suffixed
-    // with the concrete type argument's name, so two expansions of the
-    // same blueprint with different type args in the same scope never
-    // collide (the same blueprint expanded twice with the *same* type
-    // arg still collides — falls through to the ordinary duplicate-
-    // declaration check downstream, same as two hand-written
-    // declarations with the same name).
+    // Hygiene: a declared name that's also a declared `params` entry
+    // (e.g. `crud name: R;` alongside `params { name: String; }`) takes
+    // its literal param value verbatim — the caller asked for that
+    // exact name (this is what lets a blueprint faithfully wrap an
+    // existing primitive, e.g. `std/crud.ciac`, matching hand-written
+    // output exactly). Every other declared name gets suffixed with
+    // the concrete type argument's name instead, so two expansions of
+    // the same blueprint with different type args in the same scope
+    // never collide (the same blueprint expanded twice with the *same*
+    // type arg — or the same explicit param name twice — still
+    // collides, falling through to the ordinary duplicate-declaration
+    // check downstream, same as two hand-written declarations with the
+    // same name).
     let mut renames: HashMap<String, String> = HashMap::new();
     for item in &blueprint.body {
         let name = match item {
@@ -244,10 +250,11 @@ fn instantiate(
             BlueprintItem::Handler(d) => &d.name,
             BlueprintItem::Use(_) => continue,
         };
-        renames.insert(
-            name.text.clone(),
-            format!("{}{}", name.text, stmt.type_arg.text),
-        );
+        let replacement = match params.get(name.text.as_str()) {
+            Some(AttrValue::Str { value, .. }) => value.clone(),
+            _ => format!("{}{}", name.text, stmt.type_arg.text),
+        };
+        renames.insert(name.text.clone(), replacement);
     }
 
     Some(

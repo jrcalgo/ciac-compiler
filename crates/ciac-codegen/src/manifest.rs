@@ -1,3 +1,4 @@
+use crate::evolution::RecordSchema;
 use crate::migrations::TableSchema;
 use crate::{FileRole, GeneratedProject};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,13 @@ pub struct Manifest {
     /// The next migration file's sequence number.
     #[serde(default = "first_migration_seq")]
     pub next_migration_seq: u32,
+    /// v0.8 M5: field shape of every record used across a service
+    /// boundary as of the last build, keyed by record name — the "old"
+    /// side `ciac-codegen::evolution::diff_records` diffs the current
+    /// program's boundary records against on the next build. Defaulted
+    /// so manifests written before v0.8 M5 still deserialize.
+    #[serde(default)]
+    pub records: BTreeMap<String, RecordSchema>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +84,7 @@ pub fn build_manifest(
         files,
         tables: BTreeMap::new(),
         next_migration_seq: first_migration_seq(),
+        records: BTreeMap::new(),
     }
 }
 

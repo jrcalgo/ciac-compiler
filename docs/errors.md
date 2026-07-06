@@ -57,6 +57,7 @@ test.
 | CIAC0048 | error | unknown blueprint |
 | CIAC0049 | error | blueprint arity mismatch |
 | CIAC0050 | error | blueprint constraint violation |
+| CIAC0051 | error | breaking record change |
 
 ## Notes
 
@@ -150,3 +151,10 @@ test.
 - **CIAC0050** means `expand`'s type argument isn't a declared
   `record`; every v0.8 blueprint's type parameter is constrained to
   `record`.
+- **CIAC0051** means a record used across a service boundary (a `call`
+  payload, or a stream published in one service and consumed in
+  another) had a field removed or retyped since the last build — the
+  two services redeploy independently, so this would break wire
+  compatibility. Adding a field is always fine; revert the removal/
+  retype, or coordinate the change across every consumer named in the
+  error before rebuilding.

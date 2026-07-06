@@ -13,6 +13,7 @@
 //! * backends must not embed timestamps, absolute paths, or randomness;
 //! * IR iteration order is itself deterministic (declaration order).
 
+pub mod evolution;
 pub mod manifest;
 pub mod migrations;
 pub mod model;

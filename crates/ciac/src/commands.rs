@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use ciac_codegen::evolution::{diff_records, snapshot_boundary_records, RecordSchema};
 use ciac_codegen::manifest::{
     build_manifest, hash_bytes, load_manifest, manifest_path, write_manifest,
 };
@@ -75,6 +76,7 @@ pub fn build(
         source_hash,
         tables,
         next_migration_seq,
+        records,
     } = generate(file, target, out, name)?;
 
     if force {
@@ -97,6 +99,7 @@ pub fn build(
         );
         manifest.tables = tables;
         manifest.next_migration_seq = next_migration_seq;
+        manifest.records = records;
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     } else {
@@ -146,6 +149,7 @@ pub fn build(
         );
         manifest.tables = tables;
         manifest.next_migration_seq = next_migration_seq;
+        manifest.records = records;
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     }
@@ -213,6 +217,7 @@ pub fn verify(
         source_hash,
         tables,
         next_migration_seq,
+        records,
     } = generate(file, target, out, name)?;
     if live {
         eprintln!("warning: --live health probing is not implemented yet; running static verify");
@@ -230,6 +235,7 @@ pub fn verify(
         );
         manifest.tables = tables;
         manifest.next_migration_seq = next_migration_seq;
+        manifest.records = records;
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     } else {
@@ -351,14 +357,16 @@ pub fn targets() -> Result<ExitCode> {
 
 /// Result of [`generate`]: the backend used, the generated project (with
 /// any new migration file already injected), the source hash, and the
-/// table schema state callers must stamp onto the manifest they write
-/// (`tables` as of this build, `next_migration_seq` for the *next* one).
+/// table/record schema state callers must stamp onto the manifest they
+/// write (`tables` as of this build, `next_migration_seq` for the *next*
+/// one, `records` as of this build).
 struct Generated {
     backend: Box<dyn Backend>,
     project: GeneratedProject,
     source_hash: String,
     tables: BTreeMap<String, TableSchema>,
     next_migration_seq: u32,
+    records: BTreeMap<String, RecordSchema>,
 }
 
 fn generate(file: &Path, target: &str, out: &Path, name: Option<String>) -> Result<Generated> {
@@ -437,12 +445,26 @@ fn generate(file: &Path, target: &str, out: &Path, name: Option<String>) -> Resu
         }
     };
 
+    // v0.8 M5: a record used across a service boundary (a `call`
+    // payload, or a stream published in one service and consumed in
+    // another) must stay backward compatible between builds, since the
+    // two services redeploy independently.
+    let old_records = previous.map(|m| m.records).unwrap_or_default();
+    let new_records = snapshot_boundary_records(&ir);
+    if let Err(changes) = diff_records(&old_records, &new_records, &ir) {
+        for change in &changes {
+            eprintln!("error[{}]: {change}", ErrorCode::BreakingRecordChange);
+        }
+        bail!("breaking record change");
+    }
+
     Ok(Generated {
         backend,
         project,
         source_hash,
         tables: new_tables,
         next_migration_seq,
+        records: new_records,
     })
 }
 

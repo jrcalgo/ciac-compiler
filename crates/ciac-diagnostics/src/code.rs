@@ -458,6 +458,21 @@ error_codes! {
          is constrained to `record` (`<R: record>`) — pass a record name, \
          not a table, primitive type, or undeclared identifier."
     ),
+    BreakingRecordChange = (
+        "CIAC0051",
+        Error,
+        "breaking record change",
+        "A record used across a service boundary — a `call` payload, or \
+         a stream published in one service and consumed in another — \
+         had a field removed or retyped since the last build. The two \
+         services are redeployed independently, so this would break \
+         wire compatibility for whichever side hasn't rebuilt yet. The \
+         differ is additive-only, like `table` migrations: adding a \
+         field is fine, but removing or retyping one that a live \
+         consumer (named in the error) depends on is refused rather \
+         than guessed at. Revert the field, or coordinate the change \
+         across every consumer before rebuilding."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

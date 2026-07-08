@@ -12,12 +12,12 @@ use ciac_ir::{
     RealtimeProvider, RecordId, ServiceId, Step, StepKind,
 };
 use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The generated system: one deployable project per declared service, or
 /// a single unprefixed project for single-service programs.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SystemModel {
     /// System/project name, e.g. `media-system`.
     pub project_name: String,
@@ -35,7 +35,7 @@ pub struct SystemModel {
 }
 
 /// Root template context for one deployable project.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Ctx {
     /// Original service name, e.g. `VideoPlatform`.
     pub service_name: String,
@@ -108,7 +108,7 @@ pub struct Ctx {
 /// SQLAlchemy model: same field data as [`RecordCtx`], named after the
 /// table (not the record) so a record reused under several table names
 /// doesn't collide.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TableCtx {
     pub class_name: String,
     pub snake: String,
@@ -116,7 +116,7 @@ pub struct TableCtx {
 }
 
 /// A resolved record type.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RecordCtx {
     /// Type name in both targets, e.g. `Video`.
     pub name: String,
@@ -138,14 +138,14 @@ pub struct RecordCtx {
     pub enums: Vec<EnumCtx>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EnumCtx {
     /// e.g. `VideoStatus` for `record Video { status: enum { .. } }`.
     pub name: String,
     pub variants: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FieldCtx {
     pub name: String,
     /// Python annotation, e.g. `str`, `datetime`, `Literal["A", "B"]`.
@@ -164,7 +164,7 @@ pub struct FieldCtx {
 }
 
 /// The payload type a pipeline (and its handlers) carries.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PayloadRef {
     /// Record/class name, e.g. `Video`, identical in both targets.
     pub class_name: String,
@@ -173,7 +173,7 @@ pub struct PayloadRef {
 /// One named capability instance (db/cache), with every naming variant
 /// codegen needs. The legacy/`default` instance keeps the unsuffixed
 /// names so pre-v0.4 output is unchanged.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceCtx {
     /// Instance name as declared, e.g. `default`, `main`.
     pub name: String,
@@ -202,7 +202,7 @@ pub struct InstanceCtx {
 }
 
 /// One typed configuration field of an ontology capability instance.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CfgFieldCtx {
     /// Settings field name, e.g. `s3_endpoint_media`.
     pub field: String,
@@ -222,7 +222,7 @@ pub struct CfgFieldCtx {
 
 /// One instance of an ontology capability (object_store/email/search/
 /// external_http) with its generated-client wiring.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OntologyInstanceCtx {
     /// Instance name as declared, e.g. `default`, `media`.
     pub name: String,
@@ -247,7 +247,7 @@ pub struct OntologyInstanceCtx {
 }
 
 /// A capability client a handler receives beyond db/cache.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtraDepCtx {
     /// Capability kind, e.g. `object_store`.
     pub kind: String,
@@ -270,7 +270,7 @@ pub struct ExtraDepCtx {
 }
 
 /// A database session a route/worker needs for its handlers.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionCtx {
     /// Parameter/variable name, e.g. `session` / `session_main`.
     pub param: String,
@@ -281,7 +281,7 @@ pub struct SessionCtx {
 }
 
 /// An api with a request pipeline.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiCtx {
     pub name: String,
     pub snake: String,
@@ -312,7 +312,7 @@ pub struct ApiCtx {
 }
 
 /// A realtime route exposing a stream over WebSocket or SSE.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChannelCtx {
     pub name: String,
     pub snake: String,
@@ -323,16 +323,16 @@ pub struct ChannelCtx {
 }
 
 /// One `from app.<module> import <getter>` line a route/worker needs.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtraImportCtx {
     pub py_module: String,
     pub py_getter: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StepCtx {
     /// One of `auth`, `handler`, `publish`, `return`, `match`.
-    pub kind: &'static str,
+    pub kind: String,
     pub handler: Option<HandlerRef>,
     /// Subject of the published stream, for `publish` steps.
     pub subject: Option<String>,
@@ -341,7 +341,7 @@ pub struct StepCtx {
     pub arms: Vec<ArmCtx>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallCtx {
     pub service: String,
     pub api: String,
@@ -355,7 +355,7 @@ pub struct CallCtx {
 
 /// A downstream service this service invokes via `call <Service>.<Api>`:
 /// the compiler generates one typed HTTP client per target.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CallTargetCtx {
     /// Target service name, e.g. `Billing`.
     pub service: String,
@@ -380,7 +380,7 @@ pub struct CallTargetCtx {
 }
 
 /// One api of a call target, generated as a client method.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CallApiCtx {
     /// Api name, e.g. `Charge`.
     pub name: String,
@@ -394,14 +394,14 @@ pub struct CallApiCtx {
     pub payload: Option<PayloadRef>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ArmCtx {
     pub label: Option<String>,
     pub rust_variant: Option<String>,
     pub steps: Vec<StepCtx>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandlerRef {
     /// Class name, e.g. `StoreVideo`.
     pub class_name: String,
@@ -411,7 +411,7 @@ pub struct HandlerRef {
     /// handlers (seeded, user-owned), `logic` for v0.7 inline typed
     /// handlers (compiler-owned, lowered from the HIR). Shared by both
     /// backends (Python's `app.<package>`, Rust's `crate::<package>`).
-    pub handler_package: &'static str,
+    pub handler_package: String,
     pub needs_db: bool,
     pub needs_cache: bool,
     pub bindings: Vec<BindingCtx>,
@@ -430,7 +430,7 @@ pub struct HandlerRef {
     pub extras: Vec<ExtraDepCtx>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BindingCtx {
     pub kind: String,
     pub name: String,
@@ -440,7 +440,7 @@ pub struct BindingCtx {
 }
 
 /// A declared worker with (or without) a processing pipeline.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WorkerCtx {
     pub name: String,
     pub snake: String,
@@ -469,7 +469,7 @@ pub struct WorkerCtx {
 }
 
 /// A scheduled job with (or without) a processing pipeline.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct JobCtx {
     pub name: String,
     pub snake: String,
@@ -500,7 +500,7 @@ pub struct JobCtx {
 }
 
 /// A consumer generated from `events <Name>;`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ConsumerCtx {
     pub name: String,
     pub snake: String,
@@ -510,7 +510,7 @@ pub struct ConsumerCtx {
 }
 
 /// An implicit service handler module.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ServiceCtx {
     pub class_name: String,
     pub module: String,
@@ -528,7 +528,7 @@ pub struct ServiceCtx {
 }
 
 /// A CRUD resource from `crud <Name>;`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ResourceCtx {
     /// e.g. `Note`.
     pub name: String,
@@ -1494,7 +1494,7 @@ fn step_ctxs(
         .iter()
         .map(|step| match &step.kind {
             StepKind::Auth { .. } => StepCtx {
-                kind: "auth",
+                kind: "auth".to_owned(),
                 handler: None,
                 subject: None,
                 call: None,
@@ -1502,7 +1502,7 @@ fn step_ctxs(
                 arms: Vec::new(),
             },
             StepKind::Publish { stream } => StepCtx {
-                kind: "publish",
+                kind: "publish".to_owned(),
                 handler: None,
                 subject: Some(stream_subject(ir, *stream)),
                 call: None,
@@ -1510,7 +1510,7 @@ fn step_ctxs(
                 arms: Vec::new(),
             },
             StepKind::Return => StepCtx {
-                kind: "return",
+                kind: "return".to_owned(),
                 handler: None,
                 subject: None,
                 call: None,
@@ -1518,7 +1518,7 @@ fn step_ctxs(
                 arms: Vec::new(),
             },
             StepKind::Call { target } => StepCtx {
-                kind: "call",
+                kind: "call".to_owned(),
                 handler: None,
                 subject: None,
                 call: Some(call_ctx(ir, *target)),
@@ -1531,7 +1531,7 @@ fn step_ctxs(
                     handlers.push(handler.clone());
                 }
                 StepCtx {
-                    kind: "handler",
+                    kind: "handler".to_owned(),
                     handler: Some(handler),
                     subject: None,
                     call: None,
@@ -1540,7 +1540,7 @@ fn step_ctxs(
                 }
             }
             StepKind::Match { field, arms } => StepCtx {
-                kind: "match",
+                kind: "match".to_owned(),
                 handler: None,
                 subject: None,
                 call: None,
@@ -1596,7 +1596,7 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
     }
     HandlerRef {
         module: name.to_snake_case(),
-        handler_package,
+        handler_package: handler_package.to_owned(),
         class_name: name,
         needs_db: access.db.is_some(),
         needs_cache: access.cache_expr.is_some(),

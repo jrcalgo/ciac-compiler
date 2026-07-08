@@ -109,6 +109,20 @@ enum Command {
         #[arg(long, default_value = "json", value_parser = ["json", "dot"])]
         format: String,
     },
+    /// Dump the external-backend wire contract for a target, without
+    /// running any backend — a `ciac-backend-<name>` executable (not
+    /// yet implemented by any target) would receive this same JSON on
+    /// stdin.
+    CodegenRequest {
+        /// Path to the `.ciac` source file.
+        file: PathBuf,
+        /// Code-generation target this request would be built for.
+        #[arg(short, long)]
+        target: String,
+        /// Override the generated project's name.
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Explain an error code, e.g. `ciac explain CIAC0006`.
     Explain {
         /// The error code to explain.
@@ -171,6 +185,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             name,
         } => commands::verify(&file, &target, &out, live, system, name),
         Command::Graph { file, format } => commands::graph(&file, &format),
+        Command::CodegenRequest { file, target, name } => {
+            commands::codegen_request(&file, &target, name)
+        }
         Command::Explain { code } => commands::explain(&code),
         Command::Targets => commands::targets(),
     }

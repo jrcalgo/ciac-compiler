@@ -19,6 +19,7 @@ pub mod manifest;
 pub mod migrations;
 pub mod model;
 mod project;
+pub mod protocol;
 pub mod regen;
 pub mod system_tests;
 pub mod template;

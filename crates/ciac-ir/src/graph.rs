@@ -2,11 +2,21 @@ use crate::component::{Component, CrudConfig, NodeKind};
 use crate::hir::{Table, TableId};
 use crate::record::{Record, RecordId};
 use ciac_diagnostics::Span;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Index of a node in a [`SystemGraph`]. Stable for the life of the graph;
 /// nodes are never removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+///
+/// `Deserialize` (external-backend protocol M1): a transparent `u32`
+/// newtype with no domain semantics to leak, unlike e.g.
+/// `ciac_ir::FieldType` — safe to round-trip so `Ctx::typed_handlers`
+/// (`ciac-codegen/src/model.rs`), which embeds this directly, can
+/// serialize into the wire contract at all. Note for later milestones:
+/// that field's `NodeId`s are opaque without the `HandlerBody` HIR
+/// they point at (looked up from `NormalizedIr`, not carried in
+/// `SystemModel`) — an external backend can see *that* a typed
+/// handler exists but not what it does, yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeId(pub u32);
 

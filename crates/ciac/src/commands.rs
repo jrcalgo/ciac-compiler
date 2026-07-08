@@ -352,6 +352,23 @@ pub fn graph(file: &Path, format: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// v0.8 external-backend protocol M1: dumps the wire contract a
+/// `ciac-backend-<target>` executable would receive on stdin, without
+/// running any backend (no such executable exists yet — this is the
+/// request half only, for inspection). Read-only, like `graph`: no
+/// file writes, no manifest.
+pub fn codegen_request(file: &Path, target: &str, name: Option<String>) -> Result<ExitCode> {
+    let (ir, has_errors, _sources) = front_end(file)?;
+    let Some(ir) = ir.filter(|_| !has_errors) else {
+        return Ok(ExitCode::FAILURE);
+    };
+    let opts = GenOptions { project_name: name };
+    let system = ciac_codegen::model::build_system(&ir, &opts);
+    let request = ciac_codegen::protocol::CodegenRequest::new(target, opts.project_name, system);
+    println!("{}", serde_json::to_string_pretty(&request)?);
+    Ok(ExitCode::SUCCESS)
+}
+
 pub fn explain(code: &str) -> Result<ExitCode> {
     let Some(code) = ErrorCode::parse(code) else {
         bail!("unknown error code `{code}`; codes look like CIAC0001 (see docs/errors.md)");

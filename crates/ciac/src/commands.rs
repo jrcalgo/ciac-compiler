@@ -408,11 +408,16 @@ fn generate(
     k8s_image: Option<(Option<&str>, &str)>,
 ) -> Result<Generated> {
     let all = backends();
-    let Some(index) = all.iter().position(|b| b.id() == target) else {
-        let known: Vec<&str> = all.iter().map(|b| b.id()).collect();
-        bail!("unknown target `{target}`; available: {}", known.join(", "));
+    let backend: Box<dyn Backend> = match all.into_iter().find(|b| b.id() == target) {
+        Some(backend) => backend,
+        // v0.8 external-backend protocol M2: no built-in target
+        // matches, so try `ciac-backend-<target>` on $PATH before
+        // giving up — `ExternalBackend`'s own spawn error becomes the
+        // final "unknown target" message if nothing's actually there
+        // (see `ciac_codegen::external::spawn_error`), so there's no
+        // separate existence check (and no TOCTOU race) here.
+        None => Box::new(ciac_codegen::external::ExternalBackend::new(target)),
     };
-    let backend = all.into_iter().nth(index).expect("index was found");
 
     let (ir, has_errors, sources) = front_end(file)?;
     let Some(ir) = ir.filter(|_| !has_errors) else {

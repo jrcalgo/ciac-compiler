@@ -5,13 +5,15 @@
 //! round-trippable through JSON so a backend can, in principle, exist
 //! as an external process rather than a linked-in Rust crate.
 //!
-//! M1 defines the *request* half only (`ciac codegen-request` dumps
-//! it for inspection; nothing consumes it yet). The response half
-//! (`CodegenResponse`) and an actual `Backend` that shells out to an
-//! external executable are later milestones — see the plan history
-//! for why this is deliberately staged rather than built all at once.
+//! M1 defined the *request* half (`ciac codegen-request` dumps it for
+//! inspection). M2 adds the *response* half (`CodegenResponse`) — the
+//! shape an external `ciac-backend-<target>` process writes to its own
+//! stdout after reading a [`CodegenRequest`] from stdin. See
+//! [`crate::external::ExternalBackend`] for the process that actually
+//! speaks this protocol; this module only defines the wire shapes.
 
 use crate::model::SystemModel;
+use crate::FileRole;
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`SystemModel`]'s shape changes in a way that isn't
@@ -48,6 +50,28 @@ impl CodegenRequest {
             system,
         }
     }
+}
+
+/// What an external backend writes to its own stdout after reading a
+/// [`CodegenRequest`] from stdin: the generated file tree, in exactly
+/// the shape [`crate::GeneratedProject`] already uses internally, plus
+/// `protocol_version` so [`crate::external::ExternalBackend`] can
+/// refuse a response from a backend built against an incompatible
+/// contract instead of silently misinterpreting it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CodegenResponse {
+    pub protocol_version: u32,
+    pub files: Vec<ResponseFile>,
+    /// Mirrors [`crate::GeneratedProject::notes`].
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResponseFile {
+    pub path: String,
+    pub content: String,
+    pub role: FileRole,
 }
 
 #[cfg(test)]

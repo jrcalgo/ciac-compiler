@@ -1,0 +1,8 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph Ping {
+    rankdir=LR;
+    n0 [label="api Echo", shape=rarrow];
+}

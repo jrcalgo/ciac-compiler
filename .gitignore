@@ -23,3 +23,6 @@ __pycache__/
 
 # insta snapshot review leftovers
 *.snap.new
+
+# compiled external-backend binaries (backends/go/, etc.)
+/backends/go/ciac-backend-go

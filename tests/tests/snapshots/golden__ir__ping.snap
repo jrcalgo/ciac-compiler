@@ -1,0 +1,65 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "Ping",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "Ping"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Api",
+      "name": "Echo",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/echo",
+        "scope": null
+      }
+    }
+  ],
+  "edges": [],
+  "records": [
+    {
+      "name": "Message",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "text",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Echo",
+      "service": 0,
+      "owner": 0,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

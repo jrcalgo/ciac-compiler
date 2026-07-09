@@ -73,3 +73,44 @@ jobs:
             cargo run -q -p ciac -- verify "$src" --target rust --out "$out"
             echo "::endgroup::"
           done
+
+  # v0.9 M5: `ciac verify --system` actually runs, automatically — a
+  # real `docker compose up`, the generated tests/system/ suite (call
+  # reachability, broker delivery, channels, capability round-trips)
+  # against real containers, and a guaranteed teardown. Scoped to the
+  # system-bearing examples (not all of them) per the CI-time-budget
+  # risk in 09UpdatePlan.md; between them they exercise every generated
+  # system-test kind at least once. ubuntu-latest runners ship Docker +
+  # compose, so no extra setup step is needed.
+  generated-system:
+    name: System-verify multi-service examples (compose-backed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Build the compiler
+        run: cargo build -p ciac
+      # Python covers all three system-bearing examples; Rust covers
+      # only the smallest (a compose build of a Rust service compiles
+      # its whole crate tree inside an uncached container — running the
+      # 5-service media system that way would blow the job's time
+      # budget for no additional system-test coverage).
+      - name: System-verify each target
+        run: |
+          set -euo pipefail
+          run_system() {
+            local src="$1" target="$2"
+            local name; name="$(basename "$src" .ciac)"
+            local out="/tmp/gen-system-$target-$name"
+            echo "::group::$name ($target)"
+            cargo run -q -p ciac -- verify "$src" --target "$target" --out "$out" --system
+            echo "::endgroup::"
+          }
+          run_system examples/multi-service-media.ciac python
+          run_system examples/audited-crud.ciac python
+          run_system examples/inventory-system.ciac python
+          run_system examples/inventory-system.ciac rust

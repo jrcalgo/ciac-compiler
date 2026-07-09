@@ -1,14 +1,12 @@
 services:
-{%- for c in m.services %}
-
-  {{ c.dir }}:
-    build: ./{{ c.dir }}
+  app:
+    build: .
     ports:
-      - "{{ c.host_port }}:8000"
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
+      - "8000:8000"
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: postgres://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+      {{ inst.env_var }}: {{ backend.db_scheme }}://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
@@ -22,9 +20,6 @@ services:
 {%- for inst in c.search_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
       {{ f.env }}: {{ f.compose_value }}
 {%- endif %}{% endfor %}{% endfor %}
-{%- for t in c.call_targets %}
-      {{ t.env_var }}: http://{{ t.kebab }}:8000
-{%- endfor %}
 {%- if c.has_queue %}
       NATS_URL: nats://queue:4222
 {%- endif %}
@@ -55,13 +50,13 @@ services:
 {%- endif %}
 {%- if c.workers or c.jobs or c.consumers %}
 
-  {{ c.dir }}-workers:
-    build: ./{{ c.dir }}
-    command: ["workers"]
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
+  workers:
+    build: .
+    command: {{ backend.workers_command }}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: postgres://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+      {{ inst.env_var }}: {{ backend.db_scheme }}://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
@@ -75,9 +70,6 @@ services:
 {%- for inst in c.search_instances %}{% for f in inst.cfg %}{% if f.compose_value %}
       {{ f.env }}: {{ f.compose_value }}
 {%- endif %}{% endfor %}{% endfor %}
-{%- for t in c.call_targets %}
-      {{ t.env_var }}: http://{{ t.kebab }}:8000
-{%- endfor %}
 {%- if c.has_queue %}
       NATS_URL: nats://queue:4222
 {%- endif %}
@@ -102,8 +94,6 @@ services:
 {%- endif %}
 {%- endif %}
 {%- endif %}
-{%- endfor %}
-{%- for c in m.services %}
 {%- for inst in c.db_instances %}
 
   {{ inst.container }}:
@@ -135,7 +125,7 @@ services:
   {{ inst.container }}:
     image: axllent/mailpit
     ports:
-      - "{{ inst.host_port }}:8025"
+      - "{{ 8025 + loop.index0 }}:8025"
 {%- endfor %}
 {%- for inst in c.search_instances %}
 
@@ -145,21 +135,18 @@ services:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"
 {%- endfor %}
-{%- endfor %}
-{%- if m.has_queue %}
+{%- if c.has_queue %}
 
   queue:
     image: nats:2
 {%- endif %}
-{%- if m.has_db or m.has_object_store %}
+{%- if c.has_db or c.has_object_store %}
 
 volumes:
-{%- for c in m.services %}
 {%- for inst in c.db_instances %}
   {{ inst.container }}-data:
 {%- endfor %}
 {%- for inst in c.object_store_instances %}
   {{ inst.container }}-data:
-{%- endfor %}
 {%- endfor %}
 {%- endif %}

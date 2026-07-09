@@ -8,7 +8,7 @@ services:
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: postgresql+asyncpg://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+      {{ inst.env_var }}: {{ backend.db_scheme }}://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
@@ -57,11 +57,11 @@ services:
 
   {{ c.dir }}-workers:
     build: ./{{ c.dir }}
-    command: ["python", "-m", "app.workers"]
+    command: {{ backend.workers_command }}
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: postgresql+asyncpg://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+      {{ inst.env_var }}: {{ backend.db_scheme }}://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0

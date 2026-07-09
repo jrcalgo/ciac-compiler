@@ -29,6 +29,16 @@ use minijinja::context;
 
 static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
+/// This backend's two compose-file divergences (v0.9 M1): SQLx wants
+/// the plain `postgres` URL scheme, and workers start as the binary's
+/// `workers` subcommand. Everything else in the compose files is
+/// shared — see `ciac_codegen::compose`.
+const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
+    ciac_codegen::compose::BackendComposeOpts {
+        db_url_scheme: "postgres",
+        workers_command: r#"["workers"]"#,
+    };
+
 #[derive(Debug, Default)]
 pub struct RustBackend;
 
@@ -81,8 +91,7 @@ impl Backend for RustBackend {
             let m = minijinja::Value::from_serialize(&model);
             project.add_file(
                 "docker-compose.yml",
-                env.get_template("system-compose.yml.j2")?
-                    .render(context! { m => m })?,
+                ciac_codegen::compose::render_system_compose(&model, &COMPOSE_OPTS)?,
             );
             project.add_file(
                 "README.md",
@@ -171,7 +180,7 @@ fn emit_service(
     if !multi {
         project.add_file(
             at("docker-compose.yml"),
-            render("docker-compose.yml.j2", empty())?,
+            ciac_codegen::compose::render_service_compose(ctx, &COMPOSE_OPTS)?,
         );
     }
     project.add_file(at(".gitignore"), "/target\n");

@@ -73,25 +73,58 @@ call to make, the same way choosing a real image registry is.
   service, one broker StatefulSet); front it with whatever ingress
   controller and autoscaling policy your cluster already uses.
 
-## `ciac verify --system` (v0.8 M4)
+## `ciac verify --system` (v0.8 M4, extended v0.9)
 
 Compose and k8s both answer "can this be deployed"; `ciac verify
 --system` answers "does the deployed system actually work" — it boots
 the program's `docker-compose.yml` and runs a generated `tests/system/`
 pytest suite (always Python, regardless of build target, since it's
-exercising HTTP/NATS/WebSocket wire contracts rather than
-target-language ones) proving whole-system edges: every cross-service
-`call` is reachable, every single-hop publish→consume stream and
-channel actually delivers across the real broker.
+exercising HTTP/NATS/WebSocket/SQL wire contracts rather than
+target-language ones) proving whole-system behavior:
+
+- every cross-service `call` is reachable at the URL/path the caller
+  is configured to use;
+- every single-hop publish→consume stream and channel actually
+  delivers across the real broker;
+- **capability round-trips (v0.9 M2)**: every auth-less typed CRUD
+  resource is created through the real HTTP api, then read back
+  through a *second, independent* connection — asyncpg straight into
+  Postgres, and a direct Redis client for the cache entry after a
+  cached read — proving the write persisted to the infrastructure,
+  not just to app-process state. Compose maps each db/cache instance
+  to a unique host port (5432+, 6379+) so these direct connections
+  are possible from outside the compose network.
 
 ```sh
-ciac verify video-platform.ciac --target python --out ./video-platform --system
+ciac verify inventory-system.ciac --target python --out ./inventory --system
 ```
 
-Requires Docker; a no-op success when the program has no whole-system
-edges to test (single-service, no cross-service calls or streams).
-Plain `ciac verify` (no `--system`) never runs this suite and needs no
-infra — `tests/system/` is excluded from the per-service project walk
-`ciac verify` otherwise does. See `crates/ciac-codegen/src/system_tests.rs`
-for exactly which edges qualify and why (single-hop, non-auth-gated
-calls only — a disclosed, deliberate scoping, not an oversight).
+Requires Docker; a no-op success when the program has nothing
+system-level to test (no cross-service edges and no verifiable
+capabilities). Plain `ciac verify` (no `--system`) never runs this
+suite and needs no infra — `tests/system/` is excluded from the
+per-service project walk `ciac verify` otherwise does. See
+`crates/ciac-codegen/src/system_tests.rs` for exactly which edges and
+resources qualify and why (single-hop, non-auth-gated only — a
+disclosed, deliberate scoping, not an oversight).
+
+**This runs in CI on every push** (v0.9 M5): the `generated-system`
+job system-verifies the multi-service examples for real — a green
+checkmark means containers actually booted and the generated suite
+passed against them, not just that text snapshots matched.
+
+## `ciac verify --live` and `--keep` (v0.9 M3+M4)
+
+`--live` boots the generated compose stack and polls every service's
+`/health` route (bounded backoff, 60s budget), reporting per-service
+up/down — a fast "does it even start" smoke check without running the
+full system suite:
+
+```sh
+ciac verify app.ciac --target python --out ./app --live
+```
+
+`--keep` (with `--system` or `--live`) leaves a **green** stack
+running instead of tearing it down, and prints the
+`docker compose down` invocation to stop it — for poking at the live
+system after verification passes. A failing run always tears down.

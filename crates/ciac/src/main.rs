@@ -88,15 +88,23 @@ enum Command {
         /// Output directory containing the generated project.
         #[arg(short, long)]
         out: PathBuf,
-        /// Boot the generated service and probe `/health` (experimental).
+        /// Boot the generated compose stack and probe every service's
+        /// `/health` route until it answers (bounded backoff),
+        /// reporting per-service up/down. Requires Docker.
         #[arg(long)]
         live: bool,
         /// Run the generated `tests/system/` suite over a `docker
         /// compose`-booted stack, proving cross-service edges (calls,
-        /// broker delivery, channels) actually work. Requires Docker;
-        /// a no-op when the program has no whole-system edges.
+        /// broker delivery, channels) and capability round-trips
+        /// actually work. Requires Docker; a no-op when the program
+        /// has no whole-system edges or verifiable capabilities.
         #[arg(long)]
         system: bool,
+        /// Leave the compose stack running after a green `--system` or
+        /// `--live` run instead of tearing it down, for local poking.
+        /// A failing run always tears down.
+        #[arg(long)]
+        keep: bool,
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
@@ -182,8 +190,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             out,
             live,
             system,
+            keep,
             name,
-        } => commands::verify(&file, &target, &out, live, system, name),
+        } => commands::verify(&file, &target, &out, live, system, keep, name),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::CodegenRequest { file, target, name } => {
             commands::codegen_request(&file, &target, name)

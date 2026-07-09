@@ -223,6 +223,7 @@ pub fn verify(
     out: &Path,
     live: bool,
     system: bool,
+    keep: bool,
     name: Option<String>,
 ) -> Result<ExitCode> {
     let Generated {
@@ -233,9 +234,6 @@ pub fn verify(
         next_migration_seq,
         records,
     } = generate(file, target, out, name, None)?;
-    if live {
-        eprintln!("warning: --live health probing is not implemented yet; running static verify");
-    }
 
     if !output_dir_nonempty(out)? {
         project
@@ -287,19 +285,64 @@ pub fn verify(
     }
 
     let static_result = validate_generated(out, backend.id())?;
-    if static_result != ExitCode::SUCCESS || !system {
+    if static_result != ExitCode::SUCCESS {
         return Ok(static_result);
     }
-    verify_system(out)
+    if system {
+        let system_result = verify_system(out, keep)?;
+        if system_result != ExitCode::SUCCESS {
+            return Ok(system_result);
+        }
+    }
+    if live {
+        return verify_live(file, out, keep);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Boots the generated compose stack (`up -d --wait`), erroring out on
+/// a non-zero exit or a missing Docker binary.
+fn compose_up(compose_file: &Path) -> Result<()> {
+    let status = Command::new("docker")
+        .arg("compose")
+        .arg("-f")
+        .arg(compose_file)
+        .args(["up", "-d", "--wait"])
+        .status()
+        .map_err(|err| {
+            anyhow::anyhow!("cannot run `docker compose` ({err}); this step requires Docker")
+        })?;
+    if !status.success() {
+        anyhow::bail!("docker compose up failed ({status})");
+    }
+    Ok(())
+}
+
+/// Best-effort teardown of the generated compose stack — or, with
+/// `keep`, leaves it running and prints how to tear it down by hand.
+fn compose_down_or_keep(compose_file: &Path, keep: bool) {
+    if keep {
+        eprintln!(
+            "info: --keep: leaving the stack up; stop it with `docker compose -f {} down -v --remove-orphans`",
+            compose_file.display()
+        );
+        return;
+    }
+    let _ = Command::new("docker")
+        .arg("compose")
+        .arg("-f")
+        .arg(compose_file)
+        .args(["down", "-v", "--remove-orphans"])
+        .status();
 }
 
 /// v0.8 M4: runs the compose-backed `tests/system/` suite
 /// (`ciac_codegen::system_tests`) `ciac verify --system` asks for. A
 /// no-op success when the program had no whole-system edges to test
-/// (`tests/system/` was never generated). Teardown always runs,
-/// regardless of whether `up` or the test run itself failed, so a
-/// failing `--system` run never leaves containers behind.
-fn verify_system(out: &Path) -> Result<ExitCode> {
+/// (`tests/system/` was never generated). Teardown always runs on
+/// failure; on success, `--keep` (v0.9 M4) leaves the stack up for
+/// local poking.
+fn verify_system(out: &Path, keep: bool) -> Result<ExitCode> {
     let system_dir = out.join("tests/system");
     if !system_dir.exists() {
         eprintln!("info: no system-level edges to test; `--system` is a no-op here");
@@ -307,28 +350,14 @@ fn verify_system(out: &Path) -> Result<ExitCode> {
     }
 
     let compose_file = out.join("docker-compose.yml");
-    let up_result = Command::new("docker")
-        .arg("compose")
-        .arg("-f")
-        .arg(&compose_file)
-        .args(["up", "-d", "--wait"])
-        .status();
+    let result: Result<()> = compose_up(&compose_file).and_then(|()| {
+        run_in(&system_dir, "uv", &["sync", "-q"])
+            .and_then(|_| run_in(&system_dir, "uv", &["run", "pytest", "-q"]))
+    });
 
-    let result: Result<()> = match up_result {
-        Ok(status) if status.success() => run_in(&system_dir, "uv", &["sync", "-q"])
-            .and_then(|_| run_in(&system_dir, "uv", &["run", "pytest", "-q"])),
-        Ok(status) => Err(anyhow::anyhow!("docker compose up failed ({status})")),
-        Err(err) => Err(anyhow::anyhow!(
-            "cannot run `docker compose` ({err}); `ciac verify --system` requires Docker"
-        )),
-    };
-
-    let _ = Command::new("docker")
-        .arg("compose")
-        .arg("-f")
-        .arg(&compose_file)
-        .args(["down", "-v", "--remove-orphans"])
-        .status();
+    // `--keep` only applies to a green stack: a failed run always
+    // tears down so it never leaves broken containers behind.
+    compose_down_or_keep(&compose_file, keep && result.is_ok());
 
     match result {
         Ok(()) => Ok(ExitCode::SUCCESS),
@@ -337,6 +366,79 @@ fn verify_system(out: &Path) -> Result<ExitCode> {
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// v0.9 M3: `--live` health probing, replacing the long-standing stub.
+/// Boots the generated compose stack, polls every service's `/health`
+/// route with a bounded backoff, reports per-service up/down, and
+/// tears the stack down (unless `--keep`, on all-green).
+fn verify_live(file: &Path, out: &Path, keep: bool) -> Result<ExitCode> {
+    // Recompute the model for service names + host ports; the program
+    // compiled moments ago in `generate`, so this cannot newly fail.
+    let (ir, has_errors, _sources) = front_end(file)?;
+    let Some(ir) = ir.filter(|_| !has_errors) else {
+        anyhow::bail!("program stopped compiling between generate and --live probing");
+    };
+    let model = ciac_codegen::model::build_system(&ir, &GenOptions::default());
+    let services: Vec<(String, u16)> = model
+        .services
+        .iter()
+        .map(|ctx| (ctx.service_name.clone(), ctx.host_port))
+        .collect();
+
+    let compose_file = out.join("docker-compose.yml");
+    if let Err(err) = compose_up(&compose_file) {
+        eprintln!("error: --live probing failed: {err:#}");
+        return Ok(ExitCode::FAILURE);
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut all_healthy = true;
+    for (service, port) in &services {
+        let mut healthy = health_probe(*port);
+        while !healthy && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            healthy = health_probe(*port);
+        }
+        eprintln!(
+            "live: {service} (localhost:{port}/health) {}",
+            if healthy { "up" } else { "DOWN" }
+        );
+        all_healthy &= healthy;
+    }
+
+    compose_down_or_keep(&compose_file, keep && all_healthy);
+    Ok(if all_healthy {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// One `GET /health` over a plain TcpStream — a dependency-free probe
+/// is all a fixed, tiny request like this needs.
+fn health_probe(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let timeout = std::time::Duration::from_secs(2);
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, timeout) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(timeout)).is_err()
+        || stream.set_write_timeout(Some(timeout)).is_err()
+    {
+        return false;
+    }
+    let request =
+        format!("GET /health HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
 pub fn graph(file: &Path, format: &str) -> Result<ExitCode> {
@@ -761,4 +863,50 @@ fn find_project_dirs(root: &Path, marker: &str) -> Result<Vec<std::path::PathBuf
     walk(root, marker, &mut projects)?;
     projects.sort();
     Ok(projects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_probe;
+    use std::io::{Read, Write};
+
+    /// A minimal one-shot HTTP server on an ephemeral port, answering
+    /// every request with the given status line.
+    fn serve_once(status_line: &'static str) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral port");
+        let port = listener.local_addr().expect("bound").port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    format!("{status_line}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .as_bytes(),
+                );
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn health_probe_accepts_a_real_200() {
+        let port = serve_once("HTTP/1.1 200 OK");
+        assert!(health_probe(port));
+    }
+
+    #[test]
+    fn health_probe_rejects_a_500() {
+        let port = serve_once("HTTP/1.1 500 Internal Server Error");
+        assert!(!health_probe(port));
+    }
+
+    #[test]
+    fn health_probe_rejects_a_closed_port() {
+        // Bind-then-drop guarantees the port exists but nothing listens.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral port");
+            listener.local_addr().expect("bound").port()
+        };
+        assert!(!health_probe(port));
+    }
 }

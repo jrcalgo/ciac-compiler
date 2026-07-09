@@ -867,6 +867,8 @@ services:
 
   db:
     image: postgres:16
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: media
@@ -875,6 +877,8 @@ services:
 
   cache:
     image: redis:7
+    ports:
+      - "6379:6379"
 
   queue:
     image: nats:2

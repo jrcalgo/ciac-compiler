@@ -59,6 +59,31 @@ struct ChannelCheck {
     producer: Producer,
 }
 
+/// A typed, auth-less CRUD resource whose persistence can be verified
+/// through a second, independent connection (v0.9 M2): create via the
+/// real HTTP api, then read the row back directly from Postgres —
+/// and, when the resource caches reads, check the cache entry directly
+/// in Redis after a GET.
+struct CapabilityCheck {
+    service: String,
+    resource: String,
+    /// Route base and table name, e.g. `notes`.
+    plural: String,
+    /// The owning service's HTTP host port.
+    host_port: u16,
+    /// Create body with the server-generated `id` excluded.
+    sample_json: String,
+    /// Direct asyncpg DSN via the db instance's compose host port.
+    db_dsn: String,
+    /// Direct Redis probe when the resource caches reads.
+    cache: Option<CacheProbe>,
+}
+
+struct CacheProbe {
+    host_port: u16,
+    redis_db: u32,
+}
+
 /// Builds `tests/system/`'s file set from the validated IR. `None` when
 /// the graph has no whole-system edge worth generating a test for.
 pub fn build(ir: &NormalizedIr) -> Option<Vec<(String, String)>> {
@@ -68,8 +93,13 @@ pub fn build(ir: &NormalizedIr) -> Option<Vec<(String, String)>> {
     let call_checks = build_call_checks(ir, &system);
     let delivery_checks = build_delivery_checks(&system, &producers);
     let channel_checks = build_channel_checks(&system, &producers);
+    let capability_checks = build_capability_checks(ir, &system);
 
-    if call_checks.is_empty() && delivery_checks.is_empty() && channel_checks.is_empty() {
+    if call_checks.is_empty()
+        && delivery_checks.is_empty()
+        && channel_checks.is_empty()
+        && capability_checks.is_empty()
+    {
         return None;
     }
 
@@ -77,7 +107,12 @@ pub fn build(ir: &NormalizedIr) -> Option<Vec<(String, String)>> {
         ("conftest.py".to_string(), CONFTEST.to_string()),
         (
             "pyproject.toml".to_string(),
-            render_pyproject(!delivery_checks.is_empty(), !channel_checks.is_empty()),
+            render_pyproject(&PyprojectDeps {
+                nats: !delivery_checks.is_empty(),
+                websockets: !channel_checks.is_empty(),
+                asyncpg: !capability_checks.is_empty(),
+                redis: capability_checks.iter().any(|c| c.cache.is_some()),
+            }),
         ),
     ];
     if !call_checks.is_empty() {
@@ -93,6 +128,12 @@ pub fn build(ir: &NormalizedIr) -> Option<Vec<(String, String)>> {
         files.push((
             "test_channels.py".to_string(),
             render_channels(&channel_checks),
+        ));
+    }
+    if !capability_checks.is_empty() {
+        files.push((
+            "test_capabilities.py".to_string(),
+            render_capabilities(&capability_checks),
         ));
     }
     Some(files)
@@ -226,6 +267,67 @@ fn build_channel_checks(
     checks
 }
 
+/// The instance a resource's `key_arg` binds to: empty means the
+/// implicit `default` instance; otherwise the quoted instance name.
+fn bound_instance<'a>(
+    instances: &'a [crate::model::InstanceCtx],
+    key_arg: &str,
+) -> Option<&'a crate::model::InstanceCtx> {
+    if key_arg.is_empty() {
+        instances.iter().find(|inst| inst.is_default)
+    } else {
+        let name = key_arg.trim_matches('"');
+        instances.iter().find(|inst| inst.snake == name)
+    }
+}
+
+fn build_capability_checks(ir: &NormalizedIr, system: &SystemModel) -> Vec<CapabilityCheck> {
+    let mut checks = Vec::new();
+    for service in &system.services {
+        for resource in &service.resources {
+            if resource.has_auth {
+                continue; // no credentials to present; same as call checks.
+            }
+            let Some(record_ctx) = &resource.record else {
+                continue; // untyped keyed-document resource: no columns to verify.
+            };
+            let Some(db) = bound_instance(&service.db_instances, &resource.db_session.key_arg)
+            else {
+                continue;
+            };
+            let Some(record) = ir.find_record(&record_ctx.name).map(|id| ir.record(id)) else {
+                continue;
+            };
+            let cache = if resource.has_cache {
+                // `cache_expr` is `get_cache()` or `get_cache("name")`.
+                let key_arg = resource
+                    .cache_expr
+                    .trim_start_matches("get_cache(")
+                    .trim_end_matches(')');
+                bound_instance(&service.cache_instances, key_arg).map(|inst| CacheProbe {
+                    host_port: inst.host_port,
+                    redis_db: inst.redis_db,
+                })
+            } else {
+                None
+            };
+            checks.push(CapabilityCheck {
+                service: service.service_name.clone(),
+                resource: resource.snake.clone(),
+                plural: resource.plural.clone(),
+                host_port: service.host_port,
+                sample_json: sample_json_without_id(record),
+                db_dsn: format!(
+                    "postgresql://postgres:postgres@localhost:{}/{}",
+                    db.host_port, db.db_name
+                ),
+                cache,
+            });
+        }
+    }
+    checks
+}
+
 fn clone_producer(p: &Producer) -> Producer {
     Producer {
         host_port: p.host_port,
@@ -263,15 +365,40 @@ fn sample_json(record: &Record) -> String {
     serde_json::to_string(&serde_json::Value::Object(object)).expect("json map always serializes")
 }
 
+/// Create body for a typed CRUD resource: the `id` primary key is
+/// always server-generated, so the `<Name>In` schema excludes it.
+fn sample_json_without_id(record: &Record) -> String {
+    let object: serde_json::Map<String, serde_json::Value> = record
+        .fields
+        .iter()
+        .filter(|f| f.name != "id")
+        .map(|f| (f.name.clone(), sample_value(&f.ty)))
+        .collect();
+    serde_json::to_string(&serde_json::Value::Object(object)).expect("json map always serializes")
+}
+
 const CONFTEST: &str = "\"\"\"Pytest configuration. Generated by CIaC.\"\"\"\n\nimport pytest\n\n\n@pytest.fixture\ndef anyio_backend() -> str:\n    return \"asyncio\"\n";
 
-fn render_pyproject(needs_nats: bool, needs_ws: bool) -> String {
+struct PyprojectDeps {
+    nats: bool,
+    websockets: bool,
+    asyncpg: bool,
+    redis: bool,
+}
+
+fn render_pyproject(needs: &PyprojectDeps) -> String {
     let mut deps = vec!["\"pytest>=8.0\"", "\"anyio>=4.4\"", "\"httpx>=0.27\""];
-    if needs_nats {
+    if needs.nats {
         deps.push("\"nats-py>=2.7\"");
     }
-    if needs_ws {
+    if needs.websockets {
         deps.push("\"websockets>=12.0\"");
+    }
+    if needs.asyncpg {
+        deps.push("\"asyncpg>=0.29\"");
+    }
+    if needs.redis {
+        deps.push("\"redis>=5.0\"");
     }
     format!(
         "[project]\nname = \"system-tests\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = [\n{}\n]\n\n[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n\n[tool.hatch.build.targets.wheel]\nbypass-selection = true\n",
@@ -344,6 +471,41 @@ fn render_channels(checks: &[ChannelCheck]) -> String {
     out
 }
 
+fn render_capabilities(checks: &[CapabilityCheck]) -> String {
+    let any_cache = checks.iter().any(|c| c.cache.is_some());
+    let mut out = String::from(
+        "\"\"\"Generated by CIaC (v0.9 M2). Capability round-trip tests: creates\na record through the real HTTP api, then reads it back through a\nsecond, independent client connection (asyncpg straight into Postgres;\na direct Redis client for cached reads) — proving the write actually\npersisted to the infrastructure, not just to app-process state.\nRequires `ciac verify --system` (docker compose up).\n\"\"\"\n\nimport json\n\nimport asyncpg\nimport httpx\nimport pytest\n",
+    );
+    if any_cache {
+        out.push_str("import redis.asyncio as aioredis\n");
+    }
+    for check in checks {
+        let service_snake = to_snake(&check.service);
+        out.push_str(&format!(
+            "\n\n@pytest.mark.anyio\nasync def test_{service_snake}_{resource}_persists_to_postgres() -> None:\n    payload = json.loads('{sample}')\n    async with httpx.AsyncClient(base_url=\"http://localhost:{port}\") as client:\n        response = await client.post(\"/{plural}\", json=payload)\n    assert response.status_code == 201, response.text\n    row_id = response.json()[\"id\"]\n\n    conn = await asyncpg.connect(\"{dsn}\")\n    try:\n        row = await conn.fetchrow(\"SELECT id FROM {plural} WHERE id = $1\", row_id)\n    finally:\n        await conn.close()\n    assert row is not None, f\"created {{row_id}} not found in postgres\"\n",
+            service_snake = service_snake,
+            resource = check.resource,
+            sample = check.sample_json,
+            port = check.host_port,
+            plural = check.plural,
+            dsn = check.db_dsn,
+        ));
+        if let Some(cache) = &check.cache {
+            out.push_str(&format!(
+                "\n\n@pytest.mark.anyio\nasync def test_{service_snake}_{resource}_read_populates_redis() -> None:\n    payload = json.loads('{sample}')\n    async with httpx.AsyncClient(base_url=\"http://localhost:{port}\") as client:\n        response = await client.post(\"/{plural}\", json=payload)\n        assert response.status_code == 201, response.text\n        row_id = response.json()[\"id\"]\n        got = await client.get(f\"/{plural}/{{row_id}}\")\n    assert got.status_code == 200, got.text\n\n    client = aioredis.Redis(host=\"localhost\", port={cache_port}, db={redis_db})\n    try:\n        cached = await client.get(f\"{plural}:{{row_id}}\")\n    finally:\n        await client.aclose()\n    assert cached is not None, f\"read of {{row_id}} did not populate the cache\"\n",
+                service_snake = service_snake,
+                resource = check.resource,
+                sample = check.sample_json,
+                port = check.host_port,
+                plural = check.plural,
+                cache_port = cache.host_port,
+                redis_db = cache.redis_db,
+            ));
+        }
+    }
+    out
+}
+
 fn to_snake(name: &str) -> String {
     use heck::ToSnakeCase;
     name.to_snake_case()
@@ -399,6 +561,52 @@ service Transcoder {
         assert!(names.contains(&"test_calls.py"));
         assert!(names.contains(&"test_delivery.py"));
         assert!(!names.contains(&"test_channels.py"));
+    }
+
+    #[test]
+    fn authless_typed_crud_generates_capability_round_trips() {
+        let ir = compile(
+            "service Catalog;\nuse { db Postgres; cache Redis; }\nrecord Item { id: Uuid; name: String; }\ncrud Item: Item;\n",
+        );
+        let files = build(&ir).expect("auth-less typed crud qualifies");
+        let caps = files
+            .iter()
+            .find(|(p, _)| p == "test_capabilities.py")
+            .map(|(_, c)| c)
+            .expect("test_capabilities.py generated");
+        assert!(
+            caps.contains("test_catalog_item_persists_to_postgres"),
+            "{caps}"
+        );
+        assert!(
+            caps.contains("test_catalog_item_read_populates_redis"),
+            "{caps}"
+        );
+        // Second, independent connections: direct DSN + direct Redis.
+        assert!(
+            caps.contains("postgresql://postgres:postgres@localhost:5432/catalog"),
+            "{caps}"
+        );
+        assert!(caps.contains("port=6379, db=0"), "{caps}");
+        // Create body excludes the server-generated id.
+        assert!(caps.contains(r#"json.loads('{"name":"test"}')"#), "{caps}");
+        let (_, pyproject) = files
+            .iter()
+            .find(|(p, _)| p == "pyproject.toml")
+            .expect("pyproject");
+        assert!(pyproject.contains("asyncpg"), "{pyproject}");
+        assert!(pyproject.contains("redis"), "{pyproject}");
+    }
+
+    #[test]
+    fn auth_gated_typed_crud_generates_no_capability_tests() {
+        let ir = compile(
+            "service Catalog;\nuse { auth JWT; db Postgres; }\nrecord Item { id: Uuid; name: String; }\ncrud Item: Item;\n",
+        );
+        assert!(
+            build(&ir).is_none(),
+            "auth-gated crud has no credentials to present"
+        );
     }
 
     #[test]

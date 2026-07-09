@@ -887,6 +887,8 @@ services:
 
   db-main:
     image: postgres:16
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: media_ops_main
@@ -895,6 +897,8 @@ services:
 
   db-analytics:
     image: postgres:16
+    ports:
+      - "5433:5432"
     environment:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: media_ops_analytics
@@ -903,6 +907,8 @@ services:
 
   cache-hot:
     image: redis:7
+    ports:
+      - "6379:6379"
 
   minio-media:
     image: minio/minio

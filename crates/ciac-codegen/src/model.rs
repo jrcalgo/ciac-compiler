@@ -199,6 +199,11 @@ pub struct InstanceCtx {
     /// Argument for `get_sessionmaker(..)` / `get_cache(..)`:
     /// empty for the default instance, else `"name"` (quoted).
     pub key_arg: String,
+    /// Host port docker-compose maps for this instance (v0.9 M2), so
+    /// the generated system tests can reach it directly from the host:
+    /// 5432, 5433, .. for db instances, 6379, 6380, .. for caches —
+    /// unique across the whole system, assigned by [`build_system`].
+    pub host_port: u16,
 }
 
 /// One typed configuration field of an ontology capability instance.
@@ -575,6 +580,22 @@ pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
         for inst in &mut ctx.email_instances {
             inst.host_port = Some(mail_port);
             mail_port += 1;
+        }
+    }
+    // Same for db/cache host ports (v0.9 M2): compose maps each
+    // instance to a unique host port so the generated system tests can
+    // verify persistence through a second, independent connection —
+    // not just through the app that wrote the data.
+    let mut db_port = 5432;
+    let mut cache_port = 6379;
+    for ctx in &mut services {
+        for inst in &mut ctx.db_instances {
+            inst.host_port = db_port;
+            db_port += 1;
+        }
+        for inst in &mut ctx.cache_instances {
+            inst.host_port = cache_port;
+            cache_port += 1;
         }
     }
     SystemModel {
@@ -1137,6 +1158,10 @@ fn instance_ctx(
         is_default,
         snake,
         url_field,
+        // Placeholder: real, system-wide-unique ports are assigned by
+        // `build_system`'s post-pass (same treatment as mailpit UI
+        // ports), since uniqueness spans services.
+        host_port: 0,
     }
 }
 

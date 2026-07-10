@@ -14,6 +14,7 @@
 
 use crate::model::SystemModel;
 use crate::FileRole;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever [`SystemModel`]'s shape changes in a way that isn't
@@ -23,9 +24,22 @@ use serde::{Deserialize, Serialize};
 /// actually depends on it.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The full wire contract as one JSON Schema document (v0.10 M2):
+/// `protocol_version` plus schemas for both halves, derived from the
+/// same types that serialize the real payloads so it cannot drift.
+/// `ciac codegen-schema` prints this; `docs/protocol-schema.json` is
+/// it checked in, held identical by an integration test.
+pub fn schema_document() -> serde_json::Value {
+    serde_json::json!({
+        "protocol_version": PROTOCOL_VERSION,
+        "request": schemars::schema_for!(CodegenRequest),
+        "response": schemars::schema_for!(CodegenResponse),
+    })
+}
+
 /// Everything an external backend needs to generate a project for one
 /// `--target`, serialized as the request payload.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CodegenRequest {
     pub protocol_version: u32,
     /// The `--target` name the request was built for (informational at
@@ -58,7 +72,7 @@ impl CodegenRequest {
 /// `protocol_version` so [`crate::external::ExternalBackend`] can
 /// refuse a response from a backend built against an incompatible
 /// contract instead of silently misinterpreting it.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CodegenResponse {
     pub protocol_version: u32,
     pub files: Vec<ResponseFile>,
@@ -67,7 +81,7 @@ pub struct CodegenResponse {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ResponseFile {
     pub path: String,
     pub content: String,

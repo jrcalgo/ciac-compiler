@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 ciac-diagnostics.workspace = true
+schemars.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

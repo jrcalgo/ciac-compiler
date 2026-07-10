@@ -117,6 +117,12 @@ enum Command {
         #[arg(long, default_value = "json", value_parser = ["json", "dot"])]
         format: String,
     },
+    /// Print the JSON Schema for the external-backend wire contract
+    /// (`CodegenRequest` on the child's stdin, `CodegenResponse` on
+    /// its stdout) — derived from the same types that serialize the
+    /// real payloads. `docs/protocol-schema.json` is this output,
+    /// checked in.
+    CodegenSchema,
     /// Dump the external-backend wire contract for a target, without
     /// running any backend — a `ciac-backend-<name>` executable (not
     /// yet implemented by any target) would receive this same JSON on
@@ -194,6 +200,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             name,
         } => commands::verify(&file, &target, &out, live, system, keep, name),
         Command::Graph { file, format } => commands::graph(&file, &format),
+        Command::CodegenSchema => commands::codegen_schema(),
         Command::CodegenRequest { file, target, name } => {
             commands::codegen_request(&file, &target, name)
         }

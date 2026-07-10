@@ -471,6 +471,19 @@ pub fn codegen_request(file: &Path, target: &str, name: Option<String>) -> Resul
     Ok(ExitCode::SUCCESS)
 }
 
+/// v0.10 M2: prints the JSON Schema for the external-backend wire
+/// contract — derived from the same Rust types that serialize the real
+/// payloads, so it cannot drift from what `ciac` actually sends and
+/// accepts. `docs/protocol-schema.json` is this output checked in,
+/// held identical by an integration test.
+pub fn codegen_schema() -> Result<ExitCode> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&ciac_codegen::protocol::schema_document())?
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 pub fn explain(code: &str) -> Result<ExitCode> {
     let Some(code) = ErrorCode::parse(code) else {
         bail!("unknown error code `{code}`; codes look like CIAC0001 (see docs/errors.md)");

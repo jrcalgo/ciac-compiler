@@ -12,12 +12,13 @@ use ciac_ir::{
     RealtimeProvider, RecordId, ServiceId, Step, StepKind,
 };
 use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The generated system: one deployable project per declared service, or
 /// a single unprefixed project for single-service programs.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SystemModel {
     /// System/project name, e.g. `media-system`.
     pub project_name: String,
@@ -35,7 +36,7 @@ pub struct SystemModel {
 }
 
 /// Root template context for one deployable project.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Ctx {
     /// Original service name, e.g. `VideoPlatform`.
     pub service_name: String,
@@ -108,7 +109,7 @@ pub struct Ctx {
 /// SQLAlchemy model: same field data as [`RecordCtx`], named after the
 /// table (not the record) so a record reused under several table names
 /// doesn't collide.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TableCtx {
     pub class_name: String,
     pub snake: String,
@@ -116,7 +117,7 @@ pub struct TableCtx {
 }
 
 /// A resolved record type.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RecordCtx {
     /// Type name in both targets, e.g. `Video`.
     pub name: String,
@@ -138,7 +139,7 @@ pub struct RecordCtx {
     pub enums: Vec<EnumCtx>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EnumCtx {
     /// e.g. `VideoStatus` for `record Video { status: enum { .. } }`.
     pub name: String,
@@ -153,7 +154,7 @@ pub struct EnumCtx {
 /// set, but lives here so the wire contract doesn't depend on IR
 /// types, and carries the *generated* enum type name rather than raw
 /// variants alone.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FieldTypeKind {
     Str,
@@ -170,7 +171,7 @@ pub enum FieldTypeKind {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FieldCtx {
     pub name: String,
     /// Language-neutral type, for backends with no dedicated
@@ -192,7 +193,7 @@ pub struct FieldCtx {
 }
 
 /// The payload type a pipeline (and its handlers) carries.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PayloadRef {
     /// Record/class name, e.g. `Video`, identical in both targets.
     pub class_name: String,
@@ -201,7 +202,7 @@ pub struct PayloadRef {
 /// One named capability instance (db/cache), with every naming variant
 /// codegen needs. The legacy/`default` instance keeps the unsuffixed
 /// names so pre-v0.4 output is unchanged.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InstanceCtx {
     /// Instance name as declared, e.g. `default`, `main`.
     pub name: String,
@@ -235,7 +236,7 @@ pub struct InstanceCtx {
 }
 
 /// One typed configuration field of an ontology capability instance.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CfgFieldCtx {
     /// Settings field name, e.g. `s3_endpoint_media`.
     pub field: String,
@@ -255,7 +256,7 @@ pub struct CfgFieldCtx {
 
 /// One instance of an ontology capability (object_store/email/search/
 /// external_http) with its generated-client wiring.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OntologyInstanceCtx {
     /// Instance name as declared, e.g. `default`, `media`.
     pub name: String,
@@ -280,7 +281,7 @@ pub struct OntologyInstanceCtx {
 }
 
 /// A capability client a handler receives beyond db/cache.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExtraDepCtx {
     /// Capability kind, e.g. `object_store`.
     pub kind: String,
@@ -303,7 +304,7 @@ pub struct ExtraDepCtx {
 }
 
 /// A database session a route/worker needs for its handlers.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionCtx {
     /// Parameter/variable name, e.g. `session` / `session_main`.
     pub param: String,
@@ -314,7 +315,7 @@ pub struct SessionCtx {
 }
 
 /// An api with a request pipeline.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ApiCtx {
     pub name: String,
     pub snake: String,
@@ -345,7 +346,7 @@ pub struct ApiCtx {
 }
 
 /// A realtime route exposing a stream over WebSocket or SSE.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ChannelCtx {
     pub name: String,
     pub snake: String,
@@ -356,13 +357,13 @@ pub struct ChannelCtx {
 }
 
 /// One `from app.<module> import <getter>` line a route/worker needs.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ExtraImportCtx {
     pub py_module: String,
     pub py_getter: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StepCtx {
     /// One of `auth`, `handler`, `publish`, `return`, `match`.
     pub kind: String,
@@ -374,7 +375,7 @@ pub struct StepCtx {
     pub arms: Vec<ArmCtx>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CallCtx {
     pub service: String,
     pub api: String,
@@ -388,7 +389,7 @@ pub struct CallCtx {
 
 /// A downstream service this service invokes via `call <Service>.<Api>`:
 /// the compiler generates one typed HTTP client per target.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CallTargetCtx {
     /// Target service name, e.g. `Billing`.
     pub service: String,
@@ -413,7 +414,7 @@ pub struct CallTargetCtx {
 }
 
 /// One api of a call target, generated as a client method.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CallApiCtx {
     /// Api name, e.g. `Charge`.
     pub name: String,
@@ -427,14 +428,14 @@ pub struct CallApiCtx {
     pub payload: Option<PayloadRef>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ArmCtx {
     pub label: Option<String>,
     pub rust_variant: Option<String>,
     pub steps: Vec<StepCtx>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HandlerRef {
     /// Class name, e.g. `StoreVideo`.
     pub class_name: String,
@@ -463,7 +464,7 @@ pub struct HandlerRef {
     pub extras: Vec<ExtraDepCtx>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct BindingCtx {
     pub kind: String,
     pub name: String,
@@ -473,7 +474,7 @@ pub struct BindingCtx {
 }
 
 /// A declared worker with (or without) a processing pipeline.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerCtx {
     pub name: String,
     pub snake: String,
@@ -502,7 +503,7 @@ pub struct WorkerCtx {
 }
 
 /// A scheduled job with (or without) a processing pipeline.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct JobCtx {
     pub name: String,
     pub snake: String,
@@ -533,7 +534,7 @@ pub struct JobCtx {
 }
 
 /// A consumer generated from `events <Name>;`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ConsumerCtx {
     pub name: String,
     pub snake: String,
@@ -543,7 +544,7 @@ pub struct ConsumerCtx {
 }
 
 /// An implicit service handler module.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ServiceCtx {
     pub class_name: String,
     pub module: String,
@@ -561,7 +562,7 @@ pub struct ServiceCtx {
 }
 
 /// A CRUD resource from `crud <Name>;`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ResourceCtx {
     /// e.g. `Note`.
     pub name: String,

@@ -16,7 +16,19 @@ use serde::{Deserialize, Serialize};
 /// they point at (looked up from `NormalizedIr`, not carried in
 /// `SystemModel`) — an external backend can see *that* a typed
 /// handler exists but not what it does, yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct NodeId(pub u32);
 

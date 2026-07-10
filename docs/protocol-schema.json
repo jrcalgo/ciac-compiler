@@ -1,0 +1,1774 @@
+{
+  "protocol_version": 1,
+  "request": {
+    "$defs": {
+      "ApiCtx": {
+        "description": "An api with a request pipeline.",
+        "properties": {
+          "call_imports": {
+            "description": "Deduplicated service clients the route invokes, for imports.",
+            "items": {
+              "$ref": "#/$defs/CallCtx"
+            },
+            "type": "array"
+          },
+          "db_imports": {
+            "description": "Comma-joined dependency names for the `from app.db import ..` line.",
+            "type": "string"
+          },
+          "db_sessions": {
+            "description": "Distinct database sessions the route must inject, in first-use order.",
+            "items": {
+              "$ref": "#/$defs/SessionCtx"
+            },
+            "type": "array"
+          },
+          "extra_imports": {
+            "description": "Deduplicated ontology getters the route imports, per module.",
+            "items": {
+              "$ref": "#/$defs/ExtraImportCtx"
+            },
+            "type": "array"
+          },
+          "handlers": {
+            "description": "Deduplicated handlers, in invocation order, for imports.",
+            "items": {
+              "$ref": "#/$defs/HandlerRef"
+            },
+            "type": "array"
+          },
+          "has_auth_step": {
+            "type": "boolean"
+          },
+          "has_body": {
+            "type": "boolean"
+          },
+          "has_publish_step": {
+            "type": "boolean"
+          },
+          "method_lower": {
+            "type": "string"
+          },
+          "method_upper": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "needs_cache": {
+            "type": "boolean"
+          },
+          "needs_db": {
+            "description": "Whether any invoked handler needs a database session / cache client.",
+            "type": "boolean"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PayloadRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Typed request payload; `None` = untyped JSON body."
+          },
+          "route": {
+            "description": "Route path, e.g. `/upload`.",
+            "type": "string"
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snake": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/StepCtx"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "route",
+          "method_upper",
+          "method_lower",
+          "has_body",
+          "steps",
+          "has_auth_step",
+          "has_publish_step",
+          "needs_db",
+          "needs_cache",
+          "db_sessions",
+          "db_imports",
+          "extra_imports",
+          "call_imports",
+          "handlers"
+        ],
+        "type": "object"
+      },
+      "ArmCtx": {
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rust_variant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/StepCtx"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "type": "object"
+      },
+      "BindingCtx": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "py_attr": {
+            "type": "string"
+          },
+          "rust_field": {
+            "type": "string"
+          },
+          "snake": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "snake",
+          "py_attr",
+          "rust_field"
+        ],
+        "type": "object"
+      },
+      "CallApiCtx": {
+        "description": "One api of a call target, generated as a client method.",
+        "properties": {
+          "has_body": {
+            "type": "boolean"
+          },
+          "http_method_lower": {
+            "description": "HTTP method for the request, e.g. `post`.",
+            "type": "string"
+          },
+          "method": {
+            "description": "Client method name, e.g. `charge`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Api name, e.g. `Charge`.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Route path, e.g. `/charge`.",
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PayloadRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "method",
+          "http_method_lower",
+          "path",
+          "has_body"
+        ],
+        "type": "object"
+      },
+      "CallCtx": {
+        "properties": {
+          "api": {
+            "type": "string"
+          },
+          "class_name": {
+            "description": "Client class/struct name, e.g. `BillingClient`.",
+            "type": "string"
+          },
+          "method": {
+            "description": "Client method, e.g. `charge`.",
+            "type": "string"
+          },
+          "module": {
+            "description": "Client module under `app/clients` / `src/clients`, e.g. `billing`.",
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "api",
+          "module",
+          "class_name",
+          "method"
+        ],
+        "type": "object"
+      },
+      "CallTargetCtx": {
+        "description": "A downstream service this service invokes via `call <Service>.<Api>`:\nthe compiler generates one typed HTTP client per target.",
+        "properties": {
+          "apis": {
+            "items": {
+              "$ref": "#/$defs/CallApiCtx"
+            },
+            "type": "array"
+          },
+          "class_name": {
+            "description": "Client class/struct, e.g. `BillingClient`.",
+            "type": "string"
+          },
+          "default_url": {
+            "description": "Development default: the target's host port from the system\ncompose mapping, e.g. `http://localhost:8000`.",
+            "type": "string"
+          },
+          "env_var": {
+            "description": "Environment variable, e.g. `BILLING_URL`.",
+            "type": "string"
+          },
+          "kebab": {
+            "description": "Compose DNS name of the target's app container, e.g. `billing`.",
+            "type": "string"
+          },
+          "module": {
+            "description": "Client module, e.g. `billing`.",
+            "type": "string"
+          },
+          "needs_any": {
+            "description": "Any called api lacks a typed payload (drives dict/Any signatures).",
+            "type": "boolean"
+          },
+          "schema_imports": {
+            "description": "Record class names the client file imports.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "service": {
+            "description": "Target service name, e.g. `Billing`.",
+            "type": "string"
+          },
+          "url_field": {
+            "description": "Settings/Config field holding the base URL, e.g. `billing_url`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "module",
+          "kebab",
+          "class_name",
+          "url_field",
+          "env_var",
+          "default_url",
+          "schema_imports",
+          "needs_any",
+          "apis"
+        ],
+        "type": "object"
+      },
+      "CfgFieldCtx": {
+        "description": "One typed configuration field of an ontology capability instance.",
+        "properties": {
+          "compose_value": {
+            "description": "Value wired into docker-compose (container DNS), when it differs\nfrom the development default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "description": "Environment variable, e.g. `S3_ENDPOINT_MEDIA`.",
+            "type": "string"
+          },
+          "field": {
+            "description": "Settings field name, e.g. `s3_endpoint_media`.",
+            "type": "string"
+          },
+          "py_ann": {
+            "description": "Python annotation: `str`, `int`, or `bool`.",
+            "type": "string"
+          },
+          "py_default": {
+            "description": "Python default literal, e.g. `\"http://localhost:9000\"`, `1025`.",
+            "type": "string"
+          },
+          "rust_default": {
+            "description": "Rust default literal (all ontology config is `String` in Rust;\nnumeric/bool values are parsed at the use site).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "env",
+          "py_ann",
+          "py_default",
+          "rust_default"
+        ],
+        "type": "object"
+      },
+      "ChannelCtx": {
+        "description": "A realtime route exposing a stream over WebSocket or SSE.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PayloadRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "snake": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "path",
+          "subject",
+          "provider"
+        ],
+        "type": "object"
+      },
+      "ConsumerCtx": {
+        "description": "A consumer generated from `events <Name>;`.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "needs_db": {
+            "type": "boolean"
+          },
+          "queue_group": {
+            "type": "string"
+          },
+          "snake": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "subject",
+          "queue_group",
+          "needs_db"
+        ],
+        "type": "object"
+      },
+      "Ctx": {
+        "description": "Root template context for one deployable project.",
+        "properties": {
+          "apis": {
+            "items": {
+              "$ref": "#/$defs/ApiCtx"
+            },
+            "type": "array"
+          },
+          "cache_instances": {
+            "items": {
+              "$ref": "#/$defs/InstanceCtx"
+            },
+            "type": "array"
+          },
+          "call_targets": {
+            "description": "Downstream services invoked via `call`, one typed client each.",
+            "items": {
+              "$ref": "#/$defs/CallTargetCtx"
+            },
+            "type": "array"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/$defs/ChannelCtx"
+            },
+            "type": "array"
+          },
+          "consumers": {
+            "items": {
+              "$ref": "#/$defs/ConsumerCtx"
+            },
+            "type": "array"
+          },
+          "db_instances": {
+            "items": {
+              "$ref": "#/$defs/InstanceCtx"
+            },
+            "type": "array"
+          },
+          "dir": {
+            "description": "Output subdirectory (kebab service name) in multi-service\nsystems; empty for single-service programs.",
+            "type": "string"
+          },
+          "email_instances": {
+            "items": {
+              "$ref": "#/$defs/OntologyInstanceCtx"
+            },
+            "type": "array"
+          },
+          "events_subject": {
+            "description": "Subject of the default stream backing the legacy `Queue` step.",
+            "type": "string"
+          },
+          "external_http_instances": {
+            "items": {
+              "$ref": "#/$defs/OntologyInstanceCtx"
+            },
+            "type": "array"
+          },
+          "has_auth": {
+            "type": "boolean"
+          },
+          "has_cache": {
+            "type": "boolean"
+          },
+          "has_db": {
+            "type": "boolean"
+          },
+          "has_email": {
+            "type": "boolean"
+          },
+          "has_external_http": {
+            "type": "boolean"
+          },
+          "has_logging": {
+            "type": "boolean"
+          },
+          "has_metrics": {
+            "type": "boolean"
+          },
+          "has_object_store": {
+            "type": "boolean"
+          },
+          "has_queue": {
+            "type": "boolean"
+          },
+          "has_search": {
+            "type": "boolean"
+          },
+          "host_port": {
+            "description": "Host port the system docker-compose maps to the app's port 8000.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "jobs": {
+            "items": {
+              "$ref": "#/$defs/JobCtx"
+            },
+            "type": "array"
+          },
+          "module": {
+            "description": "Module/crate prefix, e.g. `video_platform`.",
+            "type": "string"
+          },
+          "object_store_instances": {
+            "items": {
+              "$ref": "#/$defs/OntologyInstanceCtx"
+            },
+            "type": "array"
+          },
+          "package": {
+            "description": "Package name, e.g. `video-platform`.",
+            "type": "string"
+          },
+          "queue_engine": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "records": {
+            "items": {
+              "$ref": "#/$defs/RecordCtx"
+            },
+            "type": "array"
+          },
+          "records_use_datetime": {
+            "description": "Any record uses a `Timestamp` field (drives datetime imports/deps).",
+            "type": "boolean"
+          },
+          "records_use_enum": {
+            "description": "Any record uses an inline enum (drives `Literal`/enum declarations).",
+            "type": "boolean"
+          },
+          "records_use_json": {
+            "description": "Any record uses a `Json` field (drives `Any` imports).",
+            "type": "boolean"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/$defs/ResourceCtx"
+            },
+            "type": "array"
+          },
+          "schema_key_args": {
+            "description": "Sessionmaker key args for instances that back CRUD resources\n(schema creation targets), e.g. [\"\"] or [\"\\\"main\\\"\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "schema_state_fields": {
+            "description": "Rust `AppState` fields for the same schema targets, e.g. [\"db\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "search_instances": {
+            "items": {
+              "$ref": "#/$defs/OntologyInstanceCtx"
+            },
+            "type": "array"
+          },
+          "service_name": {
+            "description": "Original service name, e.g. `VideoPlatform`.",
+            "type": "string"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/$defs/ServiceCtx"
+            },
+            "type": "array"
+          },
+          "table_db_field": {
+            "description": "Rust `AppState` field of the db instance migrations run against.\n`table` declarations aren't bound to a named instance, so this is\nalways the `default` one; `None` when there is no db instance at\nall (i.e. `tables` is also empty).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tables": {
+            "description": "`table <Name>: <Record>;` declarations: one SQLAlchemy/`FromRow`\nmodel per entry. Schema is provisioned by the v0.7 M5 migration\ndiffer (`ciac-codegen::migrations`), not `create_schema`/\n`ensure_schema` — those stay scoped to CRUD resources.",
+            "items": {
+              "$ref": "#/$defs/TableCtx"
+            },
+            "type": "array"
+          },
+          "typed_handlers": {
+            "description": "v0.7 typed handlers (inline body or `extern`) owned by this\nservice, identified by node id — see the comment at their build\nsite for why they aren't a `ServiceCtx`.",
+            "items": {
+              "$ref": "#/$defs/NodeId"
+            },
+            "type": "array"
+          },
+          "workers": {
+            "items": {
+              "$ref": "#/$defs/WorkerCtx"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "service_name",
+          "package",
+          "module",
+          "dir",
+          "host_port",
+          "has_auth",
+          "has_db",
+          "has_cache",
+          "has_queue",
+          "db_instances",
+          "cache_instances",
+          "object_store_instances",
+          "email_instances",
+          "search_instances",
+          "external_http_instances",
+          "has_object_store",
+          "has_email",
+          "has_search",
+          "has_external_http",
+          "schema_key_args",
+          "schema_state_fields",
+          "has_logging",
+          "has_metrics",
+          "events_subject",
+          "records",
+          "records_use_datetime",
+          "records_use_json",
+          "records_use_enum",
+          "apis",
+          "channels",
+          "workers",
+          "jobs",
+          "consumers",
+          "services",
+          "resources",
+          "tables",
+          "typed_handlers",
+          "call_targets"
+        ],
+        "type": "object"
+      },
+      "EnumCtx": {
+        "properties": {
+          "name": {
+            "description": "e.g. `VideoStatus` for `record Video { status: enum { .. } }`.",
+            "type": "string"
+          },
+          "variants": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "variants"
+        ],
+        "type": "object"
+      },
+      "ExtraDepCtx": {
+        "description": "A capability client a handler receives beyond db/cache.",
+        "properties": {
+          "kind": {
+            "description": "Capability kind, e.g. `object_store`.",
+            "type": "string"
+          },
+          "param": {
+            "description": "Constructor parameter name, e.g. `object_store`, `email`, `http`.",
+            "type": "string"
+          },
+          "py_expr": {
+            "description": "Python getter expression, e.g. `get_object_store(\"media\")`.",
+            "type": "string"
+          },
+          "py_getter": {
+            "description": "Python getter function name (for imports).",
+            "type": "string"
+          },
+          "py_module": {
+            "description": "Python module under `app.` providing the getter.",
+            "type": "string"
+          },
+          "py_type": {
+            "description": "Python parameter type, e.g. `ObjectStore`.",
+            "type": "string"
+          },
+          "rust_module": {
+            "description": "Rust module providing the type, e.g. `object_store`.",
+            "type": "string"
+          },
+          "rust_state_field": {
+            "description": "Rust `AppState` field, e.g. `object_store_media`.",
+            "type": "string"
+          },
+          "rust_type": {
+            "description": "Rust type, e.g. `ObjectStore`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "param",
+          "py_type",
+          "py_module",
+          "py_expr",
+          "py_getter",
+          "rust_type",
+          "rust_module",
+          "rust_state_field"
+        ],
+        "type": "object"
+      },
+      "ExtraImportCtx": {
+        "description": "One `from app.<module> import <getter>` line a route/worker needs.",
+        "properties": {
+          "py_getter": {
+            "type": "string"
+          },
+          "py_module": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "py_module",
+          "py_getter"
+        ],
+        "type": "object"
+      },
+      "FieldCtx": {
+        "properties": {
+          "db_rust_type": {
+            "description": "Rust type as stored in the database (enums are TEXT → `String`).",
+            "type": "string"
+          },
+          "is_enum": {
+            "type": "boolean"
+          },
+          "is_json": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "py_out_type": {
+            "description": "Python annotation on the read path; enums come back from storage\nas their text form, so `Literal[..]` widens to `str`.",
+            "type": "string"
+          },
+          "py_type": {
+            "description": "Python annotation, e.g. `str`, `datetime`, `Literal[\"A\", \"B\"]`.",
+            "type": "string"
+          },
+          "rust_type": {
+            "description": "Rust type, e.g. `String`, `chrono::DateTime<chrono::Utc>`, `VideoStatus`.",
+            "type": "string"
+          },
+          "sql_type": {
+            "description": "Postgres column type, e.g. `TEXT`, `BIGINT`, `JSONB`.",
+            "type": "string"
+          },
+          "type_kind": {
+            "$ref": "#/$defs/FieldTypeKind",
+            "description": "Language-neutral type, for backends with no dedicated\n`<host>_type` field below (v0.10 M1)."
+          }
+        },
+        "required": [
+          "name",
+          "type_kind",
+          "py_type",
+          "py_out_type",
+          "rust_type",
+          "db_rust_type",
+          "sql_type",
+          "is_json",
+          "is_enum"
+        ],
+        "type": "object"
+      },
+      "FieldTypeKind": {
+        "description": "A field's language-neutral type (v0.10 M1) — what an *external*\nbackend maps to its own host language, instead of string-matching\none of the host-specific fields below (the workaround both the\nv0.8 Go spike and the first real Go backend had to use, each with\na silent-fallback risk). Mirrors [`ciac_ir::FieldType`]'s closed\nset, but lives here so the wire contract doesn't depend on IR\ntypes, and carries the *generated* enum type name rather than raw\nvariants alone.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "str",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "int",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "float",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "bool",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "timestamp",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "json",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "enum",
+                "type": "string"
+              },
+              "name": {
+                "description": "Generated enum type name, e.g. `VideoStatus`.",
+                "type": "string"
+              },
+              "variants": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "kind",
+              "name",
+              "variants"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "HandlerRef": {
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/$defs/BindingCtx"
+            },
+            "type": "array"
+          },
+          "class_name": {
+            "description": "Class name, e.g. `StoreVideo`.",
+            "type": "string"
+          },
+          "db_session": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SessionCtx"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The database session this handler consumes, when bound."
+          },
+          "extras": {
+            "description": "Ontology clients this handler receives (object stores, email,\nsearch, external HTTP), resolved to their bound instances.",
+            "items": {
+              "$ref": "#/$defs/ExtraDepCtx"
+            },
+            "type": "array"
+          },
+          "handler_package": {
+            "description": "Package the module lives under: `services` for classic/`extern`\nhandlers (seeded, user-owned), `logic` for v0.7 inline typed\nhandlers (compiler-owned, lowered from the HIR). Shared by both\nbackends (Python's `app.<package>`, Rust's `crate::<package>`).",
+            "type": "string"
+          },
+          "module": {
+            "description": "Module name, e.g. `store_video`.",
+            "type": "string"
+          },
+          "needs_cache": {
+            "type": "boolean"
+          },
+          "needs_db": {
+            "type": "boolean"
+          },
+          "py_args": {
+            "description": "Precomputed Python constructor arguments for invoking this handler\nfrom a route/worker, e.g. `session=session_main, cache=get_cache(\"hot\")`.\nKeeps templates free of whitespace gymnastics.",
+            "type": "string"
+          },
+          "rust_cache_field": {
+            "description": "Rust `AppState` field for the bound cache, e.g. `cache_hot`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rust_db_field": {
+            "description": "Rust `AppState` field for the bound database, e.g. `db_main`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "class_name",
+          "module",
+          "handler_package",
+          "needs_db",
+          "needs_cache",
+          "bindings",
+          "py_args",
+          "extras"
+        ],
+        "type": "object"
+      },
+      "InstanceCtx": {
+        "description": "One named capability instance (db/cache), with every naming variant\ncodegen needs. The legacy/`default` instance keeps the unsuffixed\nnames so pre-v0.4 output is unchanged.",
+        "properties": {
+          "container": {
+            "description": "Compose container name, e.g. `db` / `db-main`.",
+            "type": "string"
+          },
+          "db_name": {
+            "description": "Postgres database name (db instances only).",
+            "type": "string"
+          },
+          "env_var": {
+            "description": "Environment variable, e.g. `DATABASE_URL_MAIN`.",
+            "type": "string"
+          },
+          "host_port": {
+            "description": "Host port docker-compose maps for this instance (v0.9 M2), so\nthe generated system tests can reach it directly from the host:\n5432, 5433, .. for db instances, 6379, 6380, .. for caches —\nunique across the whole system, assigned by [`build_system`].",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "key_arg": {
+            "description": "Argument for `get_sessionmaker(..)` / `get_cache(..)`:\nempty for the default instance, else `\"name\"` (quoted).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Instance name as declared, e.g. `default`, `main`.",
+            "type": "string"
+          },
+          "redis_db": {
+            "description": "Redis database index for cache instances (0, 1, ..).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_dep": {
+            "description": "FastAPI session dependency (db instances only),\ne.g. `get_session` / `get_session_main`.",
+            "type": "string"
+          },
+          "session_param": {
+            "description": "Route parameter name (db instances only), e.g. `session_main`.",
+            "type": "string"
+          },
+          "snake": {
+            "type": "string"
+          },
+          "state_field": {
+            "description": "Rust `AppState` field, e.g. `db` / `db_main`.",
+            "type": "string"
+          },
+          "url_field": {
+            "description": "Settings field, e.g. `database_url` / `database_url_main`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "is_default",
+          "url_field",
+          "env_var",
+          "container",
+          "redis_db",
+          "state_field",
+          "db_name",
+          "session_dep",
+          "session_param",
+          "key_arg",
+          "host_port"
+        ],
+        "type": "object"
+      },
+      "JobCtx": {
+        "description": "A scheduled job with (or without) a processing pipeline.",
+        "properties": {
+          "call_imports": {
+            "description": "Deduplicated service clients the job invokes, for imports.",
+            "items": {
+              "$ref": "#/$defs/CallCtx"
+            },
+            "type": "array"
+          },
+          "catch_up": {
+            "type": "boolean"
+          },
+          "cron_crate_schedule": {
+            "description": "`schedule` translated to the `cron` crate's expectations: a leading\nseconds field, and weekday `0` (CIaC's Sunday, matching POSIX cron)\nrewritten as `7` (the crate only accepts 1-7). Ranges, lists, and\nsteps in the weekday field are expanded to an explicit list so the\nrewrite stays correct across the 0-6/1-7 numbering gap. Rust-only;\nother backends parse `schedule` with a library that already accepts\nthe 0-7 convention.",
+            "type": "string"
+          },
+          "db_sessions": {
+            "description": "Distinct database sessions the job opens per tick.",
+            "items": {
+              "$ref": "#/$defs/SessionCtx"
+            },
+            "type": "array"
+          },
+          "extra_imports": {
+            "description": "Deduplicated ontology getters the job imports, per module.",
+            "items": {
+              "$ref": "#/$defs/ExtraImportCtx"
+            },
+            "type": "array"
+          },
+          "handlers": {
+            "items": {
+              "$ref": "#/$defs/HandlerRef"
+            },
+            "type": "array"
+          },
+          "has_publish_step": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "needs_cache": {
+            "type": "boolean"
+          },
+          "needs_db": {
+            "type": "boolean"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "session_with": {
+            "description": "Pre-joined `async with` items, e.g.\n`get_sessionmaker()() as session, get_sessionmaker(\"main\")() as session_main`.",
+            "type": "string"
+          },
+          "snake": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/StepCtx"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "schedule",
+          "cron_crate_schedule",
+          "catch_up",
+          "has_publish_step",
+          "steps",
+          "handlers",
+          "needs_db",
+          "needs_cache",
+          "db_sessions",
+          "session_with",
+          "extra_imports",
+          "call_imports"
+        ],
+        "type": "object"
+      },
+      "NodeId": {
+        "description": "Index of a node in a [`SystemGraph`]. Stable for the life of the graph;\nnodes are never removed.\n\n`Deserialize` (external-backend protocol M1): a transparent `u32`\nnewtype with no domain semantics to leak, unlike e.g.\n`ciac_ir::FieldType` — safe to round-trip so `Ctx::typed_handlers`\n(`ciac-codegen/src/model.rs`), which embeds this directly, can\nserialize into the wire contract at all. Note for later milestones:\nthat field's `NodeId`s are opaque without the `HandlerBody` HIR\nthey point at (looked up from `NormalizedIr`, not carried in\n`SystemModel`) — an external backend can see *that* a typed\nhandler exists but not what it does, yet.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "OntologyInstanceCtx": {
+        "description": "One instance of an ontology capability (object_store/email/search/\nexternal_http) with its generated-client wiring.",
+        "properties": {
+          "bucket": {
+            "description": "Bucket name (object stores only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cfg": {
+            "items": {
+              "$ref": "#/$defs/CfgFieldCtx"
+            },
+            "type": "array"
+          },
+          "container": {
+            "description": "Compose container name, when a local-dev container exists.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host_port": {
+            "description": "Host port docker-compose maps for the instance's inspection UI\n(email only: the Mailpit web interface).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "key_arg": {
+            "description": "Python getter argument: empty for default, else `\"media\"` (quoted).",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Capability kind: `object_store` | `email` | `search` | `external_http`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Instance name as declared, e.g. `default`, `media`.",
+            "type": "string"
+          },
+          "provider": {
+            "description": "Provider, e.g. `S3`, `SES`, `SMTP`, `OpenSearch`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snake": {
+            "type": "string"
+          },
+          "state_field": {
+            "description": "Rust `AppState` field, e.g. `object_store_media`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "is_default",
+          "kind",
+          "state_field",
+          "key_arg",
+          "cfg"
+        ],
+        "type": "object"
+      },
+      "PayloadRef": {
+        "description": "The payload type a pipeline (and its handlers) carries.",
+        "properties": {
+          "class_name": {
+            "description": "Record/class name, e.g. `Video`, identical in both targets.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "class_name"
+        ],
+        "type": "object"
+      },
+      "RecordCtx": {
+        "description": "A resolved record type.",
+        "properties": {
+          "enums": {
+            "description": "Rust needs named enum types; one per inline-enum field.",
+            "items": {
+              "$ref": "#/$defs/EnumCtx"
+            },
+            "type": "array"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/$defs/FieldCtx"
+            },
+            "type": "array"
+          },
+          "has_id": {
+            "description": "Whether the record declares its own `id` field. Typed CRUD always\nstores a server-generated TEXT `id` primary key; when the record\nhas one it doubles as that key, otherwise one is synthesized.",
+            "type": "boolean"
+          },
+          "insert_placeholders": {
+            "type": "string"
+          },
+          "is_error": {
+            "description": "`error` (v0.7) vs. plain `record`: an error record generates a\nraisable exception type instead of a `BaseModel`.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Type name in both targets, e.g. `Video`.",
+            "type": "string"
+          },
+          "select_cols": {
+            "description": "Precomputed SQL fragments for typed CRUD, e.g.\n`id, title, status` / `$1, $2, $3` / `title = $2, status = $3`.",
+            "type": "string"
+          },
+          "snake": {
+            "type": "string"
+          },
+          "update_assignments": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "has_id",
+          "is_error",
+          "select_cols",
+          "insert_placeholders",
+          "update_assignments",
+          "fields",
+          "enums"
+        ],
+        "type": "object"
+      },
+      "ResourceCtx": {
+        "description": "A CRUD resource from `crud <Name>;`.",
+        "properties": {
+          "cache_expr": {
+            "description": "`get_cache(..)` expression when caching is enabled.",
+            "type": "string"
+          },
+          "cache_ttl": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "db_session": {
+            "$ref": "#/$defs/SessionCtx",
+            "description": "Session dependency backing this resource's store."
+          },
+          "has_auth": {
+            "type": "boolean"
+          },
+          "has_cache": {
+            "type": "boolean"
+          },
+          "name": {
+            "description": "e.g. `Note`.",
+            "type": "string"
+          },
+          "page_size": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "plural": {
+            "description": "Route base and table name, e.g. `notes`.",
+            "type": "string"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RecordCtx"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Typed columns from `crud <Name>: <Record>;`; `None` keeps the\ngeneric keyed-document model."
+          },
+          "rust_cache_field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rust_db_field": {
+            "description": "Rust `AppState` fields for the bound instances.",
+            "type": "string"
+          },
+          "snake": {
+            "description": "e.g. `note`.",
+            "type": "string"
+          },
+          "store_class": {
+            "description": "Store class/module, e.g. `NoteStore` / `note_store`.",
+            "type": "string"
+          },
+          "store_module": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "plural",
+          "store_class",
+          "store_module",
+          "has_auth",
+          "has_cache",
+          "cache_ttl",
+          "page_size",
+          "db_session",
+          "cache_expr",
+          "rust_db_field"
+        ],
+        "type": "object"
+      },
+      "ServiceCtx": {
+        "description": "An implicit service handler module.",
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/$defs/BindingCtx"
+            },
+            "type": "array"
+          },
+          "class_name": {
+            "type": "string"
+          },
+          "extras": {
+            "description": "Ontology clients this handler receives.",
+            "items": {
+              "$ref": "#/$defs/ExtraDepCtx"
+            },
+            "type": "array"
+          },
+          "module": {
+            "type": "string"
+          },
+          "needs_cache": {
+            "type": "boolean"
+          },
+          "needs_db": {
+            "type": "boolean"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PayloadRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Payload type when every pipeline using this handler agrees on one;\n`None` falls back to untyped JSON."
+          },
+          "rust_cache_field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rust_db_field": {
+            "description": "Rust `AppState` fields for the bound db/cache instances.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "class_name",
+          "module",
+          "needs_db",
+          "needs_cache",
+          "bindings",
+          "extras"
+        ],
+        "type": "object"
+      },
+      "SessionCtx": {
+        "description": "A database session a route/worker needs for its handlers.",
+        "properties": {
+          "dep": {
+            "description": "FastAPI dependency function, e.g. `get_session_main`.",
+            "type": "string"
+          },
+          "key_arg": {
+            "description": "`get_sessionmaker(..)` argument (empty or `\"main\"` quoted).",
+            "type": "string"
+          },
+          "param": {
+            "description": "Parameter/variable name, e.g. `session` / `session_main`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "param",
+          "dep",
+          "key_arg"
+        ],
+        "type": "object"
+      },
+      "StepCtx": {
+        "properties": {
+          "arms": {
+            "items": {
+              "$ref": "#/$defs/ArmCtx"
+            },
+            "type": "array"
+          },
+          "call": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CallCtx"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handler": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HandlerRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "description": "One of `auth`, `handler`, `publish`, `return`, `match`.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "Subject of the published stream, for `publish` steps.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "arms"
+        ],
+        "type": "object"
+      },
+      "SystemModel": {
+        "description": "The generated system: one deployable project per declared service, or\na single unprefixed project for single-service programs.",
+        "properties": {
+          "has_db": {
+            "description": "Any service declares databases (drives the compose volume list).",
+            "type": "boolean"
+          },
+          "has_object_store": {
+            "type": "boolean"
+          },
+          "has_queue": {
+            "description": "Any service publishes/consumes streams (the system compose then\nruns one shared broker every service's `nats_url` points at).",
+            "type": "boolean"
+          },
+          "multi": {
+            "description": "True when the program declares `service { .. }` blocks; the\nbackends then emit each service under `<dir>/` plus root\ndocker-compose/README files for the whole system.",
+            "type": "boolean"
+          },
+          "project_name": {
+            "description": "System/project name, e.g. `media-system`.",
+            "type": "string"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/$defs/Ctx"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "project_name",
+          "multi",
+          "services",
+          "has_queue",
+          "has_db",
+          "has_object_store"
+        ],
+        "type": "object"
+      },
+      "TableCtx": {
+        "description": "A resolved `table <Name>: <Record>;` declaration, ready for a\nSQLAlchemy model: same field data as [`RecordCtx`], named after the\ntable (not the record) so a record reused under several table names\ndoesn't collide.",
+        "properties": {
+          "class_name": {
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/$defs/RecordCtx"
+          },
+          "snake": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "class_name",
+          "snake",
+          "record"
+        ],
+        "type": "object"
+      },
+      "WorkerCtx": {
+        "description": "A declared worker with (or without) a processing pipeline.",
+        "properties": {
+          "call_imports": {
+            "description": "Deduplicated service clients the worker invokes, for imports.",
+            "items": {
+              "$ref": "#/$defs/CallCtx"
+            },
+            "type": "array"
+          },
+          "concurrency": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "db_sessions": {
+            "description": "Distinct database sessions the worker opens per message.",
+            "items": {
+              "$ref": "#/$defs/SessionCtx"
+            },
+            "type": "array"
+          },
+          "extra_imports": {
+            "description": "Deduplicated ontology getters the worker imports, per module.",
+            "items": {
+              "$ref": "#/$defs/ExtraImportCtx"
+            },
+            "type": "array"
+          },
+          "handlers": {
+            "items": {
+              "$ref": "#/$defs/HandlerRef"
+            },
+            "type": "array"
+          },
+          "has_publish_step": {
+            "type": "boolean"
+          },
+          "max_retries": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "needs_cache": {
+            "type": "boolean"
+          },
+          "needs_db": {
+            "type": "boolean"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/PayloadRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Typed message payload; `None` = untyped JSON."
+          },
+          "queue_group": {
+            "description": "Queue group so replicas of this worker load-balance.",
+            "type": "string"
+          },
+          "session_with": {
+            "description": "Pre-joined `async with` items, e.g.\n`get_sessionmaker()() as session, get_sessionmaker(\"main\")() as session_main`.",
+            "type": "string"
+          },
+          "snake": {
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/StepCtx"
+            },
+            "type": "array"
+          },
+          "subject": {
+            "description": "Subject the worker consumes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "snake",
+          "subject",
+          "queue_group",
+          "concurrency",
+          "max_retries",
+          "has_publish_step",
+          "steps",
+          "handlers",
+          "needs_db",
+          "needs_cache",
+          "db_sessions",
+          "session_with",
+          "extra_imports",
+          "call_imports"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Everything an external backend needs to generate a project for one\n`--target`, serialized as the request payload.",
+    "properties": {
+      "project_name": {
+        "description": "Mirrors [`crate::GenOptions::project_name`].",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "protocol_version": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "system": {
+        "$ref": "#/$defs/SystemModel"
+      },
+      "target": {
+        "description": "The `--target` name the request was built for (informational at\nthis stage — nothing branches on it yet, since `SystemModel` is\nalready target-neutral).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "protocol_version",
+      "target",
+      "system"
+    ],
+    "title": "CodegenRequest",
+    "type": "object"
+  },
+  "response": {
+    "$defs": {
+      "FileRole": {
+        "description": "Regeneration ownership role for a generated file.",
+        "oneOf": [
+          {
+            "const": "owned",
+            "description": "Compiler-owned wiring. Regeneration may rewrite it when unchanged.",
+            "type": "string"
+          },
+          {
+            "const": "seeded",
+            "description": "Generated seed owned by the user after first write.",
+            "type": "string"
+          }
+        ]
+      },
+      "ResponseFile": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/$defs/FileRole"
+          }
+        },
+        "required": [
+          "path",
+          "content",
+          "role"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "What an external backend writes to its own stdout after reading a\n[`CodegenRequest`] from stdin: the generated file tree, in exactly\nthe shape [`crate::GeneratedProject`] already uses internally, plus\n`protocol_version` so [`crate::external::ExternalBackend`] can\nrefuse a response from a backend built against an incompatible\ncontract instead of silently misinterpreting it.",
+    "properties": {
+      "files": {
+        "items": {
+          "$ref": "#/$defs/ResponseFile"
+        },
+        "type": "array"
+      },
+      "notes": {
+        "default": [],
+        "description": "Mirrors [`crate::GeneratedProject::notes`].",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "protocol_version": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "protocol_version",
+      "files"
+    ],
+    "title": "CodegenResponse",
+    "type": "object"
+  }
+}

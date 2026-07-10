@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Component as PathComponent, Path};
 
 /// Regeneration ownership role for a generated file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FileRole {
     /// Compiler-owned wiring. Regeneration may rewrite it when unchanged.

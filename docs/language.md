@@ -1,4 +1,4 @@
-# The CIaC Language (v0.10.0)
+# The CIaC Language (v0.11.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -168,10 +168,10 @@ pairs (`CIAC0013` otherwise):
 
 | Capability | Providers | Generated as (Python / Rust) |
 |------------|-----------|------------------------------|
-| `auth` | `JWT` | FastAPI dependency + PyJWT / axum extractor + jsonwebtoken |
-| `db` | `Postgres` | SQLAlchemy async engine per instance / SQLx pool per instance |
+| `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) |
+| `db` | `Postgres`, `MySQL`* | SQLAlchemy async engine per instance / SQLx pool per instance |
 | `cache` | `Redis` | redis-py client per instance / redis crate client per instance |
-| `queue` | `NATS`, `Kafka`* | nats-py / async-nats |
+| `queue` | `NATS`, `Kafka`* | nats-py or aiokafka / async-nats |
 | `logging` | `Structured` | structlog / tracing |
 | `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus |
 | `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper (+ MinIO in compose) |
@@ -181,8 +181,12 @@ pairs (`CIAC0013` otherwise):
 | `scheduler` | `Cron` | in-process scheduled jobs |
 | `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
 
-\* `Kafka` is accepted by the language but not yet implemented by the
-bundled backends (`CIAC0011` at build time).
+\* `MySQL` and `Kafka` are fully implemented by the Python backend
+(v0.11); the Rust backend gates both (`CIAC0011` at build time) —
+sqlx pools are typed per database and rdkafka carries a native build
+chain, so each waits on real demand. `auth OAuth2` requires an
+`issuer` attribute (and optional `audience`): bearer RS256 tokens are
+validated against `{issuer}/.well-known/jwks.json` on both backends.
 
 Both `SES` and `SMTP` email providers send over SMTP — for SES, point
 the generated `SMTP_*` variables at your SES SMTP endpoint. Handlers

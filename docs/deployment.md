@@ -73,6 +73,32 @@ call to make, the same way choosing a real image registry is.
   service, one broker StatefulSet); front it with whatever ingress
   controller and autoscaling policy your cluster already uses.
 
+## Terraform (`ciac build --deploy terraform`, v0.11)
+
+k8s manifests deliberately stop at "point the ConfigMap at whatever
+you actually run" for stateful infrastructure. `--deploy terraform`
+reaches past that boundary: `terraform/main.tf` gets one AWS module
+per stateful capability instance — RDS per `db` (postgres or mysql),
+ElastiCache per `cache`, MSK when the program uses `queue Kafka`, an
+S3 bucket per `object_store` — with outputs named after the same env
+vars compose and the ConfigMap already use. `--deploy` is repeatable:
+`--deploy k8s --deploy terraform` emits both. Same discipline as k8s:
+ciac emits the shape; review networking/sizing and run
+`terraform apply` yourself.
+
+## `--profile` and `--secrets` (v0.11)
+
+`--profile {dev,staging,prod}` sizes the deploy artifacts: k8s
+replicas 1/2/3 (resource requests/limits beyond dev), Terraform
+instance classes/storage/broker counts per tier. Compose is the
+dev-only path and ignores it; generated application code is
+profile-independent by design.
+
+`--secrets` (with `--deploy k8s`) moves secret-shaped values
+(`JWT_SECRET`) out of the ConfigMap into a generated
+`k8s/<service>-secrets.yaml` `Secret` wired via `secretRef` —
+placeholder values, override before applying.
+
 ## `ciac verify --system` (v0.8 M4, extended v0.9)
 
 Compose and k8s both answer "can this be deployed"; `ciac verify

@@ -25,6 +25,7 @@ pub mod protocol;
 pub mod regen;
 pub mod system_tests;
 pub mod template;
+pub mod terraform;
 
 pub use project::{FileRole, GeneratedProject};
 
@@ -36,6 +37,80 @@ pub struct GenOptions {
     /// Overrides the generated project's package/crate name
     /// (defaults to the kebab-cased service name).
     pub project_name: Option<String>,
+}
+
+/// Deployment sizing profile (v0.11): selected with `--profile`,
+/// threaded into the k8s and Terraform generators. Compose is the
+/// dev-only path and ignores it. Generated *application* code is
+/// profile-independent by design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Profile {
+    #[default]
+    Dev,
+    Staging,
+    Prod,
+}
+
+impl Profile {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "dev" => Some(Self::Dev),
+            "staging" => Some(Self::Staging),
+            "prod" => Some(Self::Prod),
+            _ => None,
+        }
+    }
+
+    pub fn is_dev(self) -> bool {
+        self == Self::Dev
+    }
+
+    /// k8s Deployment replicas per service.
+    pub fn replicas(self) -> u32 {
+        match self {
+            Self::Dev => 1,
+            Self::Staging => 2,
+            Self::Prod => 3,
+        }
+    }
+
+    pub fn db_instance_class(self) -> &'static str {
+        match self {
+            Self::Dev => "db.t4g.micro",
+            Self::Staging => "db.t4g.small",
+            Self::Prod => "db.m6g.large",
+        }
+    }
+
+    pub fn db_storage_gb(self) -> u32 {
+        match self {
+            Self::Dev => 20,
+            Self::Staging => 50,
+            Self::Prod => 100,
+        }
+    }
+
+    pub fn cache_node_type(self) -> &'static str {
+        match self {
+            Self::Dev => "cache.t4g.micro",
+            Self::Staging => "cache.t4g.small",
+            Self::Prod => "cache.m6g.large",
+        }
+    }
+
+    pub fn kafka_brokers(self) -> u32 {
+        match self {
+            Self::Dev | Self::Staging => 2,
+            Self::Prod => 3,
+        }
+    }
+
+    pub fn kafka_instance_type(self) -> &'static str {
+        match self {
+            Self::Dev | Self::Staging => "kafka.t3.small",
+            Self::Prod => "kafka.m5.large",
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

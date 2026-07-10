@@ -135,9 +135,11 @@ fn with_json_envelope(
 /// `--deploy k8s` and its two image-naming knobs, bundled since they
 /// only ever travel together from `ciac build`'s CLI args.
 pub struct DeployOpts {
-    pub deploy: Option<String>,
+    pub deploy: Vec<String>,
     pub image_prefix: Option<String>,
     pub image_tag: String,
+    pub profile: String,
+    pub secrets: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -171,11 +173,21 @@ fn build_inner(
     if force && adopt {
         bail!("--force and --adopt cannot be used together");
     }
-    let k8s_image = match deploy.deploy.as_deref() {
-        Some("k8s") => Some((deploy.image_prefix.as_deref(), deploy.image_tag.as_str())),
-        Some(other) => bail!("unknown --deploy target `{other}`; available: k8s"),
-        None => None,
+    let Some(profile) = ciac_codegen::Profile::parse(&deploy.profile) else {
+        bail!(
+            "unknown --profile `{}`; available: dev, staging, prod",
+            deploy.profile
+        );
     };
+    let mut k8s_image = None;
+    let mut terraform = None;
+    for kind in &deploy.deploy {
+        match kind.as_str() {
+            "k8s" => k8s_image = Some((deploy.image_prefix.as_deref(), deploy.image_tag.as_str())),
+            "terraform" => terraform = Some(profile),
+            other => bail!("unknown --deploy target `{other}`; available: k8s, terraform"),
+        }
+    }
 
     let Generated {
         backend,
@@ -184,7 +196,16 @@ fn build_inner(
         tables,
         next_migration_seq,
         records,
-    } = generate(file, target, out, name, k8s_image)?;
+    } = generate(
+        file,
+        target,
+        out,
+        name,
+        k8s_image,
+        terraform,
+        profile,
+        deploy.secrets,
+    )?;
 
     if force {
         if out.exists() {
@@ -349,7 +370,16 @@ fn diff_json(
 }
 
 fn diff_plan(file: &Path, target: &str, out: &Path, name: Option<String>) -> Result<RegenPlan> {
-    let Generated { project, .. } = generate(file, target, out, name, None)?;
+    let Generated { project, .. } = generate(
+        file,
+        target,
+        out,
+        name,
+        None,
+        None,
+        ciac_codegen::Profile::Dev,
+        false,
+    )?;
     let manifest_file = manifest_path(out);
     let manifest = if manifest_file.exists() {
         Some(load_manifest(out).with_context(|| {
@@ -400,7 +430,16 @@ fn verify_inner(
         tables,
         next_migration_seq,
         records,
-    } = generate(file, target, out, name, None)?;
+    } = generate(
+        file,
+        target,
+        out,
+        name,
+        None,
+        None,
+        ciac_codegen::Profile::Dev,
+        false,
+    )?;
 
     if !output_dir_nonempty(out)? {
         project
@@ -684,12 +723,16 @@ struct Generated {
     records: BTreeMap<String, RecordSchema>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate(
     file: &Path,
     target: &str,
     out: &Path,
     name: Option<String>,
     k8s_image: Option<(Option<&str>, &str)>,
+    terraform: Option<ciac_codegen::Profile>,
+    profile: ciac_codegen::Profile,
+    secrets: bool,
 ) -> Result<Generated> {
     let all = backends();
     let backend: Box<dyn Backend> = match all.into_iter().find(|b| b.id() == target) {
@@ -745,7 +788,14 @@ fn generate(
     // Compose remains the dev default and is always emitted by each
     // backend above; this is additive production deployment posture.
     if let Some((image_prefix, image_tag)) = k8s_image {
-        for (path, content) in ciac_codegen::k8s::build(&ir, image_prefix, image_tag) {
+        for (path, content) in
+            ciac_codegen::k8s::build(&ir, image_prefix, image_tag, profile, secrets)
+        {
+            project.add_file(path, content);
+        }
+    }
+    if let Some(tf_profile) = terraform {
+        for (path, content) in ciac_codegen::terraform::build(&ir, tf_profile) {
             project.add_file(path, content);
         }
     }

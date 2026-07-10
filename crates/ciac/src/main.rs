@@ -49,11 +49,23 @@ enum Command {
         /// writing sidecars for generated content that would replace them.
         #[arg(long)]
         adopt: bool,
-        /// Also emit Kubernetes manifests under `k8s/` (only accepted
-        /// value today: `k8s`). Compose remains the dev default; this
-        /// is additive production deployment posture.
+        /// Also emit deployment artifacts: `k8s` (manifests under
+        /// `k8s/`) and/or `terraform` (AWS modules for stateful
+        /// capabilities under `terraform/`). Repeatable. Compose
+        /// remains the dev default; these are additive production
+        /// posture.
         #[arg(long, value_name = "TARGET")]
-        deploy: Option<String>,
+        deploy: Vec<String>,
+        /// Sizing profile for `--deploy` artifacts (k8s replicas and
+        /// resources, Terraform instance classes): dev, staging, prod.
+        #[arg(long, default_value = "dev")]
+        profile: String,
+        /// With `--deploy k8s`: move secret-shaped env values
+        /// (JWT_SECRET) out of the ConfigMap into a generated Secret
+        /// manifest wired via secretRef. Placeholder values --
+        /// override before applying.
+        #[arg(long)]
+        secrets: bool,
         /// Image name prefix for `--deploy k8s` manifests (default: the
         /// project name). Build and push `{prefix}[-<service>]:<tag>`
         /// from the generated `Dockerfile` before applying the
@@ -195,6 +207,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             image_tag,
             name,
             json,
+            profile,
+            secrets,
         } => commands::build(
             &file,
             &target,
@@ -205,6 +219,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 deploy,
                 image_prefix,
                 image_tag,
+                profile,
+                secrets,
             },
             name,
             json,

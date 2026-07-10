@@ -27,7 +27,13 @@ use ciac_ir::NormalizedIr;
 /// under `k8s/`. Empty for a program with no services (never actually
 /// happens — every valid program has at least one). `image_prefix`
 /// defaults to the program's own project name when `None`.
-pub fn build(ir: &NormalizedIr, image_prefix: Option<&str>, tag: &str) -> Vec<(String, String)> {
+pub fn build(
+    ir: &NormalizedIr,
+    image_prefix: Option<&str>,
+    tag: &str,
+    profile: crate::Profile,
+    secrets: bool,
+) -> Vec<(String, String)> {
     let system = build_system(ir, &GenOptions::default());
     let image_prefix = image_prefix.unwrap_or(&system.project_name);
     let mut files = Vec::new();
@@ -40,10 +46,32 @@ pub fn build(ir: &NormalizedIr, image_prefix: Option<&str>, tag: &str) -> Vec<(S
             format!("{image_prefix}:{tag}")
         };
         let env = service_env(ctx);
+        // `--secrets` (v0.11 M5): secret-shaped values move out of the
+        // ConfigMap into a Secret manifest wired via envFrom, so the
+        // ConfigMap never carries them verbatim. Placeholder values are
+        // documented as override-before-apply, same as before.
+        let (secret_env, plain_env): (Vec<_>, Vec<_>) = if secrets {
+            env.into_iter().partition(|(key, _)| key == "JWT_SECRET")
+        } else {
+            (Vec::new(), env)
+        };
         files.push((
             format!("k8s/{name}.yaml"),
-            render_service_manifest(&name, &image, ctx.host_port, &env),
+            render_service_manifest(
+                &name,
+                &image,
+                ctx.host_port,
+                &plain_env,
+                profile,
+                !secret_env.is_empty(),
+            ),
         ));
+        if !secret_env.is_empty() {
+            files.push((
+                format!("k8s/{name}-secrets.yaml"),
+                render_secret_manifest(&name, &secret_env),
+            ));
+        }
     }
 
     if system.has_queue {
@@ -140,7 +168,24 @@ fn service_env(ctx: &Ctx) -> Vec<(String, String)> {
     env
 }
 
-fn render_service_manifest(name: &str, image: &str, port: u16, env: &[(String, String)]) -> String {
+fn render_secret_manifest(name: &str, env: &[(String, String)]) -> String {
+    let mut out = String::from("apiVersion: v1\nkind: Secret\nmetadata:\n");
+    out.push_str(&format!("  name: {name}-secrets\n"));
+    out.push_str("type: Opaque\nstringData:\n");
+    for (key, value) in env {
+        out.push_str(&format!("  {key}: {value:?}\n"));
+    }
+    out
+}
+
+fn render_service_manifest(
+    name: &str,
+    image: &str,
+    port: u16,
+    env: &[(String, String)],
+    profile: crate::Profile,
+    with_secret_ref: bool,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {name}-config\ndata:\n"
@@ -159,7 +204,7 @@ fn render_service_manifest(name: &str, image: &str, port: u16, env: &[(String, S
          metadata:\n\
          \x20 name: {name}\n\
          spec:\n\
-         \x20 replicas: 1\n\
+         \x20 replicas: {replicas}\n\
          \x20 selector:\n\
          \x20   matchLabels:\n\
          \x20     app: {name}\n\
@@ -176,6 +221,7 @@ fn render_service_manifest(name: &str, image: &str, port: u16, env: &[(String, S
          \x20         envFrom:\n\
          \x20           - configMapRef:\n\
          \x20               name: {name}-config\n\
+         {secret_ref}\
          \x20         readinessProbe:\n\
          \x20           httpGet:\n\
          \x20             path: /health\n\
@@ -187,7 +233,27 @@ fn render_service_manifest(name: &str, image: &str, port: u16, env: &[(String, S
          \x20             path: /health\n\
          \x20             port: 8000\n\
          \x20           initialDelaySeconds: 5\n\
-         \x20           periodSeconds: 10\n"
+         \x20           periodSeconds: 10\n\
+         {resources}",
+        replicas = profile.replicas(),
+        secret_ref = if with_secret_ref {
+            "\x20           - secretRef:\n\x20               name: {name}-secrets\n"
+                .replace("{name}", name)
+        } else {
+            String::new()
+        },
+        resources = if profile.is_dev() {
+            String::new()
+        } else {
+            "\x20         resources:\n\
+             \x20           requests:\n\
+             \x20             cpu: 250m\n\
+             \x20             memory: 256Mi\n\
+             \x20           limits:\n\
+             \x20             cpu: \"1\"\n\
+             \x20             memory: 512Mi\n"
+                .to_owned()
+        },
     ));
 
     out.push_str(&format!(
@@ -270,7 +336,7 @@ mod tests {
         let ir = compile(
             "service Notes;\nuse { db Postgres; }\nrecord Note { id: Uuid; }\ncrud Note;\n",
         );
-        let files = build(&ir, Some("notes"), "latest");
+        let files = build(&ir, Some("notes"), "latest", crate::Profile::Dev, false);
         let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"k8s/notes.yaml"));
         assert!(!paths.iter().any(|p| p.contains("queue")));
@@ -305,7 +371,7 @@ service Transcoder {
 }
 "#;
         let ir = compile(src);
-        let files = build(&ir, Some("media"), "v1");
+        let files = build(&ir, Some("media"), "v1", crate::Profile::Dev, false);
         let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"k8s/billing.yaml"));
         assert!(paths.contains(&"k8s/upload-api.yaml"));

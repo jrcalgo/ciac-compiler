@@ -55,16 +55,13 @@ impl Backend for RustBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet. v0.7 typed handler signatures
-        // (`extern` or inline body) graduated in M4 — `lower.rs` walks
-        // the HIR directly, same as the Python backend since M3.
+        // Kafka has no Rust generator yet (v0.13 M2 closes it). MySQL
+        // graduated in v0.13 M1: per-engine sqlx pools + placeholder
+        // styles. Typed handler signatures graduated in v0.7 M4.
         !matches!(
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
-                ..
-            } | Component::Database {
-                engine: ciac_ir::DbEngine::MySql,
                 ..
             }
         )

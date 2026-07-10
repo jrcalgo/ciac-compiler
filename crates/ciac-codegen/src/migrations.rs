@@ -160,6 +160,10 @@ fn create_table_sql(table: &str, schema: &TableSchema) -> String {
         .iter()
         .map(|(name, ty)| {
             if name == "id" {
+                // MySQL rejects `TEXT PRIMARY KEY` (index keys need a
+                // length); a sized VARCHAR holding a stringified UUID
+                // is portable across every supported engine (v0.13 M1).
+                let ty = if ty == "TEXT" { "VARCHAR(36)" } else { ty };
                 format!("    {name} {ty} PRIMARY KEY")
             } else {
                 format!("    {name} {ty} NOT NULL")
@@ -200,7 +204,10 @@ mod tests {
         )]);
         let sql = diff_schema(&old, &new).unwrap().unwrap();
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS videos"));
-        assert!(sql.contains("id TEXT PRIMARY KEY"));
+        assert!(
+            sql.contains("id VARCHAR(36) PRIMARY KEY"),
+            "TEXT ids become sized VARCHAR keys (MySQL-portable): {sql}"
+        );
         assert!(sql.contains("title TEXT NOT NULL"));
     }
 

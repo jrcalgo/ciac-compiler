@@ -8,7 +8,7 @@ pub struct AppState {
 {%- for inst in c.db_instances %}
     /// Lazy pool: connections are established on first use, so the server
     /// starts (and compiles) without a running database.
-    pub {{ inst.state_field }}: sqlx::PgPool,
+    pub {{ inst.state_field }}: {% if inst.db_engine == "mysql" %}sqlx::MySqlPool{% else %}sqlx::PgPool{% endif %},
 {%- endfor %}
 {%- for inst in c.cache_instances %}
     pub {{ inst.state_field }}: redis::Client,
@@ -38,8 +38,13 @@ pub struct AppState {
 impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
 {%- for inst in c.db_instances %}
+{%- if inst.db_engine == "mysql" %}
+        let {{ inst.state_field }} =
+            sqlx::mysql::MySqlPoolOptions::new().connect_lazy(&config.{{ inst.url_field }})?;
+{%- else %}
         let {{ inst.state_field }} =
             sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.{{ inst.url_field }})?;
+{%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
         let {{ inst.state_field }} = redis::Client::open(config.{{ inst.url_field }}.as_str())?;

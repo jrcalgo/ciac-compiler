@@ -76,8 +76,18 @@ pub struct Ctx {
     /// Sessionmaker key args for instances that back CRUD resources
     /// (schema creation targets), e.g. [""] or ["\"main\""].
     pub schema_key_args: Vec<String>,
-    /// Rust `AppState` fields for the same schema targets, e.g. ["db"].
-    pub schema_state_fields: Vec<String>,
+    /// Rust `AppState` fields for the same schema targets, e.g. ["db"],
+    /// paired with each target instance's engine (v0.13 M1) so
+    /// `main.rs` can call the right per-engine `ensure_schema_*`.
+    pub schema_state_fields: Vec<SchemaTargetCtx>,
+    /// Distinct engines among the schema targets (v0.13 M1): the Rust
+    /// backend emits one `ensure_schema_<engine>` per entry, since sqlx
+    /// pools are typed per database.
+    pub schema_engines: Vec<String>,
+    /// Engine of the instance `table_db_field` points at (v0.13 M1):
+    /// typed-handler `db.*` SQL is lowered with this engine's
+    /// placeholder style. `postgres` when there is no db at all.
+    pub table_db_engine: String,
     pub has_logging: bool,
     pub has_metrics: bool,
     pub queue_engine: Option<String>,
@@ -140,10 +150,17 @@ pub struct RecordCtx {
     /// raisable exception type instead of a `BaseModel`.
     pub is_error: bool,
     /// Precomputed SQL fragments for typed CRUD, e.g.
-    /// `id, title, status` / `$1, $2, $3` / `title = $2, status = $3`.
+    /// `id, title, status` / `$1, $2, $3` / `title = $1, status = $2`.
+    /// Placeholders are Postgres-style `$N`, numbered in **bind order**
+    /// (v0.13 M1: assignments start at `$1`, the UPDATE's `WHERE id`
+    /// placeholder comes last) so a target with purely positional `?`
+    /// placeholders (MySQL/SQLite) can substitute them one-for-one
+    /// without reordering binds — see the `sqlph` template filter.
     pub select_cols: String,
     pub insert_placeholders: String,
     pub update_assignments: String,
+    /// The UPDATE's `WHERE id =` placeholder, e.g. `$3` — bound last.
+    pub update_where: String,
     pub fields: Vec<FieldCtx>,
     /// Rust needs named enum types; one per inline-enum field.
     pub enums: Vec<EnumCtx>,
@@ -575,6 +592,9 @@ pub struct ServiceCtx {
     /// Rust `AppState` fields for the bound db/cache instances.
     pub rust_db_field: Option<String>,
     pub rust_cache_field: Option<String>,
+    /// Engine of the bound db instance (v0.13 M1): selects the sqlx
+    /// pool type. `postgres` when no db is bound.
+    pub db_engine: String,
     /// Ontology clients this handler receives.
     pub extras: Vec<ExtraDepCtx>,
 }
@@ -605,6 +625,18 @@ pub struct ResourceCtx {
     /// Rust `AppState` fields for the bound instances.
     pub rust_db_field: String,
     pub rust_cache_field: Option<String>,
+    /// Engine of the bound db instance (v0.13 M1): selects the sqlx
+    /// pool type and the SQL placeholder style.
+    pub db_engine: String,
+}
+
+/// One CRUD schema-creation target for `main.rs` (v0.13 M1): the
+/// `AppState` field plus its engine, so the right per-engine
+/// `ensure_schema_*` is called.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SchemaTargetCtx {
+    pub field: String,
+    pub engine: String,
 }
 
 /// Builds the whole system: one [`Ctx`] per declared service, or a single
@@ -929,7 +961,7 @@ fn build_scoped(
         )
     };
 
-    let services = ir
+    let mut services: Vec<ServiceCtx> = ir
         .nodes_of_kind(NodeKind::Service)
         .filter(|s| {
             owned_by(s.service, sid)
@@ -947,6 +979,8 @@ fn build_scoped(
                 needs_cache: access.cache_expr.is_some(),
                 rust_db_field: access.rust_db_field,
                 rust_cache_field: access.rust_cache_field,
+                // Resolved against db_instances in the post-pass below.
+                db_engine: "postgres".to_owned(),
                 extras: extras_of(&bindings),
                 bindings,
                 class_name: name,
@@ -966,7 +1000,7 @@ fn build_scoped(
         .map(|s| s.id)
         .collect();
 
-    let resources: Vec<ResourceCtx> = ir
+    let mut resources: Vec<ResourceCtx> = ir
         .resources
         .iter()
         .filter(|resource| owned_by(resource.service_owner, sid))
@@ -994,6 +1028,8 @@ fn build_scoped(
                     .unwrap_or_else(|| "get_cache()".to_owned()),
                 rust_db_field: access.rust_db_field.unwrap_or_else(|| "db".to_owned()),
                 rust_cache_field: access.rust_cache_field,
+                // Resolved against db_instances in the post-pass below.
+                db_engine: "postgres".to_owned(),
                 snake,
             }
         })
@@ -1091,6 +1127,31 @@ fn build_scoped(
         .find(|inst| inst.is_default)
         .or_else(|| db_instances.first())
         .map(|inst| inst.state_field.clone());
+    let table_db_engine = db_instances
+        .iter()
+        .find(|inst| inst.is_default)
+        .or_else(|| db_instances.first())
+        .map(|inst| inst.db_engine.clone())
+        .unwrap_or_else(|| "postgres".to_owned());
+
+    // v0.13 M1: resolve each db-bound context's engine now that the
+    // instance list exists — the engine selects the sqlx pool type and
+    // the SQL placeholder style in the Rust backend's templates.
+    let engine_of = |field: &str| -> String {
+        db_instances
+            .iter()
+            .find(|inst| inst.state_field == field)
+            .map(|inst| inst.db_engine.clone())
+            .unwrap_or_else(|| "postgres".to_owned())
+    };
+    for resource in &mut resources {
+        resource.db_engine = engine_of(&resource.rust_db_field);
+    }
+    for service in &mut services {
+        if let Some(field) = &service.rust_db_field {
+            service.db_engine = engine_of(field);
+        }
+    }
     let all_fields = |records: &[RecordCtx]| -> Vec<String> {
         records
             .iter()
@@ -1134,14 +1195,27 @@ fn build_scoped(
             keys
         },
         schema_state_fields: {
-            let mut fields: Vec<String> = Vec::new();
+            let mut targets: Vec<SchemaTargetCtx> = Vec::new();
             for resource in &resources {
-                if !fields.contains(&resource.rust_db_field) {
-                    fields.push(resource.rust_db_field.clone());
+                if !targets.iter().any(|t| t.field == resource.rust_db_field) {
+                    targets.push(SchemaTargetCtx {
+                        field: resource.rust_db_field.clone(),
+                        engine: resource.db_engine.clone(),
+                    });
                 }
             }
-            fields
+            targets
         },
+        schema_engines: {
+            let mut engines: Vec<String> = Vec::new();
+            for resource in &resources {
+                if !engines.contains(&resource.db_engine) {
+                    engines.push(resource.db_engine.clone());
+                }
+            }
+            engines
+        },
+        table_db_engine,
         db_instances,
         cache_instances,
         has_object_store: !object_store_instances.is_empty(),
@@ -1995,12 +2069,16 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
         .map(|i| format!("${i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    // Numbered in bind order (fields first, id last in the UPDATE's
+    // WHERE) so `$N` -> `?` substitution is order-preserving — see the
+    // field docs on [`RecordCtx`].
     let update_assignments = non_id
         .iter()
         .enumerate()
-        .map(|(i, name)| format!("{name} = ${}", i + 2))
+        .map(|(i, name)| format!("{name} = ${}", i + 1))
         .collect::<Vec<_>>()
         .join(", ");
+    let update_where = format!("${}", non_id.len() + 1);
     RecordCtx {
         name: record.name.clone(),
         snake: record.name.to_snake_case(),
@@ -2009,6 +2087,7 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
         select_cols,
         insert_placeholders,
         update_assignments,
+        update_where,
         fields,
         enums,
     }

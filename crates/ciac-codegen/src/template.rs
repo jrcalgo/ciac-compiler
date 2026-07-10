@@ -23,15 +23,70 @@ pub fn environment<'a>(
     env.add_filter("pascal_case", |s: &str| s.to_pascal_case());
     env.add_filter("kebab_case", |s: &str| s.to_kebab_case());
     env.add_filter("shouty_snake_case", |s: &str| s.to_shouty_snake_case());
+    // v0.13 M1: SQL placeholder style per db engine. Generated SQL is
+    // written with Postgres-style `$N` numbered in bind order; engines
+    // with purely positional placeholders (MySQL, SQLite) substitute
+    // each `$N` with `?` — order-preserving by construction.
+    env.add_filter("sqlph", |sql: &str, engine: &str| sqlph(sql, engine));
+    env.add_function("ph", |engine: &str, n: u32| {
+        if question_placeholders(engine) {
+            "?".to_string()
+        } else {
+            format!("${n}")
+        }
+    });
     for (name, source) in templates {
         env.add_template(name, source)?;
     }
     Ok(env)
 }
 
+/// Whether `engine` binds with positional `?` placeholders instead of
+/// Postgres-style `$N`.
+pub fn question_placeholders(engine: &str) -> bool {
+    matches!(engine, "mysql" | "sqlite")
+}
+
+/// Rewrites every `$<digits>` placeholder to `?` for
+/// [`question_placeholders`] engines; other engines keep the SQL
+/// untouched. Only safe because generated SQL numbers placeholders in
+/// bind order (see `RecordCtx`'s field docs).
+pub fn sqlph(sql: &str, engine: &str) -> String {
+    if !question_placeholders(engine) {
+        return sql.to_string();
+    }
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' && chars.peek().is_some_and(|n| n.is_ascii_digit()) {
+            out.push('?');
+            while chars.peek().is_some_and(|n| n.is_ascii_digit()) {
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlph_rewrites_only_for_question_engines() {
+        let sql = "UPDATE t SET a = $1, b = $12 WHERE id = $13";
+        assert_eq!(sqlph(sql, "postgres"), sql);
+        assert_eq!(
+            sqlph(sql, "mysql"),
+            "UPDATE t SET a = ?, b = ? WHERE id = ?"
+        );
+        assert_eq!(
+            sqlph("no placeholders, $ alone", "sqlite"),
+            "no placeholders, $ alone"
+        );
+    }
 
     #[test]
     fn casing_filters_work() {

@@ -5,8 +5,8 @@ async fn main() -> anyhow::Result<()> {
     {{ c.module }}::observability::init();
     let config = Config::from_env();
     let state = AppState::new(config).await?;
-{%- for field in c.schema_state_fields %}
-    {{ c.module }}::db::ensure_schema(&state.{{ field }}).await?;
+{%- for target in c.schema_state_fields %}
+    {{ c.module }}::db::ensure_schema_{{ target.engine }}(&state.{{ target.field }}).await?;
 {%- endfor %}
 {%- if c.tables %}
     sqlx::migrate!("./migrations").run(&state.{{ c.table_db_field }}).await?;

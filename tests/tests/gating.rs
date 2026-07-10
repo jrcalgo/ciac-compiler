@@ -66,6 +66,56 @@ fn kafka_generates_on_python_but_still_gates_on_rust() {
     }
 }
 
+const MYSQL_PROBE: &str = r#"
+service MysqlProbe;
+
+use {
+    db MySQL;
+}
+
+record Note {
+    id: Uuid;
+    title: String;
+}
+
+crud Note: Note;
+"#;
+
+/// v0.13 M1: MySQL graduated on the Rust backend — per-engine sqlx
+/// pools and positional `?` placeholders. Both backends generate.
+#[test]
+fn mysql_generates_on_both_backends() {
+    let (ir, diags) = compile(MYSQL_PROBE);
+    assert!(!diags.has_errors(), "probe compiles: {:?}", diags.codes());
+    let ir = ir.expect("probe produces IR");
+
+    for backend in backends() {
+        ciac_codegen::check_support(backend.as_ref(), &ir)
+            .unwrap_or_else(|err| panic!("{} must support MySQL: {err}", backend.id()));
+        let project = backend
+            .generate(&ir, &ciac_codegen::GenOptions::default())
+            .expect("mysql program generates");
+        if backend.id() == "rust" {
+            let store = project
+                .get("src/services/note_store.rs")
+                .expect("resource store");
+            assert!(store.contains("sqlx::MySqlPool"), "{store}");
+            assert!(
+                store.contains("WHERE id = ?") && !store.contains("$1"),
+                "mysql SQL must use positional placeholders: {store}"
+            );
+            let update_pos = store.find("UPDATE notes SET").expect("update query");
+            let binds_after_update = &store[update_pos..];
+            let title_bind = binds_after_update.find(".bind(&entity.title)");
+            let id_bind = binds_after_update.find(".bind(id)");
+            assert!(
+                title_bind.unwrap() < id_bind.unwrap(),
+                "with `?` placeholders the UPDATE must bind fields before id"
+            );
+        }
+    }
+}
+
 #[test]
 fn scheduler_jobs_are_supported() {
     let (ir, diags) = compile(SCHEDULER_SUPPORTED);

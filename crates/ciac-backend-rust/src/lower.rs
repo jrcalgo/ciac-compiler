@@ -481,6 +481,7 @@ fn rust_match(
 fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[HirExpr]) -> String {
     match verb {
         Verb::DbInsert(table) => {
+            let engine = db_engine_of(ir, body);
             let table_snake = ir.table(table).name.to_snake_case();
             let record_ctx = context::build_record(ir, ir.table(table).record);
             let value = rust_expr(ir, body, &args[0]);
@@ -503,18 +504,20 @@ fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[Hir
             format!(
                 "{{\n    let __row = {value}.clone();\n    sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n        .execute(self.db)\n        .await?;\n    __row\n}}",
                 cols = record_ctx.select_cols,
-                phs = record_ctx.insert_placeholders,
+                phs = ciac_codegen::template::sqlph(&record_ctx.insert_placeholders, engine),
             )
         }
         Verb::DbGet(table) => {
+            let engine = db_engine_of(ir, body);
             let model = model_class_name(ir, table);
             let record_name = record_class_name(ir, ir.table(table).record);
             let table_snake = ir.table(table).name.to_snake_case();
             let record_ctx = context::build_record(ir, ir.table(table).record);
             let key = rust_expr(ir, body, &args[0]);
             format!(
-                "{{\n    let row: Option<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake} WHERE id = $1\")\n        .bind({key}.to_string())\n        .fetch_optional(self.db)\n        .await?;\n    row.map({record_name}::try_from).transpose()?\n}}",
+                "{{\n    let row: Option<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .fetch_optional(self.db)\n        .await?;\n    row.map({record_name}::try_from).transpose()?\n}}",
                 cols = record_ctx.select_cols,
+                ph = ciac_codegen::template::sqlph("$1", engine),
             )
         }
         Verb::CacheGet => {
@@ -673,10 +676,27 @@ pub struct LogicFileCtx {
     pub needs_queue: bool,
     pub rust_db_field: Option<String>,
     pub rust_cache_field: Option<String>,
+    /// Engine of the bound db instance (v0.13 M1): selects the sqlx
+    /// pool type in `logic.rs.j2`. `postgres` when no db is bound.
+    pub db_engine: String,
     pub extras: Vec<context::ExtraDepCtx>,
     pub schema_imports: Vec<String>,
     pub model_imports: Vec<String>,
     pub body: String,
+}
+
+/// Engine of the handler's bound db instance, straight from the IR
+/// node its binding edge points at — `postgres` when unbound.
+fn db_engine_of(ir: &NormalizedIr, body: &HandlerBody) -> &'static str {
+    for id in body.capability_nodes() {
+        if let ciac_ir::Component::Database { engine, .. } = &ir.node(id).component {
+            return match engine {
+                ciac_ir::DbEngine::MySql => "mysql",
+                _ => "postgres",
+            };
+        }
+    }
+    "postgres"
 }
 
 /// Builds the render context for one typed handler node. `name` is the
@@ -727,6 +747,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         needs_queue: needs.queue,
         rust_db_field: access.rust_db_field,
         rust_cache_field: access.rust_cache_field,
+        db_engine: db_engine_of(ir, hir).to_owned(),
         extras,
         schema_imports,
         model_imports,

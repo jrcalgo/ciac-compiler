@@ -27,7 +27,7 @@ chrono = { version = "0.4", features = ["serde"] }
 cron = "0.12"
 {%- endif %}
 {%- if c.has_db %}
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls"{% if c.has_postgres_db %}, "postgres"{% endif %}{% if c.has_mysql_db %}, "mysql"{% endif %}, "json"] }
 {%- endif %}
 {%- if c.has_cache %}
 redis = { version = "0.27", features = ["tokio-comp"] }

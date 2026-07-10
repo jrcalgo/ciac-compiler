@@ -6,10 +6,11 @@ use redis::AsyncCommands;
 {% endif -%}
 use crate::models::{ {{- resource.name }}, {{ resource.name }}In};
 use crate::state::AppState;
+{% set pool_type = "sqlx::MySqlPool" if resource.db_engine == "mysql" else "sqlx::PgPool" -%}
 /// CRUD operations for {{ resource.name }}{% if resource.has_cache %} with read-through caching{% endif %}.
 #[derive(Debug)]
 pub struct {{ resource.store_class }}<'a> {
-    pub db: &'a sqlx::PgPool,
+    pub db: &'a {{ pool_type }},
 {%- if resource.has_cache %}
     pub cache: &'a redis::Client,
 {%- endif %}
@@ -40,7 +41,7 @@ impl<'a> {{ resource.store_class }}<'a> {
 {%- endfor %}
         };
         sqlx::query(
-            "INSERT INTO {{ resource.plural }} ({{ resource.record.select_cols }}) VALUES ({{ resource.record.insert_placeholders }})",
+            "INSERT INTO {{ resource.plural }} ({{ resource.record.select_cols }}) VALUES ({{ resource.record.insert_placeholders | sqlph(resource.db_engine) }})",
         )
         .bind(&entity.id)
 {%- for field in resource.record.fields %}
@@ -61,7 +62,7 @@ impl<'a> {{ resource.store_class }}<'a> {
         }
 {%- endif %}
         let entity: Option<{{ resource.name }}> =
-            sqlx::query_as("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} WHERE id = $1")
+            sqlx::query_as("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} WHERE id = {{ ph(resource.db_engine, 1) }}")
                 .bind(id)
                 .fetch_optional(self.db)
                 .await?;
@@ -77,7 +78,7 @@ impl<'a> {{ resource.store_class }}<'a> {
 
     pub async fn list(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<{{ resource.name }}>> {
         let entities =
-            sqlx::query_as("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} ORDER BY id LIMIT $1 OFFSET $2")
+            sqlx::query_as("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} ORDER BY id LIMIT {{ ph(resource.db_engine, 1) }} OFFSET {{ ph(resource.db_engine, 2) }}")
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(self.db)
@@ -103,14 +104,14 @@ impl<'a> {{ resource.store_class }}<'a> {
 {%- endfor %}
         };
         let updated = sqlx::query(
-            "UPDATE {{ resource.plural }} SET {{ resource.record.update_assignments }} WHERE id = $1",
+            "UPDATE {{ resource.plural }} SET {{ resource.record.update_assignments | sqlph(resource.db_engine) }} WHERE id = {{ resource.record.update_where | sqlph(resource.db_engine) }}",
         )
-        .bind(id)
 {%- for field in resource.record.fields %}
 {%- if field.name != "id" %}
         .bind(&entity.{{ field.name }})
 {%- endif %}
 {%- endfor %}
+        .bind(id)
         .execute(self.db)
         .await?;
         if updated.rows_affected() == 0 {
@@ -128,7 +129,7 @@ impl<'a> {{ resource.store_class }}<'a> {
             id: uuid::Uuid::new_v4().to_string(),
             data: payload.data,
         };
-        sqlx::query("INSERT INTO {{ resource.plural }} (id, data) VALUES ($1, $2)")
+        sqlx::query("INSERT INTO {{ resource.plural }} (id, data) VALUES ({{ ph(resource.db_engine, 1) }}, {{ ph(resource.db_engine, 2) }})")
             .bind(&entity.id)
             .bind(&entity.data)
             .execute(self.db)
@@ -147,7 +148,7 @@ impl<'a> {{ resource.store_class }}<'a> {
         }
 {%- endif %}
         let entity: Option<{{ resource.name }}> =
-            sqlx::query_as("SELECT id, data FROM {{ resource.plural }} WHERE id = $1")
+            sqlx::query_as("SELECT id, data FROM {{ resource.plural }} WHERE id = {{ ph(resource.db_engine, 1) }}")
                 .bind(id)
                 .fetch_optional(self.db)
                 .await?;
@@ -162,7 +163,7 @@ impl<'a> {{ resource.store_class }}<'a> {
     }
 
     pub async fn list(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<{{ resource.name }}>> {
-        let entities = sqlx::query_as("SELECT id, data FROM {{ resource.plural }} ORDER BY id LIMIT $1 OFFSET $2")
+        let entities = sqlx::query_as("SELECT id, data FROM {{ resource.plural }} ORDER BY id LIMIT {{ ph(resource.db_engine, 1) }} OFFSET {{ ph(resource.db_engine, 2) }}")
             .bind(limit)
             .bind(offset)
             .fetch_all(self.db)
@@ -175,9 +176,9 @@ impl<'a> {{ resource.store_class }}<'a> {
         id: &str,
         payload: {{ resource.name }}In,
     ) -> anyhow::Result<Option<{{ resource.name }}>> {
-        let updated = sqlx::query("UPDATE {{ resource.plural }} SET data = $2 WHERE id = $1")
-            .bind(id)
+        let updated = sqlx::query("UPDATE {{ resource.plural }} SET data = {{ ph(resource.db_engine, 1) }} WHERE id = {{ ph(resource.db_engine, 2) }}")
             .bind(&payload.data)
+            .bind(id)
             .execute(self.db)
             .await?;
         if updated.rows_affected() == 0 {
@@ -194,7 +195,7 @@ impl<'a> {{ resource.store_class }}<'a> {
     }
 {% endif %}
     pub async fn delete(&self, id: &str) -> anyhow::Result<bool> {
-        let deleted = sqlx::query("DELETE FROM {{ resource.plural }} WHERE id = $1")
+        let deleted = sqlx::query("DELETE FROM {{ resource.plural }} WHERE id = {{ ph(resource.db_engine, 1) }}")
             .bind(id)
             .execute(self.db)
             .await?;

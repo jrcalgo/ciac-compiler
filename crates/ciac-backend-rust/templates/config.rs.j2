@@ -51,10 +51,17 @@ impl Config {
     pub fn from_env() -> Self {
         Self {
 {%- for inst in c.db_instances %}
+{%- if inst.db_engine == "mysql" %}
+            {{ inst.url_field }}: env_or(
+                "{{ inst.env_var }}",
+                "mysql://root:root@localhost:3306/{{ inst.db_name }}",
+            ),
+{%- else %}
             {{ inst.url_field }}: env_or(
                 "{{ inst.env_var }}",
                 "postgres://postgres:postgres@localhost:5432/{{ inst.db_name }}",
             ),
+{%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
             {{ inst.url_field }}: env_or("{{ inst.env_var }}", "redis://localhost:6379/{{ inst.redis_db }}"),

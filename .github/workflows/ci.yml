@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `claude/**` covers the active development branches (v0.13 M1):
+    # before this, CI only ever ran on main/PRs — meaning pushes to
+    # working branches carried zero CI signal and the "runs in CI"
+    # claims for Docker-dependent verification never executed.
+    branches: [main, "claude/**"]
   pull_request:
 
 env:
@@ -70,7 +74,19 @@ jobs:
             name="$(basename "$src" .ciac)"
             out="/tmp/gen-rs-$name"
             echo "::group::$name"
-            cargo run -q -p ciac -- verify "$src" --target rust --out "$out"
+            # A CIAC0011-gated example (a provider this target doesn't
+            # implement yet) is a disclosed skip, not a failure — any
+            # other verify failure still fails the job (v0.13 M1).
+            if ! output="$(cargo run -q -p ciac -- verify "$src" --target rust --out "$out" 2>&1)"; then
+              if grep -q "CIAC0011" <<<"$output"; then
+                echo "skipped: gated on this target"
+              else
+                echo "$output"
+                exit 1
+              fi
+            else
+              echo "$output"
+            fi
             echo "::endgroup::"
           done
 
@@ -115,4 +131,5 @@ jobs:
           run_system examples/inventory-system.ciac python
           run_system examples/inventory-system.ciac rust
           run_system examples/mysql-notes.ciac python
+          run_system examples/mysql-notes.ciac rust
           run_system examples/kafka-pipeline.ciac python

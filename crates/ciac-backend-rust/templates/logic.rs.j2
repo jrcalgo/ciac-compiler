@@ -24,7 +24,7 @@ use crate::models::{ {{ handler.model_imports | join(", ") }} };
 #[derive(Debug)]
 pub struct {{ handler.class_name }}{% if borrows %}<'a>{% endif %} {
 {%- if handler.needs_db %}
-    pub db: &'a sqlx::PgPool,
+    pub db: &'a {% if handler.db_engine == "mysql" %}sqlx::MySqlPool{% else %}sqlx::PgPool{% endif %},
 {%- endif %}
 {%- if handler.needs_cache %}
     pub cache: &'a redis::Client,

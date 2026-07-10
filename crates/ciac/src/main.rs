@@ -1,6 +1,7 @@
 //! The `ciac` command-line interface.
 
 mod commands;
+mod dev;
 mod json_out;
 mod lsp;
 mod scaffold;
@@ -103,6 +104,36 @@ enum Command {
         /// on stderr.
         #[arg(long)]
         json: bool,
+    },
+    /// Watch the program's source files and keep a regenerated, live
+    /// compose stack in sync: on save, recompile (compile errors keep
+    /// the last good stack running), regenerate through the same
+    /// sidecar-safe path `ciac build` uses, restart the stack, and
+    /// re-probe every service's /health route.
+    Dev {
+        /// Path to the `.ciac` source file.
+        file: PathBuf,
+        /// Code-generation target.
+        #[arg(short, long)]
+        target: String,
+        /// Output directory for the generated project.
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Leave the compose stack running on exit instead of tearing
+        /// it down.
+        #[arg(long)]
+        keep: bool,
+        /// Watch + regenerate only: never touch Docker. For pairing
+        /// with a hand-run process or zero-container (SQLite) programs.
+        #[arg(long)]
+        no_docker: bool,
+        /// Use filesystem polling instead of native change events
+        /// (for filesystems where inotify/fsevents misbehave).
+        #[arg(long)]
+        poll: bool,
+        /// Override the generated project's name.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Show what regeneration would change without writing files.
     Diff {
@@ -251,6 +282,15 @@ fn run(cli: Cli) -> Result<ExitCode> {
             name,
             json,
         ),
+        Command::Dev {
+            file,
+            target,
+            out,
+            keep,
+            no_docker,
+            poll,
+            name,
+        } => dev::run(&file, &target, &out, name, keep, no_docker, poll),
         Command::Diff {
             file,
             target,

@@ -30,7 +30,7 @@ fn backends() -> Vec<Box<dyn Backend>> {
 /// program is valid, plus the full resolved [`SourceMap`] (every file
 /// `import "path";` pulled in, v0.8 M1) so callers that need the whole
 /// source set (e.g. hashing it for the manifest) don't re-resolve it.
-fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap)> {
+pub(crate) fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap)> {
     let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
     let renderer = AriadneRenderer {
         color: std::io::stderr().is_terminal(),
@@ -161,7 +161,7 @@ pub fn build(
     build_inner(file, target, out, force, adopt, deploy, name)
 }
 
-fn build_inner(
+pub(crate) fn build_inner(
     file: &Path,
     target: &str,
     out: &Path,
@@ -527,7 +527,7 @@ fn compose_up(compose_file: &Path) -> Result<()> {
 
 /// Best-effort teardown of the generated compose stack — or, with
 /// `keep`, leaves it running and prints how to tear it down by hand.
-fn compose_down_or_keep(compose_file: &Path, keep: bool) {
+pub(crate) fn compose_down_or_keep(compose_file: &Path, keep: bool) {
     if keep {
         eprintln!(
             "info: --keep: leaving the stack up; stop it with `docker compose -f {} down -v --remove-orphans`",
@@ -625,7 +625,7 @@ fn verify_live(file: &Path, out: &Path, keep: bool) -> Result<ExitCode> {
 
 /// One `GET /health` over a plain TcpStream — a dependency-free probe
 /// is all a fixed, tiny request like this needs.
-fn health_probe(port: u16) -> bool {
+pub(crate) fn health_probe(port: u16) -> bool {
     use std::io::{Read, Write};
     let timeout = std::time::Duration::from_secs(2);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));

@@ -11,6 +11,7 @@
 
 use crate::ast::{Item, Program};
 use crate::parser::parse;
+use crate::registry;
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, SourceMap};
 use std::collections::BTreeSet;
 use std::io;
@@ -84,6 +85,15 @@ fn resolve_file(
         match item {
             Item::Import(import) if import.path.starts_with("std/") => {
                 items.extend(resolve_std(&import.path, sources, diags, loaded, stack)?);
+            }
+            Item::Import(import) if import.path.starts_with("registry:") => {
+                items.extend(resolve_registry(
+                    &import.path,
+                    sources,
+                    diags,
+                    loaded,
+                    stack,
+                )?);
             }
             Item::Import(import) => {
                 let imported = dir.join(&import.path);
@@ -162,6 +172,78 @@ fn resolve_std(
                     io::ErrorKind::InvalidData,
                     format!(
                         "std blueprint '{path}' cannot import a real file ({})",
+                        import.path
+                    ),
+                ));
+            }
+            other => items.push(other),
+        }
+    }
+    stack.pop();
+    loaded.insert(key);
+    Ok(items)
+}
+
+/// Resolves a `registry:` import (v0.12 M3): fetch-or-cache via
+/// [`registry::resolve`], then splice exactly like any other import.
+/// The spec string is the dedup/cycle key — like `std/` keys, it can
+/// never collide with a canonicalized real path. Fetched content may
+/// import `std/` blueprints or further `registry:` specs, but not
+/// local files: a remote blueprint has no local directory to resolve
+/// them against.
+fn resolve_registry(
+    spec: &str,
+    sources: &mut SourceMap,
+    diags: &mut Diagnostics,
+    loaded: &mut BTreeSet<PathBuf>,
+    stack: &mut Vec<PathBuf>,
+) -> io::Result<Vec<Item>> {
+    let key = PathBuf::from(spec);
+
+    if loaded.contains(&key) {
+        return Ok(Vec::new());
+    }
+    if let Some(pos) = stack.iter().position(|p| p == &key) {
+        let cycle = stack[pos..]
+            .iter()
+            .chain(std::iter::once(&key))
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        diags.push(Diagnostic::new(
+            ErrorCode::ImportCycle,
+            format!("import cycle: {cycle}"),
+        ));
+        return Ok(Vec::new());
+    }
+
+    let src = registry::resolve(spec)?;
+    let file_id = sources.add_file(spec.to_string(), src.clone());
+    let program = parse(&src, file_id, diags);
+
+    stack.push(key.clone());
+    let mut items = Vec::with_capacity(program.items.len());
+    for item in program.items {
+        match item {
+            Item::Import(import) if import.path.starts_with("std/") => {
+                items.extend(resolve_std(&import.path, sources, diags, loaded, stack)?);
+            }
+            Item::Import(import) if import.path.starts_with("registry:") => {
+                items.extend(resolve_registry(
+                    &import.path,
+                    sources,
+                    diags,
+                    loaded,
+                    stack,
+                )?);
+            }
+            Item::Import(import) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "registry import '{spec}' cannot import a local file ({}); \
+                         remote blueprints may only import `std/` or other \
+                         `registry:` blueprints",
                         import.path
                     ),
                 ));

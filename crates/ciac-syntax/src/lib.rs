@@ -9,6 +9,7 @@ pub mod ast;
 mod lexer;
 pub mod module;
 mod parser;
+mod registry;
 
 pub use lexer::{lex, Token, TokenKind};
 pub use module::load;

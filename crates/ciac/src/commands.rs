@@ -279,7 +279,76 @@ pub fn diff(
     out: &Path,
     patch: bool,
     name: Option<String>,
+    json: bool,
 ) -> Result<ExitCode> {
+    if json {
+        return diff_json(file, target, out, patch, name);
+    }
+    let plan = diff_plan(file, target, out, name)?;
+    for entry in &plan.entries {
+        println!("{:13} {}", entry.status.as_str(), entry.path);
+        if let Some(sidecar) = &entry.sidecar_path {
+            println!("{:13} {}", "sidecar", sidecar);
+        }
+        if patch {
+            if let Some(text) = patch_text(entry) {
+                print!("{text}");
+            }
+        }
+    }
+    if plan.has_errors() {
+        Ok(ExitCode::FAILURE)
+    } else {
+        Ok(ExitCode::SUCCESS)
+    }
+}
+
+/// `diff` is the manifest-aware dry-run; `--json` (v0.10 M4) makes it
+/// machine-readable — the regeneration plan as data in the same
+/// envelope `check`/`build`/`verify --json` use.
+fn diff_json(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    patch: bool,
+    name: Option<String>,
+) -> Result<ExitCode> {
+    JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
+    if has_errors || ir.is_none() {
+        crate::json_out::emit(&crate::json_out::envelope("diff", false, &diags, &sources));
+        return Ok(ExitCode::FAILURE);
+    }
+    let (entries, success) = match diff_plan(file, target, out, name) {
+        Ok(plan) => {
+            let entries = plan
+                .entries
+                .iter()
+                .map(|entry| crate::json_out::DiffEntry {
+                    path: entry.path.clone(),
+                    status: entry.status.as_str().to_owned(),
+                    sidecar: entry.sidecar_path.clone(),
+                    patch: if patch { patch_text(entry) } else { None },
+                })
+                .collect();
+            (Some(entries), !plan.has_errors())
+        }
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            (None, false)
+        }
+    };
+    let mut envelope = crate::json_out::envelope("diff", success, &diags, &sources);
+    envelope.entries = entries;
+    crate::json_out::emit(&envelope);
+    Ok(if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+fn diff_plan(file: &Path, target: &str, out: &Path, name: Option<String>) -> Result<RegenPlan> {
     let Generated { project, .. } = generate(file, target, out, name, None)?;
     let manifest_file = manifest_path(out);
     let manifest = if manifest_file.exists() {
@@ -292,22 +361,8 @@ pub fn diff(
     } else {
         None
     };
-    let plan = plan_regeneration(&project, out, manifest.as_ref(), RegenMode::Normal)
-        .with_context(|| format!("cannot compare generated files with {}", out.display()))?;
-    for entry in &plan.entries {
-        println!("{:13} {}", entry.status.as_str(), entry.path);
-        if let Some(sidecar) = &entry.sidecar_path {
-            println!("{:13} {}", "sidecar", sidecar);
-        }
-        if patch {
-            print_patch(entry);
-        }
-    }
-    if plan.has_errors() {
-        Ok(ExitCode::FAILURE)
-    } else {
-        Ok(ExitCode::SUCCESS)
-    }
+    plan_regeneration(&project, out, manifest.as_ref(), RegenMode::Normal)
+        .with_context(|| format!("cannot compare generated files with {}", out.display()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -857,18 +912,20 @@ fn report_regen_plan(plan: &RegenPlan, adopt: bool, sidecars_written: bool) {
     }
 }
 
-fn print_patch(entry: &ciac_codegen::regen::RegenEntry) {
+/// Unified diff text for a changed entry; `None` when content is
+/// identical (nothing to show).
+fn patch_text(entry: &ciac_codegen::regen::RegenEntry) -> Option<String> {
     let old = entry.old_content.as_deref().unwrap_or_default();
     let new = entry.new_content.as_deref().unwrap_or_default();
     if old == new {
-        return;
+        return None;
     }
     let diff = similar::TextDiff::from_lines(old, new);
-    print!(
-        "{}",
+    Some(
         diff.unified_diff()
             .header(&format!("a/{}", entry.path), &format!("b/{}", entry.path))
-    );
+            .to_string(),
+    )
 }
 
 fn list_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {

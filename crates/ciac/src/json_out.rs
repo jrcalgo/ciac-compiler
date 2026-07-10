@@ -15,6 +15,24 @@ pub struct Envelope {
     pub command: &'static str,
     pub success: bool,
     pub diagnostics: Vec<JsonDiagnostic>,
+    /// `diff --json` only (v0.10 M4): the regeneration plan as data.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<DiffEntry>>,
+}
+
+/// One regeneration-plan entry — what a real `ciac build` would do to
+/// this path, without having done it.
+#[derive(Debug, Serialize)]
+pub struct DiffEntry {
+    pub path: String,
+    /// [`ciac_codegen::regen::RegenStatus::as_str`]'s vocabulary.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidecar: Option<String>,
+    /// Unified diff text, present only under `--patch` and only when
+    /// content actually changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
 }
 
 /// A [`ciac_diagnostics::Diagnostic`] with every span resolved to
@@ -83,6 +101,7 @@ pub fn envelope(
         command,
         success,
         diagnostics,
+        entries: None,
     }
 }
 

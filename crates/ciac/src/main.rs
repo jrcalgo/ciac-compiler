@@ -90,6 +90,11 @@ enum Command {
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
+        /// Emit the regeneration plan as one machine-readable JSON
+        /// document on stdout (with `--patch`, including unified diff
+        /// text per changed entry).
+        #[arg(long)]
+        json: bool,
     },
     /// Verify an existing generated project still matches its CIaC source.
     Verify {
@@ -210,7 +215,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             out,
             patch,
             name,
-        } => commands::diff(&file, &target, &out, patch, name),
+            json,
+        } => commands::diff(&file, &target, &out, patch, name, json),
         Command::Verify {
             file,
             target,

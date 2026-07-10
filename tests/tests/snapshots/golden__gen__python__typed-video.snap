@@ -295,7 +295,6 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/media"
 
     redis_url: str = "redis://localhost:6379/0"
-
     nats_url: str = "nats://localhost:4222"
 
     jwt_secret: str = "change-me"
@@ -719,6 +718,7 @@ so replicas of this worker load-balance messages between them.
 
 import asyncio
 import logging
+
 import nats
 
 from app.config import get_settings
@@ -776,6 +776,7 @@ so replicas of this worker load-balance messages between them.
 
 import asyncio
 import logging
+
 import nats
 
 from app.config import get_settings
@@ -914,6 +915,12 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# tests/system/ needs the compose stack up and is run only by
+# `ciac verify --system` (from its own directory); plain `pytest`
+# must never collect it.
+norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"

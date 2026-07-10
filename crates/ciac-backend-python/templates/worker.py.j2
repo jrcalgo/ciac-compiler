@@ -37,7 +37,11 @@ import json
 from typing import Any
 
 {% endif -%}
+{%- if c.queue_engine == "kafka" %}
+from aiokafka import AIOKafkaConsumer
+{%- else %}
 import nats
+{%- endif %}
 
 from app.config import get_settings
 {%- if worker.needs_cache %}
@@ -101,6 +105,24 @@ async def handle_message(payload: {{ payload_type }}) -> None:
 
 
 async def _consume(worker_index: int) -> None:
+{%- if c.queue_engine == "kafka" %}
+    consumer = AIOKafkaConsumer(
+        SUBJECT,
+        group_id=QUEUE_GROUP,
+        bootstrap_servers=get_settings().kafka_url,
+    )
+    await consumer.start()
+    logger.info("worker {{ worker.name }} consumer %s subscribed", worker_index)
+    try:
+        async for message in consumer:
+{%- if worker.payload %}
+            await handle_message({{ worker.payload.class_name }}.model_validate_json(message.value))
+{%- else %}
+            await handle_message(json.loads(message.value))
+{%- endif %}
+    finally:
+        await consumer.stop()
+{%- else %}
     client = await nats.connect(get_settings().nats_url)
     subscription = await client.subscribe(SUBJECT, queue=QUEUE_GROUP)
     logger.info("worker {{ worker.name }} consumer %s subscribed", worker_index)
@@ -109,6 +131,7 @@ async def _consume(worker_index: int) -> None:
         await handle_message({{ worker.payload.class_name }}.model_validate_json(message.data))
 {%- else %}
         await handle_message(json.loads(message.data))
+{%- endif %}
 {%- endif %}
 
 

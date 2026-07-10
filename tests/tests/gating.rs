@@ -33,24 +33,36 @@ pipeline Cleanup: Prune;
 "#;
 
 #[test]
-fn kafka_passes_check_but_gates_at_build() {
+fn kafka_generates_on_python_but_still_gates_on_rust() {
+    // v0.11 M3: Kafka graduated on the Python backend (aiokafka); the
+    // Rust backend still gates it (rdkafka's native build chain is a
+    // cost with no new seam knowledge -- disclosed in 11UpdatePlan.md).
     let (ir, diags) = compile(KAFKA_GATED);
     assert!(
         !diags.has_errors(),
         "check must accept kafka declarations: {:?}",
         diags.codes()
     );
-    let ir = ir.expect("gated program still produces IR");
+    let ir = ir.expect("program produces IR");
 
     for backend in backends() {
-        let err = ciac_codegen::check_support(backend.as_ref(), &ir)
-            .expect_err(&format!("{} must gate Kafka", backend.id()));
-        let message = err.to_string();
-        assert!(
-            message.contains("queue default Kafka"),
-            "{} gating error should name the unsupported construct: {message}",
-            backend.id()
-        );
+        let support = ciac_codegen::check_support(backend.as_ref(), &ir);
+        match backend.id() {
+            "python" => {
+                support.expect("python supports Kafka since v0.11 M3");
+                let project = backend
+                    .generate(&ir, &ciac_codegen::GenOptions::default())
+                    .expect("kafka program generates on python");
+                let queue_py = project.get("app/queue.py").expect("queue module");
+                assert!(queue_py.contains("AIOKafkaProducer"), "{queue_py}");
+            }
+            "rust" => {
+                let err = support.expect_err("rust must still gate Kafka");
+                let message = err.to_string();
+                assert!(message.contains("queue default Kafka"), "{message}");
+            }
+            other => panic!("unexpected backend {other}"),
+        }
     }
 }
 

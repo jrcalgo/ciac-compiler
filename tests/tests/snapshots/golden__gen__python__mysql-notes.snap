@@ -509,6 +509,12 @@ dev = [
 [tool.uv]
 package = false
 
+[tool.pytest.ini_options]
+# tests/system/ needs the compose stack up and is run only by
+# `ciac verify --system` (from its own directory); plain `pytest`
+# must never collect it.
+norecursedirs = ["tests/system"]
+
 [tool.ruff]
 target-version = "py311"
 ============================================================

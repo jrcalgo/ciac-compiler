@@ -1572,6 +1572,13 @@
             "description": "System/project name, e.g. `media-system`.",
             "type": "string"
           },
+          "queue_engine": {
+            "description": "`nats` | `kafka` when any service declares a queue (v0.11 M3).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "services": {
             "items": {
               "$ref": "#/$defs/Ctx"

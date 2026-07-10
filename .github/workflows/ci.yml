@@ -114,3 +114,5 @@ jobs:
           run_system examples/audited-crud.ciac python
           run_system examples/inventory-system.ciac python
           run_system examples/inventory-system.ciac rust
+          run_system examples/mysql-notes.ciac python
+          run_system examples/kafka-pipeline.ciac python

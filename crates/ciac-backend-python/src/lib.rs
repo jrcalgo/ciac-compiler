@@ -51,17 +51,10 @@ impl Backend for PythonBackend {
         "Python 3.11+ project using FastAPI, SQLAlchemy, redis-py, and nats-py"
     }
 
-    fn supports(&self, component: &Component) -> bool {
-        // Kafka has no generator yet. v0.7 typed handler signatures
-        // (`extern` or inline body) graduated in M3 — `lower.rs` walks
-        // the HIR directly; Rust's own gate for them stays until M4.
-        !matches!(
-            component,
-            Component::Queue {
-                engine: ciac_ir::QueueEngine::Kafka,
-                ..
-            }
-        )
+    fn supports(&self, _component: &Component) -> bool {
+        // Everything, including Kafka since v0.11 M3 (aiokafka). The
+        // Rust backend still gates Kafka and MySQL.
+        true
     }
 
     fn generate(

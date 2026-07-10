@@ -1,0 +1,16 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph Clickstream {
+    rankdir=LR;
+    n0 [label="queue default Kafka", shape=cds];
+    n1 [label="stream Clicks", shape=parallelogram];
+    n2 [label="api Ingest", shape=rarrow];
+    n3 [label="worker Enrich", shape=component];
+    n4 [label="service EnrichClick", shape=box];
+    n1 -> n0 [label="DependsOn", style=dotted];
+    n1 -> n3 [label="AsyncMessage", style=dashed];
+    n2 -> n1 [label="AsyncMessage", style=dashed];
+    n3 -> n4 [label="RequestFlow", style=solid];
+}

@@ -27,6 +27,8 @@ pub struct SystemModel {
     /// docker-compose/README files for the whole system.
     pub multi: bool,
     pub services: Vec<Ctx>,
+    /// `nats` | `kafka` when any service declares a queue (v0.11 M3).
+    pub queue_engine: Option<String>,
     /// Any service publishes/consumes streams (the system compose then
     /// runs one shared broker every service's `nats_url` points at).
     pub has_queue: bool,
@@ -652,6 +654,7 @@ pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
     SystemModel {
         project_name,
         multi: ir.multi_service,
+        queue_engine: services.iter().find_map(|c| c.queue_engine.clone()),
         has_queue: services.iter().any(|c| c.has_queue),
         has_db: services.iter().any(|c| c.has_db),
         has_object_store: services.iter().any(|c| c.has_object_store),

@@ -119,7 +119,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ingest"
-
     nats_url: str = "nats://localhost:4222"
 
 
@@ -381,7 +380,6 @@ Consumes `ingest.page_view` in queue group `page_view_consumer`.
 
 import json
 from typing import Any
-
 import nats
 
 from app.config import get_settings
@@ -416,6 +414,7 @@ import asyncio
 import logging
 import json
 from typing import Any
+
 
 import nats
 
@@ -541,6 +540,12 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# tests/system/ needs the compose stack up and is run only by
+# `ciac verify --system` (from its own directory); plain `pytest`
+# must never collect it.
+norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"

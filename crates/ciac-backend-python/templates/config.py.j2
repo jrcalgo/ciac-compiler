@@ -50,7 +50,11 @@ class Settings(BaseSettings):
 {%- endif %}
 {%- if c.has_queue %}
 
+{%- if c.queue_engine == "kafka" %}
+    kafka_url: str = "localhost:9092"
+{%- else %}
     nats_url: str = "nats://localhost:4222"
+{%- endif %}
 {%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
 

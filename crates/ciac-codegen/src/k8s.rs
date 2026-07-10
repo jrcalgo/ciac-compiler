@@ -47,7 +47,10 @@ pub fn build(ir: &NormalizedIr, image_prefix: Option<&str>, tag: &str) -> Vec<(S
     }
 
     if system.has_queue {
-        files.push(("k8s/queue.yaml".to_string(), render_broker_manifest()));
+        files.push((
+            "k8s/queue.yaml".to_string(),
+            render_broker_manifest(system.queue_engine.as_deref()),
+        ));
     }
 
     files
@@ -115,7 +118,11 @@ fn service_env(ctx: &Ctx) -> Vec<(String, String)> {
         ));
     }
     if ctx.has_queue {
-        env.push(("NATS_URL".to_owned(), "nats://queue:4222".to_owned()));
+        if ctx.queue_engine.as_deref() == Some("kafka") {
+            env.push(("KAFKA_URL".to_owned(), "queue:9092".to_owned()));
+        } else {
+            env.push(("NATS_URL".to_owned(), "nats://queue:4222".to_owned()));
+        }
     }
     if ctx.auth_scheme == "oauth2" {
         env.push(("OAUTH_ISSUER".to_owned(), ctx.auth_issuer.clone()));
@@ -204,8 +211,14 @@ fn render_service_manifest(name: &str, image: &str, port: u16, env: &[(String, S
 /// `queue` to match the hostname `docker-compose.yml.j2` already wires
 /// every `NATS_URL` to (`nats://queue:4222`) — no per-service env
 /// difference between compose and k8s for this one.
-fn render_broker_manifest() -> String {
-    "apiVersion: apps/v1\n\
+fn render_broker_manifest(queue_engine: Option<&str>) -> String {
+    let (image, port) = if queue_engine == Some("kafka") {
+        ("apache/kafka:3.8.0", 9092)
+    } else {
+        ("nats:2", 4222)
+    };
+    format!(
+        "apiVersion: apps/v1\n\
      kind: StatefulSet\n\
      metadata:\n\
      \x20 name: queue\n\
@@ -222,9 +235,9 @@ fn render_broker_manifest() -> String {
      \x20   spec:\n\
      \x20     containers:\n\
      \x20       - name: queue\n\
-     \x20         image: nats:2\n\
+     \x20         image: {image}\n\
      \x20         ports:\n\
-     \x20           - containerPort: 4222\n\
+     \x20           - containerPort: {port}\n\
      ---\n\
      apiVersion: v1\n\
      kind: Service\n\
@@ -235,8 +248,8 @@ fn render_broker_manifest() -> String {
      \x20 selector:\n\
      \x20   app: queue\n\
      \x20 ports:\n\
-     \x20   - port: 4222\n"
-        .to_owned()
+     \x20   - port: {port}\n"
+    )
 }
 
 #[cfg(test)]

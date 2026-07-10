@@ -19,7 +19,9 @@ dependencies = [
 {%- if c.has_cache %}
     "redis>=5.0",
 {%- endif %}
-{%- if c.has_queue %}
+{%- if c.queue_engine == "kafka" %}
+    "aiokafka>=0.11",
+{%- elif c.has_queue %}
     "nats-py>=2.7",
 {%- endif %}
 {%- if c.jobs %}
@@ -60,6 +62,12 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# tests/system/ needs the compose stack up and is run only by
+# `ciac verify --system` (from its own directory); plain `pytest`
+# must never collect it.
+norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"

@@ -26,7 +26,7 @@ pub struct AppState {
     pub {{ inst.state_field }}: crate::http_clients::ExternalHttp,
 {%- endfor %}
 {%- if c.has_queue %}
-    pub queue: async_nats::Client,
+    pub queue: crate::queue::Queue,
 {%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
     /// JWKS fetched from the issuer at startup; `Claims` selects the
@@ -78,7 +78,11 @@ impl AppState {
             crate::http_clients::ExternalHttp::new(config.{{ inst.cfg[0].field }}.clone());
 {%- endfor %}
 {%- if c.has_queue %}
-        let queue = async_nats::connect(&config.nats_url).await?;
+{%- if c.queue_engine == "kafka" %}
+        let queue = crate::queue::Queue::connect(&config.kafka_url).await?;
+{%- else %}
+        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+{%- endif %}
 {%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
         let jwks: jsonwebtoken::jwk::JwkSet = reqwest::get(format!(

@@ -179,19 +179,28 @@ services:
   queue:
 {%- if m.queue_engine == "kafka" %}
     image: apache/kafka:3.8.0
+    # Dual listeners (v0.13 M2): in-network clients use queue:9092;
+    # host clients (the generated tests/system suite) use
+    # localhost:29092 -- a host client on 9092 would be redirected to
+    # the unresolvable advertised name `queue`.
     ports:
-      - "9092:9092"
+      - "29092:29092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@queue:9093
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://queue:9092
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://queue:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
 {%- else %}
     image: nats:2
+    # Host mapping (v0.13 M2): the generated tests/system delivery and
+    # channel tests connect from the host at localhost:4222.
+    ports:
+      - "4222:4222"
 {%- endif %}
 {%- endif %}
 {%- if m.has_db or m.has_object_store %}

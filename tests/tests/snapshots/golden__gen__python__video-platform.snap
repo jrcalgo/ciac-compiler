@@ -603,6 +603,10 @@ services:
 
   queue:
     image: nats:2
+    # Host mapping (v0.13 M2): the generated tests/system delivery and
+    # channel tests connect from the host at localhost:4222.
+    ports:
+      - "4222:4222"
 
 volumes:
   db-data:

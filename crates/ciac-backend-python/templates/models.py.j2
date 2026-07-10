@@ -7,13 +7,14 @@ payload). `table <Name>: <Record>;` declarations (v0.7) get the same
 column treatment, named after the table so a record reused under several
 table names doesn't collide. Enums are stored as text.
 """
-{% set ns = namespace(any_json=false, any_dt=false, any_literal=false, any_untyped=false) %}
+{% set ns = namespace(any_json=false, any_dt=false, any_literal=false, any_untyped=false, any_text=false) %}
 {%- for resource in c.resources %}
 {%- if resource.record %}
 {%- for field in resource.record.fields %}
 {%- if field.is_json %}{% set ns.any_json = true %}{% endif %}
 {%- if field.py_type == "datetime" %}{% set ns.any_dt = true %}{% endif %}
 {%- if field.is_enum %}{% set ns.any_literal = true %}{% endif %}
+{%- if field.name != "id" and field.py_type == "str" and not field.is_enum and not field.is_json %}{% set ns.any_text = true %}{% endif %}
 {%- endfor %}
 {%- else %}
 {%- set ns.any_untyped = true %}
@@ -23,6 +24,7 @@ table names doesn't collide. Enums are stored as text.
 {%- for field in table.record.fields %}
 {%- if field.is_json %}{% set ns.any_json = true %}{% endif %}
 {%- if field.py_type == "datetime" %}{% set ns.any_dt = true %}{% endif %}
+{%- if field.name != "id" and field.py_type == "str" and not field.is_enum and not field.is_json %}{% set ns.any_text = true %}{% endif %}
 {%- endfor %}
 {%- endfor %}
 {% if ns.any_dt %}
@@ -34,7 +36,7 @@ from typing import {% if ns.any_json or ns.any_untyped %}Any{% if ns.any_literal
 {% if c.resources %}
 from pydantic import BaseModel{% if ns.any_untyped %}, Field{% endif %}
 {% endif -%}
-from sqlalchemy import {% if ns.any_json or ns.any_untyped %}JSON, {% endif %}String, Text
+from sqlalchemy import {% if ns.any_json or ns.any_untyped %}JSON, {% endif %}String{% if ns.any_text %}, Text{% endif %}
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base

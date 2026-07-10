@@ -613,7 +613,7 @@ fn rust_stmt(ir: &NormalizedIr, body: &HandlerBody, stmt: &HirStmt, tail: Tail) 
         HirStmt::Publish { stream, value } => {
             let subject = stream_subject(ir, *stream);
             format!(
-                "self.queue.publish({subject:?}.to_owned(), serde_json::to_vec(&{})?.into()).await?;",
+                "self.queue.publish({subject:?}, serde_json::to_vec(&{})?).await?;",
                 rust_expr(ir, body, value)
             )
         }

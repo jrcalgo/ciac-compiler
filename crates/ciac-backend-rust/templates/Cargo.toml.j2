@@ -33,7 +33,17 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls"{% if c.has_postgres
 redis = { version = "0.27", features = ["tokio-comp"] }
 {%- endif %}
 {%- if c.has_queue %}
+{%- if c.queue_engine == "kafka" %}
+# Vendored librdkafka (cmake-build): full consumer-group semantics at
+# the cost of a native build chain — cmake is required (the generated
+# Dockerfile installs it; see its build stage). rdkafka-sys is pinned
+# to =4.7.0 (librdkafka 2.3.0): newer vendored librdkafkas (2.12.x)
+# demand libcurl dev headers even with WITH_CURL=0.
+rdkafka = { version = "0.36", features = ["cmake-build", "tokio", "libz-static"] }
+rdkafka-sys = { version = "=4.7.0", features = ["cmake-build", "libz-static"] }
+{%- else %}
 async-nats = "0.38"
+{%- endif %}
 futures = "0.3"
 {%- endif %}
 {%- if c.channels %}
@@ -54,7 +64,7 @@ opensearch = "2"
 {%- if c.has_external_http or c.call_targets or c.auth_scheme == "oauth2" %}
 reqwest = { version = "0.12", features = ["json"] }
 {%- endif %}
-{%- if c.resources or needs_uuid_crate %}
+{%- if c.resources or needs_uuid_crate or (c.channels and c.queue_engine == "kafka") %}
 uuid = { version = "1", features = ["v4"] }
 {%- endif %}
 {%- if c.has_metrics %}

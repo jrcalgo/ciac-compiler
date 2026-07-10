@@ -6,6 +6,9 @@
 pub mod config;
 pub mod error;
 pub mod observability;
+{%- if c.has_queue %}
+pub mod queue;
+{%- endif %}
 pub mod routes;
 pub mod state;
 {%- if c.has_auth %}

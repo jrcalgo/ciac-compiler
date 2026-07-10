@@ -3,7 +3,9 @@
 //! Consumes `{{ worker.subject }}` in queue group `{{ worker.queue_group }}`
 //! so replicas of this worker load-balance messages between them.
 
+{% if c.queue_engine != "kafka" -%}
 use futures::StreamExt;
+{% endif -%}
 use futures::future::try_join_all;
 
 {% if worker.payload -%}
@@ -30,9 +32,41 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+{% if c.queue_engine == "kafka" -%}
+async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
+    use rdkafka::Message;
+    let consumer = state
+        .queue
+        .consumer(&state.config.kafka_url, SUBJECT, QUEUE_GROUP)?;
+    tracing::info!(subject = SUBJECT, worker_index, "worker {{ worker.name }} consuming");
+    loop {
+        let message = match consumer.recv().await {
+            Ok(message) => message,
+            Err(err) => {
+                tracing::warn!(?err, "kafka receive error");
+                continue;
+            }
+        };
+        let Some(bytes) = message.payload() else {
+            continue;
+        };
+        let payload: {{ payload_type }} = match serde_json::from_slice(bytes) {
+            Ok(payload) => payload,
+            Err(err) => {
+                tracing::warn!(?err, "discarding malformed message");
+                continue;
+            }
+        };
+        if let Err(err) = handle_message(&state, payload).await {
+            tracing::error!(?err, "message processing failed after retries");
+        }
+    }
+}
+{%- else -%}
 async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
     let mut subscription = state
         .queue
+        .client()
         .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
         .await?;
     tracing::info!(subject = SUBJECT, worker_index, "worker {{ worker.name }} consuming");
@@ -50,6 +84,7 @@ async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
     }
     Ok(())
 }
+{%- endif %}
 
 {% macro emit_steps(steps, indent) -%}
 {%- for step in steps %}
@@ -58,7 +93,7 @@ async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
 {%- elif step.kind == "publish" %}
 {{ indent }}state
 {{ indent }}    .queue
-{{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?.into())
+{{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?)
 {{ indent }}    .await?;
 {%- elif step.kind == "call" %}
 {{ indent }}let result = crate::clients::{{ step.call.module }}::{{ step.call.class_name }}::new(state)

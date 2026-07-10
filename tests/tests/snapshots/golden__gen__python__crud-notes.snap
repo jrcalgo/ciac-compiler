@@ -382,7 +382,7 @@ table names doesn't collide. Enums are stored as text.
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, String, Text
+from sqlalchemy import JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base

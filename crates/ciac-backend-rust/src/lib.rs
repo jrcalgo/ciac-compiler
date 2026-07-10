@@ -51,20 +51,16 @@ impl Backend for RustBackend {
     }
 
     fn description(&self) -> &'static str {
-        "Rust project using Axum, SQLx, redis, and async-nats"
+        "Rust project using Axum, SQLx, redis, and async-nats/rdkafka"
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // Kafka has no Rust generator yet (v0.13 M2 closes it). MySQL
-        // graduated in v0.13 M1: per-engine sqlx pools + placeholder
-        // styles. Typed handler signatures graduated in v0.7 M4.
-        !matches!(
-            component,
-            Component::Queue {
-                engine: ciac_ir::QueueEngine::Kafka,
-                ..
-            }
-        )
+        // Full provider parity since v0.13: MySQL graduated in M1
+        // (per-engine sqlx pools + placeholder styles), Kafka in M2
+        // (rdkafka vendored; same topics/groups as the Python
+        // backend). Typed handler signatures graduated in v0.7 M4.
+        let _ = component;
+        true
     }
 
     fn generate(
@@ -198,6 +194,9 @@ fn emit_service(
     project.add_file(at("src/config.rs"), render("config.rs.j2", empty())?);
     project.add_file(at("src/state.rs"), render("state.rs.j2", empty())?);
     project.add_file(at("src/error.rs"), render("error.rs.j2", empty())?);
+    if ctx.has_queue {
+        project.add_file(at("src/queue.rs"), render("queue.rs.j2", empty())?);
+    }
     project.add_file(
         at("src/observability.rs"),
         render("observability.rs.j2", empty())?,

@@ -70,6 +70,11 @@ jobs:
       - name: Verify every example
         run: |
           set -euo pipefail
+          # One shared target dir for every generated project: 17
+          # examples x a full Axum/SQLx dep tree each exhausted the
+          # runner's disk (v0.13 M1's first-ever run of this job);
+          # sharing compiles the deps once and fits comfortably.
+          export CARGO_TARGET_DIR=/tmp/gen-rs-shared-target
           for src in examples/*.ciac; do
             name="$(basename "$src" .ciac)"
             out="/tmp/gen-rs-$name"

@@ -474,7 +474,10 @@ fn render_delivery(checks: &[DeliveryCheck]) -> String {
         out.push_str("import nats\n\nNATS_URL = \"nats://localhost:4222\"\n");
     }
     if any_kafka {
-        out.push_str("from aiokafka import AIOKafkaConsumer\n\nKAFKA_URL = \"localhost:9092\"\n");
+        // 29092 is the broker's EXTERNAL listener (v0.13 M2): host
+        // clients on 9092 would be redirected to the in-network
+        // advertised name `queue`, which doesn't resolve out here.
+        out.push_str("from aiokafka import AIOKafkaConsumer\n\nKAFKA_URL = \"localhost:29092\"\n");
     }
     for check in checks {
         let test_name = format!("test_{}_delivery", to_snake(&check.stream));

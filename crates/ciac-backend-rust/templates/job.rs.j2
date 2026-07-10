@@ -49,7 +49,7 @@ async fn sleep_until_next(schedule: &Schedule) -> anyhow::Result<()> {
 {%- elif step.kind == "publish" %}
 {{ indent }}state
 {{ indent }}    .queue
-{{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?.into())
+{{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?)
 {{ indent }}    .await?;
 {%- elif step.kind == "call" %}
 {{ indent }}let result = crate::clients::{{ step.call.module }}::{{ step.call.class_name }}::new(state)

@@ -30,7 +30,7 @@ pub struct {{ handler.class_name }}{% if borrows %}<'a>{% endif %} {
     pub cache: &'a redis::Client,
 {%- endif %}
 {%- if handler.needs_queue %}
-    pub queue: &'a async_nats::Client,
+    pub queue: &'a crate::queue::Queue,
 {%- endif %}
 {%- for extra in handler.extras %}
     pub {{ extra.param }}: &'a crate::{{ extra.rust_module }}::{{ extra.rust_type }},

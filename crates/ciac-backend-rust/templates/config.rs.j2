@@ -35,7 +35,11 @@ pub struct Config {
     pub {{ t.url_field }}: String,
 {%- endfor %}
 {%- if c.has_queue %}
+{%- if c.queue_engine == "kafka" %}
+    pub kafka_url: String,
+{%- else %}
     pub nats_url: String,
+{%- endif %}
 {%- endif %}
 {%- if c.has_auth %}
 {%- if c.auth_scheme == "oauth2" %}
@@ -90,7 +94,11 @@ impl Config {
             {{ t.url_field }}: env_or("{{ t.env_var }}", "{{ t.default_url }}"),
 {%- endfor %}
 {%- if c.has_queue %}
+{%- if c.queue_engine == "kafka" %}
+            kafka_url: env_or("KAFKA_URL", "localhost:9092"),
+{%- else %}
             nats_url: env_or("NATS_URL", "nats://localhost:4222"),
+{%- endif %}
 {%- endif %}
 {%- if c.has_auth %}
 {%- if c.auth_scheme == "oauth2" %}

@@ -127,6 +127,17 @@ outbox publisher, a rate-limited API) are deferred: each needs
 extension with its own hygiene questions, better justified once a
 second concrete blueprint actually needs it.
 
+## `registry:` imports (v0.12 M3)
+
+`import "registry:<owner>/<repo>/<path>.ciac@<ref>";` fetches a
+blueprint from a plain git-hosted directory (default base:
+`raw.githubusercontent.com`; override with `$CIAC_REGISTRY`), caches
+it under `$XDG_CACHE_HOME/ciac/registry/`, and splices it in through
+the identical parse → expansion → validation path as local and `std/`
+imports. Pin an immutable ref and resolution is reproducible and
+offline after the first fetch. Details, editor tooling, and the trust
+boundary live in [authoring.md](authoring.md).
+
 ## Worked example
 
 `examples/audited-crud.ciac` is the M2 flagship: one blueprint,

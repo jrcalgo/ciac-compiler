@@ -1,4 +1,4 @@
-# The CIaC Language (v0.11.0)
+# The CIaC Language (v0.12.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -127,10 +127,12 @@ Splices another file's items in, in place, at the position of the
 same file reached through two different import paths loads exactly
 once; a cycle is `CIAC0047`). By the time semantic analysis runs, a
 multi-file program is indistinguishable from one big file. Paths are
-relative to the importing file, except the reserved `std/` prefix
-(`import "std/crud.ciac";`), which resolves against a small blueprint
-library embedded in the compiler itself rather than the filesystem.
-See `docs/blueprints.md`.
+relative to the importing file, with two reserved prefixes: `std/`
+(`import "std/crud.ciac";`) resolves against a small blueprint
+library embedded in the compiler itself, and `registry:` (v0.12,
+`import "registry:<owner>/<repo>/<path>.ciac@<ref>";`) fetches a
+git-hosted blueprint over HTTP with local caching. See
+`docs/blueprints.md` and `docs/authoring.md`.
 
 ### `blueprint <Name><<R: record>> { .. }` and `expand <Name><<Concrete>> { .. };` (v0.8)
 

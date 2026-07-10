@@ -153,9 +153,29 @@ media-system/
 target api's real method and path, fails the pipeline on non-2xx, and
 validates the response envelope back into the `Video` record.
 
-Constructs the language accepts but no backend implements yet (`Kafka`)
-pass `ciac check` and are refused by `ciac build` with `CIAC0011` — if
-it builds, the generated system actually does it.
+Constructs a specific target doesn't implement (`db MySQL` and
+`queue Kafka` generate on Python but not yet on Rust) pass `ciac
+check` and are refused by `ciac build --target rust` with `CIAC0011`
+— if it builds, the generated system actually does it. The
+per-provider support table lives in [docs/language.md](docs/language.md).
+
+## Quick start
+
+```sh
+cargo install --path crates/ciac    # or grab a release build
+ciac new my-app                     # templates: crud | multi-service | kafka | minimal
+cd my-app
+ciac check main.ciac
+ciac build main.ciac --target python --out ./build
+```
+
+Every `ciac new` template is a checked-in example the test suite
+already compiles and (where applicable) system-verifies in CI, so a
+scaffold always passes `ciac check`. Editing support — the `ciac lsp`
+language server (live diagnostics, hover with per-target provider
+notes, completion), TextMate syntax highlighting, and cross-project
+blueprint reuse via `registry:` imports — is covered in
+[docs/authoring.md](docs/authoring.md).
 
 ## Why
 
@@ -227,6 +247,7 @@ worked Go example in [backends/go/](backends/go/).
 
 | Command | Purpose |
 |---------|---------|
+| `ciac new DIR [--template crud\|multi-service\|kafka\|minimal]` | Scaffold a new project from a proven example |
 | `ciac check file.ciac` | Parse + validate, print diagnostics |
 | `ciac build file.ciac --target python\|rust --out DIR [--deploy k8s]` | Generate a project, optionally with Kubernetes manifests |
 | `ciac diff file.ciac --target python\|rust --out DIR` | Preview regeneration drift |
@@ -234,6 +255,7 @@ worked Go example in [backends/go/](backends/go/).
 | `ciac graph file.ciac --format json\|dot` | Dump the system graph |
 | `ciac explain CIAC0005` | Explain an error code |
 | `ciac codegen-schema` | Print the external-backend wire-contract JSON Schema |
+| `ciac lsp` | Language Server Protocol server over stdio (diagnostics, hover, completion) |
 | `ciac targets` | List code-generation targets |
 
 `check`, `build`, `diff`, and `verify` all accept `--json`: one
@@ -241,10 +263,12 @@ machine-readable document on stdout (diagnostics resolved to
 file/line/column; for `diff`, the regeneration plan), human narration
 on stderr.
 
-Multi-file programs (`import "path";`) and reusable `blueprint`/`expand`
-templates are both accepted directly by `file.ciac` above — see
-[docs/blueprints.md](docs/blueprints.md). Deployment (compose, k8s, and
-`ciac verify --system`) is covered end to end in
+Multi-file programs (`import "path";`), reusable `blueprint`/`expand`
+templates, and cross-project `registry:` imports (v0.12, cached and
+pinnable to a git ref) are all accepted directly by `file.ciac` above
+— see [docs/blueprints.md](docs/blueprints.md) and
+[docs/authoring.md](docs/authoring.md). Deployment (compose, k8s,
+Terraform, and `ciac verify --system`) is covered end to end in
 [docs/deployment.md](docs/deployment.md).
 
 ## Building from source
@@ -268,8 +292,9 @@ cargo run -p ciac -- check examples/video-platform.ciac
 | `crates/ciac-backend-python` | FastAPI target |
 | `crates/ciac-backend-rust` | Axum target |
 | `examples/` | valid example programs |
+| `editors/` | TextMate grammar for `.ciac` syntax highlighting |
 | `tests/` | golden snapshots, negative suite, determinism tests |
-| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [regeneration](docs/regeneration.md) · [deployment](docs/deployment.md) · [errors](docs/errors.md) |
+| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [authoring](docs/authoring.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [external backends](docs/external-backends.md) · [regeneration](docs/regeneration.md) · [deployment](docs/deployment.md) · [errors](docs/errors.md) |
 
 ## License
 

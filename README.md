@@ -203,6 +203,14 @@ Every backend consumes the same validated IR, so adding a target language
 never touches the language or its guarantees. See
 [docs/backends.md](docs/backends.md).
 
+A backend doesn't have to be a Rust crate, either (v0.10): `ciac build
+--target <name>` falls back to running a `ciac-backend-<name>`
+executable found on `$PATH`, speaking a versioned JSON protocol over
+stdin/stdout — write one in any language against the published schema
+(`ciac codegen-schema`, [docs/protocol-schema.json](docs/protocol-schema.json)).
+See [docs/external-backends.md](docs/external-backends.md) and the
+worked Go example in [backends/go/](backends/go/).
+
 | CIaC concept | Python target | Rust target |
 |--------------|---------------|-------------|
 | API          | FastAPI router | Axum router |
@@ -225,7 +233,13 @@ never touches the language or its guarantees. See
 | `ciac verify file.ciac --target python\|rust --out DIR [--system]` | Check regeneration drift and generated project validity, optionally running compose-backed system tests |
 | `ciac graph file.ciac --format json\|dot` | Dump the system graph |
 | `ciac explain CIAC0005` | Explain an error code |
+| `ciac codegen-schema` | Print the external-backend wire-contract JSON Schema |
 | `ciac targets` | List code-generation targets |
+
+`check`, `build`, `diff`, and `verify` all accept `--json`: one
+machine-readable document on stdout (diagnostics resolved to
+file/line/column; for `diff`, the regeneration plan), human narration
+on stderr.
 
 Multi-file programs (`import "path";`) and reusable `blueprint`/`expand`
 templates are both accepted directly by `file.ciac` above — see

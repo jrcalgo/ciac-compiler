@@ -3,6 +3,11 @@
 Backends turn the validated IR into a project. The language, IR, and
 validation never change when a target is added.
 
+> This page covers **in-process** backends (a Rust crate implementing
+> the `Backend` trait). A backend can also be a standalone executable
+> in any language, speaking JSON over stdin/stdout — see
+> [external-backends.md](external-backends.md) (v0.10).
+
 ## The seam
 
 ```rust

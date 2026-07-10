@@ -1,6 +1,7 @@
 //! The `ciac` command-line interface.
 
 mod commands;
+mod json_out;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -24,6 +25,12 @@ enum Command {
     Check {
         /// Path to the `.ciac` source file.
         file: PathBuf,
+        /// Emit one machine-readable JSON document on stdout
+        /// (diagnostics with resolved file/line/column, plus success)
+        /// instead of only human-readable text; human narration stays
+        /// on stderr.
+        #[arg(long)]
+        json: bool,
     },
     /// Compile a CIaC program into a backend project.
     Build {
@@ -60,6 +67,12 @@ enum Command {
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
+        /// Emit one machine-readable JSON document on stdout
+        /// (diagnostics with resolved file/line/column, plus success)
+        /// instead of only human-readable text; human narration stays
+        /// on stderr.
+        #[arg(long)]
+        json: bool,
     },
     /// Show what regeneration would change without writing files.
     Diff {
@@ -108,6 +121,12 @@ enum Command {
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
+        /// Emit one machine-readable JSON document on stdout
+        /// (diagnostics with resolved file/line/column, plus success)
+        /// instead of only human-readable text; human narration stays
+        /// on stderr.
+        #[arg(long)]
+        json: bool,
     },
     /// Dump the validated system graph.
     Graph {
@@ -159,7 +178,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Command::Check { file } => commands::check(&file),
+        Command::Check { file, json } => commands::check(&file, json),
         Command::Build {
             file,
             target,
@@ -170,6 +189,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             image_prefix,
             image_tag,
             name,
+            json,
         } => commands::build(
             &file,
             &target,
@@ -182,6 +202,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 image_tag,
             },
             name,
+            json,
         ),
         Command::Diff {
             file,
@@ -198,7 +219,8 @@ fn run(cli: Cli) -> Result<ExitCode> {
             system,
             keep,
             name,
-        } => commands::verify(&file, &target, &out, live, system, keep, name),
+            json,
+        } => commands::verify(&file, &target, &out, live, system, keep, name, json),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::CodegenSchema => commands::codegen_schema(),
         Command::CodegenRequest { file, target, name } => {

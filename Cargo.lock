@@ -150,6 +150,7 @@ dependencies = [
  "ciac-sema",
  "ciac-syntax",
  "clap",
+ "serde",
  "serde_json",
  "similar",
 ]

@@ -31,14 +31,7 @@ fn backends() -> Vec<Box<dyn Backend>> {
 /// `import "path";` pulled in, v0.8 M1) so callers that need the whole
 /// source set (e.g. hashing it for the manifest) don't re-resolve it.
 fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap)> {
-    let mut sources = SourceMap::new();
-    let mut diags = Diagnostics::new();
-    let program = ciac_syntax::load(file, &mut sources, &mut diags)
-        .with_context(|| format!("cannot read {}", file.display()))?;
-    let ir = ciac_sema::analyze(&program, &mut diags);
-
-    diags.sort();
-    let has_errors = diags.has_errors();
+    let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
     let renderer = AriadneRenderer {
         color: std::io::stderr().is_terminal(),
     };
@@ -49,13 +42,94 @@ fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap)> {
     Ok((ir, has_errors, sources))
 }
 
-pub fn check(file: &Path) -> Result<ExitCode> {
+/// [`front_end`] without the ariadne rendering — `--json` callers
+/// (v0.10 M3) serialize the returned [`Diagnostics`] instead.
+fn front_end_quiet(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap, Diagnostics)> {
+    let mut sources = SourceMap::new();
+    let mut diags = Diagnostics::new();
+    let program = ciac_syntax::load(file, &mut sources, &mut diags)
+        .with_context(|| format!("cannot read {}", file.display()))?;
+    let ir = ciac_sema::analyze(&program, &mut diags);
+    diags.sort();
+    let has_errors = diags.has_errors();
+    Ok((ir, has_errors, sources, diags))
+}
+
+pub fn check(file: &Path, json: bool) -> Result<ExitCode> {
+    if json {
+        let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
+        let success = !has_errors && ir.is_some();
+        crate::json_out::emit(&crate::json_out::envelope(
+            "check", success, &diags, &sources,
+        ));
+        return Ok(if success {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
     let (ir, has_errors, _sources) = front_end(file)?;
     if has_errors || ir.is_none() {
         return Ok(ExitCode::FAILURE);
     }
     eprintln!("{}: no errors", file.display());
     Ok(ExitCode::SUCCESS)
+}
+
+/// `--json` promises exactly one JSON document on stdout — but child
+/// processes (`uv run pytest`, `docker compose`, `cargo test`) inherit
+/// stdout by default and would corrupt it. When set, [`run_streamed`]
+/// captures children's stdout and replays it on stderr instead.
+static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Runs a child to completion: streaming (inherited stdio) in human
+/// mode, captured-and-replayed-on-stderr in `--json` mode so stdout
+/// stays reserved for the envelope.
+fn run_streamed(command: &mut Command) -> std::io::Result<std::process::ExitStatus> {
+    if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        let output = command.output()?;
+        use std::io::Write;
+        let mut err = std::io::stderr().lock();
+        err.write_all(&output.stdout)?;
+        err.write_all(&output.stderr)?;
+        Ok(output.status)
+    } else {
+        command.status()
+    }
+}
+
+/// Wraps a command's normal execution for `--json` mode (v0.10 M3):
+/// compiles once quietly for the envelope's diagnostics, short-
+/// circuiting on compile errors, then runs the untouched human-mode
+/// body (which recompiles — commands here already trade recompute for
+/// simplicity) and reports its outcome as the envelope's `success`.
+/// The envelope is emitted exactly once on every path, including when
+/// the body errors out.
+fn with_json_envelope(
+    command: &'static str,
+    file: &Path,
+    body: impl FnOnce() -> Result<ExitCode>,
+) -> Result<ExitCode> {
+    JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
+    if has_errors || ir.is_none() {
+        crate::json_out::emit(&crate::json_out::envelope(command, false, &diags, &sources));
+        return Ok(ExitCode::FAILURE);
+    }
+    let code = match body() {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            ExitCode::FAILURE
+        }
+    };
+    crate::json_out::emit(&crate::json_out::envelope(
+        command,
+        code == ExitCode::SUCCESS,
+        &diags,
+        &sources,
+    ));
+    Ok(code)
 }
 
 /// `--deploy k8s` and its two image-naming knobs, bundled since they
@@ -66,7 +140,26 @@ pub struct DeployOpts {
     pub image_tag: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    force: bool,
+    adopt: bool,
+    deploy: DeployOpts,
+    name: Option<String>,
+    json: bool,
+) -> Result<ExitCode> {
+    if json {
+        return with_json_envelope("build", file, || {
+            build_inner(file, target, out, force, adopt, deploy, name)
+        });
+    }
+    build_inner(file, target, out, force, adopt, deploy, name)
+}
+
+fn build_inner(
     file: &Path,
     target: &str,
     out: &Path,
@@ -217,7 +310,26 @@ pub fn diff(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn verify(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    live: bool,
+    system: bool,
+    keep: bool,
+    name: Option<String>,
+    json: bool,
+) -> Result<ExitCode> {
+    if json {
+        return with_json_envelope("verify", file, || {
+            verify_inner(file, target, out, live, system, keep, name)
+        });
+    }
+    verify_inner(file, target, out, live, system, keep, name)
+}
+
+fn verify_inner(
     file: &Path,
     target: &str,
     out: &Path,
@@ -303,15 +415,16 @@ pub fn verify(
 /// Boots the generated compose stack (`up -d --wait`), erroring out on
 /// a non-zero exit or a missing Docker binary.
 fn compose_up(compose_file: &Path) -> Result<()> {
-    let status = Command::new("docker")
-        .arg("compose")
-        .arg("-f")
-        .arg(compose_file)
-        .args(["up", "-d", "--wait"])
-        .status()
-        .map_err(|err| {
-            anyhow::anyhow!("cannot run `docker compose` ({err}); this step requires Docker")
-        })?;
+    let status = run_streamed(
+        Command::new("docker")
+            .arg("compose")
+            .arg("-f")
+            .arg(compose_file)
+            .args(["up", "-d", "--wait"]),
+    )
+    .map_err(|err| {
+        anyhow::anyhow!("cannot run `docker compose` ({err}); this step requires Docker")
+    })?;
     if !status.success() {
         anyhow::bail!("docker compose up failed ({status})");
     }
@@ -328,12 +441,13 @@ fn compose_down_or_keep(compose_file: &Path, keep: bool) {
         );
         return;
     }
-    let _ = Command::new("docker")
-        .arg("compose")
-        .arg("-f")
-        .arg(compose_file)
-        .args(["down", "-v", "--remove-orphans"])
-        .status();
+    let _ = run_streamed(
+        Command::new("docker")
+            .arg("compose")
+            .arg("-f")
+            .arg(compose_file)
+            .args(["down", "-v", "--remove-orphans"]),
+    );
 }
 
 /// v0.8 M4: runs the compose-backed `tests/system/` suite
@@ -819,11 +933,8 @@ fn validate_rust_project(project: &Path) -> Result<()> {
 }
 
 fn run_in(project: &Path, program: &str, args: &[&str]) -> Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .current_dir(project)
-        .status()
-        .with_context(|| {
+    let status =
+        run_streamed(Command::new(program).args(args).current_dir(project)).with_context(|| {
             format!(
                 "failed to run `{program} {}` in {}",
                 args.join(" "),

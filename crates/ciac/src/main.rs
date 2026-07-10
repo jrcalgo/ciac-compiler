@@ -2,6 +2,7 @@
 
 mod commands;
 mod json_out;
+mod scaffold;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -21,6 +22,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Scaffold a new CIaC project directory from an embedded template.
+    New {
+        /// Directory to create (must not exist or must be empty).
+        dir: PathBuf,
+        /// Project template. Each is a checked-in example the test
+        /// suite already compiles: `crud` (typed CRUD service),
+        /// `multi-service` (cross-service call + verifiable
+        /// capabilities), `kafka` (event ingestion), `minimal`
+        /// (one api, no capabilities).
+        #[arg(
+            long,
+            default_value = "crud",
+            value_parser = ["crud", "multi-service", "kafka", "minimal"]
+        )]
+        template: String,
+    },
     /// Parse and validate a CIaC program, reporting diagnostics.
     Check {
         /// Path to the `.ciac` source file.
@@ -195,6 +212,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
+        Command::New { dir, template } => scaffold::new_project(&dir, &template),
         Command::Check { file, json } => commands::check(&file, json),
         Command::Build {
             file,

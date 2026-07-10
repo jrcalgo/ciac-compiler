@@ -34,7 +34,7 @@ from typing import {% if ns.any_json or ns.any_untyped %}Any{% if ns.any_literal
 {% if c.resources %}
 from pydantic import BaseModel{% if ns.any_untyped %}, Field{% endif %}
 {% endif -%}
-from sqlalchemy import {% if ns.any_json or ns.any_untyped %}JSON, {% endif %}String
+from sqlalchemy import {% if ns.any_json or ns.any_untyped %}JSON, {% endif %}String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -52,6 +52,8 @@ class {{ resource.name }}(Base):
     {{ field.name }}: Mapped[str] = mapped_column(String(64))
 {%- elif field.is_json %}
     {{ field.name }}: Mapped[dict[str, Any]] = mapped_column(JSON)
+{%- elif field.py_type == "str" %}
+    {{ field.name }}: Mapped[str] = mapped_column(Text)
 {%- else %}
     {{ field.name }}: Mapped[{{ field.py_type }}]
 {%- endif %}
@@ -107,6 +109,8 @@ class {{ table.class_name }}(Base):
     {{ field.name }}: Mapped[str] = mapped_column(String(64))
 {%- elif field.is_json %}
     {{ field.name }}: Mapped[dict[str, Any]] = mapped_column(JSON)
+{%- elif field.py_type == "str" %}
+    {{ field.name }}: Mapped[str] = mapped_column(Text)
 {%- else %}
     {{ field.name }}: Mapped[{{ field.py_type }}]
 {%- endif %}

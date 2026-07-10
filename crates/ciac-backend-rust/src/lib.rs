@@ -37,6 +37,9 @@ const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
     ciac_codegen::compose::BackendComposeOpts {
         db_url_scheme: "postgres",
         workers_command: r#"["workers"]"#,
+        // Unreachable in practice: the Rust backend gates MySQL
+        // (CIAC0011) before compose rendering.
+        mysql_url_scheme: "mysql",
     };
 
 #[derive(Debug, Default)]
@@ -59,6 +62,9 @@ impl Backend for RustBackend {
             component,
             Component::Queue {
                 engine: ciac_ir::QueueEngine::Kafka,
+                ..
+            } | Component::Database {
+                engine: ciac_ir::DbEngine::MySql,
                 ..
             }
         )

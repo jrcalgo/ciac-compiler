@@ -51,6 +51,9 @@ pub struct Ctx {
     pub host_port: u16,
     pub has_auth: bool,
     pub has_db: bool,
+    /// Per-engine presence (v0.11 M1), for engine-specific driver deps.
+    pub has_postgres_db: bool,
+    pub has_mysql_db: bool,
     pub has_cache: bool,
     pub has_queue: bool,
     pub db_instances: Vec<InstanceCtx>,
@@ -230,9 +233,17 @@ pub struct InstanceCtx {
     pub key_arg: String,
     /// Host port docker-compose maps for this instance (v0.9 M2), so
     /// the generated system tests can reach it directly from the host:
-    /// 5432, 5433, .. for db instances, 6379, 6380, .. for caches —
+    /// 5432+/3306+ for db instances (per engine), 6379+ for caches —
     /// unique across the whole system, assigned by [`build_system`].
     pub host_port: u16,
+    /// Database engine (v0.11 M1): `postgres` | `mysql` for db
+    /// instances, empty for caches.
+    pub db_engine: String,
+    /// Compose-container superuser (`postgres` / `root`); doubles as
+    /// the dev password, matching the long-standing postgres pattern.
+    pub db_user: String,
+    /// The engine's in-container port (5432 / 3306).
+    pub db_container_port: u16,
 }
 
 /// One typed configuration field of an ontology capability instance.
@@ -615,12 +626,18 @@ pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
     // instance to a unique host port so the generated system tests can
     // verify persistence through a second, independent connection —
     // not just through the app that wrote the data.
-    let mut db_port = 5432;
+    let mut pg_port = 5432;
+    let mut mysql_port = 3306;
     let mut cache_port = 6379;
     for ctx in &mut services {
         for inst in &mut ctx.db_instances {
-            inst.host_port = db_port;
-            db_port += 1;
+            if inst.db_engine == "mysql" {
+                inst.host_port = mysql_port;
+                mysql_port += 1;
+            } else {
+                inst.host_port = pg_port;
+                pg_port += 1;
+            }
         }
         for inst in &mut ctx.cache_instances {
             inst.host_port = cache_port;
@@ -1081,6 +1098,8 @@ fn build_scoped(
         host_port,
         has_auth: capability(NodeKind::Auth).is_some(),
         has_db,
+        has_postgres_db: db_instances.iter().any(|i| i.db_engine == "postgres"),
+        has_mysql_db: db_instances.iter().any(|i| i.db_engine == "mysql"),
         has_cache,
         schema_key_args: {
             let mut keys: Vec<String> = Vec::new();
@@ -1158,6 +1177,7 @@ fn instance_ctx(
     container_prefix: &str,
     name: &str,
     index: u32,
+    db_engine: &str,
 ) -> InstanceCtx {
     let snake = name.to_snake_case();
     let is_default = name == "default";
@@ -1191,6 +1211,17 @@ fn instance_ctx(
         // `build_system`'s post-pass (same treatment as mailpit UI
         // ports), since uniqueness spans services.
         host_port: 0,
+        db_user: match db_engine {
+            "mysql" => "root".to_owned(),
+            "postgres" => "postgres".to_owned(),
+            _ => String::new(),
+        },
+        db_container_port: match db_engine {
+            "mysql" => 3306,
+            "postgres" => 5432,
+            _ => 0,
+        },
+        db_engine: db_engine.to_owned(),
     }
 }
 
@@ -1224,12 +1255,20 @@ fn instances_of(
         .filter(|node| infra_in_scope(node.service, scope))
         .enumerate()
         .map(|(index, node)| {
+            let db_engine = match &node.component {
+                Component::Database { engine, .. } => match engine {
+                    ciac_ir::DbEngine::Postgres => "postgres",
+                    ciac_ir::DbEngine::MySql => "mysql",
+                },
+                _ => "",
+            };
             instance_ctx(
                 kind,
                 module,
                 container_prefix,
                 node.component.name().unwrap_or("default"),
                 index as u32,
+                db_engine,
             )
         })
         .collect()

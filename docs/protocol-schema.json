@@ -488,7 +488,14 @@
           "has_metrics": {
             "type": "boolean"
           },
+          "has_mysql_db": {
+            "type": "boolean"
+          },
           "has_object_store": {
+            "type": "boolean"
+          },
+          "has_postgres_db": {
+            "description": "Per-engine presence (v0.11 M1), for engine-specific driver deps.",
             "type": "boolean"
           },
           "has_queue": {
@@ -620,6 +627,8 @@
           "host_port",
           "has_auth",
           "has_db",
+          "has_postgres_db",
+          "has_mysql_db",
           "has_cache",
           "has_queue",
           "db_instances",
@@ -986,8 +995,23 @@
             "description": "Compose container name, e.g. `db` / `db-main`.",
             "type": "string"
           },
+          "db_container_port": {
+            "description": "The engine's in-container port (5432 / 3306).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "db_engine": {
+            "description": "Database engine (v0.11 M1): `postgres` | `mysql` for db\ninstances, empty for caches.",
+            "type": "string"
+          },
           "db_name": {
             "description": "Postgres database name (db instances only).",
+            "type": "string"
+          },
+          "db_user": {
+            "description": "Compose-container superuser (`postgres` / `root`); doubles as\nthe dev password, matching the long-standing postgres pattern.",
             "type": "string"
           },
           "env_var": {
@@ -995,7 +1019,7 @@
             "type": "string"
           },
           "host_port": {
-            "description": "Host port docker-compose maps for this instance (v0.9 M2), so\nthe generated system tests can reach it directly from the host:\n5432, 5433, .. for db instances, 6379, 6380, .. for caches —\nunique across the whole system, assigned by [`build_system`].",
+            "description": "Host port docker-compose maps for this instance (v0.9 M2), so\nthe generated system tests can reach it directly from the host:\n5432+/3306+ for db instances (per engine), 6379+ for caches —\nunique across the whole system, assigned by [`build_system`].",
             "format": "uint16",
             "maximum": 65535,
             "minimum": 0,
@@ -1051,7 +1075,10 @@
           "session_dep",
           "session_param",
           "key_arg",
-          "host_port"
+          "host_port",
+          "db_engine",
+          "db_user",
+          "db_container_port"
         ],
         "type": "object"
       },

@@ -382,7 +382,7 @@ table names doesn't collide. Enums are stored as text.
 
 
 from pydantic import BaseModel
-from sqlalchemy import String
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -393,7 +393,7 @@ class Item(Base):
     __tablename__ = "items"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    name: Mapped[str]
+    name: Mapped[str] = mapped_column(Text)
 
 
 class ItemIn(BaseModel):

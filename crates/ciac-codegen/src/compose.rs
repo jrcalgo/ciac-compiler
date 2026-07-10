@@ -26,6 +26,9 @@ pub struct BackendComposeOpts {
     /// array text to emit — e.g. `["python", "-m", "app.workers"]` or
     /// `["workers"]`.
     pub workers_command: &'static str,
+    /// URL scheme for MySQL instances (v0.11 M1), same convention as
+    /// `db_url_scheme` — e.g. `mysql+aiomysql` (SQLAlchemy) or `mysql`.
+    pub mysql_url_scheme: &'static str,
 }
 
 const SERVICE_COMPOSE: &str = include_str!("../templates/docker-compose.yml.j2");
@@ -41,6 +44,7 @@ fn environment() -> Result<minijinja::Environment<'static>, minijinja::Error> {
 fn backend_value(opts: &BackendComposeOpts) -> minijinja::Value {
     minijinja::context! {
         db_scheme => opts.db_url_scheme,
+        mysql_scheme => opts.mysql_url_scheme,
         workers_command => opts.workers_command,
     }
 }

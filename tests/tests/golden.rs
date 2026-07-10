@@ -30,7 +30,12 @@ fn example_generated_project_snapshots() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         for backend in backends() {
-            ciac_codegen::check_support(backend.as_ref(), &ir).expect("examples are supported");
+            // v0.11: provider support is per-backend (db MySQL and
+            // queue Kafka are python-only today) — skip a gated
+            // backend/example combination instead of failing it.
+            if ciac_codegen::check_support(backend.as_ref(), &ir).is_err() {
+                continue;
+            }
             let project = backend
                 .generate(&ir, &GenOptions::default())
                 .expect("examples generate");

@@ -308,7 +308,7 @@ table names doesn't collide. Enums are stored as text.
 """
 
 
-from sqlalchemy import String
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -318,7 +318,7 @@ from app.db import Base
 class Videos(Base):
     __tablename__ = "videos"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    title: Mapped[str]
+    title: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(64))
 
 ============================================================

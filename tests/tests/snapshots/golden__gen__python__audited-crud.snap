@@ -316,7 +316,7 @@ table names doesn't collide. Enums are stored as text.
 
 
 from pydantic import BaseModel
-from sqlalchemy import String
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -327,7 +327,7 @@ class ResourceUser(Base):
     __tablename__ = "resource_users"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    title: Mapped[str]
+    title: Mapped[str] = mapped_column(Text)
 
 
 class ResourceUserIn(BaseModel):
@@ -777,7 +777,7 @@ table names doesn't collide. Enums are stored as text.
 
 
 from pydantic import BaseModel
-from sqlalchemy import String
+from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -788,7 +788,7 @@ class ResourceVideo(Base):
     __tablename__ = "resource_videos"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    title: Mapped[str]
+    title: Mapped[str] = mapped_column(Text)
 
 
 class ResourceVideoIn(BaseModel):

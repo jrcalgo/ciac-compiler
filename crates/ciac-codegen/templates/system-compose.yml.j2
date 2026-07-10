@@ -8,7 +8,7 @@ services:
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: {{ backend.db_scheme }}://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+      {{ inst.env_var }}: {% if inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}{% else %}{{ backend.db_scheme }}{% endif %}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
@@ -61,7 +61,7 @@ services:
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: {{ backend.db_scheme }}://postgres:postgres@{{ inst.container }}:5432/{{ inst.db_name }}
+      {{ inst.env_var }}: {% if inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}{% else %}{{ backend.db_scheme }}{% endif %}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
@@ -107,6 +107,16 @@ services:
 {%- for inst in c.db_instances %}
 
   {{ inst.container }}:
+{%- if inst.db_engine == "mysql" %}
+    image: mysql:8
+    ports:
+      - "{{ inst.host_port }}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: {{ inst.db_name }}
+    volumes:
+      - {{ inst.container }}-data:/var/lib/mysql
+{%- else %}
     image: postgres:16
     ports:
       - "{{ inst.host_port }}:5432"
@@ -115,6 +125,7 @@ services:
       POSTGRES_DB: {{ inst.db_name }}
     volumes:
       - {{ inst.container }}-data:/var/lib/postgresql/data
+{%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
 

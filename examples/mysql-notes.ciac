@@ -1,0 +1,18 @@
+// v0.11 M1: the crud-notes shape on MySQL instead of Postgres —
+// proving the db capability's provider abstraction end to end.
+// Python target: fully generated (SQLAlchemy + aiomysql, mysql:8 dev
+// container). Rust target: gated (CIAC0011) — sqlx pools are typed
+// per database, so MySQL there is deferred until real demand.
+service MysqlNotes;
+
+use {
+    db MySQL;
+    cache Redis;
+}
+
+record Note {
+    id: Uuid;
+    title: String;
+}
+
+crud Note: Note;

@@ -85,6 +85,11 @@ pub enum AuthScheme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum DbEngine {
     Postgres,
+    /// v0.11 M1. Fully implemented by the Python backend; the Rust
+    /// backend gates it (CIAC0011) — sqlx pools are typed per
+    /// database, so MySQL there is a structural fork deferred until
+    /// real demand.
+    MySql,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]

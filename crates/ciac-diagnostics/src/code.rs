@@ -156,7 +156,7 @@ error_codes! {
         Error,
         "unknown provider",
         "A `use` entry names a capability or provider the language does not \
-         know. Supported: auth JWT; db Postgres; cache Redis; queue NATS or \
+         know. Supported: auth JWT; db Postgres|MySQL; cache Redis; queue NATS or \
          Kafka; logging Structured; metrics Prometheus."
     ),
     EmptyPipeline = (

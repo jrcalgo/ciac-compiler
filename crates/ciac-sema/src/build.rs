@@ -499,6 +499,10 @@ impl<'d> Builder<'d> {
                 name: name.to_owned(),
                 engine: DbEngine::Postgres,
             },
+            ("db", Some("MySQL")) => Component::Database {
+                name: name.to_owned(),
+                engine: DbEngine::MySql,
+            },
             ("cache", Some("Redis")) => Component::Cache {
                 name: name.to_owned(),
                 engine: CacheEngine::Redis,

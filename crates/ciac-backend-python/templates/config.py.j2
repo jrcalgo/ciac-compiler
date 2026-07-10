@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 {%- if c.has_db %}
 {% for inst in c.db_instances %}
-    {{ inst.url_field }}: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/{{ inst.db_name }}"
+    {{ inst.url_field }}: str = "{% if inst.db_engine == "mysql" %}mysql+aiomysql://root:root@localhost:3306/{{ inst.db_name }}{% else %}postgresql+asyncpg://postgres:postgres@localhost:5432/{{ inst.db_name }}{% endif %}"
 {%- endfor %}
 {%- endif %}
 {%- if c.has_cache %}

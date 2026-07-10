@@ -74,11 +74,19 @@ fn resource_name(system: &SystemModel, ctx: &Ctx) -> String {
 fn service_env(ctx: &Ctx) -> Vec<(String, String)> {
     let mut env = Vec::new();
     for inst in &ctx.db_instances {
+        let scheme = if inst.db_engine == "mysql" {
+            "mysql"
+        } else {
+            "postgres"
+        };
         env.push((
             inst.env_var.clone(),
             format!(
-                "postgres://postgres:postgres@{}:5432/{}",
-                inst.container, inst.db_name
+                "{scheme}://{user}:{user}@{container}:{port}/{db}",
+                user = inst.db_user,
+                container = inst.container,
+                port = inst.db_container_port,
+                db = inst.db_name
             ),
         ));
     }

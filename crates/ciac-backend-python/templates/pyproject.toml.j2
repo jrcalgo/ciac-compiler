@@ -16,6 +16,9 @@ dependencies = [
 {%- if c.has_mysql_db %}
     "aiomysql>=0.2",
 {%- endif %}
+{%- if c.has_sqlite_db %}
+    "aiosqlite>=0.20",
+{%- endif %}
 {%- if c.has_cache %}
     "redis>=5.0",
 {%- endif %}

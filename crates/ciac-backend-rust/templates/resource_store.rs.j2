@@ -6,7 +6,7 @@ use redis::AsyncCommands;
 {% endif -%}
 use crate::models::{ {{- resource.name }}, {{ resource.name }}In};
 use crate::state::AppState;
-{% set pool_type = "sqlx::MySqlPool" if resource.db_engine == "mysql" else "sqlx::PgPool" -%}
+{% set pool_type = "sqlx::MySqlPool" if resource.db_engine == "mysql" else ("sqlx::SqlitePool" if resource.db_engine == "sqlite" else "sqlx::PgPool") -%}
 /// CRUD operations for {{ resource.name }}{% if resource.has_cache %} with read-through caching{% endif %}.
 #[derive(Debug)]
 pub struct {{ resource.store_class }}<'a> {

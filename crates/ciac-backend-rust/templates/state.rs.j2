@@ -8,7 +8,7 @@ pub struct AppState {
 {%- for inst in c.db_instances %}
     /// Lazy pool: connections are established on first use, so the server
     /// starts (and compiles) without a running database.
-    pub {{ inst.state_field }}: {% if inst.db_engine == "mysql" %}sqlx::MySqlPool{% else %}sqlx::PgPool{% endif %},
+    pub {{ inst.state_field }}: {% if inst.db_engine == "mysql" %}sqlx::MySqlPool{% elif inst.db_engine == "sqlite" %}sqlx::SqlitePool{% else %}sqlx::PgPool{% endif %},
 {%- endfor %}
 {%- for inst in c.cache_instances %}
     pub {{ inst.state_field }}: redis::Client,
@@ -41,6 +41,13 @@ impl AppState {
 {%- if inst.db_engine == "mysql" %}
         let {{ inst.state_field }} =
             sqlx::mysql::MySqlPoolOptions::new().connect_lazy(&config.{{ inst.url_field }})?;
+{%- elif inst.db_engine == "sqlite" %}
+        // The database is a local file; make sure its directory
+        // exists before the pool touches it (`?mode=rwc` creates the
+        // file itself).
+        std::fs::create_dir_all("data")?;
+        let {{ inst.state_field }} =
+            sqlx::sqlite::SqlitePoolOptions::new().connect_lazy(&config.{{ inst.url_field }})?;
 {%- else %}
         let {{ inst.state_field }} =
             sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.{{ inst.url_field }})?;

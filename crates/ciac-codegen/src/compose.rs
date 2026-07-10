@@ -29,6 +29,16 @@ pub struct BackendComposeOpts {
     /// URL scheme for MySQL instances (v0.11 M1), same convention as
     /// `db_url_scheme` — e.g. `mysql+aiomysql` (SQLAlchemy) or `mysql`.
     pub mysql_url_scheme: &'static str,
+    /// SQLite URL for a db file named `<db_name>.db` under the app
+    /// container's `data/` directory (v0.13 M3): the text before the
+    /// db name — e.g. `sqlite+aiosqlite:///data/` or `sqlite://data/`.
+    pub sqlite_url_prefix: &'static str,
+    /// ...and after it — e.g. `` or `?mode=rwc`.
+    pub sqlite_url_suffix: &'static str,
+    /// Absolute in-container path of the app's `data/` directory,
+    /// where the sqlite volume mounts — e.g. `/app/data` (Python
+    /// image WORKDIR) or `/data` (Rust runtime image, cwd `/`).
+    pub data_mount: &'static str,
 }
 
 const SERVICE_COMPOSE: &str = include_str!("../templates/docker-compose.yml.j2");
@@ -46,6 +56,9 @@ fn backend_value(opts: &BackendComposeOpts) -> minijinja::Value {
         db_scheme => opts.db_url_scheme,
         mysql_scheme => opts.mysql_url_scheme,
         workers_command => opts.workers_command,
+        sqlite_url_prefix => opts.sqlite_url_prefix,
+        sqlite_url_suffix => opts.sqlite_url_suffix,
+        data_mount => opts.data_mount,
     }
 }
 

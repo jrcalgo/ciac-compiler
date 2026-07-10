@@ -48,6 +48,11 @@ pub fn build(ir: &NormalizedIr, profile: Profile) -> Vec<(String, String)> {
     let mut any = false;
     for ctx in &system.services {
         for inst in &ctx.db_instances {
+            if inst.db_engine == "sqlite" {
+                // No managed-database module: sqlite is a file inside
+                // the app container (v0.13 M3).
+                continue;
+            }
             any = true;
             let engine = if inst.db_engine == "mysql" {
                 "mysql"

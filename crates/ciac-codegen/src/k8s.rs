@@ -105,6 +105,16 @@ fn resource_name(system: &SystemModel, ctx: &Ctx) -> String {
 fn service_env(ctx: &Ctx) -> Vec<(String, String)> {
     let mut env = Vec::new();
     for inst in &ctx.db_instances {
+        if inst.db_engine == "sqlite" {
+            // Pod-local file (v0.13 M3): no Service to point at. Dev
+            // and light production only -- the file lives and dies
+            // with the pod unless a PersistentVolume is added by hand.
+            env.push((
+                inst.env_var.clone(),
+                format!("sqlite://data/{}.db?mode=rwc", inst.db_name),
+            ));
+            continue;
+        }
         let scheme = if inst.db_engine == "mysql" {
             "mysql"
         } else {

@@ -7,7 +7,7 @@
 /// instead, applied via `sqlx::migrate!` at startup (see `main.rs`).
 /// The id key is `VARCHAR(36)` (a stringified UUID) rather than
 /// `TEXT`: portable to engines that require sized index keys.
-pub async fn ensure_schema_{{ engine }}(db: &{% if engine == "mysql" %}sqlx::MySqlPool{% else %}sqlx::PgPool{% endif %}) -> anyhow::Result<()> {
+pub async fn ensure_schema_{{ engine }}(db: &{% if engine == "mysql" %}sqlx::MySqlPool{% elif engine == "sqlite" %}sqlx::SqlitePool{% else %}sqlx::PgPool{% endif %}) -> anyhow::Result<()> {
 {%- for resource in c.resources %}
 {%- if resource.db_engine == engine %}
 {%- if resource.record %}
@@ -25,6 +25,8 @@ pub async fn ensure_schema_{{ engine }}(db: &{% if engine == "mysql" %}sqlx::MyS
             id VARCHAR(36) PRIMARY KEY,
 {%- if engine == "mysql" %}
             data JSON NOT NULL
+{%- elif engine == "sqlite" %}
+            data TEXT NOT NULL
 {%- else %}
             data JSONB NOT NULL DEFAULT '{}'::jsonb
 {%- endif %}

@@ -20,7 +20,7 @@ use crate::state::AppState;
 #[derive(Debug)]
 pub struct {{ service.class_name }}{% if borrows %}<'a>{% endif %} {
 {%- if service.needs_db %}
-    pub db: &'a {% if service.db_engine == "mysql" %}sqlx::MySqlPool{% else %}sqlx::PgPool{% endif %},
+    pub db: &'a {% if service.db_engine == "mysql" %}sqlx::MySqlPool{% elif service.db_engine == "sqlite" %}sqlx::SqlitePool{% else %}sqlx::PgPool{% endif %},
 {%- endif %}
 {%- if service.needs_cache %}
     pub cache: &'a redis::Client,

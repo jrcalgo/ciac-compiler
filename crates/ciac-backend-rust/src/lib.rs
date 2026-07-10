@@ -37,9 +37,10 @@ const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
     ciac_codegen::compose::BackendComposeOpts {
         db_url_scheme: "postgres",
         workers_command: r#"["workers"]"#,
-        // Unreachable in practice: the Rust backend gates MySQL
-        // (CIAC0011) before compose rendering.
         mysql_url_scheme: "mysql",
+        sqlite_url_prefix: "sqlite://data/",
+        sqlite_url_suffix: "?mode=rwc",
+        data_mount: "/data",
     };
 
 #[derive(Debug, Default)]

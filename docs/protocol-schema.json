@@ -515,6 +515,9 @@
           "has_search": {
             "type": "boolean"
           },
+          "has_sqlite_db": {
+            "type": "boolean"
+          },
           "host_port": {
             "description": "Host port the system docker-compose maps to the app's port 8000.",
             "format": "uint16",
@@ -654,6 +657,7 @@
           "has_db",
           "has_postgres_db",
           "has_mysql_db",
+          "has_sqlite_db",
           "has_cache",
           "has_queue",
           "db_instances",

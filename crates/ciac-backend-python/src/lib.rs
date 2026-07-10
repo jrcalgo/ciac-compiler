@@ -37,6 +37,9 @@ const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
         db_url_scheme: "postgresql+asyncpg",
         workers_command: r#"["python", "-m", "app.workers"]"#,
         mysql_url_scheme: "mysql+aiomysql",
+        sqlite_url_prefix: "sqlite+aiosqlite:///data/",
+        sqlite_url_suffix: "",
+        data_mount: "/app/data",
     };
 
 #[derive(Debug, Default)]

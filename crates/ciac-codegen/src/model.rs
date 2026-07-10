@@ -61,6 +61,7 @@ pub struct Ctx {
     /// Per-engine presence (v0.11 M1), for engine-specific driver deps.
     pub has_postgres_db: bool,
     pub has_mysql_db: bool,
+    pub has_sqlite_db: bool,
     pub has_cache: bool,
     pub has_queue: bool,
     pub db_instances: Vec<InstanceCtx>,
@@ -670,7 +671,10 @@ pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
     let mut cache_port = 6379;
     for ctx in &mut services {
         for inst in &mut ctx.db_instances {
-            if inst.db_engine == "mysql" {
+            if inst.db_engine == "sqlite" {
+                // No container, no host port: the database is a file
+                // inside the app container (v0.13 M3).
+            } else if inst.db_engine == "mysql" {
                 inst.host_port = mysql_port;
                 mysql_port += 1;
             } else {
@@ -1184,6 +1188,7 @@ fn build_scoped(
         has_db,
         has_postgres_db: db_instances.iter().any(|i| i.db_engine == "postgres"),
         has_mysql_db: db_instances.iter().any(|i| i.db_engine == "mysql"),
+        has_sqlite_db: db_instances.iter().any(|i| i.db_engine == "sqlite"),
         has_cache,
         schema_key_args: {
             let mut keys: Vec<String> = Vec::new();
@@ -1356,6 +1361,7 @@ fn instances_of(
                 Component::Database { engine, .. } => match engine {
                     ciac_ir::DbEngine::Postgres => "postgres",
                     ciac_ir::DbEngine::MySql => "mysql",
+                    ciac_ir::DbEngine::Sqlite => "sqlite",
                 },
                 _ => "",
             };

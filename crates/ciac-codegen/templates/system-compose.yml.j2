@@ -8,7 +8,7 @@ services:
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: {% if inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}{% else %}{{ backend.db_scheme }}{% endif %}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}
+      {{ inst.env_var }}: {% if inst.db_engine == "sqlite" %}{{ backend.sqlite_url_prefix }}{{ inst.db_name }}.db{{ backend.sqlite_url_suffix }}{% elif inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% else %}{{ backend.db_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
@@ -44,7 +44,9 @@ services:
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search %}
     depends_on:
 {%- for inst in c.db_instances %}
+{%- if inst.db_engine != "sqlite" %}
       - {{ inst.container }}
+{%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       - {{ inst.container }}
@@ -62,6 +64,10 @@ services:
       - queue
 {%- endif %}
 {%- endif %}
+{%- if c.has_sqlite_db %}
+    volumes:
+      - {{ c.dir }}-app-data:{{ backend.data_mount }}
+{%- endif %}
 {%- if c.workers or c.jobs or c.consumers %}
 
   {{ c.dir }}-workers:
@@ -70,7 +76,7 @@ services:
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}
-      {{ inst.env_var }}: {% if inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}{% else %}{{ backend.db_scheme }}{% endif %}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}
+      {{ inst.env_var }}: {% if inst.db_engine == "sqlite" %}{{ backend.sqlite_url_prefix }}{{ inst.db_name }}.db{{ backend.sqlite_url_suffix }}{% elif inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% else %}{{ backend.db_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       {{ inst.env_var }}: redis://{{ inst.container }}:6379/0
@@ -96,7 +102,9 @@ services:
 {%- endif %}
     depends_on:
 {%- for inst in c.db_instances %}
+{%- if inst.db_engine != "sqlite" %}
       - {{ inst.container }}
+{%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
       - {{ inst.container }}
@@ -114,13 +122,21 @@ services:
       - queue
 {%- endif %}
 {%- endif %}
+{%- if c.has_sqlite_db %}
+    volumes:
+      - {{ c.dir }}-app-data:{{ backend.data_mount }}
+{%- endif %}
 {%- endif %}
 {%- endfor %}
 {%- for c in m.services %}
 {%- for inst in c.db_instances %}
+{%- if inst.db_engine != "sqlite" %}
 
   {{ inst.container }}:
-{%- if inst.db_engine == "mysql" %}
+{%- endif %}
+{%- if inst.db_engine == "sqlite" %}
+{#- no container: the database is a file inside the app (v0.13 M3) #}
+{%- elif inst.db_engine == "mysql" %}
     image: mysql:8
     ports:
       - "{{ inst.host_port }}:3306"
@@ -207,8 +223,13 @@ services:
 
 volumes:
 {%- for c in m.services %}
+{%- if c.has_sqlite_db %}
+  {{ c.dir }}-app-data:
+{%- endif %}
 {%- for inst in c.db_instances %}
+{%- if inst.db_engine != "sqlite" %}
   {{ inst.container }}-data:
+{%- endif %}
 {%- endfor %}
 {%- for inst in c.object_store_instances %}
   {{ inst.container }}-data:

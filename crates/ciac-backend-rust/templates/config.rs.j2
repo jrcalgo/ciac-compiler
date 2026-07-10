@@ -60,6 +60,11 @@ impl Config {
                 "{{ inst.env_var }}",
                 "mysql://root:root@localhost:3306/{{ inst.db_name }}",
             ),
+{%- elif inst.db_engine == "sqlite" %}
+            {{ inst.url_field }}: env_or(
+                "{{ inst.env_var }}",
+                "sqlite://data/{{ inst.db_name }}.db?mode=rwc",
+            ),
 {%- else %}
             {{ inst.url_field }}: env_or(
                 "{{ inst.env_var }}",

@@ -523,6 +523,10 @@ impl<'d> Builder<'d> {
                 name: name.to_owned(),
                 engine: DbEngine::MySql,
             },
+            ("db", Some("SQLite")) => Component::Database {
+                name: name.to_owned(),
+                engine: DbEngine::Sqlite,
+            },
             ("cache", Some("Redis")) => Component::Cache {
                 name: name.to_owned(),
                 engine: CacheEngine::Redis,

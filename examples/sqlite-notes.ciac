@@ -1,0 +1,17 @@
+// v0.13 M3: the zero-container database. `db SQLite` stores a file
+// under the app's `data/` directory — no compose service, no managed
+// database, and `ciac verify` runs with no Docker at all. The natural
+// companion to `ciac new` for the fastest possible first system, and
+// a real answer for single-node deployments.
+service SqliteNotes;
+
+use {
+    db SQLite;
+}
+
+record Note {
+    id: Uuid;
+    title: String;
+}
+
+crud Note: Note;

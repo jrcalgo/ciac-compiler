@@ -325,6 +325,14 @@ fn build_capability_checks(ir: &NormalizedIr, system: &SystemModel) -> Vec<Capab
             } else {
                 None
             };
+            if db.db_engine == "sqlite" {
+                // The database is a file inside the app container --
+                // there is no host port for a second, independent
+                // connection to prove persistence through (v0.13 M3).
+                // The HTTP CRUD behavior is still covered by the
+                // generated per-project tests.
+                continue;
+            }
             checks.push(CapabilityCheck {
                 service: service.service_name.clone(),
                 resource: resource.snake.clone(),

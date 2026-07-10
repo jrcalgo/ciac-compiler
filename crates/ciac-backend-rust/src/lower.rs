@@ -692,7 +692,8 @@ fn db_engine_of(ir: &NormalizedIr, body: &HandlerBody) -> &'static str {
         if let ciac_ir::Component::Database { engine, .. } = &ir.node(id).component {
             return match engine {
                 ciac_ir::DbEngine::MySql => "mysql",
-                _ => "postgres",
+                ciac_ir::DbEngine::Sqlite => "sqlite",
+                ciac_ir::DbEngine::Postgres => "postgres",
             };
         }
     }

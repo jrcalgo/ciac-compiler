@@ -37,6 +37,8 @@ heck = "0.5"
 include_dir = "0.7"
 insta = { version = "1", features = ["json"] }
 logos = "0.15"
+lsp-server = "0.7"
+lsp-types = "0.95"
 minijinja = { version = "2", features = ["loader"] }
 schemars = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

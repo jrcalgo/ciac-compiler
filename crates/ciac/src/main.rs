@@ -2,6 +2,7 @@
 
 mod commands;
 mod json_out;
+mod lsp;
 mod scaffold;
 
 use anyhow::Result;
@@ -162,6 +163,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run a Language Server Protocol server over stdio. Configure
+    /// `ciac lsp` as the language server command for `.ciac` files;
+    /// it publishes the same diagnostics `ciac check` reports (on
+    /// open and save), plus hover and completion for the language's
+    /// keywords, capabilities, providers, and the file's own
+    /// declarations.
+    Lsp,
     /// Dump the validated system graph.
     Graph {
         /// Path to the `.ciac` source file.
@@ -261,6 +269,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             name,
             json,
         } => commands::verify(&file, &target, &out, live, system, keep, name, json),
+        Command::Lsp => lsp::run(),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::CodegenSchema => commands::codegen_schema(),
         Command::CodegenRequest { file, target, name } => {

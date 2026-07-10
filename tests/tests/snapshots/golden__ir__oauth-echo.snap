@@ -1,0 +1,85 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "OauthEcho",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "OauthEcho"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "OAuth2",
+      "issuer": "http://localhost:9099",
+      "audience": "ciac-demo"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Api",
+      "name": "Echo",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/echo",
+        "scope": null
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 1,
+      "to": 0,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Message",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "text",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Echo",
+      "service": 0,
+      "owner": 1,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Auth",
+          "node": 0
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

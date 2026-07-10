@@ -80,6 +80,9 @@ impl Default for CrudConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum AuthScheme {
     Jwt,
+    /// v0.11 M2: OAuth2 resource server — bearer RS256 JWTs validated
+    /// against the issuer's JWKS. Both backends implement it.
+    OAuth2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -229,6 +232,11 @@ pub enum Component {
     Auth {
         name: String,
         scheme: AuthScheme,
+        /// OAuth2 only: the token issuer (JWKS at
+        /// `{issuer}/.well-known/jwks.json`).
+        issuer: Option<String>,
+        /// OAuth2 only: expected `aud` claim, unchecked when absent.
+        audience: Option<String>,
     },
     Logging {
         name: String,
@@ -325,7 +333,7 @@ impl Component {
             Component::Cache { name, engine } => format!("cache {name} {engine:?}"),
             Component::Queue { name, engine } => format!("queue {name} {engine:?}"),
             Component::Stream { name, .. } => format!("stream {name}"),
-            Component::Auth { name, scheme } => format!("auth {name} {scheme:?}"),
+            Component::Auth { name, scheme, .. } => format!("auth {name} {scheme:?}"),
             Component::Logging { name, provider } => format!("logging {name} {provider:?}"),
             Component::Metrics { name, provider } => format!("metrics {name} {provider:?}"),
             Component::ObjectStore { name, provider, .. } => {

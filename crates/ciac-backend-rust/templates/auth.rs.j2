@@ -53,6 +53,28 @@ impl FromRequestParts<AppState> for Claims {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or((StatusCode::UNAUTHORIZED, "missing bearer token"))?;
+{%- if c.auth_scheme == "oauth2" %}
+        let header = jsonwebtoken::decode_header(token)
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "malformed token"))?;
+        let jwk = header
+            .kid
+            .as_deref()
+            .and_then(|kid| state.jwks.find(kid))
+            .or_else(|| state.jwks.keys.first())
+            .ok_or((StatusCode::UNAUTHORIZED, "no signing key for this token"))?;
+        let key = DecodingKey::from_jwk(jwk)
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "unusable signing key"))?;
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[state.config.oauth_issuer.as_str()]);
+        if state.config.oauth_audience.is_empty() {
+            validation.validate_aud = false;
+        } else {
+            validation.set_audience(&[state.config.oauth_audience.as_str()]);
+        }
+        let data = jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation)
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid or expired token"))?;
+        Ok(Claims(data.claims))
+{%- else %}
         let mut validation = Validation::new(Algorithm::HS256);
         validation.required_spec_claims.clear();
         let data = jsonwebtoken::decode::<serde_json::Value>(
@@ -62,5 +84,6 @@ impl FromRequestParts<AppState> for Claims {
         )
         .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid or expired token"))?;
         Ok(Claims(data.claims))
+{%- endif %}
     }
 }

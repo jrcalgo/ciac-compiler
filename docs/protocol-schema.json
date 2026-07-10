@@ -416,6 +416,17 @@
             },
             "type": "array"
           },
+          "auth_audience": {
+            "type": "string"
+          },
+          "auth_issuer": {
+            "description": "OAuth2 only: issuer + expected audience (\"\" = unchecked).",
+            "type": "string"
+          },
+          "auth_scheme": {
+            "description": "`jwt` | `oauth2` | empty when no auth (v0.11 M2).",
+            "type": "string"
+          },
           "cache_instances": {
             "items": {
               "$ref": "#/$defs/InstanceCtx"
@@ -626,6 +637,9 @@
           "dir",
           "host_port",
           "has_auth",
+          "auth_scheme",
+          "auth_issuer",
+          "auth_audience",
           "has_db",
           "has_postgres_db",
           "has_mysql_db",

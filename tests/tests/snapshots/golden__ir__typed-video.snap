@@ -17,7 +17,9 @@ expression: json
       "service": 0,
       "kind": "Auth",
       "name": "default",
-      "scheme": "Jwt"
+      "scheme": "Jwt",
+      "issuer": null,
+      "audience": null
     },
     {
       "id": 1,

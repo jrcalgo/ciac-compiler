@@ -28,7 +28,12 @@ services:
 {%- if c.has_queue %}
       NATS_URL: nats://queue:4222
 {%- endif %}
-{%- if c.has_auth %}
+{%- if c.auth_scheme == "oauth2" %}
+      OAUTH_ISSUER: {{ c.auth_issuer }}
+{%- if c.auth_audience %}
+      OAUTH_AUDIENCE: {{ c.auth_audience }}
+{%- endif %}
+{%- elif c.has_auth %}
       JWT_SECRET: ${JWT_SECRET:-change-me}
 {%- endif %}
 {%- endif %}

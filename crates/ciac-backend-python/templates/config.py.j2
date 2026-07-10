@@ -52,7 +52,11 @@ class Settings(BaseSettings):
 
     nats_url: str = "nats://localhost:4222"
 {%- endif %}
-{%- if c.has_auth %}
+{%- if c.auth_scheme == "oauth2" %}
+
+    oauth_issuer: str = "{{ c.auth_issuer }}"
+    oauth_audience: str = "{{ c.auth_audience }}"
+{%- elif c.has_auth %}
 
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"

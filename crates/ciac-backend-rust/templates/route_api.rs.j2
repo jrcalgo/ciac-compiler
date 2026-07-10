@@ -62,6 +62,9 @@ async fn {{ api.snake }}(
     Json(payload): Json<serde_json::Value>,
 {%- endif %}
 ) -> Result<Json<serde_json::Value>, AppError> {
+{%- if not api.handlers and not api.has_publish_step and not api.call_imports and not api.needs_db and not api.needs_cache %}
+    let _ = &state;
+{%- endif %}
 {%- if api.scope %}
     claims.require_scope("{{ api.scope }}")?;
 {%- endif %}

@@ -28,6 +28,11 @@ pub struct AppState {
 {%- if c.has_queue %}
     pub queue: async_nats::Client,
 {%- endif %}
+{%- if c.auth_scheme == "oauth2" %}
+    /// JWKS fetched from the issuer at startup; `Claims` selects the
+    /// key matching each token's `kid`.
+    pub jwks: jsonwebtoken::jwk::JwkSet,
+{%- endif %}
 }
 
 impl AppState {
@@ -70,6 +75,15 @@ impl AppState {
 {%- if c.has_queue %}
         let queue = async_nats::connect(&config.nats_url).await?;
 {%- endif %}
+{%- if c.auth_scheme == "oauth2" %}
+        let jwks: jsonwebtoken::jwk::JwkSet = reqwest::get(format!(
+            "{}/.well-known/jwks.json",
+            config.oauth_issuer.trim_end_matches('/')
+        ))
+        .await?
+        .json()
+        .await?;
+{%- endif %}
         Ok(Self {
             config,
 {%- for inst in c.db_instances %}
@@ -92,6 +106,9 @@ impl AppState {
 {%- endfor %}
 {%- if c.has_queue %}
             queue,
+{%- endif %}
+{%- if c.auth_scheme == "oauth2" %}
+            jwks,
 {%- endif %}
         })
     }

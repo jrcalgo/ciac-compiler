@@ -1,0 +1,10 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph OauthEcho {
+    rankdir=LR;
+    n0 [label="auth default OAuth2", shape=hexagon];
+    n1 [label="api Echo", shape=rarrow];
+    n1 -> n0 [label="RequestFlow", style=solid];
+}

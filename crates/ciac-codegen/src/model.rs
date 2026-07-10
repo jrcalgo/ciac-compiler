@@ -50,6 +50,11 @@ pub struct Ctx {
     /// Host port the system docker-compose maps to the app's port 8000.
     pub host_port: u16,
     pub has_auth: bool,
+    /// `jwt` | `oauth2` | empty when no auth (v0.11 M2).
+    pub auth_scheme: String,
+    /// OAuth2 only: issuer + expected audience ("" = unchecked).
+    pub auth_issuer: String,
+    pub auth_audience: String,
     pub has_db: bool,
     /// Per-engine presence (v0.11 M1), for engine-specific driver deps.
     pub has_postgres_db: bool,
@@ -1097,6 +1102,21 @@ fn build_scoped(
         dir,
         host_port,
         has_auth: capability(NodeKind::Auth).is_some(),
+        auth_scheme: match capability(NodeKind::Auth).map(|n| &n.component) {
+            Some(Component::Auth { scheme, .. }) => match scheme {
+                ciac_ir::AuthScheme::Jwt => "jwt".to_owned(),
+                ciac_ir::AuthScheme::OAuth2 => "oauth2".to_owned(),
+            },
+            _ => String::new(),
+        },
+        auth_issuer: match capability(NodeKind::Auth).map(|n| &n.component) {
+            Some(Component::Auth { issuer, .. }) => issuer.clone().unwrap_or_default(),
+            _ => String::new(),
+        },
+        auth_audience: match capability(NodeKind::Auth).map(|n| &n.component) {
+            Some(Component::Auth { audience, .. }) => audience.clone().unwrap_or_default(),
+            _ => String::new(),
+        },
         has_db,
         has_postgres_db: db_instances.iter().any(|i| i.db_engine == "postgres"),
         has_mysql_db: db_instances.iter().any(|i| i.db_engine == "mysql"),

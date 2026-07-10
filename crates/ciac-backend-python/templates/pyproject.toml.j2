@@ -37,7 +37,9 @@ dependencies = [
 {%- if c.has_external_http or c.call_targets %}
     "httpx>=0.27",
 {%- endif %}
-{%- if c.has_auth %}
+{%- if c.auth_scheme == "oauth2" %}
+    "pyjwt[crypto]>=2.8",
+{%- elif c.has_auth %}
     "pyjwt>=2.8",
 {%- endif %}
 {%- if c.has_logging %}

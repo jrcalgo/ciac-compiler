@@ -117,7 +117,12 @@ fn service_env(ctx: &Ctx) -> Vec<(String, String)> {
     if ctx.has_queue {
         env.push(("NATS_URL".to_owned(), "nats://queue:4222".to_owned()));
     }
-    if ctx.has_auth {
+    if ctx.auth_scheme == "oauth2" {
+        env.push(("OAUTH_ISSUER".to_owned(), ctx.auth_issuer.clone()));
+        if !ctx.auth_audience.is_empty() {
+            env.push(("OAUTH_AUDIENCE".to_owned(), ctx.auth_audience.clone()));
+        }
+    } else if ctx.has_auth {
         // ConfigMap only (v0.8 M6 scope) — a real deployment should
         // override this via a Secret, not ship it here verbatim.
         env.push((

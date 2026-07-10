@@ -38,7 +38,12 @@ pub struct Config {
     pub nats_url: String,
 {%- endif %}
 {%- if c.has_auth %}
+{%- if c.auth_scheme == "oauth2" %}
+    pub oauth_issuer: String,
+    pub oauth_audience: String,
+{%- else %}
     pub jwt_secret: String,
+{%- endif %}
 {%- endif %}
 }
 
@@ -81,7 +86,12 @@ impl Config {
             nats_url: env_or("NATS_URL", "nats://localhost:4222"),
 {%- endif %}
 {%- if c.has_auth %}
+{%- if c.auth_scheme == "oauth2" %}
+            oauth_issuer: env_or("OAUTH_ISSUER", "{{ c.auth_issuer }}"),
+            oauth_audience: env_or("OAUTH_AUDIENCE", "{{ c.auth_audience }}"),
+{%- else %}
             jwt_secret: env_or("JWT_SECRET", "change-me"),
+{%- endif %}
 {%- endif %}
         }
     }

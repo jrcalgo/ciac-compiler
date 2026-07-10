@@ -494,7 +494,27 @@ impl<'d> Builder<'d> {
             ("auth", Some("JWT")) => Component::Auth {
                 name: name.to_owned(),
                 scheme: AuthScheme::Jwt,
+                issuer: None,
+                audience: None,
             },
+            ("auth", Some("OAuth2")) => {
+                let Some(issuer) = attr_string(&entry.attrs, "issuer") else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::UnsupportedProviderConfig,
+                            "auth OAuth2 requires an `issuer` string attribute",
+                        )
+                        .with_label(entry.span, "missing `issuer`"),
+                    );
+                    return;
+                };
+                Component::Auth {
+                    name: name.to_owned(),
+                    scheme: AuthScheme::OAuth2,
+                    issuer: Some(issuer),
+                    audience: attr_string(&entry.attrs, "audience"),
+                }
+            }
             ("db", Some("Postgres")) => Component::Database {
                 name: name.to_owned(),
                 engine: DbEngine::Postgres,

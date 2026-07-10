@@ -145,9 +145,37 @@ pub struct EnumCtx {
     pub variants: Vec<String>,
 }
 
+/// A field's language-neutral type (v0.10 M1) — what an *external*
+/// backend maps to its own host language, instead of string-matching
+/// one of the host-specific fields below (the workaround both the
+/// v0.8 Go spike and the first real Go backend had to use, each with
+/// a silent-fallback risk). Mirrors [`ciac_ir::FieldType`]'s closed
+/// set, but lives here so the wire contract doesn't depend on IR
+/// types, and carries the *generated* enum type name rather than raw
+/// variants alone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FieldTypeKind {
+    Str,
+    Int,
+    Float,
+    Bool,
+    Uuid,
+    Timestamp,
+    Json,
+    Enum {
+        /// Generated enum type name, e.g. `VideoStatus`.
+        name: String,
+        variants: Vec<String>,
+    },
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FieldCtx {
     pub name: String,
+    /// Language-neutral type, for backends with no dedicated
+    /// `<host>_type` field below (v0.10 M1).
+    pub type_kind: FieldTypeKind,
     /// Python annotation, e.g. `str`, `datetime`, `Literal["A", "B"]`.
     pub py_type: String,
     /// Python annotation on the read path; enums come back from storage
@@ -1856,8 +1884,24 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
             }
         };
         let is_enum = matches!(field.ty, FieldType::Enum { .. });
+        let type_kind = match &field.ty {
+            FieldType::Str => FieldTypeKind::Str,
+            FieldType::Int => FieldTypeKind::Int,
+            FieldType::Float => FieldTypeKind::Float,
+            FieldType::Bool => FieldTypeKind::Bool,
+            FieldType::Uuid => FieldTypeKind::Uuid,
+            FieldType::Timestamp => FieldTypeKind::Timestamp,
+            FieldType::Json => FieldTypeKind::Json,
+            FieldType::Enum { variants } => FieldTypeKind::Enum {
+                // Same generated type name the `rust_type` arm above
+                // computed, e.g. `VideoStatus`.
+                name: rust_type.clone(),
+                variants: variants.clone(),
+            },
+        };
         fields.push(FieldCtx {
             name: field.name.clone(),
+            type_kind,
             is_json: matches!(field.ty, FieldType::Json),
             py_out_type: if is_enum {
                 "str".to_owned()

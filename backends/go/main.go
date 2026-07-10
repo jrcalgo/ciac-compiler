@@ -32,9 +32,16 @@ const protocolVersion = 1
 // encoding/json ignores everything else in the request, so this is
 // deliberately a partial mirror of SystemModel/Ctx, not a full one.
 
+type fieldTypeKind struct {
+	Kind string `json:"kind"`
+	// Generated enum type name + variants, present when kind=="enum".
+	Name     string   `json:"name"`
+	Variants []string `json:"variants"`
+}
+
 type fieldCtx struct {
-	Name     string `json:"name"`
-	RustType string `json:"rust_type"`
+	Name     string        `json:"name"`
+	TypeKind fieldTypeKind `json:"type_kind"`
 }
 
 type recordCtx struct {
@@ -198,7 +205,9 @@ func renderMainGo(svc serviceCtx) (string, error) {
 	b.WriteString(")\n\n")
 
 	for _, rec := range svc.Records {
-		writeStruct(&b, rec)
+		if err := writeStruct(&b, rec); err != nil {
+			return "", err
+		}
 	}
 
 	for _, api := range svc.Apis {
@@ -236,12 +245,17 @@ func renderMainGo(svc serviceCtx) (string, error) {
 	return string(formatted), nil
 }
 
-func writeStruct(b *strings.Builder, rec recordCtx) {
+func writeStruct(b *strings.Builder, rec recordCtx) error {
 	fmt.Fprintf(b, "type %s struct {\n", exportedName(rec.Name))
 	for _, f := range rec.Fields {
-		fmt.Fprintf(b, "\t%s %s `json:%q`\n", exportedName(f.Name), goType(f.RustType), f.Name)
+		goTy, err := goType(f.TypeKind)
+		if err != nil {
+			return fmt.Errorf("record %s, field %s: %w", rec.Name, f.Name, err)
+		}
+		fmt.Fprintf(b, "\t%s %s `json:%q`\n", exportedName(f.Name), goTy, f.Name)
 	}
 	b.WriteString("}\n\n")
+	return nil
 }
 
 func writeHandler(b *strings.Builder, api apiCtx) {
@@ -270,32 +284,37 @@ func handlerFuncName(api apiCtx) string {
 	return unexportedName(api.Name) + "Handler"
 }
 
-// goType maps a field's Rust type (the closest thing FieldCtx offers
-// to a language-neutral type) onto a Go type. FieldCtx
-// (ciac-codegen/src/model.rs) has no generic type-mapping hook and no
-// go_type field — the same gap the v0.8 M6 Go spike already found and
-// hand-translated around (docs/backend-spike-report.md); this is that
-// same workaround, not a fix to FieldCtx itself.
-func goType(rustType string) string {
-	switch rustType {
-	case "String":
-		return "string"
-	case "i64":
-		return "int64"
-	case "f64":
-		return "float64"
+// goType maps a field's language-neutral `type_kind` (v0.10 M1, see
+// FieldTypeKind in ciac-codegen/src/model.rs) onto a Go type. This
+// replaces the v0.8-spike-era workaround of string-matching the
+// Rust-specific `rust_type` field — and unlike that workaround, an
+// unrecognized kind is a loud error, not a silent `string` fallback.
+func goType(kind fieldTypeKind) (string, error) {
+	switch kind.Kind {
+	case "str", "uuid":
+		return "string", nil
+	case "int":
+		return "int64", nil
+	case "float":
+		return "float64", nil
 	case "bool":
-		return "bool"
-	case "chrono::DateTime<chrono::Utc>":
+		return "bool", nil
+	case "timestamp":
 		// Kept as the RFC3339 string the JSON wire format already
 		// uses rather than pulling in time.Time's own JSON quirks.
-		return "string"
-	case "serde_json::Value":
-		return "interface{}"
+		return "string", nil
+	case "json":
+		return "interface{}", nil
+	case "enum":
+		// Stored and transported as its text form (variant name);
+		// generating a real Go const type for kind.Name/kind.Variants
+		// is a deliberate non-goal of this narrow backend.
+		return "string", nil
 	default:
-		// Most likely an enum's generated Rust type name (e.g.
-		// "VideoStatus") -- falls back to string, same as the spike.
-		return "string"
+		return "", fmt.Errorf(
+			"unknown field type kind %q (this ciac speaks a newer protocol than this backend)",
+			kind.Kind,
+		)
 	}
 }
 

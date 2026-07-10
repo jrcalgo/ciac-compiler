@@ -107,6 +107,44 @@ mod tests {
     }
 
     #[test]
+    fn enum_field_type_kind_survives_the_wire() {
+        // v0.10 M1: an external backend must be able to read a field's
+        // language-neutral kind — including a real enum's generated
+        // type name and variants — straight off the wire, instead of
+        // string-matching `rust_type`.
+        let ir = compile(
+            "service Media;\nuse { db Postgres; }\nrecord Video { id: Uuid; status: enum { Pending, Ready }; }\ncrud Video: Video;\n",
+        );
+        let system = build_system(&ir, &GenOptions::default());
+        let request = CodegenRequest::new("go", None, system);
+        let json = serde_json::to_string(&request).expect("serializes");
+        let restored: CodegenRequest = serde_json::from_str(&json).expect("deserializes");
+
+        let record = restored.system.services[0]
+            .records
+            .iter()
+            .find(|r| r.name == "Video")
+            .expect("Video record on the wire");
+        let status = record
+            .fields
+            .iter()
+            .find(|f| f.name == "status")
+            .expect("status field");
+        match &status.type_kind {
+            crate::model::FieldTypeKind::Enum { name, variants } => {
+                assert_eq!(name, "VideoStatus");
+                assert_eq!(variants, &["Pending".to_owned(), "Ready".to_owned()]);
+            }
+            other => panic!("expected an enum kind, got {other:?}"),
+        }
+        // And the wire text itself is the documented serde shape.
+        assert!(
+            json.contains(r#""type_kind":{"kind":"enum","name":"VideoStatus""#),
+            "wire shape changed: {json}"
+        );
+    }
+
+    #[test]
     fn typed_handler_ids_survive_the_round_trip_even_though_theyre_opaque() {
         // examples/typed-handlers.ciac's shape: a program with an
         // inline typed handler body. `Ctx::typed_handlers` carries raw

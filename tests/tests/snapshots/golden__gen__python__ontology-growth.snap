@@ -859,13 +859,20 @@ services:
       SEARCH_URL_CATALOG: http://search-catalog:9200
       NATS_URL: nats://queue:4222
     depends_on:
-      - db-main
-      - db-analytics
-      - cache-hot
-      - minio-media
-      - mailpit-transactional
-      - search-catalog
-      - queue
+      db-main:
+        condition: service_healthy
+      db-analytics:
+        condition: service_healthy
+      cache-hot:
+        condition: service_healthy
+      minio-media:
+        condition: service_started
+      mailpit-transactional:
+        condition: service_started
+      search-catalog:
+        condition: service_started
+      queue:
+        condition: service_started
 
   workers:
     build: .
@@ -879,13 +886,20 @@ services:
       SEARCH_URL_CATALOG: http://search-catalog:9200
       NATS_URL: nats://queue:4222
     depends_on:
-      - db-main
-      - db-analytics
-      - cache-hot
-      - minio-media
-      - mailpit-transactional
-      - search-catalog
-      - queue
+      db-main:
+        condition: service_healthy
+      db-analytics:
+        condition: service_healthy
+      cache-hot:
+        condition: service_healthy
+      minio-media:
+        condition: service_started
+      mailpit-transactional:
+        condition: service_started
+      search-catalog:
+        condition: service_started
+      queue:
+        condition: service_started
 
   db-main:
     image: postgres:16
@@ -896,6 +910,11 @@ services:
       POSTGRES_DB: media_ops_main
     volumes:
       - db-main-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   db-analytics:
     image: postgres:16
@@ -906,11 +925,21 @@ services:
       POSTGRES_DB: media_ops_analytics
     volumes:
       - db-analytics-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   cache-hot:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   minio-media:
     image: minio/minio

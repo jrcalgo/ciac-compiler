@@ -305,7 +305,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/maintenance
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   workers:
     build: .
@@ -313,7 +314,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/maintenance
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   db:
     image: postgres:16
@@ -324,6 +326,11 @@ services:
       POSTGRES_DB: maintenance
     volumes:
       - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
 volumes:
   db-data:

@@ -45,23 +45,29 @@ services:
     depends_on:
 {%- for inst in c.db_instances %}
 {%- if inst.db_engine != "sqlite" %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_healthy
 {%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_healthy
 {%- endfor %}
 {%- for inst in c.object_store_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_started
 {%- endfor %}
 {%- for inst in c.email_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_started
 {%- endfor %}
 {%- for inst in c.search_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_started
 {%- endfor %}
 {%- if c.has_queue %}
-      - queue
+      queue:
+        condition: service_started
 {%- endif %}
 {%- endif %}
 {%- if c.has_sqlite_db %}
@@ -103,23 +109,29 @@ services:
     depends_on:
 {%- for inst in c.db_instances %}
 {%- if inst.db_engine != "sqlite" %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_healthy
 {%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_healthy
 {%- endfor %}
 {%- for inst in c.object_store_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_started
 {%- endfor %}
 {%- for inst in c.email_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_started
 {%- endfor %}
 {%- for inst in c.search_instances %}
-      - {{ inst.container }}
+      {{ inst.container }}:
+        condition: service_started
 {%- endfor %}
 {%- if c.has_queue %}
-      - queue
+      queue:
+        condition: service_started
 {%- endif %}
 {%- endif %}
 {%- if c.has_sqlite_db %}
@@ -145,6 +157,11 @@ services:
       MYSQL_DATABASE: {{ inst.db_name }}
     volumes:
       - {{ inst.container }}-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 {%- else %}
     image: postgres:16
     ports:
@@ -154,6 +171,11 @@ services:
       POSTGRES_DB: {{ inst.db_name }}
     volumes:
       - {{ inst.container }}-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 {%- endif %}
 {%- endfor %}
 {%- for inst in c.cache_instances %}
@@ -162,6 +184,11 @@ services:
     image: redis:7
     ports:
       - "{{ inst.host_port }}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 {%- endfor %}
 {%- for inst in c.object_store_instances %}
 

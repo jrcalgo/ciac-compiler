@@ -82,7 +82,8 @@ services:
     environment:
       NATS_URL: nats://queue:4222
     depends_on:
-      - queue
+      queue:
+        condition: service_started
 
   queue:
     image: nats:2

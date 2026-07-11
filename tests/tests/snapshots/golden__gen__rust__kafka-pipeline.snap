@@ -100,7 +100,8 @@ services:
     environment:
       KAFKA_URL: queue:9092
     depends_on:
-      - queue
+      queue:
+        condition: service_started
 
   workers:
     build: .
@@ -108,7 +109,8 @@ services:
     environment:
       KAFKA_URL: queue:9092
     depends_on:
-      - queue
+      queue:
+        condition: service_started
 
   queue:
     image: apache/kafka:3.8.0

@@ -98,9 +98,12 @@ services:
       NATS_URL: nats://queue:4222
       JWT_SECRET: ${JWT_SECRET:-change-me}
     depends_on:
-      - db
-      - cache
-      - queue
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      queue:
+        condition: service_started
 
   workers:
     build: .
@@ -110,9 +113,12 @@ services:
       REDIS_URL: redis://cache:6379/0
       NATS_URL: nats://queue:4222
     depends_on:
-      - db
-      - cache
-      - queue
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      queue:
+        condition: service_started
 
   db:
     image: postgres:16
@@ -123,11 +129,21 @@ services:
       POSTGRES_DB: media
     volumes:
       - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   cache:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   queue:
     image: nats:2

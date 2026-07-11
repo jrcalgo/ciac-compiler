@@ -486,8 +486,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/ingest
       NATS_URL: nats://queue:4222
     depends_on:
-      - db
-      - queue
+      db:
+        condition: service_healthy
+      queue:
+        condition: service_started
 
   workers:
     build: .
@@ -496,8 +498,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/ingest
       NATS_URL: nats://queue:4222
     depends_on:
-      - db
-      - queue
+      db:
+        condition: service_healthy
+      queue:
+        condition: service_started
 
   db:
     image: postgres:16
@@ -508,6 +512,11 @@ services:
       POSTGRES_DB: ingest
     volumes:
       - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   queue:
     image: nats:2

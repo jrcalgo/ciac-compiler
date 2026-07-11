@@ -384,7 +384,8 @@ services:
       BILLING_URL: http://billing:8000
       NATS_URL: nats://queue:4222
     depends_on:
-      - queue
+      queue:
+        condition: service_started
 
   transcoder:
     build: ./transcoder
@@ -394,8 +395,10 @@ services:
       S3_ENDPOINT_MEDIA: http://transcoder-minio-media:9000
       NATS_URL: nats://queue:4222
     depends_on:
-      - transcoder-minio-media
-      - queue
+      transcoder-minio-media:
+        condition: service_started
+      queue:
+        condition: service_started
 
   transcoder-workers:
     build: ./transcoder
@@ -404,8 +407,10 @@ services:
       S3_ENDPOINT_MEDIA: http://transcoder-minio-media:9000
       NATS_URL: nats://queue:4222
     depends_on:
-      - transcoder-minio-media
-      - queue
+      transcoder-minio-media:
+        condition: service_started
+      queue:
+        condition: service_started
 
   notifier:
     build: ./notifier
@@ -415,8 +420,10 @@ services:
       SMTP_HOST_TRANSACTIONAL: notifier-mailpit-transactional
       NATS_URL: nats://queue:4222
     depends_on:
-      - notifier-mailpit-transactional
-      - queue
+      notifier-mailpit-transactional:
+        condition: service_started
+      queue:
+        condition: service_started
 
   notifier-workers:
     build: ./notifier
@@ -425,8 +432,10 @@ services:
       SMTP_HOST_TRANSACTIONAL: notifier-mailpit-transactional
       NATS_URL: nats://queue:4222
     depends_on:
-      - notifier-mailpit-transactional
-      - queue
+      notifier-mailpit-transactional:
+        condition: service_started
+      queue:
+        condition: service_started
 
   progress-feed:
     build: ./progress-feed
@@ -435,7 +444,8 @@ services:
     environment:
       NATS_URL: nats://queue:4222
     depends_on:
-      - queue
+      queue:
+        condition: service_started
 
   transcoder-minio-media:
     image: minio/minio

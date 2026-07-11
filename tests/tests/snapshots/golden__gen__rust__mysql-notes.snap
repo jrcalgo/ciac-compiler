@@ -83,8 +83,10 @@ services:
       DATABASE_URL: mysql://root:root@db:3306/mysql_notes
       REDIS_URL: redis://cache:6379/0
     depends_on:
-      - db
-      - cache
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
 
   db:
     image: mysql:8
@@ -95,11 +97,21 @@ services:
       MYSQL_DATABASE: mysql_notes
     volumes:
       - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   cache:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
 volumes:
   db-data:

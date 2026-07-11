@@ -980,7 +980,8 @@ services:
     environment:
       DATABASE_URL_MAIN: postgresql+asyncpg://postgres:postgres@catalog-db-main:5432/catalog_main
     depends_on:
-      - catalog-db-main
+      catalog-db-main:
+        condition: service_healthy
 
   accounts:
     build: ./accounts
@@ -989,7 +990,8 @@ services:
     environment:
       DATABASE_URL_MAIN: postgresql+asyncpg://postgres:postgres@accounts-db-main:5432/accounts_main
     depends_on:
-      - accounts-db-main
+      accounts-db-main:
+        condition: service_healthy
 
   catalog-db-main:
     image: postgres:16
@@ -1000,6 +1002,11 @@ services:
       POSTGRES_DB: catalog_main
     volumes:
       - catalog-db-main-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   accounts-db-main:
     image: postgres:16
@@ -1010,6 +1017,11 @@ services:
       POSTGRES_DB: accounts_main
     volumes:
       - accounts-db-main-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
 volumes:
   catalog-db-main-data:

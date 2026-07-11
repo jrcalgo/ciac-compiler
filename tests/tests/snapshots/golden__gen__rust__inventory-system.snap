@@ -617,8 +617,10 @@ services:
       DATABASE_URL: postgres://postgres:postgres@catalog-db:5432/catalog
       REDIS_URL: redis://catalog-cache:6379/0
     depends_on:
-      - catalog-db
-      - catalog-cache
+      catalog-db:
+        condition: service_healthy
+      catalog-cache:
+        condition: service_healthy
 
   gateway:
     build: ./gateway
@@ -636,11 +638,21 @@ services:
       POSTGRES_DB: catalog
     volumes:
       - catalog-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
   catalog-cache:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
 
 volumes:
   catalog-db-data:

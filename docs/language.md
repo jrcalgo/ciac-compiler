@@ -1,4 +1,4 @@
-# The CIaC Language (v0.12.0)
+# The CIaC Language (v0.13.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -8,14 +8,13 @@ references after parsing the whole file.
 ## Implementation status
 
 CIaC's contract is that **whatever `ciac build` accepts, the generated
-system actually does**. Constructs the language accepts but no backend
-implements yet still pass `ciac check` (so programs can be designed
-ahead) and fail `ciac build` with `CIAC0011`:
-
-| Construct | `ciac check` | `ciac build` |
-|-----------|--------------|--------------|
-| Everything below, unless listed | accepted | generated, working code |
-| `queue .. Kafka` | accepted | gated (`CIAC0011`) |
+system actually does**. As of v0.13, both bundled targets (Python,
+Rust) implement every construct and provider in this document — there
+is no currently-gated construct to list. A backend that doesn't
+implement something a program uses still fails `ciac build` with
+`CIAC0011` (never a silent miscompile) — the mechanism a new backend
+or provider grows into on the way to full support, most recently
+exercised by external backends (`docs/external-backends.md`).
 
 ## Grammar
 
@@ -171,9 +170,9 @@ pairs (`CIAC0013` otherwise):
 | Capability | Providers | Generated as (Python / Rust) |
 |------------|-----------|------------------------------|
 | `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) |
-| `db` | `Postgres`, `MySQL`* | SQLAlchemy async engine per instance / SQLx pool per instance |
+| `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) |
 | `cache` | `Redis` | redis-py client per instance / redis crate client per instance |
-| `queue` | `NATS`, `Kafka`* | nats-py or aiokafka / async-nats |
+| `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka |
 | `logging` | `Structured` | structlog / tracing |
 | `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus |
 | `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper (+ MinIO in compose) |
@@ -183,12 +182,12 @@ pairs (`CIAC0013` otherwise):
 | `scheduler` | `Cron` | in-process scheduled jobs |
 | `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
 
-\* `MySQL` and `Kafka` are fully implemented by the Python backend
-(v0.11); the Rust backend gates both (`CIAC0011` at build time) —
-sqlx pools are typed per database and rdkafka carries a native build
-chain, so each waits on real demand. `auth OAuth2` requires an
-`issuer` attribute (and optional `audience`): bearer RS256 tokens are
-validated against `{issuer}/.well-known/jwks.json` on both backends.
+Every provider above generates on both bundled targets (as of v0.13 —
+`MySQL` and `Kafka` landed on Rust in v0.13 M1/M2, closing the last
+Python-only gap; `SQLite` is new in v0.13 M3 and needs no container at
+all, just a `data/` volume). `auth OAuth2` requires an `issuer`
+attribute (and optional `audience`): bearer RS256 tokens are validated
+against `{issuer}/.well-known/jwks.json` on both backends.
 
 Both `SES` and `SMTP` email providers send over SMTP — for SES, point
 the generated `SMTP_*` variables at your SES SMTP endpoint. Handlers

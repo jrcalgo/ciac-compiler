@@ -153,29 +153,38 @@ media-system/
 target api's real method and path, fails the pipeline on non-2xx, and
 validates the response envelope back into the `Video` record.
 
-Constructs a specific target doesn't implement (`db MySQL` and
-`queue Kafka` generate on Python but not yet on Rust) pass `ciac
-check` and are refused by `ciac build --target rust` with `CIAC0011`
-— if it builds, the generated system actually does it. The
-per-provider support table lives in [docs/language.md](docs/language.md).
+Every capability provider generates on both bundled targets as of
+v0.13. A construct no target can implement yet still passes `ciac
+check` and is refused by `ciac build` with `CIAC0011` rather than
+silently miscompiling — if it builds, the generated system actually
+does it. The per-provider support table lives in
+[docs/language.md](docs/language.md).
 
 ## Quick start
 
 ```sh
-cargo install --path crates/ciac    # or grab a release build
+curl -fsSL https://raw.githubusercontent.com/jrcalgo/ciac/main/install.sh | sh
+# or: cargo install --path crates/ciac
+# or: download a binary from the latest GitHub Release
+
 ciac new my-app                     # templates: crud | multi-service | kafka | minimal
 cd my-app
 ciac check main.ciac
 ciac build main.ciac --target python --out ./build
+ciac dev main.ciac --target python --out ./build   # watch + regenerate + restart on save
 ```
 
 Every `ciac new` template is a checked-in example the test suite
 already compiles and (where applicable) system-verifies in CI, so a
 scaffold always passes `ciac check`. Editing support — the `ciac lsp`
 language server (live diagnostics, hover with per-target provider
-notes, completion), TextMate syntax highlighting, and cross-project
-blueprint reuse via `registry:` imports — is covered in
-[docs/authoring.md](docs/authoring.md).
+notes, completion), a VS Code extension (`editors/vscode/`), TextMate
+syntax highlighting, and cross-project blueprint reuse via `registry:`
+imports — is covered in [docs/authoring.md](docs/authoring.md); the
+watch loop in [docs/dev-loop.md](docs/dev-loop.md). An agent working
+against this CLI instead of a human has its own front door — `ciac
+describe`, `ciac mcp`, generated `AGENTS.md` files — covered in
+[docs/agents.md](docs/agents.md).
 
 ## Why
 
@@ -235,13 +244,16 @@ worked Go example in [backends/go/](backends/go/).
 |--------------|---------------|-------------|
 | API          | FastAPI router | Axum router |
 | Service      | async class stub (yours) | async struct stub (yours) |
-| Worker       | NATS queue-group subscriber | async-nats + Tokio |
+| Worker       | NATS queue-group subscriber or aiokafka consumer group | async-nats or rdkafka consumer group |
 | Job          | croniter task in workers process | cron + Tokio task |
 | Channel      | FastAPI WebSocket/SSE route | Axum WebSocket/SSE route |
-| Database     | SQLAlchemy + asyncpg | SQLx (Postgres) |
+| Database     | SQLAlchemy async engine (asyncpg / aiomysql / aiosqlite) | SQLx pool (`PgPool` / `MySqlPool` / `SqlitePool`) |
 | Cache        | redis-py | redis |
-| Queue        | nats-py | async-nats |
+| Queue        | nats-py or aiokafka | async-nats or rdkafka |
 | Auth (JWT)   | dependency + PyJWT | extractor + jsonwebtoken |
+
+Full per-provider support lives in [docs/language.md](docs/language.md)
+— as of v0.13, every provider above generates on both targets.
 
 ## CLI
 
@@ -250,18 +262,22 @@ worked Go example in [backends/go/](backends/go/).
 | `ciac new DIR [--template crud\|multi-service\|kafka\|minimal]` | Scaffold a new project from a proven example |
 | `ciac check file.ciac` | Parse + validate, print diagnostics |
 | `ciac build file.ciac --target python\|rust --out DIR [--deploy k8s]` | Generate a project, optionally with Kubernetes manifests |
+| `ciac dev file.ciac --target python\|rust --out DIR` | Watch, regenerate, restart the compose stack, and re-probe health on every save |
 | `ciac diff file.ciac --target python\|rust --out DIR` | Preview regeneration drift |
 | `ciac verify file.ciac --target python\|rust --out DIR [--system]` | Check regeneration drift and generated project validity, optionally running compose-backed system tests |
 | `ciac graph file.ciac --format json\|dot` | Dump the system graph |
 | `ciac explain CIAC0005` | Explain an error code |
+| `ciac describe` | Print the language's full vocabulary as one versioned JSON document |
 | `ciac codegen-schema` | Print the external-backend wire-contract JSON Schema |
 | `ciac lsp` | Language Server Protocol server over stdio (diagnostics, hover, completion) |
+| `ciac mcp` | Model Context Protocol server over stdio (check/build/diff/verify/graph/explain/describe as tools) |
 | `ciac targets` | List code-generation targets |
 
 `check`, `build`, `diff`, and `verify` all accept `--json`: one
 machine-readable document on stdout (diagnostics resolved to
 file/line/column; for `diff`, the regeneration plan), human narration
-on stderr.
+on stderr. `ciac describe` and `ciac mcp` are the same machine-facing
+front door for an agent client — see [docs/agents.md](docs/agents.md).
 
 Multi-file programs (`import "path";`), reusable `blueprint`/`expand`
 templates, and cross-project `registry:` imports (v0.12, cached and
@@ -292,9 +308,9 @@ cargo run -p ciac -- check examples/video-platform.ciac
 | `crates/ciac-backend-python` | FastAPI target |
 | `crates/ciac-backend-rust` | Axum target |
 | `examples/` | valid example programs |
-| `editors/` | TextMate grammar for `.ciac` syntax highlighting |
+| `editors/` | TextMate grammar + VS Code extension for `.ciac` |
 | `tests/` | golden snapshots, negative suite, determinism tests |
-| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [authoring](docs/authoring.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [external backends](docs/external-backends.md) · [regeneration](docs/regeneration.md) · [deployment](docs/deployment.md) · [errors](docs/errors.md) |
+| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [authoring](docs/authoring.md) · [dev loop](docs/dev-loop.md) · [agents](docs/agents.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [external backends](docs/external-backends.md) · [regeneration](docs/regeneration.md) · [deployment](docs/deployment.md) · [errors](docs/errors.md) |
 
 ## License
 

@@ -1,8 +1,11 @@
-# Authoring CIaC (v0.12)
+# Authoring CIaC (v0.13)
 
-Everything in this page is about the minutes *before* `ciac build`:
-starting a project, editing `.ciac` with live feedback, and reusing
-blueprints across projects.
+Everything in this page is about the minutes *before* and *during*
+`ciac build`: starting a project, editing `.ciac` with live feedback,
+keeping a running stack in sync while you iterate, and reusing
+blueprints across projects. Once you're generating and iterating on
+output, see [docs/dev-loop.md](dev-loop.md); for an agent working in
+this loop instead of a human, see [docs/agents.md](agents.md).
 
 ## Start from a scaffold: `ciac new`
 
@@ -31,15 +34,20 @@ same spans, resolved through the same line/column pipeline as
 `--json`) on file open and save, plus:
 
 - **hover** over any keyword, capability, provider, or declared name
-  — providers carry their per-target support notes (e.g. that
-  `MySQL`/`Kafka` generate on Python but gate on Rust with CIAC0011);
+  — providers carry their per-target support notes (every provider
+  generates on both bundled targets as of v0.13; see
+  [docs/language.md](language.md)'s support table);
 - **completion** for keywords, capabilities, providers, builtin
   pipeline steps, and the names your own file declares.
 
 Diagnostics refresh on *save*, not on every keystroke: imports
 resolve against the filesystem exactly as the CLI resolves them, and
-resolving unsaved buffers would need a VFS layer that is deliberately
-out of v0.12's scope (as are rename, references, and code actions).
+resolving unsaved buffers would need a VFS layer that remains
+deliberately out of scope (as are rename, references, and code
+actions). `ciac lsp` and `ciac describe` (v0.13, see
+[docs/agents.md](agents.md)) render their vocabulary from the same
+table in `crates/ciac/src/vocab.rs`, so hover text and the
+machine-readable registry can't drift apart.
 
 ### Editor setup
 
@@ -69,21 +77,32 @@ file-types = ["ciac"]
 language-servers = ["ciac"]
 ```
 
-**VS Code**: there is no published extension yet; any generic
-LSP-client extension works — point it at command `ciac`, args
-`["lsp"]`, for language id/extension `ciac`. Pair it with the
-TextMate grammar below.
+**VS Code**: `editors/vscode/` (v0.13 M6) is a checked-in extension
+bundling the TextMate grammar below and an LSP client that launches
+`ciac lsp` for `.ciac` files — no generic LSP-client extension needed.
+Load it unpacked for local use:
+
+```sh
+cd editors/vscode
+npm install
+code --extensionDevelopmentPath="$PWD" .
+```
+
+or package a `.vsix` with `vsce package` (see
+`editors/vscode/README.md` for the packaging caveats — `vsce` pulls
+from npm, which isn't always reachable from every environment this
+repo is built in, so packaging is a documented manual step rather
+than a CI hard-requirement).
 
 ### Syntax highlighting
 
 `editors/ciac.tmLanguage.json` is a self-contained TextMate grammar
 (comments, strings, keywords, capability kinds, the provider
 registry, primitive types, HTTP methods, builtin steps, declaration
-names). Any TextMate-compatible editor can consume it directly; in a
-VS Code extension it slots in as a `grammars` contribution for scope
-`source.ciac`. A Tree-sitter grammar was considered for v0.12 and
-deliberately deferred — the TextMate file covers highlighting today
-with zero codegen toolchain.
+names) — the same file the VS Code extension bundles. Any
+TextMate-compatible editor can consume it directly. A Tree-sitter
+grammar was considered for v0.12 and deliberately deferred — the
+TextMate file covers highlighting today with zero codegen toolchain.
 
 ## Reuse across projects: `registry:` imports
 

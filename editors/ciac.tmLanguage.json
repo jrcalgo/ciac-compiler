@@ -61,7 +61,7 @@
     "providers": {
       "comment": "The closed provider registry (see docs/language.md).",
       "name": "support.constant.provider.ciac",
-      "match": "\\b(JWT|OAuth2|Postgres|MySQL|Redis|NATS|Kafka|Structured|Prometheus|S3|SES|SMTP|OpenSearch|Cron|WebSocket|SSE)\\b"
+      "match": "\\b(JWT|OAuth2|Postgres|MySQL|SQLite|Redis|NATS|Kafka|Structured|Prometheus|S3|SES|SMTP|OpenSearch|Cron|WebSocket|SSE)\\b"
     },
     "types": {
       "name": "storage.type.primitive.ciac",

@@ -26,3 +26,7 @@ __pycache__/
 
 # compiled external-backend binaries (backends/go/, etc.)
 /backends/go/ciac-backend-go
+
+# VS Code extension build artifacts (editors/vscode/)
+/editors/vscode/node_modules/
+/editors/vscode/*.vsix

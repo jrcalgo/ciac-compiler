@@ -57,16 +57,9 @@ fn front_end_quiet(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap
 
 pub fn check(file: &Path, json: bool) -> Result<ExitCode> {
     if json {
-        let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
-        let success = !has_errors && ir.is_some();
-        crate::json_out::emit(&crate::json_out::envelope(
-            "check", success, &diags, &sources,
-        ));
-        return Ok(if success {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        });
+        let (envelope, code) = check_envelope(file)?;
+        crate::json_out::emit(&envelope);
+        return Ok(code);
     }
     let (ir, has_errors, _sources) = front_end(file)?;
     if has_errors || ir.is_none() {
@@ -74,6 +67,21 @@ pub fn check(file: &Path, json: bool) -> Result<ExitCode> {
     }
     eprintln!("{}: no errors", file.display());
     Ok(ExitCode::SUCCESS)
+}
+
+/// [`check`]'s JSON path as a value rather than a print — the form
+/// `ciac mcp` (v0.13 M5) consumes directly, with no stdout capture in
+/// between.
+pub(crate) fn check_envelope(file: &Path) -> Result<(crate::json_out::Envelope, ExitCode)> {
+    let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
+    let success = !has_errors && ir.is_some();
+    let envelope = crate::json_out::envelope("check", success, &diags, &sources);
+    let code = if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    Ok((envelope, code))
 }
 
 /// `--json` promises exactly one JSON document on stdout — but child
@@ -103,18 +111,18 @@ fn run_streamed(command: &mut Command) -> std::io::Result<std::process::ExitStat
 /// circuiting on compile errors, then runs the untouched human-mode
 /// body (which recompiles — commands here already trade recompute for
 /// simplicity) and reports its outcome as the envelope's `success`.
-/// The envelope is emitted exactly once on every path, including when
-/// the body errors out.
+/// Returns the envelope as a value; the caller (a CLI wrapper printing
+/// it, or `ciac mcp` consuming it directly) decides what happens next.
 fn with_json_envelope(
     command: &'static str,
     file: &Path,
     body: impl FnOnce() -> Result<ExitCode>,
-) -> Result<ExitCode> {
+) -> Result<(crate::json_out::Envelope, ExitCode)> {
     JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
     let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
     if has_errors || ir.is_none() {
-        crate::json_out::emit(&crate::json_out::envelope(command, false, &diags, &sources));
-        return Ok(ExitCode::FAILURE);
+        let envelope = crate::json_out::envelope(command, false, &diags, &sources);
+        return Ok((envelope, ExitCode::FAILURE));
     }
     let code = match body() {
         Ok(code) => code,
@@ -123,13 +131,8 @@ fn with_json_envelope(
             ExitCode::FAILURE
         }
     };
-    crate::json_out::emit(&crate::json_out::envelope(
-        command,
-        code == ExitCode::SUCCESS,
-        &diags,
-        &sources,
-    ));
-    Ok(code)
+    let envelope = crate::json_out::envelope(command, code == ExitCode::SUCCESS, &diags, &sources);
+    Ok((envelope, code))
 }
 
 /// `--deploy k8s` and its two image-naming knobs, bundled since they
@@ -154,11 +157,28 @@ pub fn build(
     json: bool,
 ) -> Result<ExitCode> {
     if json {
-        return with_json_envelope("build", file, || {
+        let (envelope, code) = with_json_envelope("build", file, || {
             build_inner(file, target, out, force, adopt, deploy, name)
-        });
+        })?;
+        crate::json_out::emit(&envelope);
+        return Ok(code);
     }
     build_inner(file, target, out, force, adopt, deploy, name)
+}
+
+/// [`build`]'s JSON path as a value — `ciac mcp`'s `build` tool (always
+/// non-forcing, non-adopting: the plan-vs-clobber tradeoff needs a
+/// human at the keyboard, so MCP only ever regenerates in place).
+pub(crate) fn build_envelope(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    deploy: DeployOpts,
+    name: Option<String>,
+) -> Result<(crate::json_out::Envelope, ExitCode)> {
+    with_json_envelope("build", file, || {
+        build_inner(file, target, out, false, false, deploy, name)
+    })
 }
 
 pub(crate) fn build_inner(
@@ -303,7 +323,9 @@ pub fn diff(
     json: bool,
 ) -> Result<ExitCode> {
     if json {
-        return diff_json(file, target, out, patch, name);
+        let (envelope, code) = diff_envelope(file, target, out, patch, name)?;
+        crate::json_out::emit(&envelope);
+        return Ok(code);
     }
     let plan = diff_plan(file, target, out, name)?;
     for entry in &plan.entries {
@@ -326,19 +348,21 @@ pub fn diff(
 
 /// `diff` is the manifest-aware dry-run; `--json` (v0.10 M4) makes it
 /// machine-readable — the regeneration plan as data in the same
-/// envelope `check`/`build`/`verify --json` use.
-fn diff_json(
+/// envelope `check`/`build`/`verify --json` use. Returns the envelope
+/// as a value; the CLI (`diff`) prints it, `ciac mcp`'s `diff` tool
+/// (v0.13 M5) consumes it directly.
+pub(crate) fn diff_envelope(
     file: &Path,
     target: &str,
     out: &Path,
     patch: bool,
     name: Option<String>,
-) -> Result<ExitCode> {
+) -> Result<(crate::json_out::Envelope, ExitCode)> {
     JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
     let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
     if has_errors || ir.is_none() {
-        crate::json_out::emit(&crate::json_out::envelope("diff", false, &diags, &sources));
-        return Ok(ExitCode::FAILURE);
+        let envelope = crate::json_out::envelope("diff", false, &diags, &sources);
+        return Ok((envelope, ExitCode::FAILURE));
     }
     let (entries, success) = match diff_plan(file, target, out, name) {
         Ok(plan) => {
@@ -361,12 +385,12 @@ fn diff_json(
     };
     let mut envelope = crate::json_out::envelope("diff", success, &diags, &sources);
     envelope.entries = entries;
-    crate::json_out::emit(&envelope);
-    Ok(if success {
+    let code = if success {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
-    })
+    };
+    Ok((envelope, code))
 }
 
 fn diff_plan(file: &Path, target: &str, out: &Path, name: Option<String>) -> Result<RegenPlan> {
@@ -407,11 +431,28 @@ pub fn verify(
     json: bool,
 ) -> Result<ExitCode> {
     if json {
-        return with_json_envelope("verify", file, || {
+        let (envelope, code) = with_json_envelope("verify", file, || {
             verify_inner(file, target, out, live, system, keep, name)
-        });
+        })?;
+        crate::json_out::emit(&envelope);
+        return Ok(code);
     }
     verify_inner(file, target, out, live, system, keep, name)
+}
+
+/// [`verify`]'s JSON path as a value — `ciac mcp`'s `verify` tool
+/// (v0.13 M5) always runs the static check only (no `--system`/
+/// `--live`: those boot Docker and belong to a human at a terminal,
+/// per the plan's out-of-scope list).
+pub(crate) fn verify_envelope(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    name: Option<String>,
+) -> Result<(crate::json_out::Envelope, ExitCode)> {
+    with_json_envelope("verify", file, || {
+        verify_inner(file, target, out, false, false, false, name)
+    })
 }
 
 fn verify_inner(
@@ -650,16 +691,33 @@ pub(crate) fn health_probe(port: u16) -> bool {
 }
 
 pub fn graph(file: &Path, format: &str) -> Result<ExitCode> {
+    match graph_document(file, format)? {
+        Some(text) => {
+            if format == "dot" {
+                print!("{text}");
+            } else {
+                println!("{text}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        None => Ok(ExitCode::FAILURE),
+    }
+}
+
+/// [`graph`]'s rendering as a value — `None` on compile errors (the
+/// CLI path renders those itself via [`front_end`]; `ciac mcp`'s
+/// `graph` tool (v0.13 M5) points a caller at `check` instead).
+pub(crate) fn graph_document(file: &Path, format: &str) -> Result<Option<String>> {
     let (ir, has_errors, _sources) = front_end(file)?;
     let Some(ir) = ir.filter(|_| !has_errors) else {
-        return Ok(ExitCode::FAILURE);
+        return Ok(None);
     };
-    match format {
-        "json" => println!("{}", serde_json::to_string_pretty(&ir)?),
-        "dot" => print!("{}", ir.to_dot()),
+    let text = match format {
+        "json" => serde_json::to_string_pretty(&ir)?,
+        "dot" => ir.to_dot(),
         other => bail!("unknown format `{other}`"),
-    }
-    Ok(ExitCode::SUCCESS)
+    };
+    Ok(Some(text))
 }
 
 /// v0.8 external-backend protocol M1: dumps the wire contract a
@@ -693,13 +751,22 @@ pub fn codegen_schema() -> Result<ExitCode> {
 }
 
 pub fn explain(code: &str) -> Result<ExitCode> {
+    println!("{}", explain_document(code)?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// [`explain`]'s rendering as a value — `ciac mcp`'s `explain` tool
+/// (v0.13 M5) consumes it directly.
+pub(crate) fn explain_document(code: &str) -> Result<String> {
     let Some(code) = ErrorCode::parse(code) else {
         bail!("unknown error code `{code}`; codes look like CIAC0001 (see docs/errors.md)");
     };
-    println!("{}: {}", code.code(), code.title());
-    println!();
-    println!("{}", code.explanation());
-    Ok(ExitCode::SUCCESS)
+    Ok(format!(
+        "{}: {}\n\n{}",
+        code.code(),
+        code.title(),
+        code.explanation()
+    ))
 }
 
 pub fn targets() -> Result<ExitCode> {
@@ -800,6 +867,13 @@ fn generate(
         }
     }
 
+    // v0.13 M5: an agent-facing front door into the generated tree
+    // itself, alongside the human-facing notes above. Every build
+    // target gets one, so `build`/`diff`/`verify` all account for it
+    // (regeneration owns it exactly like any other compiler-owned
+    // file — see `report_regen_plan`'s conflict/drift handling).
+    project.add_file("AGENTS.md", agents_md(backend.id()));
+
     let manifest_file = manifest_path(out);
     let previous = if manifest_file.exists() {
         Some(load_manifest(out).with_context(|| {
@@ -851,6 +925,54 @@ fn generate(
         next_migration_seq,
         records: new_records,
     })
+}
+
+/// The generated tree's own `AGENTS.md` (v0.13 M5) — regenerated
+/// alongside every other compiler-owned file, so it can never drift
+/// out of date the way a hand-written note would.
+fn agents_md(target: &str) -> String {
+    format!(
+        "\
+# Agents working in this generated project\n\
+\n\
+This tree was generated by `ciac build` (target: `{target}`) from a\n\
+`.ciac` source file. Two kinds of files live here, and the difference\n\
+matters:\n\
+\n\
+- **Compiler-owned** (most files): rewritten by every `ciac build`.\n\
+  Hand edits are lost on the next build — `ciac diff`/`ciac verify`\n\
+  detect and report them as drift (CIAC0033) rather than silently\n\
+  discarding your change.\n\
+- **Seeded** (extern handler implementations and migration files —\n\
+  `app/services/*.py` on the python target, `src/services/*.rs` on\n\
+  rust): generated once, then yours. `ciac build` never overwrites an\n\
+  existing seeded file; if the seed it *would* generate changes, it\n\
+  preserves your file and writes the new seed to a `.ciac-new`\n\
+  sidecar for manual reconciliation (CIAC0034).\n\
+\n\
+**Where logic goes**: write `extern handler` bodies in the seeded\n\
+service module for the handler's name. Everything else in this tree\n\
+is wiring generated from the `.ciac` source — change the behavior by\n\
+editing the source and rebuilding, not by editing generated wiring.\n\
+\n\
+## The truth signal\n\
+\n\
+`ciac verify <source.ciac> --target {target} --out .` regenerates from\n\
+the current source into this directory and runs the generated\n\
+project's own test suite. A green exit code means the source and this\n\
+tree agree *and* the generated code actually works. Add `--system`\n\
+(requires Docker) to also prove cross-service edges and capability\n\
+round-trips against a booted stack.\n\
+\n\
+## Machine-readable output\n\
+\n\
+`ciac check|build|diff|verify --json` (run from beside the `.ciac`\n\
+source) each print one JSON envelope on stdout — human narration\n\
+stays on stderr. `ciac describe` prints the language's full\n\
+vocabulary as one versioned JSON document. `ciac mcp` exposes the\n\
+same commands as a Model Context Protocol server over stdio.\n\
+"
+    )
 }
 
 /// Adds the diffed migration SQL, under each generated deployable

@@ -45,11 +45,7 @@ const TEMPLATES: &[Template] = &[
         source: include_str!("../../../examples/kafka-pipeline.ciac"),
         summary: "an event-ingestion shape on Kafka: an api publishing to a \
                   stream, a worker consuming it in a consumer group",
-        note: Some(
-            "`queue Kafka` currently generates on the Python target only; \
-             the Rust target reports CIAC0011 (see docs/language.md's \
-             provider support table).",
-        ),
+        note: None,
     },
     Template {
         name: "minimal",
@@ -59,6 +55,13 @@ const TEMPLATES: &[Template] = &[
         note: None,
     },
 ];
+
+/// `(name, summary)` for every `--template` choice — `ciac describe`
+/// (v0.13 M5) lists these without embedding the template sources
+/// themselves.
+pub fn template_summaries() -> Vec<(&'static str, &'static str)> {
+    TEMPLATES.iter().map(|t| (t.name, t.summary)).collect()
+}
 
 /// Scaffolds `dir` from the named template: `main.ciac` (the embedded
 /// example, verbatim) plus a README with the next commands to run.
@@ -89,6 +92,8 @@ pub fn new_project(dir: &Path, template: &str) -> Result<ExitCode> {
         .with_context(|| format!("cannot write {}", dir.join("main.ciac").display()))?;
     std::fs::write(dir.join("README.md"), readme(tpl))
         .with_context(|| format!("cannot write {}", dir.join("README.md").display()))?;
+    std::fs::write(dir.join("AGENTS.md"), AGENTS_MD)
+        .with_context(|| format!("cannot write {}", dir.join("AGENTS.md").display()))?;
 
     eprintln!(
         "scaffolded the `{}` template into {}",
@@ -98,6 +103,53 @@ pub fn new_project(dir: &Path, template: &str) -> Result<ExitCode> {
     eprintln!("next: cd {} && ciac check main.ciac", dir.display());
     Ok(ExitCode::SUCCESS)
 }
+
+/// Emitted into every scaffolded project (v0.13 M5) — the front door
+/// for an agent that opens this directory cold, before `ciac build`
+/// has produced anything to read `AGENTS.md`'s generated-project
+/// counterpart (see `commands::agents_md`) about.
+const AGENTS_MD: &str = "\
+# Agents working in this project\n\
+\n\
+This directory holds one file that matters: `main.ciac`, the whole\n\
+architecture. Everything else (`README.md`, this file, and — once you\n\
+run `ciac build` — a generated project tree) is derived from it or\n\
+describes it.\n\
+\n\
+## Loop\n\
+\n\
+```sh\n\
+ciac check main.ciac                                # parse + validate, fast\n\
+ciac build main.ciac --target python --out ./build  # generate a runnable project\n\
+ciac verify main.ciac --target python --out ./build # regenerate + run its own tests\n\
+```\n\
+\n\
+`ciac verify`'s exit code is the truth signal: it regenerates from the\n\
+current source and runs the generated project's own test suite, so a\n\
+green `verify` means the source and the generated tree agree and the\n\
+generated code actually works — not just that it parsed.\n\
+\n\
+Once `ciac build` has run, `./build/AGENTS.md` explains that tree's\n\
+own owned-vs-seeded rules (which files regenerate freely and which\n\
+hold code you write once).\n\
+\n\
+## Machine-readable output\n\
+\n\
+`ciac check|build|diff|verify --json` each print one JSON envelope on\n\
+stdout (diagnostics resolved to file/line/column, plus success) —\n\
+human narration stays on stderr, so the two never interleave.\n\
+`ciac describe` prints the language's full vocabulary (capabilities,\n\
+providers, field types, error codes) as one versioned JSON document.\n\
+`ciac mcp` runs the same commands as a Model Context Protocol server\n\
+over stdio, for a client that would rather call a tool than parse a\n\
+CLI's stdout.\n\
+\n\
+## Learn the language\n\
+\n\
+<https://github.com/jrcalgo/ciac/blob/main/docs/language.md> —\n\
+records, apis, pipelines, streams, workers, capabilities, and the\n\
+provider support table per target.\n\
+";
 
 fn readme(tpl: &Template) -> String {
     let mut doc = format!(

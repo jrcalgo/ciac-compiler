@@ -1,10 +1,13 @@
 //! The `ciac` command-line interface.
 
 mod commands;
+mod describe;
 mod dev;
 mod json_out;
 mod lsp;
+mod mcp;
 mod scaffold;
+mod vocab;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -236,6 +239,18 @@ enum Command {
     },
     /// List available code-generation targets.
     Targets,
+    /// Print one versioned JSON document naming everything the
+    /// language and CLI expose: capabilities, providers (with
+    /// per-target support), field types, builtin pipeline steps,
+    /// declaration kinds, error codes, and scaffold templates. The
+    /// machine-facing counterpart to `ciac lsp`'s hover/completion —
+    /// both render from the same tables.
+    Describe,
+    /// Run a Model Context Protocol server over stdio (newline-
+    /// delimited JSON-RPC): exposes `check`, `build`, `diff`,
+    /// `verify` (no `--system`/`--live`), `graph`, `explain`, and
+    /// `describe` as MCP tools for an agent client to call.
+    Mcp,
 }
 
 fn main() -> ExitCode {
@@ -317,5 +332,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Explain { code } => commands::explain(&code),
         Command::Targets => commands::targets(),
+        Command::Describe => describe::run(),
+        Command::Mcp => mcp::run(),
     }
 }

@@ -13,16 +13,18 @@
 //!   save, because import resolution reads from disk — resolving
 //!   unsaved buffers needs a VFS layer that is deliberately out of
 //!   v0.12's scope.
-//! * **hover** — a static table of keywords, capabilities, and
-//!   providers (with their per-target support notes), plus the
+//! * **hover** — the shared vocabulary in [`crate::vocab`] (keywords,
+//!   capabilities, and providers, with their per-target support
+//!   notes — the same table `ciac describe` renders from), plus the
 //!   record/stream/api/handler/... declarations harvested from the
 //!   file's last good parse.
-//! * **completion** — the same static vocabulary plus the harvested
+//! * **completion** — the same shared vocabulary plus the harvested
 //!   declaration names.
 //!
 //! Rename, references, code actions, and incremental parsing are
 //! explicitly deferred.
 
+use crate::vocab;
 use anyhow::Result;
 use ciac_diagnostics::{Diagnostics, Severity, SourceMap};
 use ciac_syntax::ast;
@@ -264,8 +266,8 @@ fn to_lsp_diagnostics(diags: &Diagnostics, sources: &SourceMap, path: &Path) -> 
 fn hover(params: &TextDocumentPositionParams, docs: &HashMap<Url, DocState>) -> Option<Hover> {
     let doc = docs.get(&params.text_document.uri)?;
     let word = word_at(&doc.text, params.position)?;
-    let value = if let Some(text) = static_hover(&word) {
-        text.to_string()
+    let value = if let Some(text) = vocab::doc_for(&word) {
+        text
     } else {
         let sym = doc.symbols.iter().find(|s| s.name == word)?;
         format!("**{}** `{}`\n\n{}", sym.kind, sym.name, sym.detail)
@@ -281,16 +283,18 @@ fn hover(params: &TextDocumentPositionParams, docs: &HashMap<Url, DocState>) -> 
 
 fn completion(params: &CompletionParams, docs: &HashMap<Url, DocState>) -> CompletionResponse {
     let mut items: Vec<CompletionItem> = Vec::new();
-    for (word, doc) in KEYWORDS {
+    for (word, doc) in vocab::KEYWORDS {
         items.push(item(word, CompletionItemKind::KEYWORD, doc));
     }
-    for (word, doc) in CAPABILITIES {
-        items.push(item(word, CompletionItemKind::MODULE, doc));
+    for cap in vocab::CAPABILITIES {
+        let doc = vocab::doc_for(cap.name).unwrap_or_default();
+        items.push(item(cap.name, CompletionItemKind::MODULE, &doc));
     }
-    for (word, doc) in PROVIDERS {
-        items.push(item(word, CompletionItemKind::ENUM_MEMBER, doc));
+    for provider in vocab::PROVIDERS {
+        let doc = vocab::doc_for(provider.name).unwrap_or_default();
+        items.push(item(provider.name, CompletionItemKind::ENUM_MEMBER, &doc));
     }
-    for (word, doc) in BUILTIN_STEPS {
+    for (word, doc) in vocab::BUILTIN_STEPS {
         items.push(item(word, CompletionItemKind::FUNCTION, doc));
     }
     if let Some(doc) = docs.get(&params.text_document_position.text_document.uri) {
@@ -519,95 +523,6 @@ fn harvest(program: &ast::Program) -> Vec<Symbol> {
     out
 }
 
-fn static_hover(word: &str) -> Option<&'static str> {
-    KEYWORDS
-        .iter()
-        .chain(CAPABILITIES)
-        .chain(PROVIDERS)
-        .chain(BUILTIN_STEPS)
-        .find(|(w, _)| *w == word)
-        .map(|(_, doc)| *doc)
-}
-
-/// Language keywords, in docs/language.md's vocabulary.
-const KEYWORDS: &[(&str, &str)] = &[
-    ("service", "`service <Name>;` names a single-service program; `service <Name> { .. }` scopes a deployable service inside a `project`."),
-    ("project", "`project <Name>;` names a multi-service system; each `service <Name> { .. }` block becomes its own deployable."),
-    ("import", "`import \"path\";` splices another file's declarations in at this position. `std/...` resolves against the embedded standard blueprints."),
-    ("use", "`use { auth JWT; db Postgres; .. }` declares capability requirements; each entry is `<capability> [<instance>] <Provider>;`."),
-    ("record", "`record <Name> { field: Type; .. }` declares a typed data schema. Field types: String, Int, Float, Bool, Uuid, Timestamp, Json, or an inline `enum { .. }`."),
-    ("error", "`error <Name> { .. }` declares an error record, usable with `fail <Name>` in handler bodies."),
-    ("stream", "`stream <Name>: <Record>;` declares a named, typed message channel carried by the `queue` capability."),
-    ("table", "`table <Name>: <Record>;` declares a typed persistent table; `db.*` verbs in handler bodies operate on tables."),
-    ("api", "`api <Name>[: <Record>] { method: POST; path: \"/x\"; }` declares an HTTP endpoint; attach behavior with `pipeline <Name>: ..;`."),
-    ("worker", "`worker <Name> on <Stream>;` declares a broker consumer; attach behavior with `pipeline <Name>: ..;`."),
-    ("job", "`job <Name> { schedule: \"0 * * * *\"; }` declares a cron job (requires the `scheduler` capability)."),
-    ("channel", "`channel <Name> on <Stream>;` fans a stream out to realtime clients (requires the `realtime` capability)."),
-    ("crud", "`crud <Name>[: <Record>];` expands into REST API + Auth + Service + Database (+ Cache when present) — a complete typed resource."),
-    ("events", "`events <Name>;` expands into Stream + Worker."),
-    ("handler", "`handler <Name> { db: main; }` binds a pipeline step to capability instances; `handler <Name>(x: T) -> U { .. }` is a typed inline handler."),
-    ("pipeline", "`pipeline <Name>: Step -> Step;` attaches behavior to an api/worker/job of the same name. Steps: handler names, `publish <Stream>`, `call <Service>.<Api>`, `match`, or builtins."),
-    ("blueprint", "`blueprint <Name><T: record> { params { .. } .. }` declares a parameterized template; instantiate with `expand`."),
-    ("expand", "`expand <Blueprint><<Record>> { param: value; };` instantiates a blueprint with hygienic names."),
-    ("publish", "`publish <Stream>` (pipeline step or handler statement) sends the current payload to a typed stream."),
-    ("call", "`call <Service>.<Api>` synchronously invokes another service's api through its typed client."),
-    ("on", "`worker <Name> on <Stream>` / `channel <Name> on <Stream>` bind a consumer to a stream."),
-    ("extern", "`extern handler <Name>(..) -> T;` declares a typed handler implemented in a seeded, user-owned file."),
-    ("match", "`match field { Variant -> Step; _ -> Step; }` branches a pipeline on an enum field."),
-    ("fail", "`fail <ErrorName>` (handler bodies) aborts with a declared `error` record."),
-];
-
-/// Capability kinds accepted in `use { .. }`, with provider notes.
-const CAPABILITIES: &[(&str, &str)] = &[
-    ("auth", "Capability: request authentication. Providers: `JWT` (shared-secret; both targets), `OAuth2` (JWKS resource server, requires `issuer`; both targets)."),
-    ("db", "Capability: relational persistence. Providers: `Postgres`, `MySQL`, `SQLite` (all on both targets since v0.13; SQLite is a zero-container local file)."),
-    ("cache", "Capability: key-value cache. Provider: `Redis` (both targets)."),
-    ("queue", "Capability: message broker backing `stream`/`worker`. Providers: `NATS`, `Kafka` (both targets since v0.13)."),
-    ("logging", "Capability: structured logging. Provider: `Structured`."),
-    ("metrics", "Capability: metrics endpoint. Provider: `Prometheus`."),
-    ("object_store", "Capability: blob storage. Provider: `S3`."),
-    ("email", "Capability: outbound email. Providers: `SES`, `SMTP`."),
-    ("search", "Capability: full-text search. Provider: `OpenSearch`."),
-    ("scheduler", "Capability: cron scheduling for `job` declarations. Provider: `Cron` (default)."),
-    ("realtime", "Capability: realtime fan-out for `channel` declarations. Providers: `WebSocket`, `SSE` (default)."),
-];
-
-const PROVIDERS: &[(&str, &str)] = &[
-    ("JWT", "auth provider: shared-secret HS256 bearer tokens (both targets)."),
-    ("OAuth2", "auth provider: JWKS-validated RS256 resource server; requires `issuer`, optional `audience` (both targets)."),
-    ("Postgres", "db provider (both targets)."),
-    ("MySQL", "db provider (both targets)."),
-    ("SQLite", "db provider (both targets): a zero-container local file under the app's data/ directory."),
-    ("Redis", "cache provider (both targets)."),
-    ("NATS", "queue provider (both targets)."),
-    ("Kafka", "queue provider (both targets)."),
-    ("Structured", "logging provider."),
-    ("Prometheus", "metrics provider."),
-    ("S3", "object_store provider."),
-    ("SES", "email provider (AWS SES)."),
-    ("SMTP", "email provider (plain SMTP)."),
-    ("OpenSearch", "search provider."),
-    ("Cron", "scheduler provider (default when omitted)."),
-    ("WebSocket", "realtime provider."),
-    ("SSE", "realtime provider (default when omitted)."),
-];
-
-/// Pipeline steps with built-in meaning (everything else names a handler).
-const BUILTIN_STEPS: &[(&str, &str)] = &[
-    (
-        "Auth",
-        "builtin pipeline step: require an authenticated request (needs the `auth` capability).",
-    ),
-    (
-        "Queue",
-        "builtin pipeline step: hand the payload to the broker (needs the `queue` capability).",
-    ),
-    (
-        "Return",
-        "builtin pipeline step: respond with the current payload.",
-    ),
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,9 +546,9 @@ mod tests {
         for word in [
             "service", "db", "queue", "Kafka", "OAuth2", "Return", "pipeline",
         ] {
-            assert!(static_hover(word).is_some(), "no hover for `{word}`");
+            assert!(vocab::doc_for(word).is_some(), "no hover for `{word}`");
         }
-        assert!(static_hover("NotAThing").is_none());
+        assert!(vocab::doc_for("NotAThing").is_none());
     }
 
     #[test]

@@ -604,6 +604,21 @@ fn verify_system(out: &Path, keep: bool) -> Result<ExitCode> {
             .and_then(|_| run_in(&system_dir, "uv", &["run", "pytest", "-q"]))
     });
 
+    // On failure, the services ran detached (`up -d`), so their stdout/
+    // stderr never reached this process — dump it now, before teardown
+    // erases the only copy, so a bare test failure doesn't hide a
+    // server-side traceback.
+    if result.is_err() {
+        eprintln!("--- docker compose logs (service stdout/stderr) ---");
+        let _ = run_streamed(
+            Command::new("docker")
+                .arg("compose")
+                .arg("-f")
+                .arg(&compose_file)
+                .args(["logs", "--no-color"]),
+        );
+    }
+
     // `--keep` only applies to a green stack: a failed run always
     // tears down so it never leaves broken containers behind.
     compose_down_or_keep(&compose_file, keep && result.is_ok());

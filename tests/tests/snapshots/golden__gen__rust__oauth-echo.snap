@@ -81,6 +81,11 @@ services:
     build: .
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       OAUTH_ISSUER: http://localhost:9099
       OAUTH_AUDIENCE: ciac-demo

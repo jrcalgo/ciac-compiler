@@ -5,6 +5,11 @@ services:
     build: ./{{ c.dir }}
     ports:
       - "{{ c.host_port }}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
 {%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
     environment:
 {%- for inst in c.db_instances %}

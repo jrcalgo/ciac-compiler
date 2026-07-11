@@ -86,6 +86,11 @@ services:
     build: .
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/ingest
       NATS_URL: nats://queue:4222

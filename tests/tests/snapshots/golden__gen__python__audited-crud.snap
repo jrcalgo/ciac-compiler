@@ -977,6 +977,11 @@ services:
     build: ./catalog
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       DATABASE_URL_MAIN: postgresql+asyncpg://postgres:postgres@catalog-db-main:5432/catalog_main
     depends_on:
@@ -987,6 +992,11 @@ services:
     build: ./accounts
     ports:
       - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       DATABASE_URL_MAIN: postgresql+asyncpg://postgres:postgres@accounts-db-main:5432/accounts_main
     depends_on:

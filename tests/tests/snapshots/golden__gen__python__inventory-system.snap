@@ -626,6 +626,11 @@ services:
     build: ./catalog
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@catalog-db:5432/catalog
       REDIS_URL: redis://catalog-cache:6379/0
@@ -639,6 +644,11 @@ services:
     build: ./gateway
     ports:
       - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       CATALOG_URL: http://catalog:8000
 

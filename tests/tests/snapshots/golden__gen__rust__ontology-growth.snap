@@ -91,6 +91,11 @@ services:
     build: .
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       DATABASE_URL_MAIN: postgres://postgres:postgres@db-main:5432/media_ops_main
       DATABASE_URL_ANALYTICS: postgres://postgres:postgres@db-analytics:5432/media_ops_analytics

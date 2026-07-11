@@ -375,11 +375,21 @@ services:
     build: ./billing
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
 
   upload-api:
     build: ./upload-api
     ports:
       - "8001:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       BILLING_URL: http://billing:8000
       NATS_URL: nats://queue:4222
@@ -391,6 +401,11 @@ services:
     build: ./transcoder
     ports:
       - "8002:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       S3_ENDPOINT_MEDIA: http://transcoder-minio-media:9000
       NATS_URL: nats://queue:4222
@@ -416,6 +431,11 @@ services:
     build: ./notifier
     ports:
       - "8003:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       SMTP_HOST_TRANSACTIONAL: notifier-mailpit-transactional
       NATS_URL: nats://queue:4222
@@ -441,6 +461,11 @@ services:
     build: ./progress-feed
     ports:
       - "8004:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
     environment:
       NATS_URL: nats://queue:4222
     depends_on:

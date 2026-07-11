@@ -30,7 +30,7 @@ futures = "0.3"
 rust-s3 = "0.35"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 opensearch = "2"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ============================================================
 Dockerfile
 ============================================================

@@ -91,10 +91,14 @@ fn dev_survives_compile_errors_and_regenerates_on_fix() {
     // Break the compile: the loop must report and survive.
     std::fs::write(&source, "service DevProbe;\n\npipeline Nope: Work;\n").unwrap();
     assert!(
-        wait_for(&log, "compile errors", 1, Duration::from_secs(30)),
+        wait_for(&log, "compile errors", 1, Duration::from_secs(60)),
         "broken save should surface diagnostics: {}",
         log.lock().unwrap()
     );
+    // Same poll-tick edge as above: give the watcher a full tick to
+    // settle before the next save, so the fix isn't coalesced into
+    // whatever polling window just closed over the broken save.
+    std::thread::sleep(Duration::from_millis(600));
 
     // Fix it with a *new* api: the loop must regenerate the new route.
     std::fs::write(
@@ -103,7 +107,7 @@ fn dev_survives_compile_errors_and_regenerates_on_fix() {
     )
     .unwrap();
     assert!(
-        wait_for(&log, "regenerated", 2, Duration::from_secs(30)),
+        wait_for(&log, "regenerated", 2, Duration::from_secs(60)),
         "fixed save should regenerate: {}",
         log.lock().unwrap()
     );

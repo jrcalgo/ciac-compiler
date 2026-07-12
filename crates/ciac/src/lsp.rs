@@ -357,23 +357,25 @@ fn word_at(text: &str, position: Position) -> Option<String> {
 /// hover/completion can answer for user-defined names — including
 /// declarations nested in `service { .. }` blocks.
 fn harvest(program: &ast::Program) -> Vec<Symbol> {
+    fn type_name(ty: &ast::TypeExpr) -> String {
+        match ty {
+            ast::TypeExpr::Named(id) => id.text.clone(),
+            ast::TypeExpr::Enum { variants, .. } => format!(
+                "enum {{ {} }}",
+                variants
+                    .iter()
+                    .map(|v| v.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            ast::TypeExpr::List { inner, .. } => format!("[{}]", type_name(inner)),
+        }
+    }
+
     fn fields(fields: &[ast::Field]) -> String {
         fields
             .iter()
-            .map(|f| {
-                let ty = match &f.ty {
-                    ast::TypeExpr::Named(id) => id.text.clone(),
-                    ast::TypeExpr::Enum { variants, .. } => format!(
-                        "enum {{ {} }}",
-                        variants
-                            .iter()
-                            .map(|v| v.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                };
-                format!("{}: {ty}", f.name.text)
-            })
+            .map(|f| format!("{}: {}", f.name.text, type_name(&f.ty)))
             .collect::<Vec<_>>()
             .join("; ")
     }

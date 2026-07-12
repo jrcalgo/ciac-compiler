@@ -401,6 +401,20 @@ impl<'d> Builder<'d> {
                 TypeExpr::Enum { variants, .. } => FieldType::Enum {
                     variants: variants.iter().map(|v| v.text.clone()).collect(),
                 },
+                TypeExpr::List { span, .. } => {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::UnsupportedFieldType,
+                            "list types aren't supported as record field types yet",
+                        )
+                        .with_label(*span, "not valid here")
+                        .with_help(
+                            "`[Type]` is valid as a handler parameter/return type, or as the \
+                             result of `db.query`/`object_store.list`/`search.query`",
+                        ),
+                    );
+                    continue;
+                }
             };
             fields.push(RecordField {
                 name: field.name.text.clone(),

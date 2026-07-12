@@ -909,7 +909,74 @@ impl Parser<'_> {
                 _ => break,
             }
         }
+        // v0.14 M1: a `where <predicate>` clause trailing a capability
+        // verb call (`db.query(Notes) where author == a`). Parsed
+        // generically after any `Call` — see `Expr::Query`'s doc.
+        if matches!(expr, Expr::Call { .. }) && self.at(TokenKind::Where) {
+            expr = self.query_expr(expr)?;
+        }
         Some(expr)
+    }
+
+    /// Wraps `call` with the `where <predicate>` clause that follows it
+    /// (v0.14 M1).
+    fn query_expr(&mut self, call: Expr) -> Option<Expr> {
+        let start = call.span();
+        let predicate = self.predicate()?;
+        let span = start.to(predicate.span);
+        Some(Expr::Query {
+            call: Box::new(call),
+            predicate,
+            span,
+        })
+    }
+
+    /// `where <field> <op> <value> (&& <field> <op> <value>)*` (v0.14 M1).
+    fn predicate(&mut self) -> Option<Predicate> {
+        let kw = self.bump();
+        let mut terms = vec![self.pred_term()?];
+        let mut end = terms[0].span;
+        while self.eat(TokenKind::AndAnd).is_some() {
+            let term = self.pred_term()?;
+            end = term.span;
+            terms.push(term);
+        }
+        Some(Predicate {
+            span: kw.span.to(end),
+            terms,
+        })
+    }
+
+    /// One `<field> <op> <value>` comparison of a [`Predicate`]. `value`
+    /// is parsed at a binding power tight enough to exclude further
+    /// comparisons/`&&`/`||` (those belong to the predicate's own
+    /// conjunction, not the value), leaving `+`/`-`/`*`/`/` available.
+    fn pred_term(&mut self) -> Option<PredTerm> {
+        let field = self.expect_ident()?;
+        let op = match self.peek().kind {
+            TokenKind::EqEq => PredOp::Eq,
+            TokenKind::NotEq => PredOp::NotEq,
+            TokenKind::Lt => PredOp::Lt,
+            TokenKind::LtEq => PredOp::LtEq,
+            TokenKind::Gt => PredOp::Gt,
+            TokenKind::GtEq => PredOp::GtEq,
+            TokenKind::Contains => PredOp::Contains,
+            _ => {
+                self.error_expected(
+                    "a comparison operator (`==`, `!=`, `<`, `<=`, `>`, `>=`, `contains`)",
+                );
+                return None;
+            }
+        };
+        self.bump();
+        let value = self.expr(7)?;
+        let span = field.span.to(value.span());
+        Some(PredTerm {
+            field,
+            op,
+            value,
+            span,
+        })
     }
 
     /// `{ name: value, .. }` — the field list of a record
@@ -1102,7 +1169,8 @@ impl Parser<'_> {
         }))
     }
 
-    /// A field type: a named type or `enum { A, B, .. }`.
+    /// A field type: a named type, `enum { A, B, .. }`, or `[Type]` (a
+    /// list type, v0.14 M1).
     fn type_expr(&mut self) -> Option<TypeExpr> {
         if let Some(kw) = self.eat(TokenKind::Enum) {
             self.expect(TokenKind::LBrace)?;
@@ -1116,10 +1184,18 @@ impl Parser<'_> {
                 span: kw.span.to(close.span),
             });
         }
+        if let Some(open) = self.eat(TokenKind::LBracket) {
+            let inner = self.type_expr()?;
+            let close = self.expect(TokenKind::RBracket)?;
+            return Some(TypeExpr::List {
+                inner: Box::new(inner),
+                span: open.span.to(close.span),
+            });
+        }
         if self.at(TokenKind::Ident) {
             return Some(TypeExpr::Named(self.expect_ident()?));
         }
-        self.error_expected("a type like `String` or `enum { A, B }`");
+        self.error_expected("a type like `String`, `enum { A, B }`, or `[String]`");
         None
     }
 
@@ -1965,5 +2041,65 @@ mod tests {
         );
         assert!(!diags.is_empty());
         assert!(matches!(program.items.last(), Some(Item::Service(_))));
+    }
+
+    #[test]
+    fn parses_list_type_in_handler_signature() {
+        let (program, diags) = parse_src("handler F(items: [String]) -> [Video] { return items; }");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        assert!(matches!(handler.params[0].ty, TypeExpr::List { .. }));
+        assert!(matches!(handler.return_ty, Some(TypeExpr::List { .. })));
+    }
+
+    #[test]
+    fn parses_query_with_predicate() {
+        let (program, diags) = parse_src(
+            r#"handler F() -> Video {
+                   let items = db.query(Videos) where status == Ready && title contains a;
+                   return items;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let body = handler.body.as_ref().unwrap();
+        let Stmt::Let {
+            value: Expr::Query { predicate, .. },
+            ..
+        } = &body[0]
+        else {
+            panic!("expected a `where`-wrapped query, got {:?}", body[0]);
+        };
+        assert_eq!(predicate.terms.len(), 2);
+        assert_eq!(predicate.terms[0].field.text, "status");
+        assert_eq!(predicate.terms[0].op, PredOp::Eq);
+        assert_eq!(predicate.terms[1].field.text, "title");
+        assert_eq!(predicate.terms[1].op, PredOp::Contains);
+    }
+
+    #[test]
+    fn query_without_where_is_a_plain_call() {
+        let (program, diags) = parse_src(
+            r#"handler F() -> Video {
+                   let items = db.query(Videos);
+                   return items;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let body = handler.body.as_ref().unwrap();
+        assert!(matches!(
+            &body[0],
+            Stmt::Let {
+                value: Expr::Call { .. },
+                ..
+            }
+        ));
     }
 }

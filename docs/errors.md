@@ -58,6 +58,8 @@ test.
 | CIAC0049 | error | blueprint arity mismatch |
 | CIAC0050 | error | blueprint constraint violation |
 | CIAC0051 | error | breaking record change |
+| CIAC0052 | error | `where` clause on a non-query verb |
+| CIAC0053 | error | unsupported field type |
 
 ## Notes
 
@@ -158,3 +160,10 @@ test.
   compatibility. Adding a field is always fine; revert the removal/
   retype, or coordinate the change across every consumer named in the
   error before rebuilding.
+- **CIAC0052** means a `where <predicate>` clause was attached to a
+  capability verb call that doesn't accept one — only `db.query`,
+  `db.count`, and `db.delete_where` do (v0.14 M1).
+- **CIAC0053** means a `[Type]` list type was used somewhere the
+  compiler doesn't yet support it: valid as a handler parameter/return
+  type, or as the value of `db.query`/`object_store.list`/
+  `search.query`, but not yet as a `record` field type (v0.14 M1).

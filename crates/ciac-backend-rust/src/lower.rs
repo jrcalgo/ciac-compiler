@@ -75,7 +75,7 @@ impl Needs {
     fn ty(&mut self, ty: &HirType) {
         match ty {
             HirType::Record(id) => self.record(*id),
-            HirType::Option(inner) => self.ty(inner),
+            HirType::Option(inner) | HirType::List(inner) => self.ty(inner),
             _ => {}
         }
     }
@@ -198,9 +198,45 @@ fn scan_expr(ir: &NormalizedIr, expr: &HirExpr, needs: &mut Needs) {
                 }
                 Verb::CacheGet | Verb::CacheSet => needs.cache = true,
                 Verb::ObjectStorePut | Verb::ObjectStoreGet => {}
+                // v0.14 M1 front-end only — lowering for these verbs
+                // lands in M2 (db)/M3 (cache/http)/M4 (email/store/search).
+                // No `.ciac` example calls them yet, so this is
+                // unreachable today.
+                Verb::DbUpdate(table) | Verb::DbDelete(table) => {
+                    needs.db = true;
+                    needs.table(*table);
+                }
+                Verb::CacheDelete => needs.cache = true,
+                Verb::ObjectStoreDelete | Verb::ObjectStoreList => {}
+                Verb::EmailSend | Verb::SearchIndex | Verb::SearchQuery | Verb::HttpCall => {}
+                Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
+                    unreachable!("typeck only ever constructs these via HirExpr::Query")
+                }
             }
             for arg in args {
                 scan_expr(ir, arg, needs);
+            }
+            needs.ty(ty);
+        }
+        HirExpr::Query {
+            verb,
+            predicate,
+            ty,
+            ..
+        } => {
+            // v0.14 M2 implements query lowering; see the `VerbCall` arm's
+            // comment above.
+            needs.db = true;
+            match verb {
+                Verb::DbQuery(table) | Verb::DbCount(table) | Verb::DbDeleteWhere(table) => {
+                    needs.table(*table)
+                }
+                _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
+            }
+            if let Some(predicate) = predicate {
+                for term in &predicate.terms {
+                    scan_expr(ir, &term.value, needs);
+                }
             }
             needs.ty(ty);
         }
@@ -232,6 +268,7 @@ pub fn rust_type(ir: &NormalizedIr, ty: &HirType) -> String {
         }
         HirType::Record(id) => ir.record(*id).name.clone(),
         HirType::Option(inner) => format!("Option<{}>", rust_type(ir, inner)),
+        HirType::List(inner) => format!("Vec<{}>", rust_type(ir, inner)),
         HirType::Unit | HirType::Never => "()".to_owned(),
     }
 }
@@ -376,6 +413,10 @@ pub fn rust_expr(ir: &NormalizedIr, body: &HandlerBody, expr: &HirExpr) -> Strin
             scrutinee, arms, ..
         } => rust_match(ir, body, scrutinee, arms),
         HirExpr::VerbCall { verb, args, .. } => rust_verb_expr(ir, body, *verb, args),
+        HirExpr::Query { verb, .. } => {
+            // v0.14 M2 implements db.query/count/delete_where lowering.
+            todo!("v0.14 M2: {verb:?} lowering — see 14UpdatePlan.md")
+        }
     }
 }
 
@@ -545,6 +586,23 @@ fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[Hir
         Verb::ObjectStoreGet => {
             let key = rust_expr(ir, body, &args[0]);
             format!("serde_json::from_slice(&self.object_store.get(&{key}).await?)?")
+        }
+        // v0.14 M2 (db.update/delete) / M3 (cache.delete, external_http.request)
+        // / M4 (object_store.delete/list, email.send, search.index/query)
+        // implement lowering for these — see the module doc comment.
+        Verb::DbUpdate(_)
+        | Verb::DbDelete(_)
+        | Verb::CacheDelete
+        | Verb::ObjectStoreDelete
+        | Verb::ObjectStoreList
+        | Verb::EmailSend
+        | Verb::SearchIndex
+        | Verb::SearchQuery
+        | Verb::HttpCall => {
+            todo!("v0.14: {verb:?} lowering — see 14UpdatePlan.md")
+        }
+        Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
+            unreachable!("typeck only ever constructs these via HirExpr::Query")
         }
     }
 }

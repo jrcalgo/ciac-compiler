@@ -188,18 +188,24 @@ pub struct Field {
     pub span: Span,
 }
 
-/// A field type: a named type (primitive in v0.2) or an inline enum.
+/// A field type: a named type (primitive in v0.2), an inline enum, or a
+/// `[Type]` list (v0.14 M1). List types type-check as a handler
+/// parameter/return type; `ciac-sema` rejects them as a `record` field
+/// type for now (see `CIAC0053`) — lists only ever arise from a
+/// list-returning verb call (`db.query`, `object_store.list`,
+/// `search.query`), never as stored data shape.
 #[derive(Debug, Clone, Serialize)]
 pub enum TypeExpr {
     Named(Ident),
     Enum { variants: Vec<Ident>, span: Span },
+    List { inner: Box<TypeExpr>, span: Span },
 }
 
 impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named(ident) => ident.span,
-            TypeExpr::Enum { span, .. } => *span,
+            TypeExpr::Enum { span, .. } | TypeExpr::List { span, .. } => *span,
         }
     }
 }
@@ -527,6 +533,16 @@ pub enum Expr {
         arms: Vec<ExprArm>,
         span: Span,
     },
+    /// `<call> where <predicate>` (v0.14 M1) — a query modifier trailing
+    /// a capability verb call, e.g. `db.query(Notes) where author == a`.
+    /// Parsed generically after any `Call` (see `Parser::expr_postfix`)
+    /// so the grammar doesn't need to know which verbs accept a `where`
+    /// clause; `ciac-sema` rejects it on verbs that don't (`CIAC0052`).
+    Query {
+        call: Box<Expr>,
+        predicate: Predicate,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -543,9 +559,47 @@ impl Expr {
             | Expr::Binary { span, .. }
             | Expr::Unary { span, .. }
             | Expr::If { span, .. }
-            | Expr::Match { span, .. } => *span,
+            | Expr::Match { span, .. }
+            | Expr::Query { span, .. } => *span,
         }
     }
+}
+
+/// A `where <field> <op> <value> (&& <field> <op> <value>)*` clause
+/// (v0.14 M1): a conjunction of comparisons against fields of the target
+/// verb's table. Deliberately not the general `Expr` grammar reused
+/// as-is — a bare identifier here always names a table column, which
+/// would collide with `Expr::Ident`'s "a local variable" meaning inside
+/// a normal handler-body expression.
+#[derive(Debug, Clone, Serialize)]
+pub struct Predicate {
+    pub terms: Vec<PredTerm>,
+    pub span: Span,
+}
+
+/// One `<field> <op> <value>` comparison of a [`Predicate`]. `value` is
+/// a normal handler-body expression, evaluated in the enclosing scope
+/// (so it can reference params/`let`s), not the predicate's field
+/// namespace.
+#[derive(Debug, Clone, Serialize)]
+pub struct PredTerm {
+    pub field: Ident,
+    pub op: PredOp,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PredOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    /// `contains` — substring match on a `Str` field (v0.14 M1; list
+    /// fields aren't expressible yet, see `TypeExpr::List`'s doc).
+    Contains,
 }
 
 /// One `name: value` entry of a record literal or functional update.

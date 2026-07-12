@@ -10,6 +10,6 @@ record Video {
 }
 
 handler F(v: Video) -> Video {
-    cache.delete("key");
+    cache.increment("key");
     return v;
 }

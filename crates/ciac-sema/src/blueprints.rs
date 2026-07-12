@@ -17,8 +17,8 @@
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode};
 use ciac_syntax::ast::{
     Attr, AttrValue, BlueprintDecl, BlueprintItem, CrudDecl, ExpandStmt, Expr, ExprArm, FieldInit,
-    HandlerDecl, Ident, Item, Param, Program, ServiceBlock, ServiceItem, Stmt, StreamDecl,
-    TypeExpr,
+    HandlerDecl, Ident, Item, Param, PredTerm, Predicate, Program, ServiceBlock, ServiceItem, Stmt,
+    StreamDecl, TypeExpr,
 };
 use std::collections::HashMap;
 
@@ -278,6 +278,7 @@ fn type_name(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Named(ident) => ident.text.clone(),
         TypeExpr::Enum { .. } => "enum".to_owned(),
+        TypeExpr::List { .. } => "list".to_owned(),
     }
 }
 
@@ -355,6 +356,10 @@ fn substitute_type_ident(ident: &Ident, blueprint: &BlueprintDecl, stmt: &Expand
 fn substitute_type(ty: &TypeExpr, blueprint: &BlueprintDecl, stmt: &ExpandStmt) -> TypeExpr {
     match ty {
         TypeExpr::Named(ident) => TypeExpr::Named(substitute_type_ident(ident, blueprint, stmt)),
+        TypeExpr::List { inner, span } => TypeExpr::List {
+            inner: Box::new(substitute_type(inner, blueprint, stmt)),
+            span: *span,
+        },
         other => other.clone(),
     }
 }
@@ -487,6 +492,27 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
                     span: arm.span,
                 })
                 .collect(),
+            span: *span,
+        },
+        Expr::Query {
+            call,
+            predicate,
+            span,
+        } => Expr::Query {
+            call: Box::new(rewrite_expr(call, renames)),
+            predicate: Predicate {
+                terms: predicate
+                    .terms
+                    .iter()
+                    .map(|t| PredTerm {
+                        field: t.field.clone(),
+                        op: t.op,
+                        value: rewrite_expr(&t.value, renames),
+                        span: t.span,
+                    })
+                    .collect(),
+                span: predicate.span,
+            },
             span: *span,
         },
     }

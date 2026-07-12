@@ -473,6 +473,24 @@ error_codes! {
          than guessed at. Revert the field, or coordinate the change \
          across every consumer before rebuilding."
     ),
+    QueryModifierNotSupported = (
+        "CIAC0052",
+        Error,
+        "`where` clause on a non-query verb",
+        "A `where <predicate>` clause was attached to a capability verb \
+         call that doesn't accept one. Only `db.query`, `db.count`, and \
+         `db.delete_where` accept a `where` clause (v0.14 M1)."
+    ),
+    UnsupportedFieldType = (
+        "CIAC0053",
+        Error,
+        "unsupported field type",
+        "A `[Type]` list type was used somewhere the compiler doesn't yet \
+         support it. List types (v0.14 M1) are valid as a handler \
+         parameter or return type — the value of a `db.query`, \
+         `object_store.list`, or `search.query` call — but not yet as a \
+         `record` field type."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

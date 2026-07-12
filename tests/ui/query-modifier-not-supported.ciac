@@ -1,0 +1,9 @@
+// expect: CIAC0052
+service BadWhere;
+
+use { cache Redis; }
+
+handler F() -> Int {
+    cache.get("k") where k == "x";
+    return 0;
+}

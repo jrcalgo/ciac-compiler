@@ -23,7 +23,8 @@ pub use graph::{
     ServiceId, Step, StepKind, SystemGraph,
 };
 pub use hir::{
-    BinOp, Builtin, HandlerBody, HirArm, HirExpr, HirStmt, HirType, Table, TableId, UnOp, Verb,
+    BinOp, Builtin, HandlerBody, HirArm, HirExpr, HirPredTerm, HirPredicate, HirStmt, HirType,
+    PredOp, Table, TableId, UnOp, Verb,
 };
 pub use record::{FieldType, Record, RecordField, RecordId, RecordKind};
 

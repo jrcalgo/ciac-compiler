@@ -62,7 +62,7 @@ impl Needs {
     fn ty(&mut self, ty: &HirType) {
         match ty {
             HirType::Record(id) => self.record(*id),
-            HirType::Option(inner) => self.ty(inner),
+            HirType::Option(inner) | HirType::List(inner) => self.ty(inner),
             _ => {}
         }
     }
@@ -188,9 +188,45 @@ fn scan_expr(expr: &HirExpr, needs: &mut Needs) {
                     needs.json = true;
                 }
                 Verb::ObjectStorePut => needs.object_store_put = true,
+                // v0.14 M1 front-end only — lowering for these verbs
+                // lands in M2 (db)/M3 (cache/http)/M4 (email/store/search).
+                // No `.ciac` example calls them yet, so this is
+                // unreachable today.
+                Verb::DbUpdate(table) | Verb::DbDelete(table) => {
+                    needs.db = true;
+                    needs.table(*table);
+                }
+                Verb::CacheDelete => needs.cache = true,
+                Verb::ObjectStoreDelete | Verb::ObjectStoreList => {}
+                Verb::EmailSend | Verb::SearchIndex | Verb::SearchQuery | Verb::HttpCall => {}
+                Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
+                    unreachable!("typeck only ever constructs these via HirExpr::Query")
+                }
             }
             for arg in args {
                 scan_expr(arg, needs);
+            }
+            needs.ty(ty);
+        }
+        HirExpr::Query {
+            verb,
+            predicate,
+            ty,
+            ..
+        } => {
+            // v0.14 M2 implements query lowering; see the `VerbCall` arm's
+            // comment above.
+            needs.db = true;
+            match verb {
+                Verb::DbQuery(table) | Verb::DbCount(table) | Verb::DbDeleteWhere(table) => {
+                    needs.table(*table)
+                }
+                _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
+            }
+            if let Some(predicate) = predicate {
+                for term in &predicate.terms {
+                    scan_expr(&term.value, needs);
+                }
             }
             needs.ty(ty);
         }
@@ -224,6 +260,7 @@ pub fn py_type(ir: &NormalizedIr, ty: &HirType) -> String {
         ),
         HirType::Record(id) => ir.record(*id).name.clone(),
         HirType::Option(inner) => format!("{} | None", py_type(ir, inner)),
+        HirType::List(inner) => format!("list[{}]", py_type(ir, inner)),
         HirType::Unit | HirType::Never => "None".to_owned(),
     }
 }
@@ -274,6 +311,9 @@ pub fn py_expr(ir: &NormalizedIr, body: &HandlerBody, expr: &HirExpr) -> String 
             verb: Verb::DbInsert(_),
             ..
         } => unreachable!("db.insert must be lowered via lower_tail, not nested in an expression"),
+        HirExpr::Query { .. } => {
+            unreachable!("db.query/count/delete_where must be lowered via lower_tail, not nested in an expression")
+        }
         HirExpr::Local { slot, .. } => slot_name(body, *slot),
         HirExpr::IntLit(n) => n.to_string(),
         HirExpr::FloatLit(f) => format!("{f}"),
@@ -402,6 +442,23 @@ fn py_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[HirEx
             let key = py_expr(ir, body, &args[0]);
             format!("json.loads(await self.object_store.get({key}))")
         }
+        // v0.14 M2 (db.update/delete) / M3 (cache.delete, external_http.request)
+        // / M4 (object_store.delete/list, email.send, search.index/query)
+        // implement lowering for these — see the module doc comment.
+        Verb::DbUpdate(_)
+        | Verb::DbDelete(_)
+        | Verb::CacheDelete
+        | Verb::ObjectStoreDelete
+        | Verb::ObjectStoreList
+        | Verb::EmailSend
+        | Verb::SearchIndex
+        | Verb::SearchQuery
+        | Verb::HttpCall => {
+            todo!("v0.14: {verb:?} lowering — see 14UpdatePlan.md")
+        }
+        Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
+            unreachable!("typeck only ever constructs these via HirExpr::Query")
+        }
     }
 }
 
@@ -526,6 +583,10 @@ fn lower_tail(
                 Sink::Return => out.push(format!("{indent}return {value}")),
                 Sink::Discard => {}
             }
+        }
+        HirExpr::Query { verb, .. } => {
+            // v0.14 M2 implements db.query/count/delete_where lowering.
+            todo!("v0.14 M2: {verb:?} lowering — see 14UpdatePlan.md")
         }
         _ => {
             let e = py_expr(ir, body, expr);
@@ -659,7 +720,7 @@ fn collect_record_ids(ty: &HirType, out: &mut Vec<RecordId>) {
                 out.push(*id);
             }
         }
-        HirType::Option(inner) => collect_record_ids(inner, out),
+        HirType::Option(inner) | HirType::List(inner) => collect_record_ids(inner, out),
         _ => {}
     }
 }
@@ -705,6 +766,7 @@ fn dummy_value(ir: &NormalizedIr, ty: &HirType) -> String {
                 .join(", ");
             format!("{}({args})", record.name)
         }
+        HirType::List(_) => "[]".to_owned(),
         HirType::Option(_) | HirType::Unit | HirType::Never => "None".to_owned(),
     }
 }
@@ -723,7 +785,9 @@ fn dummy_value_needs(ir: &NormalizedIr, ty: &HirType, uuid: &mut bool, datetime:
                 }
             }
         }
-        HirType::Option(inner) => dummy_value_needs(ir, inner, uuid, datetime),
+        HirType::Option(inner) | HirType::List(inner) => {
+            dummy_value_needs(ir, inner, uuid, datetime)
+        }
         _ => {}
     }
 }
@@ -738,6 +802,7 @@ fn assert_result(ir: &NormalizedIr, ty: &HirType) -> Option<String> {
         HirType::Int => Some("    assert isinstance(result, int)".to_owned()),
         HirType::Float => Some("    assert isinstance(result, float)".to_owned()),
         HirType::Bool => Some("    assert isinstance(result, bool)".to_owned()),
+        HirType::List(_) => Some("    assert isinstance(result, list)".to_owned()),
         HirType::Uuid | HirType::Timestamp | HirType::Json | HirType::Enum { .. } => None,
         HirType::Option(_) | HirType::Unit | HirType::Never => None,
     }

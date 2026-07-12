@@ -1,0 +1,48 @@
+{
+  "name": "ciac",
+  "displayName": "CIaC",
+  "description": "Syntax highlighting and Language Server Protocol support for .ciac files",
+  "version": "0.13.0",
+  "publisher": "ciac",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jrcalgo/ciac"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:ciac"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ciac",
+        "aliases": ["CIaC", "ciac"],
+        "extensions": [".ciac"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ciac",
+        "scopeName": "source.ciac",
+        "path": "../ciac.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "CIaC",
+      "properties": {
+        "ciac.serverPath": {
+          "type": "string",
+          "default": "ciac",
+          "description": "Path to the ciac executable (must be on $PATH by default; `ciac lsp` is run as the language server command)."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  }
+}

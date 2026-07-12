@@ -1,0 +1,23 @@
+FROM rust:1-slim AS build
+{%- if c.queue_engine == "kafka" %}
+
+# rdkafka's vendored librdkafka builds with cmake (statically linked,
+# so the runtime stage needs nothing extra).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake build-essential \
+    && rm -rf /var/lib/apt/lists/*
+{%- endif %}
+
+WORKDIR /src
+COPY . .
+RUN cargo build --release
+
+FROM debian:stable-slim
+
+COPY --from=build /src/target/release/{{ c.package }} /usr/local/bin/app
+{%- if c.workers or c.consumers %}
+COPY --from=build /src/target/release/workers /usr/local/bin/workers
+{%- endif %}
+
+EXPOSE 8000
+CMD ["app"]

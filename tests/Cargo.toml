@@ -1,0 +1,36 @@
+[package]
+name = "ciac-integration-tests"
+description = "Workspace-level golden, negative, and determinism tests"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "stub-backend"
+path = "bin/stub-backend.rs"
+
+[dependencies]
+ciac-backend-python.workspace = true
+ciac-backend-rust.workspace = true
+ciac-codegen.workspace = true
+ciac-diagnostics.workspace = true
+ciac-ir.workspace = true
+ciac-sema.workspace = true
+ciac-syntax.workspace = true
+# Promoted from dev-dependencies (v0.8 M2): the `stub-backend` [[bin]]
+# fixture needs it too, and `[[bin]]` targets don't see
+# dev-dependencies under a plain `cargo build`.
+serde_json.workspace = true
+
+[dev-dependencies]
+cron = "0.12"
+insta.workspace = true
+
+[lints]
+workspace = true

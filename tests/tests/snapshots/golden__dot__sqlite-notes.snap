@@ -1,0 +1,12 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph SqliteNotes {
+    rankdir=LR;
+    n0 [label="database default Sqlite", shape=cylinder];
+    n1 [label="api Note", shape=rarrow];
+    n2 [label="service NoteStore", shape=box];
+    n1 -> n2 [label="RequestFlow", style=solid];
+    n2 -> n0 [label="DataFlow", style=bold];
+}

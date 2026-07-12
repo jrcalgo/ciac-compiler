@@ -1,0 +1,22 @@
+// An event-ingestion system: a public API validates and publishes
+// events; a worker consumes and persists them. `events PageView;`
+// additionally expands into its own Queue -> Worker -> Storage chain.
+service Ingest;
+
+use {
+    db Postgres;
+    queue NATS;
+}
+
+api Submit;
+worker Processor;
+events PageView;
+
+pipeline Submit:
+    Validate
+    -> Queue
+    -> Return;
+
+pipeline Processor:
+    Enrich
+    -> Store;

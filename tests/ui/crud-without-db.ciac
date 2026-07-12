@@ -1,0 +1,3 @@
+// expect: CIAC0005
+service X;
+crud Note;

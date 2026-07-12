@@ -1,0 +1,22 @@
+[package]
+name = "ciac-syntax"
+description = "Lexer, parser, and AST for the CIaC language"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciac-diagnostics.workspace = true
+logos.workspace = true
+serde.workspace = true
+# registry: imports (v0.12 M3). A network dep in the *syntax* crate is
+# a disclosed trade-off: module resolution lives here, and the fetch
+# is isolated in src/registry.rs, reachable only via the `registry:`
+# import prefix.
+sha2.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

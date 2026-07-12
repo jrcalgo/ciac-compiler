@@ -1,0 +1,13 @@
+// Standard blueprint: a typed CRUD resource, identical to writing
+// `crud <name>: <Record>;` by hand. Exists so the common pattern can
+// be imported once instead of retyped — not because `crud` itself is
+// built from this. `crud` is still a compiler primitive (it also
+// populates `graph.resources`, which drives dedicated typed-CRUD-REST
+// codegen — create/read/update/delete, pagination, cache-aside — that
+// nothing expressible in a blueprint body can construct from smaller
+// pieces yet). This blueprint wraps the primitive; it doesn't replace
+// it. See docs/blueprints.md (once it exists) for the full story.
+blueprint Crud<R: record> {
+    params { name: String; }
+    crud name: R;
+}

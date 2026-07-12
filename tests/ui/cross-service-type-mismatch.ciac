@@ -1,0 +1,12 @@
+// expect: CIAC0029
+project X;
+record A { id: Uuid; }
+record B { id: Uuid; }
+service Caller {
+    api In: A;
+    pipeline In: call Callee.Out -> Return;
+}
+service Callee {
+    api Out: B;
+    pipeline Out: Return;
+}

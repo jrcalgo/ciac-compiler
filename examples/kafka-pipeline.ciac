@@ -1,0 +1,26 @@
+// v0.11 M3: the event-ingestion shape on Kafka instead of NATS —
+// topics reuse the `<service>.<stream>` subject names, consumer
+// groups reuse the per-worker queue-group names. Python target: fully
+// generated (aiokafka, single-node KRaft dev container). Rust target:
+// still gated (CIAC0011).
+service Clickstream;
+
+use {
+    queue Kafka;
+}
+
+record Click {
+    id: Uuid;
+    page: String;
+}
+
+stream Clicks: Click;
+
+api Ingest: Click {
+    method: POST;
+    path: "/clicks";
+}
+pipeline Ingest: publish Clicks -> Return;
+
+worker Enrich on Clicks;
+pipeline Enrich: EnrichClick;

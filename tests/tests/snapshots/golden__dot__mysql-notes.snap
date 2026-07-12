@@ -1,0 +1,14 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph MysqlNotes {
+    rankdir=LR;
+    n0 [label="database default MySql", shape=cylinder];
+    n1 [label="cache default Redis", shape=cylinder];
+    n2 [label="api Note", shape=rarrow];
+    n3 [label="service NoteStore", shape=box];
+    n2 -> n3 [label="RequestFlow", style=solid];
+    n3 -> n0 [label="DataFlow", style=bold];
+    n3 -> n1 [label="DataFlow", style=bold];
+}

@@ -1,0 +1,108 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "MysqlNotes",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "MysqlNotes"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "MySql"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Cache",
+      "name": "default",
+      "engine": "Redis"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "Note",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Service",
+      "name": "NoteStore",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 2,
+      "to": 3,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 1,
+      "from": 3,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 3,
+      "to": 1,
+      "kind": "DataFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Note",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [],
+  "resources": [
+    {
+      "name": "Note",
+      "service_owner": 0,
+      "api": 2,
+      "service": 3,
+      "database": 0,
+      "cache": 1,
+      "auth": null,
+      "record": 0,
+      "config": {
+        "cache_ttl": 300,
+        "page_size": 100
+      }
+    }
+  ],
+  "event_streams": []
+}

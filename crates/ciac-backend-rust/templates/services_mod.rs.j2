@@ -1,0 +1,12 @@
+//! Business-logic handlers. Generated once by CIaC — this is where your
+//! code goes.
+
+{% for service in c.services -%}
+pub mod {{ service.module }};
+{% endfor -%}
+{% for resource in c.resources -%}
+pub mod {{ resource.store_module }};
+{% endfor -%}
+{% for module in extern_handler_modules -%}
+pub mod {{ module }};
+{% endfor -%}

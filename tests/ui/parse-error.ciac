@@ -1,0 +1,3 @@
+// expect: CIAC0002
+service X;
+api ;

@@ -1,0 +1,62 @@
+// v0.4 flagship: named capability instances plus a larger single-service ontology.
+service MediaOps;
+
+use {
+    db main Postgres;
+    db analytics Postgres;
+    cache hot Redis;
+    queue bus NATS;
+    object_store media S3 { bucket: "videos"; }
+    email transactional SES;
+    search catalog OpenSearch;
+    external_http billing { base_url: "https://billing.internal"; }
+}
+
+record Video {
+    id: Uuid;
+    title: String;
+    status: enum { Ready, Failed };
+}
+
+stream Uploaded: Video;
+stream Indexed: Video;
+
+api Upload: Video {
+    method: PUT;
+    path: "/videos";
+}
+
+worker Indexer on Uploaded;
+worker Notifier on Indexed;
+
+handler StoreVideo {
+    db: main;
+    cache: hot;
+    object_store: media;
+}
+
+handler RecordAnalytics {
+    db: analytics;
+}
+
+handler IndexVideo {
+    search: catalog;
+    external_http: billing;
+}
+
+handler NotifyUser {
+    email: transactional;
+}
+
+pipeline Upload:
+    StoreVideo
+    -> RecordAnalytics
+    -> publish Uploaded
+    -> Return;
+
+pipeline Indexer:
+    IndexVideo
+    -> publish Indexed;
+
+pipeline Notifier:
+    NotifyUser;

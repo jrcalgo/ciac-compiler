@@ -1,0 +1,5 @@
+//! Typed HTTP clients for the services this service calls.
+
+{% for t in c.call_targets -%}
+pub mod {{ t.module }};
+{% endfor -%}

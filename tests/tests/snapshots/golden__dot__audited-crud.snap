@@ -1,0 +1,19 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph AuditedSystem {
+    rankdir=LR;
+    n0 [label="stream AuditedVideo", shape=parallelogram];
+    n1 [label="stream AuditedUser", shape=parallelogram];
+    n2 [label="database main Postgres", shape=cylinder];
+    n3 [label="api ResourceVideo", shape=rarrow];
+    n4 [label="service ResourceVideoStore", shape=box];
+    n5 [label="database main Postgres", shape=cylinder];
+    n6 [label="api ResourceUser", shape=rarrow];
+    n7 [label="service ResourceUserStore", shape=box];
+    n3 -> n4 [label="RequestFlow", style=solid];
+    n4 -> n2 [label="DataFlow", style=bold];
+    n6 -> n7 [label="RequestFlow", style=solid];
+    n7 -> n5 [label="DataFlow", style=bold];
+}

@@ -1,0 +1,56 @@
+// v0.3 flagship: component attributes plus static branching on a record enum.
+service RoutedMedia;
+
+use {
+    auth JWT;
+    db Postgres;
+    cache Redis;
+    queue NATS;
+}
+
+record Video {
+    id: Uuid;
+    title: String;
+    status: enum { Ready, Failed };
+}
+
+stream Uploaded: Video { subject: "media.uploaded"; }
+stream Transcoded: Video;
+stream DeadLetters: Video;
+
+api Upload: Video {
+    method: PUT;
+    path: "/videos";
+    scope: "videos:write";
+}
+
+worker Transcoder on Uploaded {
+    concurrency: 4;
+    max_retries: 2;
+}
+worker Notifier on Transcoded;
+worker DeadLetterSink on DeadLetters;
+
+crud Clip: Video {
+    cache_ttl: 60;
+    page_size: 50;
+}
+
+pipeline Upload:
+    Auth
+    -> StoreVideo
+    -> publish Uploaded
+    -> Return;
+
+pipeline Transcoder:
+    Transcode
+    -> match status {
+        Ready -> Notify -> publish Transcoded;
+        Failed -> publish DeadLetters;
+    };
+
+pipeline Notifier:
+    SendNotification;
+
+pipeline DeadLetterSink:
+    ArchiveFailure;

@@ -1,0 +1,15 @@
+// HTTP surface and business logic, split from the entry point and the
+// records it depends on (imported separately, from records.ciac).
+handler StoreVideo(v: Video) -> Video {
+    let stored = v { status: Ready };
+    return stored;
+}
+
+api Upload: Video {
+    method: POST;
+    path: "/videos";
+}
+
+pipeline Upload:
+    StoreVideo
+    -> Return;

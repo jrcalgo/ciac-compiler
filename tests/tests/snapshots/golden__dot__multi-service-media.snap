@@ -1,0 +1,50 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph MediaSystem {
+    rankdir=LR;
+    n0 [label="stream Uploaded", shape=parallelogram];
+    n1 [label="stream Transcoded", shape=parallelogram];
+    n2 [label="stream DeadLetters", shape=parallelogram];
+    n3 [label="api Charge", shape=rarrow];
+    n4 [label="queue bus Nats", shape=cds];
+    n5 [label="api Upload", shape=rarrow];
+    n6 [label="queue bus Nats", shape=cds];
+    n7 [label="object_store media S3", shape=folder];
+    n8 [label="worker Transcode", shape=component];
+    n9 [label="queue bus Nats", shape=cds];
+    n10 [label="email transactional Ses", shape=note];
+    n11 [label="worker Notify", shape=component];
+    n12 [label="worker DeadLetterSink", shape=component];
+    n13 [label="queue bus Nats", shape=cds];
+    n14 [label="realtime live WebSocket", shape=doublecircle];
+    n15 [label="channel Progress", shape=diamond];
+    n16 [label="service CapturePayment", shape=box];
+    n17 [label="service StoreVideo", shape=box];
+    n18 [label="service TranscodeVideo", shape=box];
+    n19 [label="service SendNotification", shape=box];
+    n20 [label="service ArchiveFailure", shape=box];
+    n0 -> n6 [label="DependsOn", style=dotted];
+    n0 -> n8 [label="AsyncMessage", style=dashed];
+    n1 -> n9 [label="DependsOn", style=dotted];
+    n1 -> n11 [label="AsyncMessage", style=dashed];
+    n2 -> n9 [label="DependsOn", style=dotted];
+    n2 -> n12 [label="AsyncMessage", style=dashed];
+    n1 -> n15 [label="AsyncMessage", style=dashed];
+    n15 -> n14 [label="DependsOn", style=dotted];
+    n3 -> n16 [label="RequestFlow", style=solid];
+    n0 -> n4 [label="DependsOn", style=dotted];
+    n5 -> n3 [label="ServiceCall", style=solid];
+    n5 -> n17 [label="RequestFlow", style=solid];
+    n17 -> n0 [label="AsyncMessage", style=dashed];
+    n18 -> n7 [label="DataFlow", style=bold];
+    n1 -> n6 [label="DependsOn", style=dotted];
+    n2 -> n6 [label="DependsOn", style=dotted];
+    n8 -> n18 [label="RequestFlow", style=solid];
+    n18 -> n1 [label="AsyncMessage", style=dashed];
+    n18 -> n2 [label="AsyncMessage", style=dashed];
+    n19 -> n10 [label="DataFlow", style=bold];
+    n11 -> n19 [label="RequestFlow", style=solid];
+    n12 -> n20 [label="RequestFlow", style=solid];
+}

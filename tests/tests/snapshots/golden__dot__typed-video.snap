@@ -1,0 +1,39 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph Media {
+    rankdir=LR;
+    n0 [label="auth default Jwt", shape=hexagon];
+    n1 [label="database default Postgres", shape=cylinder];
+    n2 [label="cache default Redis", shape=cylinder];
+    n3 [label="queue default Nats", shape=cds];
+    n4 [label="stream Uploaded", shape=parallelogram];
+    n5 [label="stream Transcoded", shape=parallelogram];
+    n6 [label="api Upload", shape=rarrow];
+    n7 [label="worker Transcoder", shape=component];
+    n8 [label="worker Notifier", shape=component];
+    n9 [label="api Clip", shape=rarrow];
+    n10 [label="service ClipStore", shape=box];
+    n11 [label="service StoreVideo", shape=box];
+    n12 [label="service Transcode", shape=box];
+    n13 [label="service Notify", shape=box];
+    n4 -> n3 [label="DependsOn", style=dotted];
+    n5 -> n3 [label="DependsOn", style=dotted];
+    n4 -> n7 [label="AsyncMessage", style=dashed];
+    n5 -> n8 [label="AsyncMessage", style=dashed];
+    n9 -> n0 [label="RequestFlow", style=solid];
+    n0 -> n10 [label="RequestFlow", style=solid];
+    n10 -> n1 [label="DataFlow", style=bold];
+    n10 -> n2 [label="DataFlow", style=bold];
+    n6 -> n0 [label="RequestFlow", style=solid];
+    n0 -> n11 [label="RequestFlow", style=solid];
+    n11 -> n4 [label="AsyncMessage", style=dashed];
+    n12 -> n1 [label="DataFlow", style=bold];
+    n12 -> n2 [label="DataFlow", style=bold];
+    n7 -> n12 [label="RequestFlow", style=solid];
+    n12 -> n5 [label="AsyncMessage", style=dashed];
+    n13 -> n1 [label="DataFlow", style=bold];
+    n13 -> n2 [label="DataFlow", style=bold];
+    n8 -> n13 [label="RequestFlow", style=solid];
+}

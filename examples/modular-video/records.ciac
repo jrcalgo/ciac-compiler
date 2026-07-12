@@ -1,0 +1,7 @@
+// Data shapes, split out from the entry point so they can be shared by
+// other files (or, one day, other services) without copy-pasting them.
+record Video {
+    id: Uuid;
+    title: String;
+    status: enum { Pending, Ready };
+}

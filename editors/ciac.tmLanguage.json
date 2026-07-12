@@ -1,0 +1,99 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "CIaC",
+  "scopeName": "source.ciac",
+  "fileTypes": ["ciac"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#capabilities" },
+    { "include": "#providers" },
+    { "include": "#types" },
+    { "include": "#http-methods" },
+    { "include": "#builtin-steps" },
+    { "include": "#booleans" },
+    { "include": "#numbers" },
+    { "include": "#arrow" },
+    { "include": "#declaration-names" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.ciac",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.ciac",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.ciac",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.declaration.ciac",
+          "match": "\\b(service|project|import|use|record|error|stream|table|api|worker|job|channel|crud|events|handler|pipeline|blueprint|expand|params|extern)\\b"
+        },
+        {
+          "name": "keyword.control.ciac",
+          "match": "\\b(publish|call|on|match|fail|if|else|let|return|enum)\\b"
+        }
+      ]
+    },
+    "capabilities": {
+      "comment": "Capability kinds accepted inside `use { .. }` blocks.",
+      "name": "support.type.capability.ciac",
+      "match": "\\b(auth|db|cache|queue|logging|metrics|object_store|email|search|scheduler|realtime)\\b"
+    },
+    "providers": {
+      "comment": "The closed provider registry (see docs/language.md).",
+      "name": "support.constant.provider.ciac",
+      "match": "\\b(JWT|OAuth2|Postgres|MySQL|SQLite|Redis|NATS|Kafka|Structured|Prometheus|S3|SES|SMTP|OpenSearch|Cron|WebSocket|SSE)\\b"
+    },
+    "types": {
+      "name": "storage.type.primitive.ciac",
+      "match": "\\b(String|Int|Float|Bool|Uuid|Timestamp|Json)\\b"
+    },
+    "http-methods": {
+      "name": "constant.language.http-method.ciac",
+      "match": "\\b(GET|POST|PUT|DELETE|PATCH)\\b"
+    },
+    "builtin-steps": {
+      "comment": "Pipeline steps with built-in meaning.",
+      "name": "support.function.builtin-step.ciac",
+      "match": "\\b(Auth|Queue|Return)\\b"
+    },
+    "booleans": {
+      "name": "constant.language.boolean.ciac",
+      "match": "\\b(true|false)\\b"
+    },
+    "numbers": {
+      "name": "constant.numeric.ciac",
+      "match": "\\b[0-9]+\\b"
+    },
+    "arrow": {
+      "name": "keyword.operator.arrow.ciac",
+      "match": "->"
+    },
+    "declaration-names": {
+      "comment": "The identifier introduced by a declaration keyword.",
+      "match": "\\b(?:service|project|record|error|stream|table|api|worker|job|channel|crud|events|handler|pipeline|blueprint)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "entity.name.type.ciac" }
+      }
+    }
+  }
+}

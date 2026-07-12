@@ -1,0 +1,24 @@
+service ProgressFeed;
+
+use {
+    queue NATS;
+    realtime live WebSocket;
+}
+
+record Video {
+    id: Uuid;
+    status: enum { Ready, Failed };
+}
+
+stream Transcoded: Video;
+
+api Complete: Video {
+    method: POST;
+    path: "/complete";
+}
+
+channel Progress on Transcoded;
+
+pipeline Complete:
+    publish Transcoded
+    -> Return;

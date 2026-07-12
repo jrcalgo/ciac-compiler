@@ -1,0 +1,5 @@
+// expect: CIAC0017
+service X;
+use { queue NATS; }
+api In;
+pipeline In: publish Nowhere -> Return;

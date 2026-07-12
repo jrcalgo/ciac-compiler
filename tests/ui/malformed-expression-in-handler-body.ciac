@@ -1,0 +1,11 @@
+// expect: CIAC0002
+service X;
+
+record Video {
+    id: Uuid;
+}
+
+handler StoreVideo(v: Video) -> Video {
+    let x = + ;
+    return v;
+}

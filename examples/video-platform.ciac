@@ -1,0 +1,24 @@
+// The flagship CIaC example: an authenticated upload API that stores
+// video metadata, hands transcoding to a queue-driven worker, and
+// responds immediately.
+service VideoPlatform;
+
+use {
+    auth JWT;
+    db Postgres;
+    cache Redis;
+    queue NATS;
+}
+
+api Upload;
+worker Transcoder;
+
+pipeline Upload:
+    Auth
+    -> StoreVideo
+    -> Queue
+    -> Return;
+
+pipeline Transcoder:
+    Transcode
+    -> SaveResult;

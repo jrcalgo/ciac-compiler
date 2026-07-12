@@ -1,0 +1,6 @@
+// expect: CIAC0015
+service X;
+use { queue NATS; }
+stream S: Missing;
+worker W on S;
+pipeline W: Work;

@@ -1,0 +1,138 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "Clickstream",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "Clickstream"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Kafka"
+    },
+    {
+      "id": 1,
+      "service": null,
+      "kind": "Stream",
+      "name": "Clicks",
+      "subject": "clickstream.clicks",
+      "record": 0
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "Ingest",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/clicks",
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Worker",
+      "name": "Enrich",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Service",
+      "name": "EnrichClick",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 1,
+      "to": 0,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 1,
+      "to": 3,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 2,
+      "from": 2,
+      "to": 1,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 3,
+      "from": 3,
+      "to": 4,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Click",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "page",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Ingest",
+      "service": 0,
+      "owner": 2,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Publish",
+          "stream": 1
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Enrich",
+      "service": 0,
+      "owner": 3,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 4
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

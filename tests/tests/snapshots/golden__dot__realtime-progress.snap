@@ -1,0 +1,16 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph ProgressFeed {
+    rankdir=LR;
+    n0 [label="queue default Nats", shape=cds];
+    n1 [label="realtime live WebSocket", shape=doublecircle];
+    n2 [label="stream Transcoded", shape=parallelogram];
+    n3 [label="api Complete", shape=rarrow];
+    n4 [label="channel Progress", shape=diamond];
+    n2 -> n0 [label="DependsOn", style=dotted];
+    n2 -> n4 [label="AsyncMessage", style=dashed];
+    n4 -> n1 [label="DependsOn", style=dotted];
+    n3 -> n2 [label="AsyncMessage", style=dashed];
+}

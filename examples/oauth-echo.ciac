@@ -1,0 +1,24 @@
+// v0.11 M2: OAuth2 resource-server auth — bearer RS256 tokens
+// validated against the issuer's JWKS ({issuer}/.well-known/jwks.json),
+// with an optional expected audience. Both backends implement it; the
+// generated app never handles login flows, only token validation.
+service OauthEcho;
+
+use {
+    auth OAuth2 {
+        issuer: "http://localhost:9099";
+        audience: "ciac-demo";
+    }
+}
+
+record Message {
+    id: Uuid;
+    text: String;
+}
+
+api Echo: Message {
+    method: POST;
+    path: "/echo";
+}
+
+pipeline Echo: Auth -> Return;

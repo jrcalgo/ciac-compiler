@@ -1,0 +1,46 @@
+// v0.8 M2 flagship: a `blueprint` written once, `expand`ed for two
+// different records in two different services. Each expansion's
+// declared names (the crud resource, the stream, the handler) are
+// hygienically suffixed with the concrete record's name — `Resource`/
+// `Audited`/`AfterWrite` become `ResourceVideo`/`AuditedVideo`/
+// `AfterWriteVideo` in Catalog and `ResourceUser`/`AuditedUser`/
+// `AfterWriteUser` in Accounts — so the two expansions never collide
+// even though they're textually identical apart from the type
+// argument. `AfterWrite` isn't wired to a pipeline in this minimal
+// example, so `ciac check` reports it (and the audit stream) as
+// unreachable — warnings, not errors; a real caller would publish to
+// it from wherever the CRUD write actually happens.
+project AuditedSystem;
+
+record Video {
+    id: Uuid;
+    title: String;
+}
+
+record User {
+    id: Uuid;
+    title: String;
+}
+
+record AuditEvent {
+    id: Uuid;
+    title: String;
+}
+
+blueprint AuditedCrud<R: record> {
+    params { prefix: String; }
+    use { db main Postgres; }
+    crud Resource: R;
+    stream Audited: AuditEvent;
+    handler AfterWrite(r: R) -> R {
+        return r;
+    }
+}
+
+service Catalog {
+    expand AuditedCrud<Video> { prefix: "/v1"; }
+}
+
+service Accounts {
+    expand AuditedCrud<User> { prefix: "/v1"; }
+}

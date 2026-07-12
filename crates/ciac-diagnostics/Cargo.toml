@@ -1,0 +1,15 @@
+[package]
+name = "ciac-diagnostics"
+description = "Source maps, spans, and structured diagnostics for the CIaC compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ariadne.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

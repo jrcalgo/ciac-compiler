@@ -1,0 +1,471 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "MediaSystem",
+  "multi_service": true,
+  "services": [
+    {
+      "id": 0,
+      "name": "Billing"
+    },
+    {
+      "id": 1,
+      "name": "UploadApi"
+    },
+    {
+      "id": 2,
+      "name": "Transcoder"
+    },
+    {
+      "id": 3,
+      "name": "Notifier"
+    },
+    {
+      "id": 4,
+      "name": "ProgressFeed"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": null,
+      "kind": "Stream",
+      "name": "Uploaded",
+      "subject": "media_system.uploaded",
+      "record": 0
+    },
+    {
+      "id": 1,
+      "service": null,
+      "kind": "Stream",
+      "name": "Transcoded",
+      "subject": "media_system.transcoded",
+      "record": 0
+    },
+    {
+      "id": 2,
+      "service": null,
+      "kind": "Stream",
+      "name": "DeadLetters",
+      "subject": "media_system.dead_letters",
+      "record": 0
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Api",
+      "name": "Charge",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/charge",
+        "scope": null
+      }
+    },
+    {
+      "id": 4,
+      "service": 1,
+      "kind": "Queue",
+      "name": "bus",
+      "engine": "Nats"
+    },
+    {
+      "id": 5,
+      "service": 1,
+      "kind": "Api",
+      "name": "Upload",
+      "request": 0,
+      "config": {
+        "method": "Put",
+        "path": "/videos",
+        "scope": null
+      }
+    },
+    {
+      "id": 6,
+      "service": 2,
+      "kind": "Queue",
+      "name": "bus",
+      "engine": "Nats"
+    },
+    {
+      "id": 7,
+      "service": 2,
+      "kind": "ObjectStore",
+      "name": "media",
+      "provider": "S3",
+      "bucket": "videos"
+    },
+    {
+      "id": 8,
+      "service": 2,
+      "kind": "Worker",
+      "name": "Transcode",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 9,
+      "service": 3,
+      "kind": "Queue",
+      "name": "bus",
+      "engine": "Nats"
+    },
+    {
+      "id": 10,
+      "service": 3,
+      "kind": "Email",
+      "name": "transactional",
+      "provider": "Ses"
+    },
+    {
+      "id": 11,
+      "service": 3,
+      "kind": "Worker",
+      "name": "Notify",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 12,
+      "service": 3,
+      "kind": "Worker",
+      "name": "DeadLetterSink",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 13,
+      "service": 4,
+      "kind": "Queue",
+      "name": "bus",
+      "engine": "Nats"
+    },
+    {
+      "id": 14,
+      "service": 4,
+      "kind": "Realtime",
+      "name": "live",
+      "provider": "WebSocket"
+    },
+    {
+      "id": 15,
+      "service": 4,
+      "kind": "Channel",
+      "name": "Progress",
+      "config": {
+        "path": "/channels/progress"
+      }
+    },
+    {
+      "id": 16,
+      "service": 0,
+      "kind": "Service",
+      "name": "CapturePayment",
+      "signature": null
+    },
+    {
+      "id": 17,
+      "service": 1,
+      "kind": "Service",
+      "name": "StoreVideo",
+      "signature": null
+    },
+    {
+      "id": 18,
+      "service": 2,
+      "kind": "Service",
+      "name": "TranscodeVideo",
+      "signature": null
+    },
+    {
+      "id": 19,
+      "service": 3,
+      "kind": "Service",
+      "name": "SendNotification",
+      "signature": null
+    },
+    {
+      "id": 20,
+      "service": 3,
+      "kind": "Service",
+      "name": "ArchiveFailure",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 0,
+      "to": 6,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 0,
+      "to": 8,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 2,
+      "from": 1,
+      "to": 9,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 3,
+      "from": 1,
+      "to": 11,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 4,
+      "from": 2,
+      "to": 9,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 5,
+      "from": 2,
+      "to": 12,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 6,
+      "from": 1,
+      "to": 15,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 7,
+      "from": 15,
+      "to": 14,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 8,
+      "from": 3,
+      "to": 16,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 9,
+      "from": 0,
+      "to": 4,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 10,
+      "from": 5,
+      "to": 3,
+      "kind": "ServiceCall"
+    },
+    {
+      "id": 11,
+      "from": 5,
+      "to": 17,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 12,
+      "from": 17,
+      "to": 0,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 13,
+      "from": 18,
+      "to": 7,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 14,
+      "from": 1,
+      "to": 6,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 15,
+      "from": 2,
+      "to": 6,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 16,
+      "from": 8,
+      "to": 18,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 17,
+      "from": 18,
+      "to": 1,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 18,
+      "from": 18,
+      "to": 2,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 19,
+      "from": 19,
+      "to": 10,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 20,
+      "from": 11,
+      "to": 19,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 21,
+      "from": 12,
+      "to": 20,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Video",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "status",
+          "ty": {
+            "type": "Enum",
+            "variants": [
+              "Ready",
+              "Failed"
+            ]
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Charge",
+      "service": 0,
+      "owner": 3,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 16
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Upload",
+      "service": 1,
+      "owner": 5,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Call",
+          "target": 3
+        },
+        {
+          "step": "Handler",
+          "node": 17
+        },
+        {
+          "step": "Publish",
+          "stream": 0
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Transcode",
+      "service": 2,
+      "owner": 8,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 18
+        },
+        {
+          "step": "Match",
+          "field": "status",
+          "arms": [
+            {
+              "label": "Ready",
+              "steps": [
+                {
+                  "step": "Publish",
+                  "stream": 1
+                }
+              ]
+            },
+            {
+              "label": "Failed",
+              "steps": [
+                {
+                  "step": "Publish",
+                  "stream": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Notify",
+      "service": 3,
+      "owner": 11,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 19
+        }
+      ]
+    },
+    {
+      "name": "DeadLetterSink",
+      "service": 3,
+      "owner": 12,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 20
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

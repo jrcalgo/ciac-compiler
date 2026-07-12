@@ -1,0 +1,19 @@
+use {{ c.module }}::{config::Config, routes, state::AppState};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    {{ c.module }}::observability::init();
+    let config = Config::from_env();
+    let state = AppState::new(config).await?;
+{%- for target in c.schema_state_fields %}
+    {{ c.module }}::db::ensure_schema_{{ target.engine }}(&state.{{ target.field }}).await?;
+{%- endfor %}
+{%- if c.tables %}
+    sqlx::migrate!("./migrations").run(&state.{{ c.table_db_field }}).await?;
+{%- endif %}
+    let app = routes::router().with_state(state);
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", 8000)).await?;
+    tracing::info!("listening on 0.0.0.0:8000");
+    axum::serve(listener, app).await?;
+    Ok(())
+}

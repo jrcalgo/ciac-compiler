@@ -1,0 +1,203 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "AuditedSystem",
+  "multi_service": true,
+  "services": [
+    {
+      "id": 0,
+      "name": "Catalog"
+    },
+    {
+      "id": 1,
+      "name": "Accounts"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": null,
+      "kind": "Stream",
+      "name": "AuditedVideo",
+      "subject": "audited_system.audited_video",
+      "record": 2
+    },
+    {
+      "id": 1,
+      "service": null,
+      "kind": "Stream",
+      "name": "AuditedUser",
+      "subject": "audited_system.audited_user",
+      "record": 2
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Database",
+      "name": "main",
+      "engine": "Postgres"
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Api",
+      "name": "ResourceVideo",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Service",
+      "name": "ResourceVideoStore",
+      "signature": null
+    },
+    {
+      "id": 5,
+      "service": 1,
+      "kind": "Database",
+      "name": "main",
+      "engine": "Postgres"
+    },
+    {
+      "id": 6,
+      "service": 1,
+      "kind": "Api",
+      "name": "ResourceUser",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 7,
+      "service": 1,
+      "kind": "Service",
+      "name": "ResourceUserStore",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 3,
+      "to": 4,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 1,
+      "from": 4,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 6,
+      "to": 7,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 3,
+      "from": 7,
+      "to": 5,
+      "kind": "DataFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Video",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "User",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "AuditEvent",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [],
+  "resources": [
+    {
+      "name": "ResourceVideo",
+      "service_owner": 0,
+      "api": 3,
+      "service": 4,
+      "database": 2,
+      "cache": null,
+      "auth": null,
+      "record": 0,
+      "config": {
+        "cache_ttl": 300,
+        "page_size": 100
+      }
+    },
+    {
+      "name": "ResourceUser",
+      "service_owner": 1,
+      "api": 6,
+      "service": 7,
+      "database": 5,
+      "cache": null,
+      "auth": null,
+      "record": 1,
+      "config": {
+        "cache_ttl": 300,
+        "page_size": 100
+      }
+    }
+  ],
+  "event_streams": []
+}

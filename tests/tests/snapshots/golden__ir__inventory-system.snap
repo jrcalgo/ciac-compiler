@@ -1,0 +1,198 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "InventorySystem",
+  "multi_service": true,
+  "services": [
+    {
+      "id": 0,
+      "name": "Catalog"
+    },
+    {
+      "id": 1,
+      "name": "Gateway"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Cache",
+      "name": "default",
+      "engine": "Redis"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "Item",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Service",
+      "name": "ItemStore",
+      "signature": null
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Api",
+      "name": "Price",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/price",
+        "scope": null
+      }
+    },
+    {
+      "id": 5,
+      "service": 1,
+      "kind": "Api",
+      "name": "Quote",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/quote",
+        "scope": null
+      }
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Service",
+      "name": "ComputePrice",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 2,
+      "to": 3,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 1,
+      "from": 3,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 3,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 6,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 4,
+      "from": 6,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 5,
+      "from": 4,
+      "to": 6,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 6,
+      "from": 5,
+      "to": 4,
+      "kind": "ServiceCall"
+    }
+  ],
+  "records": [
+    {
+      "name": "Item",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "name",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Price",
+      "service": 0,
+      "owner": 4,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 6
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Quote",
+      "service": 1,
+      "owner": 5,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Call",
+          "target": 4
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "name": "Item",
+      "service_owner": 0,
+      "api": 2,
+      "service": 3,
+      "database": 0,
+      "cache": 1,
+      "auth": null,
+      "record": 0,
+      "config": {
+        "cache_ttl": 300,
+        "page_size": 100
+      }
+    }
+  ],
+  "event_streams": []
+}

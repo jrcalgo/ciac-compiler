@@ -1,0 +1,3 @@
+// expect: CIAC0004
+service X;
+pipeline Nope: Work -> Return;

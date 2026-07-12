@@ -1,0 +1,5 @@
+// expect: CIAC0008
+service X;
+use { auth JWT; }
+api A;
+pipeline A: Work -> Auth -> Return;

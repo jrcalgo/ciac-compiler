@@ -1,0 +1,9 @@
+// expect: CIAC0006
+service X;
+use { queue NATS; }
+record E { id: Uuid; }
+stream S: E;
+api In: E;
+worker W on S;
+pipeline In: publish S -> Return;
+pipeline W: Work -> publish S;

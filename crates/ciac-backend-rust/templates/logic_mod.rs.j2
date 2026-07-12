@@ -1,0 +1,7 @@
+//! Compiler-owned typed-handler logic, lowered from `.ciac` handler
+//! bodies. Regenerated on every build; business logic lives in the
+//! `.ciac` source, not here.
+
+{% for module in inline_handler_modules -%}
+pub mod {{ module }};
+{% endfor -%}

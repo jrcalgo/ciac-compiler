@@ -1,0 +1,222 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "VideoPlatform",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "VideoPlatform"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "Jwt",
+      "issuer": null,
+      "audience": null
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Cache",
+      "name": "default",
+      "engine": "Redis"
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Api",
+      "name": "Upload",
+      "request": null,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Worker",
+      "name": "Transcoder",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Service",
+      "name": "StoreVideo",
+      "signature": null
+    },
+    {
+      "id": 7,
+      "service": null,
+      "kind": "Stream",
+      "name": "Events",
+      "subject": "video_platform.events",
+      "record": null
+    },
+    {
+      "id": 8,
+      "service": 0,
+      "kind": "Service",
+      "name": "Transcode",
+      "signature": null
+    },
+    {
+      "id": 9,
+      "service": 0,
+      "kind": "Service",
+      "name": "SaveResult",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 6,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 1,
+      "from": 6,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 2,
+      "from": 7,
+      "to": 3,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 3,
+      "from": 4,
+      "to": 0,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 4,
+      "from": 0,
+      "to": 6,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 5,
+      "from": 6,
+      "to": 7,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 6,
+      "from": 7,
+      "to": 5,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 7,
+      "from": 8,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 8,
+      "from": 8,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 9,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 10,
+      "from": 9,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 5,
+      "to": 8,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 12,
+      "from": 8,
+      "to": 9,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Upload",
+      "service": 0,
+      "owner": 4,
+      "payload": null,
+      "steps": [
+        {
+          "step": "Auth",
+          "node": 0
+        },
+        {
+          "step": "Handler",
+          "node": 6
+        },
+        {
+          "step": "Publish",
+          "stream": 7
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Transcoder",
+      "service": 0,
+      "owner": 5,
+      "payload": null,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 8
+        },
+        {
+          "step": "Handler",
+          "node": 9
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

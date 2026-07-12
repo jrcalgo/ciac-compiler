@@ -1,0 +1,10 @@
+// expect: CIAC0041
+service X;
+
+record Video {
+    id: Uuid;
+}
+
+handler F(v: Video) -> Uuid {
+    return v.nonexistent;
+}

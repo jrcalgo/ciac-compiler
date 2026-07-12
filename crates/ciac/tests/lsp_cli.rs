@@ -1,0 +1,188 @@
+//! v0.12 M2: `ciac lsp`, exercised as an editor would — raw JSON-RPC
+//! with Content-Length framing over the spawned binary's stdio. The
+//! load-bearing assertions: didOpen publishes the same CIAC0005 the
+//! CLI reports for the fixture, at the right (0-based) line; hover
+//! and completion answer from the static vocabulary and the file's
+//! harvested declarations.
+
+use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::Path;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+fn fixture(rel: &str) -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(rel)
+        .canonicalize()
+        .expect("fixture exists")
+}
+
+struct Server {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl Server {
+    fn start() -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ciac"))
+            .arg("lsp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("ciac lsp starts");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        Server {
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    fn send(&mut self, message: Value) {
+        let body = serde_json::to_string(&message).expect("serializes");
+        write!(self.stdin, "Content-Length: {}\r\n\r\n{body}", body.len()).expect("write");
+        self.stdin.flush().expect("flush");
+    }
+
+    fn recv(&mut self) -> Value {
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            self.stdout.read_line(&mut line).expect("header line");
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(len) = line.strip_prefix("Content-Length: ") {
+                content_length = len.parse().expect("length parses");
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        self.stdout.read_exact(&mut body).expect("body");
+        serde_json::from_slice(&body).expect("body is JSON")
+    }
+
+    /// Reads messages until the response with the given id arrives,
+    /// ignoring interleaved notifications.
+    fn response(&mut self, id: u64) -> Value {
+        loop {
+            let msg = self.recv();
+            if msg["id"] == json!(id) {
+                return msg;
+            }
+        }
+    }
+
+    /// Reads messages until a notification with the given method arrives.
+    fn notification(&mut self, method: &str) -> Value {
+        loop {
+            let msg = self.recv();
+            if msg["method"] == json!(method) {
+                return msg;
+            }
+        }
+    }
+}
+
+#[test]
+fn lsp_round_trip_diagnostics_hover_and_completion() {
+    let path = fixture("tests/ui/missing-queue.ciac");
+    let uri = format!("file://{}", path.display());
+    let text = std::fs::read_to_string(&path).expect("fixture readable");
+
+    let mut server = Server::start();
+
+    // initialize / initialized
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let init = server.response(1);
+    let caps = &init["result"]["capabilities"];
+    assert!(caps["hoverProvider"].as_bool().unwrap_or(false), "{caps}");
+    assert!(caps["completionProvider"].is_object(), "{caps}");
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+
+    // didOpen -> publishDiagnostics with the CLI's CIAC0005, 0-based.
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "ciac", "version": 1, "text": text
+        }}
+    }));
+    let published = server.notification("textDocument/publishDiagnostics");
+    assert_eq!(published["params"]["uri"], json!(uri));
+    let diags = published["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(!diags.is_empty());
+    let first = &diags[0];
+    assert_eq!(first["code"], "CIAC0005");
+    assert_eq!(first["severity"], 1, "LSP error severity");
+    assert_eq!(
+        first["range"]["start"]["line"], 3,
+        "the `Queue` step sits on 1-based line 4 = 0-based line 3"
+    );
+
+    // Hover a keyword (`pipeline`, line 4 col 1 -> 0-based 3:2).
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 3, "character": 2 }
+        }
+    }));
+    let hover = server.response(2);
+    let value = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("markdown hover");
+    assert!(value.contains("pipeline"), "{value}");
+
+    // Hover a builtin step (`Queue` at 0-based 3:21).
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 3, "character": 21 }
+        }
+    }));
+    let hover = server.response(3);
+    let value = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("markdown hover");
+    assert!(value.contains("queue"), "{value}");
+
+    // Completion: static vocabulary plus the file's own declarations
+    // (the fixture parses despite the sema error, so `A` is harvested).
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 4, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 0 }
+        }
+    }));
+    let completion = server.response(4);
+    let items = completion["result"].as_array().expect("completion array");
+    let labels: Vec<&str> = items.iter().filter_map(|i| i["label"].as_str()).collect();
+    for expected in ["service", "db", "Kafka", "Return", "A"] {
+        assert!(
+            labels.contains(&expected),
+            "missing `{expected}`: {labels:?}"
+        );
+    }
+
+    // shutdown / exit — the server must terminate cleanly.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": null
+    }));
+    server.response(5);
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
+    let status = server.child.wait().expect("server exits");
+    assert!(status.success(), "clean exit after shutdown");
+}

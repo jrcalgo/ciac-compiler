@@ -1,0 +1,11 @@
+// expect: CIAC0044
+service X;
+
+record Video {
+    id: Uuid;
+}
+
+handler F(v: Video) -> Video {
+    let cached = cache.get("key");
+    return v;
+}

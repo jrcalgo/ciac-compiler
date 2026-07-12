@@ -1,0 +1,157 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "ModularVideo",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "ModularVideo"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Api",
+      "name": "Upload",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/videos",
+        "scope": null
+      }
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Service",
+      "name": "StoreVideo",
+      "signature": {
+        "params": [
+          [
+            "v",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          },
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Let": {
+              "slot": 1,
+              "value": {
+                "RecordCons": {
+                  "record": 0,
+                  "base_value": {
+                    "Local": {
+                      "slot": 0,
+                      "ty": {
+                        "Record": 0
+                      }
+                    }
+                  },
+                  "fields": [
+                    [
+                      "status",
+                      {
+                        "EnumLit": {
+                          "variants": [
+                            "Pending",
+                            "Ready"
+                          ],
+                          "variant": "Ready"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 1,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 0,
+      "to": 1,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Video",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "status",
+          "ty": {
+            "type": "Enum",
+            "variants": [
+              "Pending",
+              "Ready"
+            ]
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Upload",
+      "service": 0,
+      "owner": 0,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 1
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

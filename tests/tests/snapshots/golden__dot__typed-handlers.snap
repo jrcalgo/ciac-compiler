@@ -1,0 +1,16 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph VideoVault {
+    rankdir=LR;
+    n0 [label="database default Postgres", shape=cylinder];
+    n1 [label="object_store default S3", shape=folder];
+    n2 [label="api Upload", shape=rarrow];
+    n3 [label="service StoreVideo", shape=box];
+    n4 [label="service Notify", shape=box];
+    n3 -> n1 [label="DataFlow", style=bold];
+    n3 -> n0 [label="DataFlow", style=bold];
+    n2 -> n3 [label="RequestFlow", style=solid];
+    n3 -> n4 [label="RequestFlow", style=solid];
+}

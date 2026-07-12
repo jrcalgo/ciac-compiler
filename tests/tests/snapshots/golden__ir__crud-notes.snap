@@ -1,0 +1,104 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "Notes",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "Notes"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "Jwt",
+      "issuer": null,
+      "audience": null
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Cache",
+      "name": "default",
+      "engine": "Redis"
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Api",
+      "name": "Note",
+      "request": null,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Service",
+      "name": "NoteStore",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 3,
+      "to": 0,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 1,
+      "from": 0,
+      "to": 4,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 2,
+      "from": 4,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 4,
+      "to": 2,
+      "kind": "DataFlow"
+    }
+  ],
+  "records": [],
+  "tables": [],
+  "pipelines": [],
+  "resources": [
+    {
+      "name": "Note",
+      "service_owner": 0,
+      "api": 3,
+      "service": 4,
+      "database": 1,
+      "cache": 2,
+      "auth": 0,
+      "record": null,
+      "config": {
+        "cache_ttl": 300,
+        "page_size": 100
+      }
+    }
+  ],
+  "event_streams": []
+}

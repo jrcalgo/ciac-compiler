@@ -1,0 +1,37 @@
+// v0.9 M2 flagship: a small multi-service system whose *capabilities*
+// are verifiable end-to-end. Catalog owns an auth-less typed CRUD
+// resource on Postgres with cached reads — `ciac verify --system`
+// generates round-trip tests that create an Item over real HTTP, then
+// read it back through a second, independent connection (asyncpg
+// straight into Postgres; a direct Redis client for the cache entry).
+// Gateway adds a cross-service `call` edge so the system also
+// exercises the v0.8 call-reachability tests.
+project InventorySystem;
+
+record Item {
+    id: Uuid;
+    name: String;
+}
+
+service Catalog {
+    use {
+        db Postgres;
+        cache Redis;
+    }
+
+    crud Item: Item;
+
+    api Price: Item {
+        method: POST;
+        path: "/price";
+    }
+    pipeline Price: ComputePrice -> Return;
+}
+
+service Gateway {
+    api Quote: Item {
+        method: POST;
+        path: "/quote";
+    }
+    pipeline Quote: call Catalog.Price -> Return;
+}

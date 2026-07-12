@@ -1,0 +1,957 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "OrderSystem",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "OrderSystem"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Cache",
+      "name": "default",
+      "engine": "Redis"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "Jwt",
+      "issuer": null,
+      "audience": null
+    },
+    {
+      "id": 4,
+      "service": null,
+      "kind": "Stream",
+      "name": "ReceivedOrderEvent",
+      "subject": "order_system.received_order_event",
+      "record": 4
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Api",
+      "name": "Customer",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Service",
+      "name": "CustomerStore",
+      "signature": null
+    },
+    {
+      "id": 7,
+      "service": 0,
+      "kind": "Api",
+      "name": "ShippedSummaryApi",
+      "request": 3,
+      "config": {
+        "method": "Post",
+        "path": "/orders/summary/shipped",
+        "scope": "orders:read"
+      }
+    },
+    {
+      "id": 8,
+      "service": 0,
+      "kind": "Api",
+      "name": "MarkShippedApi",
+      "request": 2,
+      "config": {
+        "method": "Post",
+        "path": "/orders/mark-shipped",
+        "scope": "orders:write"
+      }
+    },
+    {
+      "id": 9,
+      "service": 0,
+      "kind": "Api",
+      "name": "IngestOrderEvent",
+      "request": 4,
+      "config": {
+        "method": "Post",
+        "path": "/orders/webhook",
+        "scope": null
+      }
+    },
+    {
+      "id": 10,
+      "service": 0,
+      "kind": "Worker",
+      "name": "OrderEventSink",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 11,
+      "service": 0,
+      "kind": "Api",
+      "name": "LimitedOrder",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": "/orders/submit",
+        "scope": null
+      }
+    },
+    {
+      "id": 12,
+      "service": 0,
+      "kind": "Service",
+      "name": "ShippedSummary",
+      "signature": {
+        "params": [
+          [
+            "filter",
+            {
+              "Record": 3
+            }
+          ]
+        ],
+        "return_ty": "Int",
+        "locals": [
+          {
+            "Record": 3
+          },
+          "Int"
+        ],
+        "body": [
+          {
+            "Let": {
+              "slot": 1,
+              "value": {
+                "Query": {
+                  "capability": 0,
+                  "verb": {
+                    "DbCount": 0
+                  },
+                  "predicate": {
+                    "terms": [
+                      {
+                        "field": "status",
+                        "field_ty": {
+                          "Enum": {
+                            "variants": [
+                              "Pending",
+                              "Shipped",
+                              "Cancelled"
+                            ]
+                          }
+                        },
+                        "op": "Eq",
+                        "value": {
+                          "EnumLit": {
+                            "variants": [
+                              "Pending",
+                              "Shipped",
+                              "Cancelled"
+                            ],
+                            "variant": "Shipped"
+                          }
+                        }
+                      },
+                      {
+                        "field": "total",
+                        "field_ty": "Float",
+                        "op": "GtEq",
+                        "value": {
+                          "FieldAccess": {
+                            "base": {
+                              "Local": {
+                                "slot": 0,
+                                "ty": {
+                                  "Record": 3
+                                }
+                              }
+                            },
+                            "field": "min_total",
+                            "ty": "Float"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "ty": "Int"
+                }
+              }
+            }
+          },
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 1,
+                "verb": "CacheSet",
+                "args": [
+                  {
+                    "StrLit": "orders:shipped-count"
+                  },
+                  {
+                    "Local": {
+                      "slot": 1,
+                      "ty": "Int"
+                    }
+                  }
+                ],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 1,
+                "ty": "Int"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "service": 0,
+      "kind": "Service",
+      "name": "MarkShipped",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 2
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 1
+        },
+        "locals": [
+          {
+            "Record": 2
+          },
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Let": {
+              "slot": 1,
+              "value": {
+                "RecordCons": {
+                  "record": 1,
+                  "base_value": null,
+                  "fields": [
+                    [
+                      "id",
+                      {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 2
+                              }
+                            }
+                          },
+                          "field": "id",
+                          "ty": "Uuid"
+                        }
+                      }
+                    ],
+                    [
+                      "customer_id",
+                      {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 2
+                              }
+                            }
+                          },
+                          "field": "customer_id",
+                          "ty": "Uuid"
+                        }
+                      }
+                    ],
+                    [
+                      "status",
+                      {
+                        "EnumLit": {
+                          "variants": [
+                            "Pending",
+                            "Shipped",
+                            "Cancelled"
+                          ],
+                          "variant": "Shipped"
+                        }
+                      }
+                    ],
+                    [
+                      "total",
+                      {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 2
+                              }
+                            }
+                          },
+                          "field": "total",
+                          "ty": "Float"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbUpdate": 0
+                },
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 1,
+                          "ty": {
+                            "Record": 1
+                          }
+                        }
+                      },
+                      "field": "id",
+                      "ty": "Uuid"
+                    }
+                  },
+                  {
+                    "Local": {
+                      "slot": 1,
+                      "ty": {
+                        "Record": 1
+                      }
+                    }
+                  }
+                ],
+                "ty": {
+                  "Option": {
+                    "Record": 1
+                  }
+                }
+              }
+            }
+          },
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 1,
+                "verb": "CacheDelete",
+                "args": [
+                  {
+                    "StrLit": "orders:shipped-count"
+                  }
+                ],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 1,
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "service": 0,
+      "kind": "Service",
+      "name": "ReceiveOrderEvent",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 4
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 4
+        },
+        "locals": [
+          {
+            "Record": 4
+          }
+        ],
+        "body": [
+          {
+            "Publish": {
+              "stream": 4,
+              "value": {
+                "Local": {
+                  "slot": 0,
+                  "ty": {
+                    "Record": 4
+                  }
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 4
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "service": 0,
+      "kind": "Service",
+      "name": "RecordEvent",
+      "signature": null
+    },
+    {
+      "id": 16,
+      "service": 0,
+      "kind": "Service",
+      "name": "CheckLimitOrder",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 1
+        },
+        "locals": [
+          {
+            "Record": 1
+          },
+          "Int"
+        ],
+        "body": [
+          {
+            "Let": {
+              "slot": 1,
+              "value": {
+                "Query": {
+                  "capability": 0,
+                  "verb": {
+                    "DbCount": 1
+                  },
+                  "predicate": null,
+                  "ty": "Int"
+                }
+              }
+            }
+          },
+          {
+            "Expr": {
+              "If": {
+                "cond": {
+                  "Binary": {
+                    "op": "GtEq",
+                    "lhs": {
+                      "Local": {
+                        "slot": 1,
+                        "ty": "Int"
+                      }
+                    },
+                    "rhs": {
+                      "IntLit": 1000
+                    },
+                    "ty": "Bool"
+                  }
+                },
+                "then_branch": [
+                  {
+                    "Fail": {
+                      "error": 6,
+                      "args": [
+                        {
+                          "IntLit": 1000
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "else_branch": [],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbInsert": 1
+                },
+                "args": [
+                  {
+                    "RecordCons": {
+                      "record": 5,
+                      "base_value": null,
+                      "fields": [
+                        [
+                          "id",
+                          {
+                            "BuiltinCall": "UuidNew"
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 5
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 4,
+      "to": 2,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 5,
+      "to": 3,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 2,
+      "from": 3,
+      "to": 6,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 3,
+      "from": 6,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 4,
+      "from": 6,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 5,
+      "from": 4,
+      "to": 10,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 6,
+      "from": 12,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 7,
+      "from": 12,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 8,
+      "from": 7,
+      "to": 3,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 9,
+      "from": 3,
+      "to": 12,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 13,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 13,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 12,
+      "from": 8,
+      "to": 3,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 13,
+      "from": 3,
+      "to": 13,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 14,
+      "from": 9,
+      "to": 14,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 15,
+      "from": 15,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 16,
+      "from": 15,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 17,
+      "from": 10,
+      "to": 15,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 18,
+      "from": 16,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 19,
+      "from": 11,
+      "to": 16,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Customer",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "name",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "email",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "customer_id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "status",
+          "ty": {
+            "type": "Enum",
+            "variants": [
+              "Pending",
+              "Shipped",
+              "Cancelled"
+            ]
+          }
+        },
+        {
+          "name": "total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "OrderUpdate",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "customer_id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "SummaryFilter",
+      "fields": [
+        {
+          "name": "min_total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "OrderEvent",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "kind",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "TicketOrder",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "TooManyRequestsOrder",
+      "fields": [
+        {
+          "name": "limit",
+          "ty": {
+            "type": "Int"
+          }
+        }
+      ],
+      "kind": "Error"
+    }
+  ],
+  "tables": [
+    {
+      "name": "Orders",
+      "record": 1
+    },
+    {
+      "name": "TicketsOrder",
+      "record": 5
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "ShippedSummaryApi",
+      "service": 0,
+      "owner": 7,
+      "payload": 3,
+      "steps": [
+        {
+          "step": "Auth",
+          "node": 3
+        },
+        {
+          "step": "Handler",
+          "node": 12
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "MarkShippedApi",
+      "service": 0,
+      "owner": 8,
+      "payload": 2,
+      "steps": [
+        {
+          "step": "Auth",
+          "node": 3
+        },
+        {
+          "step": "Handler",
+          "node": 13
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "IngestOrderEvent",
+      "service": 0,
+      "owner": 9,
+      "payload": 4,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 14
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "OrderEventSink",
+      "service": 0,
+      "owner": 10,
+      "payload": 4,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 15
+        }
+      ]
+    },
+    {
+      "name": "LimitedOrder",
+      "service": 0,
+      "owner": 11,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 16
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "name": "Customer",
+      "service_owner": 0,
+      "api": 5,
+      "service": 6,
+      "database": 0,
+      "cache": 1,
+      "auth": 3,
+      "record": 0,
+      "config": {
+        "cache_ttl": 30,
+        "page_size": 50,
+        "read_scope": "customers:read",
+        "write_scope": "customers:write"
+      }
+    }
+  ],
+  "event_streams": []
+}

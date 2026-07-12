@@ -1,4 +1,4 @@
-# Handler-Body Expressions (v0.7)
+# Handler-Body Expressions (v0.7, extended v0.14)
 
 Through v0.6, a pipeline handler was always an opaque business-logic
 unit: the compiler generated a typed constructor and a `handle` stub,
@@ -124,41 +124,48 @@ expr-arm     = ( IDENT | "_" ) "->" "{" { stmt } "}" ;
 A handler body can only call a *bound capability instance*'s verbs —
 the exact set below, nothing else (`CIAC0043` for an unknown verb or
 wrong arity/argument types; `CIAC0044` if the capability kind has no
-bound instance in scope):
+bound instance in scope). Every verb below generates on **both**
+bundled targets (`ciac build --target python|rust`) — there is no
+front-end-only verb left as of v0.14 M7.
 
-| Capability | Verb | Signature | Behavior |
-|------------|------|-----------|----------|
-| `db` | `insert` | `(table, record) -> record` | Inserts a row into a declared `table`, returns it back. |
-| `db` | `get` | `(table, id) -> record?` | Fetches a row by primary key. |
-| `db` | `update` | `(table, id, record) -> record?` | Updates the row at `id` with `record`'s fields. |
-| `db` | `delete` | `(table, id) -> Bool` | Deletes the row at `id`; `true` if one was deleted. |
-| `db` | `query` | `(table) [where <predicate>] -> [record]` | Every row, or every matching row when a `where` clause is given. |
-| `db` | `count` | `(table) [where <predicate>] -> Int` | The number of rows, or matching rows. |
-| `db` | `delete_where` | `(table) [where <predicate>] -> Int` | Deletes every (matching) row, returns the count deleted. |
-| `cache` | `get` | `(key) -> Json?` | Reads a cached value. |
-| `cache` | `set` | `(key, value) -> Unit` | Writes a cached value. |
-| `cache` | `delete` | `(key) -> Unit` | Removes a cached value. |
-| `object_store` | `put` | `(key, value) -> Unit` | Uploads a value under a key. |
-| `object_store` | `get` | `(key) -> Json?` | Downloads a value by key. |
-| `object_store` | `delete` | `(key) -> Unit` | Removes an object by key. |
-| `object_store` | `list` | `(prefix) -> [String]` | Every key under `prefix`. |
-| `email` | `send` | `(to, subject, body) -> Unit` | Sends an email. |
-| `search` | `index` | `(doc_id, value) -> Unit` | Upserts `value` under `doc_id`. |
-| `search` | `query` | `(query) -> [Json]` | Every matching document. |
-| `external_http` | `request` | `(url, body) -> Json` | A synchronous POST, returning the response body. |
+| Capability | Verb | Signature | Behavior | Python lowering | Rust lowering |
+|------------|------|-----------|----------|------------------|----------------|
+| `db` | `insert` | `(table, record) -> record` | Inserts a row into a declared `table`, returns it back. | `session.add` + `flush`, SQLAlchemy Core model | `sqlx::query` `INSERT ... RETURNING`, engine-aware placeholders |
+| `db` | `get` | `(table, id) -> record?` | Fetches a row by primary key. | `session.get(Model, str(id))` | `sqlx::query_as` `SELECT ... WHERE id = ?/$1`, `Option<Row>` |
+| `db` | `update` | `(table, id, record) -> record?` | Updates the row at `id` with `record`'s fields. | `session.get` then attribute assignment + `flush` | `UPDATE` with per-engine bind order (`?`-style binds fields first, id last) |
+| `db` | `delete` | `(table, id) -> Bool` | Deletes the row at `id`; `true` if one was deleted. | `session.get` + `session.delete`, `rowcount`-style bool | `sqlx::query` `DELETE ... WHERE id = ?/$1`, `rows_affected() > 0` |
+| `db` | `query` | `(table) [where <predicate>] -> [record]` | Every row, or every matching row when a `where` clause is given. | SQLAlchemy Core `select(Model).where(...)`, bound parameters | `sqlx::query_as` with a built `WHERE` clause, bound parameters |
+| `db` | `count` | `(table) [where <predicate>] -> Int` | The number of rows, or matching rows. | `select(func.count()).select_from(Model).where(...)` | `SELECT COUNT(*) FROM ... WHERE ...`, `i64` |
+| `db` | `delete_where` | `(table) [where <predicate>] -> Int` | Deletes every (matching) row, returns the count deleted. | Core `delete(Model).where(...)`, `result.rowcount` | `sqlx::query` `DELETE ... WHERE ...`, `rows_affected()` |
+| `cache` | `get` | `(key) -> Json?` | Reads a cached value. | `redis.get` + `json.loads` if present | `redis` `GET` + `serde_json::from_str` if present |
+| `cache` | `set` | `(key, value) -> Unit` | Writes a cached value. | `redis.set` with `json.dumps`-encoded value | `redis` `SET` with `serde_json::to_string`-encoded value |
+| `cache` | `delete` | `(key) -> Unit` | Removes a cached value. | `redis.delete` | `redis` `DEL` |
+| `object_store` | `put` | `(key, value) -> Unit` | Uploads a value under a key. | `put_object` (aioboto3), record → JSON bytes | `put_object` (rust-s3), record → JSON bytes |
+| `object_store` | `get` | `(key) -> Json?` | Downloads a value by key. | `get_object` + `json.loads` | `get_object` + `serde_json::from_slice` |
+| `object_store` | `delete` | `(key) -> Unit` | Removes an object by key. | `delete_object` | `delete_object` |
+| `object_store` | `list` | `(prefix) -> [String]` | Every key under `prefix`. | `list_objects_v2` paginated, keys collected | `list_objects` paginated, keys collected |
+| `email` | `send` | `(to, subject, body) -> Unit` | Sends an email. | `aiosmtplib.send` | `lettre` async transport `send` |
+| `search` | `index` | `(doc_id, value) -> Unit` | Upserts `value` under `doc_id`. | OpenSearch client `index` against the service's fixed index name | OpenSearch client `index` against the service's fixed index name |
+| `search` | `query` | `(query) -> [Json]` | Every matching document. | OpenSearch `search` with a `query_string` body | OpenSearch `search` with a `query_string` body |
+| `external_http` | `request` | `(url, body) -> Json` | A synchronous POST, returning the response body. | `httpx.AsyncClient.post(...).json()` | `reqwest::Client::post(...).json()` |
 
 `db.*`'s table argument names a `table <Name>: <Record>;` declaration
 (`CIAC0042` if it isn't one); the record type is the table's declared
-record.
+record. `search.index`/`search.query` use one fixed index name derived
+from the service (there is no per-call index argument).
 
-Everything past `db.insert`/`db.get`/`cache.get`/`cache.set`/
-`object_store.put`/`object_store.get` was added in v0.14 M1 as
-**front-end only**: it fully type-checks (arity, argument types, the
-`where`-clause grammar below), but no code-generation backend lowers
-it yet — the v0.14 roadmap (`14UpdatePlan.md`) implements each family's
-generated Python/Rust in later milestones. A program using one of
-these verbs type-checks with `ciac check`, but `ciac build`/`verify`
-fails with `CIAC0011` until its backend lands.
+This table's shape reflects how the verb set actually grew:
+`db.insert`/`db.get`, `cache.get`/`cache.set`, and
+`object_store.put`/`object_store.get` shipped in v0.7 alongside the
+handler-body language itself. Every other row — the `where`-clause
+query family, `update`/`delete`-by-key, `cache.delete`,
+`object_store.delete`/`list`, `email.send`, both `search` verbs, and
+`external_http.request` — was added by v0.14: M1 landed the front-end
+(grammar, typeck, the `where`-clause grammar below) for the whole set
+at once so both backends target one frozen surface; M2 lowered the
+`db` query/mutation family on both backends against live Postgres,
+MySQL, and SQLite; M3 lowered `cache`/`external_http`; M4 lowered
+`email`/`object_store`/`search`.
 
 ### `where` clauses (predicates)
 
@@ -215,6 +222,6 @@ behavior.
 
 ## Errors
 
-Every error this document mentions (`CIAC0038`-`CIAC0046`) is
-documented in full in `docs/errors.md`, including which are warnings
-vs. hard errors and how to fix each one.
+Every error this document mentions (`CIAC0038`-`CIAC0046`,
+`CIAC0052`-`CIAC0053`) is documented in full in `docs/errors.md`,
+including which are warnings vs. hard errors and how to fix each one.

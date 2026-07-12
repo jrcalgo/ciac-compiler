@@ -193,6 +193,15 @@ fn scan_expr(expr: &HirExpr, needs: &mut Needs) {
                 Verb::CacheSet => {
                     needs.cache = true;
                     needs.cache_set = true;
+                    // Mirrors `json_encode`'s own condition below: a
+                    // non-record value goes through `json.dumps`, a
+                    // record through `model_dump_json` (no `json`
+                    // import needed) — get this wrong and it's either
+                    // an unused import (record case) or a `NameError`
+                    // at runtime (scalar case).
+                    if !matches!(args[1].ty(), HirType::Record(_)) {
+                        needs.json = true;
+                    }
                 }
                 Verb::ObjectStoreGet => {
                     needs.object_store_get = true;

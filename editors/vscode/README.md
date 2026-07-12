@@ -25,8 +25,8 @@ npm install
 npx vsce package
 ```
 
-produces `ciac-0.13.0.vsix`, installable via `code --install-extension
-ciac-0.13.0.vsix` or VS Code's "Install from VSIX" command.
+produces `ciac-0.14.0.vsix`, installable via `code --install-extension
+ciac-0.14.0.vsix` or VS Code's "Install from VSIX" command.
 
 **Disclosed**: `vsce` and `vscode-languageclient` are npm packages;
 whether `npm install`/`vsce package` succeed depends on npm registry

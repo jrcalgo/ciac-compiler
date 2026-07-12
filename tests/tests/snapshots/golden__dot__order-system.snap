@@ -1,0 +1,44 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph OrderSystem {
+    rankdir=LR;
+    n0 [label="database default Postgres", shape=cylinder];
+    n1 [label="cache default Redis", shape=cylinder];
+    n2 [label="queue default Nats", shape=cds];
+    n3 [label="auth default Jwt", shape=hexagon];
+    n4 [label="stream ReceivedOrderEvent", shape=parallelogram];
+    n5 [label="api Customer", shape=rarrow];
+    n6 [label="service CustomerStore", shape=box];
+    n7 [label="api ShippedSummaryApi", shape=rarrow];
+    n8 [label="api MarkShippedApi", shape=rarrow];
+    n9 [label="api IngestOrderEvent", shape=rarrow];
+    n10 [label="worker OrderEventSink", shape=component];
+    n11 [label="api LimitedOrder", shape=rarrow];
+    n12 [label="service ShippedSummary", shape=box];
+    n13 [label="service MarkShipped", shape=box];
+    n14 [label="service ReceiveOrderEvent", shape=box];
+    n15 [label="service RecordEvent", shape=box];
+    n16 [label="service CheckLimitOrder", shape=box];
+    n4 -> n2 [label="DependsOn", style=dotted];
+    n5 -> n3 [label="RequestFlow", style=solid];
+    n3 -> n6 [label="RequestFlow", style=solid];
+    n6 -> n0 [label="DataFlow", style=bold];
+    n6 -> n1 [label="DataFlow", style=bold];
+    n4 -> n10 [label="AsyncMessage", style=dashed];
+    n12 -> n0 [label="DataFlow", style=bold];
+    n12 -> n1 [label="DataFlow", style=bold];
+    n7 -> n3 [label="RequestFlow", style=solid];
+    n3 -> n12 [label="RequestFlow", style=solid];
+    n13 -> n0 [label="DataFlow", style=bold];
+    n13 -> n1 [label="DataFlow", style=bold];
+    n8 -> n3 [label="RequestFlow", style=solid];
+    n3 -> n13 [label="RequestFlow", style=solid];
+    n9 -> n14 [label="RequestFlow", style=solid];
+    n15 -> n0 [label="DataFlow", style=bold];
+    n15 -> n1 [label="DataFlow", style=bold];
+    n10 -> n15 [label="RequestFlow", style=solid];
+    n16 -> n0 [label="DataFlow", style=bold];
+    n11 -> n16 [label="RequestFlow", style=solid];
+}

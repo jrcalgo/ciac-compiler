@@ -37,9 +37,12 @@ pub struct Needs {
     pub uuid: bool,
     pub datetime: bool,
     pub tables: Vec<TableId>,
-    /// Tables actually read via `db.get` — the only verb that needs the
-    /// model type as a Rust type name (`db.insert` only binds the
-    /// value's own fields, never names the model type).
+    /// Tables read via `db.get`/`db.query` (v0.14 M2) — the only verbs
+    /// whose lowering spells the table's model type as a Rust type name
+    /// (`sqlx::query_as::<_, Model>`). Every other db verb — `insert`,
+    /// `update`, `delete`, `count`, `delete_where` — binds by raw SQL
+    /// and field name only, never naming the model type, so importing
+    /// it for them would be an unused import under `-D warnings`.
     pub db_get_tables: Vec<TableId>,
     pub records: Vec<RecordId>,
     /// Named enum types (`VideoStatus`) actually spelled out in the
@@ -81,6 +84,11 @@ impl Needs {
     }
 }
 
+/// Scans a handler's params, return type, and body for everything
+/// [`Needs`] tracks. A record import comes from a verb call's own
+/// return/argument types (`needs.ty(ty)`, called at every verb-call
+/// site below), not from merely touching a table — see
+/// `Needs::db_get_tables`'s doc for which verbs need the model import.
 pub fn scan(ir: &NormalizedIr, body: &HandlerBody) -> Needs {
     let mut needs = Needs::default();
     for (_, ty) in &body.params {
@@ -89,9 +97,6 @@ pub fn scan(ir: &NormalizedIr, body: &HandlerBody) -> Needs {
     needs.ty(&body.return_ty);
     if let Some(stmts) = &body.body {
         scan_block(ir, stmts, &mut needs);
-    }
-    for table in needs.tables.clone() {
-        needs.record(ir.table(table).record);
     }
     needs
 }
@@ -198,10 +203,6 @@ fn scan_expr(ir: &NormalizedIr, expr: &HirExpr, needs: &mut Needs) {
                 }
                 Verb::CacheGet | Verb::CacheSet => needs.cache = true,
                 Verb::ObjectStorePut | Verb::ObjectStoreGet => {}
-                // v0.14 M1 front-end only — lowering for these verbs
-                // lands in M2 (db)/M3 (cache/http)/M4 (email/store/search).
-                // No `.ciac` example calls them yet, so this is
-                // unreachable today.
                 Verb::DbUpdate(table) | Verb::DbDelete(table) => {
                     needs.db = true;
                     needs.table(*table);
@@ -224,13 +225,15 @@ fn scan_expr(ir: &NormalizedIr, expr: &HirExpr, needs: &mut Needs) {
             ty,
             ..
         } => {
-            // v0.14 M2 implements query lowering; see the `VerbCall` arm's
-            // comment above.
             needs.db = true;
             match verb {
-                Verb::DbQuery(table) | Verb::DbCount(table) | Verb::DbDeleteWhere(table) => {
-                    needs.table(*table)
+                Verb::DbQuery(table) => {
+                    needs.table(*table);
+                    if !needs.db_get_tables.contains(table) {
+                        needs.db_get_tables.push(*table);
+                    }
                 }
+                Verb::DbCount(table) | Verb::DbDeleteWhere(table) => needs.table(*table),
                 _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
             }
             if let Some(predicate) = predicate {
@@ -413,10 +416,9 @@ pub fn rust_expr(ir: &NormalizedIr, body: &HandlerBody, expr: &HirExpr) -> Strin
             scrutinee, arms, ..
         } => rust_match(ir, body, scrutinee, arms),
         HirExpr::VerbCall { verb, args, .. } => rust_verb_expr(ir, body, *verb, args),
-        HirExpr::Query { verb, .. } => {
-            // v0.14 M2 implements db.query/count/delete_where lowering.
-            todo!("v0.14 M2: {verb:?} lowering — see 14UpdatePlan.md")
-        }
+        HirExpr::Query {
+            verb, predicate, ..
+        } => rust_query_expr(ir, body, *verb, predicate),
     }
 }
 
@@ -587,12 +589,45 @@ fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[Hir
             let key = rust_expr(ir, body, &args[0]);
             format!("serde_json::from_slice(&self.object_store.get(&{key}).await?)?")
         }
-        // v0.14 M2 (db.update/delete) / M3 (cache.delete, external_http.request)
-        // / M4 (object_store.delete/list, email.send, search.index/query)
+        Verb::DbUpdate(table) => {
+            let engine = db_engine_of(ir, body);
+            let table_snake = ir.table(table).name.to_snake_case();
+            let record_ctx = context::build_record(ir, ir.table(table).record);
+            let key = rust_expr(ir, body, &args[0]);
+            let value = rust_expr(ir, body, &args[1]);
+            let binds: String = record_ctx
+                .fields
+                .iter()
+                .filter(|f| f.name != "id")
+                .map(|f| {
+                    if f.is_enum {
+                        format!("\n        .bind(__row.{}.as_str())", f.name)
+                    } else {
+                        format!("\n        .bind(&__row.{})", f.name)
+                    }
+                })
+                .collect();
+            // Same clone-into-`__row` reasoning as `db.insert` above: the
+            // source value may still be referenced later in the body.
+            format!(
+                "{{\n    let __row = {value}.clone();\n    let __updated = sqlx::query(\"UPDATE {table_snake} SET {assignments} WHERE id = {where_ph}\"){binds}\n        .bind({key}.to_string())\n        .execute(self.db)\n        .await?;\n    if __updated.rows_affected() == 0 {{ None }} else {{ Some(__row) }}\n}}",
+                assignments = ciac_codegen::template::sqlph(&record_ctx.update_assignments, engine),
+                where_ph = ciac_codegen::template::sqlph(&record_ctx.update_where, engine),
+            )
+        }
+        Verb::DbDelete(table) => {
+            let engine = db_engine_of(ir, body);
+            let table_snake = ir.table(table).name.to_snake_case();
+            let key = rust_expr(ir, body, &args[0]);
+            format!(
+                "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .execute(self.db)\n        .await?;\n    __deleted.rows_affected() > 0\n}}",
+                ph = ciac_codegen::template::sqlph("$1", engine),
+            )
+        }
+        // v0.14 M3 (cache.delete, external_http.request) / M4
+        // (object_store.delete/list, email.send, search.index/query)
         // implement lowering for these — see the module doc comment.
-        Verb::DbUpdate(_)
-        | Verb::DbDelete(_)
-        | Verb::CacheDelete
+        Verb::CacheDelete
         | Verb::ObjectStoreDelete
         | Verb::ObjectStoreList
         | Verb::EmailSend
@@ -604,6 +639,111 @@ fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[Hir
         Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
             unreachable!("typeck only ever constructs these via HirExpr::Query")
         }
+    }
+}
+
+/// Builds a ` WHERE ..` clause (empty string if there's no predicate)
+/// and the ordered `.bind(..)` expressions it needs (v0.14 M2). Written
+/// with Postgres-style `$N` placeholders and rewritten per-engine by
+/// `sqlph`, same as every other SQL string this backend emits. A bare
+/// enum comparison binds the variant's string form directly (`"Ready"`)
+/// rather than going through `rust_expr`, which panics on a standalone
+/// `EnumLit` — there's no named Rust enum type to resolve it against
+/// here (`term.field` is a raw SQL column name, not a `FieldAccess`).
+fn rust_where_clause(
+    ir: &NormalizedIr,
+    body: &HandlerBody,
+    predicate: &Option<ciac_ir::HirPredicate>,
+    engine: &str,
+) -> (String, Vec<String>) {
+    let Some(predicate) = predicate else {
+        return (String::new(), Vec::new());
+    };
+    let mut conditions = Vec::with_capacity(predicate.terms.len());
+    let mut binds = Vec::with_capacity(predicate.terms.len());
+    for (i, term) in predicate.terms.iter().enumerate() {
+        let idx = i + 1;
+        let bind_expr = match &term.value {
+            HirExpr::EnumLit { variant, .. } => format!("{variant:?}"),
+            _ => {
+                let value = rust_expr(ir, body, &term.value);
+                if term.field_ty == HirType::Uuid {
+                    format!("{value}.to_string()")
+                } else {
+                    value
+                }
+            }
+        };
+        let field = &term.field;
+        let op = match term.op {
+            ciac_ir::PredOp::Eq => "=",
+            ciac_ir::PredOp::NotEq => "!=",
+            ciac_ir::PredOp::Lt => "<",
+            ciac_ir::PredOp::LtEq => "<=",
+            ciac_ir::PredOp::Gt => ">",
+            ciac_ir::PredOp::GtEq => ">=",
+            ciac_ir::PredOp::Contains => "LIKE",
+        };
+        conditions.push(format!("{field} {op} ${idx}"));
+        if term.op == ciac_ir::PredOp::Contains {
+            binds.push(format!("format!(\"%{{}}%\", {bind_expr})"));
+        } else {
+            binds.push(bind_expr);
+        }
+    }
+    let sql =
+        ciac_codegen::template::sqlph(&format!(" WHERE {}", conditions.join(" AND ")), engine);
+    (sql, binds)
+}
+
+/// Lowers `db.query`/`db.count`/`db.delete_where` (v0.14 M2), with or
+/// without a `where` clause.
+fn rust_query_expr(
+    ir: &NormalizedIr,
+    body: &HandlerBody,
+    verb: Verb,
+    predicate: &Option<ciac_ir::HirPredicate>,
+) -> String {
+    let engine = db_engine_of(ir, body);
+    match verb {
+        Verb::DbQuery(table) => {
+            let table_snake = ir.table(table).name.to_snake_case();
+            let model = model_class_name(ir, table);
+            let record_name = record_class_name(ir, ir.table(table).record);
+            let record_ctx = context::build_record(ir, ir.table(table).record);
+            let (where_sql, binds) = rust_where_clause(ir, body, predicate, engine);
+            let bind_lines: String = binds
+                .iter()
+                .map(|b| format!("\n        .bind({b})"))
+                .collect();
+            format!(
+                "{{\n    let __rows: Vec<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_all(self.db)\n        .await?;\n    __rows.into_iter().map({record_name}::try_from).collect::<Result<Vec<_>, _>>()?\n}}",
+                cols = record_ctx.select_cols,
+            )
+        }
+        Verb::DbCount(table) => {
+            let table_snake = ir.table(table).name.to_snake_case();
+            let (where_sql, binds) = rust_where_clause(ir, body, predicate, engine);
+            let bind_lines: String = binds
+                .iter()
+                .map(|b| format!("\n        .bind({b})"))
+                .collect();
+            format!(
+                "{{\n    let __count: i64 = sqlx::query_scalar(\"SELECT COUNT(*) FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_one(self.db)\n        .await?;\n    __count\n}}"
+            )
+        }
+        Verb::DbDeleteWhere(table) => {
+            let table_snake = ir.table(table).name.to_snake_case();
+            let (where_sql, binds) = rust_where_clause(ir, body, predicate, engine);
+            let bind_lines: String = binds
+                .iter()
+                .map(|b| format!("\n        .bind({b})"))
+                .collect();
+            format!(
+                "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake}{where_sql}\"){bind_lines}\n        .execute(self.db)\n        .await?;\n    __deleted.rows_affected() as i64\n}}"
+            )
+        }
+        _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
     }
 }
 

@@ -42,6 +42,16 @@ pub struct Needs {
     pub cache_set: bool,
     pub object_store_put: bool,
     pub object_store_get: bool,
+    /// A `db.query`/`db.count`/`db.delete_where` appears in the body
+    /// (v0.14 M2) — the behavioral test configures `session.execute`'s
+    /// mock return shape only when this is set. `select`/`func`/`delete`
+    /// imports are tracked per-symbol below instead (only importing what
+    /// a given handler actually spells, per `ruff`'s unused-import
+    /// check).
+    pub sa_query: bool,
+    pub sa_select: bool,
+    pub sa_func: bool,
+    pub sa_delete: bool,
     pub tables: Vec<TableId>,
     pub records: Vec<RecordId>,
 }
@@ -69,10 +79,13 @@ impl Needs {
 }
 
 /// Scans a handler's params, return type, and body for everything
-/// [`Needs`] tracks. `ir` is required to resolve a table's backing
-/// record (a `db.insert`/`db.get` on a table implies that table's
-/// record needs a schema import too).
-pub fn scan(ir: &NormalizedIr, body: &HandlerBody) -> Needs {
+/// [`Needs`] tracks. A record import comes from a verb call's own
+/// return/argument types (`needs.ty(ty)`, called at every verb-call
+/// site below), not from merely touching a table:
+/// `db.delete`/`db.count`/`db.delete_where` touch a table but return
+/// `Bool`/`Int`, needing the table's *model* class (`model_imports`,
+/// tracked by `needs.table`) but not its record schema.
+pub fn scan(body: &HandlerBody) -> Needs {
     let mut needs = Needs::default();
     for (_, ty) in &body.params {
         needs.ty(ty);
@@ -80,9 +93,6 @@ pub fn scan(ir: &NormalizedIr, body: &HandlerBody) -> Needs {
     needs.ty(&body.return_ty);
     if let Some(stmts) = &body.body {
         scan_block(stmts, &mut needs);
-    }
-    for table in needs.tables.clone() {
-        needs.record(ir.table(table).record);
     }
     needs
 }
@@ -188,10 +198,6 @@ fn scan_expr(expr: &HirExpr, needs: &mut Needs) {
                     needs.json = true;
                 }
                 Verb::ObjectStorePut => needs.object_store_put = true,
-                // v0.14 M1 front-end only — lowering for these verbs
-                // lands in M2 (db)/M3 (cache/http)/M4 (email/store/search).
-                // No `.ciac` example calls them yet, so this is
-                // unreachable today.
                 Verb::DbUpdate(table) | Verb::DbDelete(table) => {
                     needs.db = true;
                     needs.table(*table);
@@ -214,12 +220,21 @@ fn scan_expr(expr: &HirExpr, needs: &mut Needs) {
             ty,
             ..
         } => {
-            // v0.14 M2 implements query lowering; see the `VerbCall` arm's
-            // comment above.
             needs.db = true;
+            needs.sa_query = true;
             match verb {
-                Verb::DbQuery(table) | Verb::DbCount(table) | Verb::DbDeleteWhere(table) => {
-                    needs.table(*table)
+                Verb::DbQuery(table) => {
+                    needs.sa_select = true;
+                    needs.table(*table);
+                }
+                Verb::DbCount(table) => {
+                    needs.sa_select = true;
+                    needs.sa_func = true;
+                    needs.table(*table);
+                }
+                Verb::DbDeleteWhere(table) => {
+                    needs.sa_delete = true;
+                    needs.table(*table);
                 }
                 _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
             }
@@ -308,9 +323,11 @@ pub fn py_expr(ir: &NormalizedIr, body: &HandlerBody, expr: &HirExpr) -> String 
             unreachable!("control flow must be lowered via lower_tail, not nested in an expression")
         }
         HirExpr::VerbCall {
-            verb: Verb::DbInsert(_),
+            verb: Verb::DbInsert(_) | Verb::DbUpdate(_) | Verb::DbDelete(_),
             ..
-        } => unreachable!("db.insert must be lowered via lower_tail, not nested in an expression"),
+        } => unreachable!(
+            "db.insert/update/delete must be lowered via lower_tail, not nested in an expression"
+        ),
         HirExpr::Query { .. } => {
             unreachable!("db.query/count/delete_where must be lowered via lower_tail, not nested in an expression")
         }
@@ -406,8 +423,8 @@ fn py_binary(
 /// everything except `db.insert` (statement-shaped; see [`lower_tail`]).
 fn py_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[HirExpr]) -> String {
     match verb {
-        Verb::DbInsert(_) => {
-            unreachable!("db.insert must be lowered via lower_tail")
+        Verb::DbInsert(_) | Verb::DbUpdate(_) | Verb::DbDelete(_) => {
+            unreachable!("db.insert/update/delete must be lowered via lower_tail")
         }
         Verb::DbGet(table) => {
             let model = model_class_name(ir, table);
@@ -442,12 +459,10 @@ fn py_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[HirEx
             let key = py_expr(ir, body, &args[0]);
             format!("json.loads(await self.object_store.get({key}))")
         }
-        // v0.14 M2 (db.update/delete) / M3 (cache.delete, external_http.request)
-        // / M4 (object_store.delete/list, email.send, search.index/query)
+        // v0.14 M3 (cache.delete, external_http.request) / M4
+        // (object_store.delete/list, email.send, search.index/query)
         // implement lowering for these — see the module doc comment.
-        Verb::DbUpdate(_)
-        | Verb::DbDelete(_)
-        | Verb::CacheDelete
+        Verb::CacheDelete
         | Verb::ObjectStoreDelete
         | Verb::ObjectStoreList
         | Verb::EmailSend
@@ -468,6 +483,64 @@ enum Sink {
     Assign(String),
     Return,
     Discard,
+}
+
+fn apply_sink(sink: &Sink, value: &str, indent: &str, out: &mut Vec<String>) {
+    match sink {
+        Sink::Assign(name) => out.push(format!("{indent}{name} = {value}")),
+        Sink::Return => out.push(format!("{indent}return {value}")),
+        Sink::Discard => out.push(format!("{indent}{value}")),
+    }
+}
+
+/// Renders the `.where(..)` chain for a `db.query`/`count`/`delete_where`
+/// predicate (v0.14 M2) — one `.where(Model.field <op> value)` per term,
+/// SQLAlchemy ANDs chained `.where()` calls together. Empty string (no
+/// filtering) when there's no `where` clause.
+fn py_where_chain(
+    ir: &NormalizedIr,
+    body: &HandlerBody,
+    model: &str,
+    predicate: &Option<ciac_ir::HirPredicate>,
+) -> String {
+    let Some(predicate) = predicate else {
+        return String::new();
+    };
+    predicate
+        .terms
+        .iter()
+        .map(|term| {
+            let field = &term.field;
+            // `field == True`/`field == False` is `ruff`'s E712: a bare
+            // (or negated) column already reads as a boolean filter in
+            // SQLAlchemy, same as Python's own preference for `if x:`
+            // over `if x == True:`.
+            match (term.op, &term.value) {
+                (ciac_ir::PredOp::Eq, HirExpr::BoolLit(true))
+                | (ciac_ir::PredOp::NotEq, HirExpr::BoolLit(false)) => {
+                    format!(".where({model}.{field})")
+                }
+                (ciac_ir::PredOp::Eq, HirExpr::BoolLit(false))
+                | (ciac_ir::PredOp::NotEq, HirExpr::BoolLit(true)) => {
+                    format!(".where(~{model}.{field})")
+                }
+                (op, value) => {
+                    let value = py_expr(ir, body, value);
+                    match op {
+                        ciac_ir::PredOp::Eq => format!(".where({model}.{field} == {value})"),
+                        ciac_ir::PredOp::NotEq => format!(".where({model}.{field} != {value})"),
+                        ciac_ir::PredOp::Lt => format!(".where({model}.{field} < {value})"),
+                        ciac_ir::PredOp::LtEq => format!(".where({model}.{field} <= {value})"),
+                        ciac_ir::PredOp::Gt => format!(".where({model}.{field} > {value})"),
+                        ciac_ir::PredOp::GtEq => format!(".where({model}.{field} >= {value})"),
+                        ciac_ir::PredOp::Contains => {
+                            format!(".where({model}.{field}.contains({value}))")
+                        }
+                    }
+                }
+            }
+        })
+        .collect()
 }
 
 /// Lowers a full handler body into indented Python source lines, each
@@ -584,17 +657,106 @@ fn lower_tail(
                 Sink::Discard => {}
             }
         }
+        HirExpr::VerbCall {
+            verb: Verb::DbUpdate(table),
+            args,
+            ..
+        } => {
+            let model = model_class_name(ir, *table);
+            let record = record_class_name(ir, ir.table(*table).record);
+            let key = py_expr(ir, body, &args[0]);
+            let value = py_expr(ir, body, &args[1]);
+            out.push(format!(
+                "{indent}_row = await self.session.get({model}, str({key}))"
+            ));
+            out.push(format!("{indent}if _row is not None:"));
+            out.push(format!(
+                "{indent}    for _k, _v in {value}.model_dump().items():"
+            ));
+            out.push(format!("{indent}        setattr(_row, _k, _v)"));
+            out.push(format!("{indent}    await self.session.commit()"));
+            apply_sink(
+                sink,
+                &format!("{record}.model_validate(_row, from_attributes=True)"),
+                &format!("{indent}    "),
+                out,
+            );
+            out.push(format!("{indent}else:"));
+            apply_sink(sink, "None", &format!("{indent}    "), out);
+        }
+        HirExpr::VerbCall {
+            verb: Verb::DbDelete(table),
+            args,
+            ..
+        } => {
+            let model = model_class_name(ir, *table);
+            let key = py_expr(ir, body, &args[0]);
+            out.push(format!(
+                "{indent}_row = await self.session.get({model}, str({key}))"
+            ));
+            out.push(format!("{indent}if _row is not None:"));
+            out.push(format!("{indent}    await self.session.delete(_row)"));
+            out.push(format!("{indent}    await self.session.commit()"));
+            apply_sink(sink, "True", &format!("{indent}    "), out);
+            out.push(format!("{indent}else:"));
+            apply_sink(sink, "False", &format!("{indent}    "), out);
+        }
+        HirExpr::Query {
+            verb: Verb::DbQuery(table),
+            predicate,
+            ..
+        } => {
+            let model = model_class_name(ir, *table);
+            let record = record_class_name(ir, ir.table(*table).record);
+            let where_chain = py_where_chain(ir, body, &model, predicate);
+            out.push(format!("{indent}_stmt = select({model}){where_chain}"));
+            out.push(format!(
+                "{indent}_rows = (await self.session.execute(_stmt)).scalars().all()"
+            ));
+            apply_sink(
+                sink,
+                &format!("[{record}.model_validate(_r, from_attributes=True) for _r in _rows]"),
+                indent,
+                out,
+            );
+        }
+        HirExpr::Query {
+            verb: Verb::DbCount(table),
+            predicate,
+            ..
+        } => {
+            let model = model_class_name(ir, *table);
+            let where_chain = py_where_chain(ir, body, &model, predicate);
+            out.push(format!(
+                "{indent}_stmt = select(func.count()).select_from({model}){where_chain}"
+            ));
+            apply_sink(
+                sink,
+                "(await self.session.execute(_stmt)).scalar_one()",
+                indent,
+                out,
+            );
+        }
+        HirExpr::Query {
+            verb: Verb::DbDeleteWhere(table),
+            predicate,
+            ..
+        } => {
+            let model = model_class_name(ir, *table);
+            let where_chain = py_where_chain(ir, body, &model, predicate);
+            out.push(format!("{indent}_stmt = sql_delete({model}){where_chain}"));
+            out.push(format!(
+                "{indent}_result = await self.session.execute(_stmt)"
+            ));
+            out.push(format!("{indent}await self.session.commit()"));
+            apply_sink(sink, "_result.rowcount", indent, out);
+        }
         HirExpr::Query { verb, .. } => {
-            // v0.14 M2 implements db.query/count/delete_where lowering.
-            todo!("v0.14 M2: {verb:?} lowering — see 14UpdatePlan.md")
+            unreachable!("HirExpr::Query only ever carries a db query verb, found {verb:?}")
         }
         _ => {
             let e = py_expr(ir, body, expr);
-            match sink {
-                Sink::Assign(name) => out.push(format!("{indent}{name} = {e}")),
-                Sink::Return => out.push(format!("{indent}return {e}")),
-                Sink::Discard => out.push(format!("{indent}{e}")),
-            }
+            apply_sink(sink, &e, indent, out);
         }
     }
 }
@@ -653,6 +815,10 @@ pub struct LogicFileCtx {
     pub needs_json: bool,
     pub needs_uuid: bool,
     pub needs_datetime: bool,
+    /// `select`/`func`/`delete as sql_delete`, filtered to what this
+    /// handler actually uses — see `Needs::sa_select`/`sa_func`/
+    /// `sa_delete`.
+    pub sa_query_imports: Vec<String>,
     pub extras: Vec<context::ExtraDepCtx>,
     pub schema_imports: Vec<String>,
     pub model_imports: Vec<String>,
@@ -662,7 +828,7 @@ pub struct LogicFileCtx {
 /// Builds the render context for one typed handler node. `name` is the
 /// handler's declared name (`node.component.name()`).
 pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx {
-    let needs = scan(ir, hir);
+    let needs = scan(hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
     let extras = context::extras_of(&bindings);
@@ -694,6 +860,17 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         None => vec!["        raise NotImplementedError".to_owned()],
     };
 
+    let mut sa_query_imports = Vec::new();
+    if needs.sa_select {
+        sa_query_imports.push("select".to_owned());
+    }
+    if needs.sa_func {
+        sa_query_imports.push("func".to_owned());
+    }
+    if needs.sa_delete {
+        sa_query_imports.push("delete as sql_delete".to_owned());
+    }
+
     LogicFileCtx {
         class_name: name.to_owned(),
         module: name.to_snake_case(),
@@ -706,6 +883,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         needs_json: needs.json,
         needs_uuid: needs.uuid,
         needs_datetime: needs.datetime,
+        sa_query_imports,
         extras,
         schema_imports,
         model_imports,
@@ -713,15 +891,18 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
     }
 }
 
+/// Records the generated behavioral test actually spells by name — only
+/// a bare `Record` (both `dummy_value` and `assert_result` reference the
+/// class name directly). `Option<Record>`/`List<Record>` deliberately
+/// don't recurse: their dummy values (`None`/`[]`) and assertions
+/// (`assert_result` skips `Option`; the `List` case only checks
+/// `isinstance(result, list)`) never spell the inner record's name, so
+/// importing it would be an unused import (`ruff` F401).
 fn collect_record_ids(ty: &HirType, out: &mut Vec<RecordId>) {
-    match ty {
-        HirType::Record(id) => {
-            if !out.contains(id) {
-                out.push(*id);
-            }
+    if let HirType::Record(id) = ty {
+        if !out.contains(id) {
+            out.push(*id);
         }
-        HirType::Option(inner) | HirType::List(inner) => collect_record_ids(inner, out),
-        _ => {}
     }
 }
 
@@ -813,7 +994,7 @@ fn assert_result(ir: &NormalizedIr, ty: &HirType) -> Option<String> {
 /// right runtime APIs. `None` for `extern` handlers (no body to test).
 pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> Option<String> {
     hir.body.as_ref()?;
-    let needs = scan(ir, hir);
+    let needs = scan(hir);
     let mut lines = Vec::new();
     lines.push(format!(
         "\"\"\"Generated behavioral test for `{}`. Regenerated on every build.\n\nExercises the lowered handler body against mocked runtime dependencies;\nreal persistence round-trips are `ciac verify --live`'s job, not this test.\n\"\"\"",
@@ -877,6 +1058,19 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
         if needs.db_get {
             lines.push("    session.get = AsyncMock(return_value=None)".to_owned());
         }
+        if needs.sa_query {
+            // `db.query`/`count`/`delete_where` go through
+            // `session.execute(..)`, not `session.get(..)` — its return
+            // value needs `.scalars().all()`/`.scalar_one()`/`.rowcount`
+            // configured so the lowered body's isinstance assertions
+            // below (list/int) actually hold; MagicMock's `__iter__`
+            // already defaults to `iter([])`, but `.scalar_one()` and
+            // `.rowcount` default to a bare `MagicMock`, not an `int`.
+            lines.push("    exec_result = MagicMock()".to_owned());
+            lines.push("    exec_result.scalar_one.return_value = 0".to_owned());
+            lines.push("    exec_result.rowcount = 0".to_owned());
+            lines.push("    session.execute = AsyncMock(return_value=exec_result)".to_owned());
+        }
         kwargs.push("session=session".to_owned());
     }
     if ctx.needs_cache {
@@ -918,6 +1112,9 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
     }
     if needs.db_get {
         lines.push("    session.get.assert_awaited_once()".to_owned());
+    }
+    if needs.sa_query {
+        lines.push("    session.execute.assert_awaited_once()".to_owned());
     }
     if needs.cache_set {
         lines.push("    cache.set.assert_awaited_once()".to_owned());

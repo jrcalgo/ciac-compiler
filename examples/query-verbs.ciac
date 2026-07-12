@@ -1,0 +1,71 @@
+// v0.14 M2 flagship for the extended db verb set: `db.query`/`count`/
+// `delete_where` (with `where` predicates), `db.update`, `db.delete` —
+// all lowered on both backends against a zero-Docker SQLite instance
+// (same "no live infra required" story as sqlite-notes.ciac).
+service QueryVerbs;
+
+use {
+    db SQLite;
+}
+
+record Note {
+    id: Uuid;
+    title: String;
+    active: Bool;
+}
+
+// Every typed handler used as a pipeline step is called with exactly
+// one payload value, so a filter/update needs its own record even when
+// it's a single field — see docs/expressions.md's `where` clause note.
+record ActiveFilter {
+    active: Bool;
+}
+
+record NoteUpdate {
+    id: Uuid;
+    title: String;
+    active: Bool;
+}
+
+record IdOnly {
+    id: Uuid;
+}
+
+table Notes: Note;
+
+handler ListActive(filter: ActiveFilter) -> [Note] {
+    return db.query(Notes) where active == filter.active;
+}
+
+handler CountActive(filter: ActiveFilter) -> Int {
+    return db.count(Notes) where active == filter.active;
+}
+
+handler DeleteByActive(filter: ActiveFilter) -> Int {
+    return db.delete_where(Notes) where active == filter.active;
+}
+
+handler Replace(payload: NoteUpdate) -> Note {
+    let n = Note { id: payload.id, title: payload.title, active: payload.active };
+    db.update(Notes, n.id, n);
+    return n;
+}
+
+handler Remove(payload: IdOnly) -> Bool {
+    return db.delete(Notes, payload.id);
+}
+
+api ListActiveApi: ActiveFilter;
+pipeline ListActiveApi: ListActive -> Return;
+
+api CountActiveApi: ActiveFilter;
+pipeline CountActiveApi: CountActive -> Return;
+
+api DeleteByActiveApi: ActiveFilter;
+pipeline DeleteByActiveApi: DeleteByActive -> Return;
+
+api ReplaceApi: NoteUpdate;
+pipeline ReplaceApi: Replace -> Return;
+
+api RemoveApi: IdOnly;
+pipeline RemoveApi: Remove -> Return;

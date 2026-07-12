@@ -549,6 +549,14 @@ impl ObjectStore {
         Ok(())
     }
 
+    pub async fn list(&self, prefix: &str) -> anyhow::Result<Vec<String>> {
+        let pages = self.bucket()?.list(prefix.to_owned(), None).await?;
+        Ok(pages
+            .into_iter()
+            .flat_map(|page| page.contents.into_iter().map(|obj| obj.key))
+            .collect())
+    }
+
     pub async fn presign_get(&self, key: &str, expires_s: u32) -> anyhow::Result<String> {
         Ok(self.bucket()?.presign_get(key, expires_s, None).await?)
     }

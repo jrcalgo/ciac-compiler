@@ -42,6 +42,7 @@ pub struct Needs {
     pub cache_set: bool,
     pub object_store_put: bool,
     pub object_store_get: bool,
+    pub object_store_list: bool,
     /// A `db.query`/`db.count`/`db.delete_where` appears in the body
     /// (v0.14 M2) — the behavioral test configures `session.execute`'s
     /// mock return shape only when this is set. `select`/`func`/`delete`
@@ -203,7 +204,8 @@ fn scan_expr(expr: &HirExpr, needs: &mut Needs) {
                     needs.table(*table);
                 }
                 Verb::CacheDelete => needs.cache = true,
-                Verb::ObjectStoreDelete | Verb::ObjectStoreList => {}
+                Verb::ObjectStoreList => needs.object_store_list = true,
+                Verb::ObjectStoreDelete => {}
                 Verb::EmailSend | Verb::SearchIndex | Verb::SearchQuery | Verb::HttpCall => {}
                 Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
                     unreachable!("typeck only ever constructs these via HirExpr::Query")
@@ -312,6 +314,27 @@ fn json_encode(ir: &NormalizedIr, body: &HandlerBody, value: &HirExpr) -> String
         format!("{}.model_dump_json()", py_expr(ir, body, value))
     } else {
         format!("json.dumps({})", py_expr(ir, body, value))
+    }
+}
+
+/// OpenSearch has no per-document collection concept in the language
+/// yet (v0.14 M3/M4) — every `search.index`/`search.query` call on a
+/// given instance shares this one index name.
+const SEARCH_INDEX_NAME: &str = "documents";
+
+/// A Python *value* (not a JSON string — for `search.index`'s
+/// `document` and `external_http.request`'s `json=` body, both of
+/// which take a real dict) for `value`, which `search.index`/
+/// `external_http.request` accept as any type per their closed verb
+/// signature (mirroring `cache.set`/`object_store.put`'s untyped
+/// payload): records become their field dict, `Json` values pass
+/// through as-is, and anything else (a bare string/number/bool) is
+/// wrapped so the body is always a JSON object.
+fn json_body(ir: &NormalizedIr, body: &HandlerBody, value: &HirExpr) -> String {
+    match value.ty() {
+        HirType::Record(_) => format!("{}.model_dump(mode=\"json\")", py_expr(ir, body, value)),
+        HirType::Json => py_expr(ir, body, value),
+        _ => format!("{{\"value\": {}}}", py_expr(ir, body, value)),
     }
 }
 
@@ -459,17 +482,39 @@ fn py_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[HirEx
             let key = py_expr(ir, body, &args[0]);
             format!("json.loads(await self.object_store.get({key}))")
         }
-        // v0.14 M3 (cache.delete, external_http.request) / M4
-        // (object_store.delete/list, email.send, search.index/query)
-        // implement lowering for these — see the module doc comment.
-        Verb::CacheDelete
-        | Verb::ObjectStoreDelete
-        | Verb::ObjectStoreList
-        | Verb::EmailSend
-        | Verb::SearchIndex
-        | Verb::SearchQuery
-        | Verb::HttpCall => {
-            todo!("v0.14: {verb:?} lowering — see 14UpdatePlan.md")
+        Verb::CacheDelete => {
+            let key = py_expr(ir, body, &args[0]);
+            format!("(await self.cache.delete({key}))")
+        }
+        Verb::ObjectStoreDelete => {
+            let key = py_expr(ir, body, &args[0]);
+            format!("(await self.object_store.delete({key}))")
+        }
+        Verb::ObjectStoreList => {
+            let prefix = py_expr(ir, body, &args[0]);
+            format!("(await self.object_store.list({prefix}))")
+        }
+        Verb::EmailSend => {
+            let to = py_expr(ir, body, &args[0]);
+            let subject = py_expr(ir, body, &args[1]);
+            let body_arg = py_expr(ir, body, &args[2]);
+            format!("(await self.email.send({to}, {subject}, {body_arg}))")
+        }
+        Verb::SearchIndex => {
+            let doc_id = py_expr(ir, body, &args[0]);
+            let document = json_body(ir, body, &args[1]);
+            format!("(await self.search.index({SEARCH_INDEX_NAME:?}, {doc_id}, {document}))")
+        }
+        Verb::SearchQuery => {
+            let query = py_expr(ir, body, &args[0]);
+            format!(
+                "(await self.search.search({SEARCH_INDEX_NAME:?}, {{\"query\": {{\"query_string\": {{\"query\": {query}}}}}}}))"
+            )
+        }
+        Verb::HttpCall => {
+            let url = py_expr(ir, body, &args[0]);
+            let json_arg = json_body(ir, body, &args[1]);
+            format!("(await self.http.post({url}, json={json_arg})).json()")
         }
         Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
             unreachable!("typeck only ever constructs these via HirExpr::Query")
@@ -1086,6 +1131,9 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
         if extra.kind == "object_store" && needs.object_store_get {
             lines.push(format!("    {var}.get = AsyncMock(return_value=b\"null\")"));
         }
+        if extra.kind == "object_store" && needs.object_store_list {
+            lines.push(format!("    {var}.list = AsyncMock(return_value=[])"));
+        }
         kwargs.push(format!("{var}={var}"));
     }
     lines.push(format!(
@@ -1130,6 +1178,9 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
             }
             if needs.object_store_get {
                 lines.push(format!("    {var}.get.assert_awaited_once()"));
+            }
+            if needs.object_store_list {
+                lines.push(format!("    {var}.list.assert_awaited_once()"));
             }
         }
     }

@@ -624,21 +624,65 @@ fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[Hir
                 ph = ciac_codegen::template::sqlph("$1", engine),
             )
         }
-        // v0.14 M3 (cache.delete, external_http.request) / M4
-        // (object_store.delete/list, email.send, search.index/query)
-        // implement lowering for these — see the module doc comment.
-        Verb::CacheDelete
-        | Verb::ObjectStoreDelete
-        | Verb::ObjectStoreList
-        | Verb::EmailSend
-        | Verb::SearchIndex
-        | Verb::SearchQuery
-        | Verb::HttpCall => {
-            todo!("v0.14: {verb:?} lowering — see 14UpdatePlan.md")
+        Verb::CacheDelete => {
+            let key = rust_expr(ir, body, &args[0]);
+            format!(
+                "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.del(&{key}).await?;\n}}"
+            )
+        }
+        Verb::ObjectStoreDelete => {
+            let key = rust_expr(ir, body, &args[0]);
+            format!("self.object_store.delete(&{key}).await?")
+        }
+        Verb::ObjectStoreList => {
+            let prefix = rust_expr(ir, body, &args[0]);
+            format!("self.object_store.list(&{prefix}).await?")
+        }
+        Verb::EmailSend => {
+            let to = rust_expr(ir, body, &args[0]);
+            let subject = rust_expr(ir, body, &args[1]);
+            let body_arg = rust_expr(ir, body, &args[2]);
+            format!("self.email.send(&{to}, &{subject}, &{body_arg}).await?")
+        }
+        Verb::SearchIndex => {
+            let doc_id = rust_expr(ir, body, &args[0]);
+            let document = rust_json_value(ir, body, &args[1]);
+            format!("self.search.index({SEARCH_INDEX_NAME:?}, &{doc_id}, &{document}).await?")
+        }
+        Verb::SearchQuery => {
+            let query = rust_expr(ir, body, &args[0]);
+            format!(
+                "self.search.search({SEARCH_INDEX_NAME:?}, &serde_json::json!({{\"query\": {{\"query_string\": {{\"query\": {query}}}}}}})).await?"
+            )
+        }
+        Verb::HttpCall => {
+            let url = rust_expr(ir, body, &args[0]);
+            let json_val = rust_json_value(ir, body, &args[1]);
+            format!(
+                "self.http.post(&{url}).json(&{json_val}).send().await?.json::<serde_json::Value>().await?"
+            )
         }
         Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
             unreachable!("typeck only ever constructs these via HirExpr::Query")
         }
+    }
+}
+
+/// OpenSearch has no index concept in ciac's language model, so every
+/// `search.index`/`search.query` call targets one hardcoded index —
+/// mirrors the Python backend's own copy of this constant.
+const SEARCH_INDEX_NAME: &str = "documents";
+
+/// Renders `value` as a `serde_json::Value`-typed argument for
+/// `search.index`/`external_http.request`'s untyped payload params.
+fn rust_json_value(ir: &NormalizedIr, body: &HandlerBody, value: &HirExpr) -> String {
+    match value.ty() {
+        HirType::Record(_) => format!("serde_json::to_value(&{})?", rust_expr(ir, body, value)),
+        HirType::Json => rust_expr(ir, body, value),
+        _ => format!(
+            "serde_json::json!({{\"value\": {}}})",
+            rust_expr(ir, body, value)
+        ),
     }
 }
 

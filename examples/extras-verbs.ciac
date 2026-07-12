@@ -1,0 +1,102 @@
+// v0.14 M3/M4 flagship for the cache/object_store/email/search/
+// external_http verb set: `cache.delete`, `object_store.delete`/
+// `.list`, `email.send`, `search.index`/`.query`, `external_http.
+// request` — all lowered on both backends. `search.query` and
+// `external_http.request` return an untyped `Json`/`[Json]` value;
+// `HirType::Json` has no surface spelling yet (v0.14 deliberately
+// deferred `is`-unwrap/Option-consumption, see docs/expressions.md),
+// so these two handlers call the verb for its effect and report
+// success rather than returning the payload — the same shape as
+// `cache.set`'s untyped payload precedent.
+service ExtrasVerbs;
+
+use {
+    cache Redis;
+    object_store S3;
+    email SMTP;
+    search OpenSearch;
+    external_http upstream { base_url: "https://example.internal"; }
+}
+
+record KeyOnly {
+    key: String;
+}
+
+record PrefixOnly {
+    prefix: String;
+}
+
+record Notification {
+    to: String;
+    subject: String;
+    body: String;
+}
+
+record IndexRequest {
+    id: String;
+    title: String;
+}
+
+record SearchRequest {
+    query: String;
+}
+
+record HttpRequest {
+    path: String;
+    payload: String;
+}
+
+handler EvictCache(payload: KeyOnly) -> Bool {
+    cache.delete(payload.key);
+    return true;
+}
+
+handler RemoveDoc(payload: KeyOnly) -> Bool {
+    object_store.delete(payload.key);
+    return true;
+}
+
+handler ListDocs(payload: PrefixOnly) -> [String] {
+    return object_store.list(payload.prefix);
+}
+
+handler NotifyUser(payload: Notification) -> Bool {
+    email.send(payload.to, payload.subject, payload.body);
+    return true;
+}
+
+handler IndexDoc(payload: IndexRequest) -> Bool {
+    search.index(payload.id, payload.title);
+    return true;
+}
+
+handler SearchDocs(payload: SearchRequest) -> Bool {
+    search.query(payload.query);
+    return true;
+}
+
+handler CallUpstream(payload: HttpRequest) -> Bool {
+    external_http.request(payload.path, payload.payload);
+    return true;
+}
+
+api EvictCacheApi: KeyOnly;
+pipeline EvictCacheApi: EvictCache -> Return;
+
+api RemoveDocApi: KeyOnly;
+pipeline RemoveDocApi: RemoveDoc -> Return;
+
+api ListDocsApi: PrefixOnly;
+pipeline ListDocsApi: ListDocs -> Return;
+
+api NotifyUserApi: Notification;
+pipeline NotifyUserApi: NotifyUser -> Return;
+
+api IndexDocApi: IndexRequest;
+pipeline IndexDocApi: IndexDoc -> Return;
+
+api SearchDocsApi: SearchRequest;
+pipeline SearchDocsApi: SearchDocs -> Return;
+
+api CallUpstreamApi: HttpRequest;
+pipeline CallUpstreamApi: CallUpstream -> Return;

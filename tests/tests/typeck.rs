@@ -325,3 +325,49 @@ record Tagged { tags: [String]; }
     assert!(ir.is_none());
     assert_eq!(diags.codes(), vec![ErrorCode::UnsupportedFieldType]);
 }
+
+/// v0.14 M6: `crud`'s `read_scope`/`write_scope` need *some* `auth`
+/// capability to actually enforce against — the "declared but
+/// silently unenforced" failure mode this pillar exists to kill, same
+/// class of check as a plain `api`'s `scope` requiring `Auth` first
+/// in its pipeline.
+#[test]
+fn crud_scope_without_auth_capability_is_ciac0019() {
+    let source = r#"
+service ScopedNoAuth;
+use { db Postgres; }
+record Note { id: Uuid; title: String; }
+crud Notes: Note {
+    read_scope: "notes:read";
+}
+"#;
+    let (ir, diags) = compile(source);
+    assert!(ir.is_none());
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == ErrorCode::InvalidAttributeValue),
+        "expected InvalidAttributeValue, got {:?}",
+        diags.codes()
+    );
+}
+
+#[test]
+fn crud_read_and_write_scope_resolve_onto_the_resource_config() {
+    let source = r#"
+service ScopedCrud;
+use { db Postgres; auth JWT; }
+record Note { id: Uuid; title: String; }
+crud Notes: Note {
+    read_scope: "notes:read";
+    write_scope: "notes:write";
+}
+"#;
+    let (ir, diags) = compile(source);
+    assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
+    let ir = ir.expect("compiles");
+    let resource = ir.resources.iter().find(|r| r.name == "Notes").unwrap();
+    assert_eq!(resource.config.read_scope.as_deref(), Some("notes:read"));
+    assert_eq!(resource.config.write_scope.as_deref(), Some("notes:write"));
+    assert!(resource.auth.is_some());
+}

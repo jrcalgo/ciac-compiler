@@ -62,10 +62,17 @@ pub struct ChannelConfig {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CrudConfig {
     pub cache_ttl: u32,
     pub page_size: u32,
+    /// Scope required to read (`GET` list/get) — v0.14 M6. `None`
+    /// means reads only need whatever `crud`'s automatic auth gating
+    /// already requires (any valid token, no specific scope).
+    pub read_scope: Option<String>,
+    /// Scope required to write (`POST`/`PUT`/`PATCH`/`DELETE`) —
+    /// v0.14 M6.
+    pub write_scope: Option<String>,
 }
 
 impl Default for CrudConfig {
@@ -73,6 +80,8 @@ impl Default for CrudConfig {
         Self {
             cache_ttl: 300,
             page_size: 100,
+            read_scope: None,
+            write_scope: None,
         }
     }
 }

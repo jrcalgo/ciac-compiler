@@ -596,6 +596,13 @@
             },
             "type": "array"
           },
+          "scopes": {
+            "description": "Every distinct scope string declared anywhere in this service\n(api `scope`, crud `read_scope`/`write_scope`) — v0.14 M6. Drives\nthe generated `require_scope`/`Claims::require_scope`\nbehavioral test: one 403-without/passes-with assertion pair per\nentry, proving the *mechanism* every scoped route calls without\nneeding a live server per route shape.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "search_instances": {
             "items": {
               "$ref": "#/$defs/OntologyInstanceCtx"
@@ -690,7 +697,8 @@
           "resources",
           "tables",
           "typed_handlers",
-          "call_targets"
+          "call_targets",
+          "scopes"
         ],
         "type": "object"
       },
@@ -1389,6 +1397,13 @@
             "description": "Route base and table name, e.g. `notes`.",
             "type": "string"
           },
+          "read_scope": {
+            "description": "Scope required on top of `has_auth`'s bearer-token check for\nread (`GET` list/get) / write (`POST`/`PUT`/`PATCH`/`DELETE`)\nroutes — v0.14 M6. `None` means no specific scope is required.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "record": {
             "anyOf": [
               {
@@ -1420,6 +1435,12 @@
           },
           "store_module": {
             "type": "string"
+          },
+          "write_scope": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

@@ -610,8 +610,8 @@ import pytest
 from app.main import app
 
 
-def _client() -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=app)
+def _client(*, raise_app_exceptions: bool = True) -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 

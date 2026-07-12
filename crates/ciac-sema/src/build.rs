@@ -186,6 +186,7 @@ impl<'d> Builder<'d> {
             self.build_flat_items(&program.items);
         }
         self.check_scoped_apis();
+        self.check_scoped_cruds();
         self.graph
     }
 
@@ -1699,6 +1700,39 @@ impl<'d> Builder<'d> {
             }
         }
     }
+
+    /// `crud`'s per-verb `read_scope`/`write_scope` attrs (v0.14 M6)
+    /// require *some* auth capability to actually enforce against —
+    /// unlike a plain `api`, a `crud` resource has no pipeline of its
+    /// own for `check_scoped_apis` to inspect, so this is a separate
+    /// check over `graph.resources` rather than an extension of that
+    /// one. Same "declared but silently unenforced" failure mode the
+    /// plain-`api` check exists to kill.
+    fn check_scoped_cruds(&mut self) {
+        for resource in &self.graph.resources {
+            if resource.auth.is_some() {
+                continue;
+            }
+            for (attr_name, scope) in [
+                ("read_scope", &resource.config.read_scope),
+                ("write_scope", &resource.config.write_scope),
+            ] {
+                let Some(scope) = scope else { continue };
+                let mut diag = Diagnostic::new(
+                    ErrorCode::InvalidAttributeValue,
+                    format!(
+                        "crud `{}` declares `{attr_name}: \"{scope}\"` but the service has no auth capability",
+                        resource.name
+                    ),
+                )
+                .with_help("add `auth JWT;` (or `auth OAuth2;`) to the `use { .. }` block");
+                if let Some(span) = self.graph.node(resource.api).span {
+                    diag = diag.with_label(span, "scoped crud declared here");
+                }
+                self.diags.push(diag);
+            }
+        }
+    }
 }
 
 fn kind_noun(kind: NodeKind) -> &'static str {
@@ -1975,6 +2009,14 @@ mod attrs {
                     Some(_) | None => {
                         invalid_value(attr, "crud `page_size` must be an integer >= 1", diags)
                     }
+                },
+                "read_scope" => match string_value(attr) {
+                    Some(scope) => config.read_scope = Some(scope.to_owned()),
+                    None => invalid_value(attr, "crud `read_scope` must be a string", diags),
+                },
+                "write_scope" => match string_value(attr) {
+                    Some(scope) => config.write_scope = Some(scope.to_owned()),
+                    None => invalid_value(attr, "crud `write_scope` must be a string", diags),
                 },
                 _ => unknown_attr(attr, "crud", diags),
             }

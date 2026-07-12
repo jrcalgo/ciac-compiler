@@ -4,15 +4,31 @@ These run without any infrastructure: clients are lazy and the ASGI
 transport below does not trigger the startup lifespan.
 """
 
+{% if c.auth_scheme == "jwt" and c.scopes -%}
+import jwt
+{% endif -%}
 import httpx
 import pytest
 
 from app.main import app
+{% if c.auth_scheme == "jwt" and c.scopes -%}
+from app.config import get_settings
+{% endif %}
 
-
-def _client() -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=app)
+def _client(*, raise_app_exceptions: bool = True) -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
+{%- if c.auth_scheme == "jwt" and c.scopes %}
+
+
+def _bearer(scope: str) -> dict[str, str]:
+    """A locally-signed token carrying `scope` — the JWT scheme verifies
+    against `jwt_secret`, which this process already has, so no live
+    issuer is needed to prove the scope check itself works."""
+    settings = get_settings()
+    token = jwt.encode({"sub": "test", "scope": scope}, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return {"Authorization": f"Bearer {token}"}
+{%- endif %}
 
 
 def test_routes_registered() -> None:
@@ -44,6 +60,39 @@ async def test_{{ api.snake }}_requires_auth() -> None:
         response = await client.{{ api.method_lower }}("{{ api.route }}")
 {%- endif %}
     assert response.status_code in (401, 403)
+{%- if api.scope and c.auth_scheme == "jwt" %}
+
+
+@pytest.mark.anyio
+async def test_{{ api.snake }}_rejects_missing_scope() -> None:
+    async with _client() as client:
+{%- if api.has_body %}
+        response = await client.{{ api.method_lower }}(
+            "{{ api.route }}", json={}, headers=_bearer("not:{{ api.scope }}")
+        )
+{%- else %}
+        response = await client.{{ api.method_lower }}("{{ api.route }}", headers=_bearer("not:{{ api.scope }}"))
+{%- endif %}
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_{{ api.snake }}_accepts_granted_scope() -> None:
+    # `raise_app_exceptions=False`: a granted-scope request clears the
+    # auth dependency and reaches the route body, which may then fail
+    # on a real dependency this no-infra suite doesn't have (a live
+    # db/cache/queue) — that failure becomes a 5xx, still proof the
+    # auth layer itself let the request through.
+    async with _client(raise_app_exceptions=False) as client:
+{%- if api.has_body %}
+        response = await client.{{ api.method_lower }}(
+            "{{ api.route }}", json={}, headers=_bearer("{{ api.scope }}")
+        )
+{%- else %}
+        response = await client.{{ api.method_lower }}("{{ api.route }}", headers=_bearer("{{ api.scope }}"))
+{%- endif %}
+    assert response.status_code not in (401, 403)
+{%- endif %}
 {%- endif %}
 {%- endfor %}
 {%- for resource in c.resources %}
@@ -54,6 +103,42 @@ async def test_{{ resource.plural }}_require_auth() -> None:
     async with _client() as client:
         response = await client.get("/{{ resource.plural }}")
     assert response.status_code in (401, 403)
+{%- if resource.read_scope and c.auth_scheme == "jwt" %}
+
+
+@pytest.mark.anyio
+async def test_{{ resource.plural }}_read_rejects_missing_scope() -> None:
+    async with _client() as client:
+        response = await client.get("/{{ resource.plural }}", headers=_bearer("not:{{ resource.read_scope }}"))
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_{{ resource.plural }}_read_accepts_granted_scope() -> None:
+    async with _client(raise_app_exceptions=False) as client:
+        response = await client.get("/{{ resource.plural }}", headers=_bearer("{{ resource.read_scope }}"))
+    assert response.status_code not in (401, 403)
+{%- endif %}
+{%- if resource.write_scope and c.auth_scheme == "jwt" %}
+
+
+@pytest.mark.anyio
+async def test_{{ resource.plural }}_write_rejects_missing_scope() -> None:
+    async with _client() as client:
+        response = await client.post(
+            "/{{ resource.plural }}", json={}, headers=_bearer("not:{{ resource.write_scope }}")
+        )
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_{{ resource.plural }}_write_accepts_granted_scope() -> None:
+    async with _client(raise_app_exceptions=False) as client:
+        response = await client.post(
+            "/{{ resource.plural }}", json={}, headers=_bearer("{{ resource.write_scope }}")
+        )
+    assert response.status_code not in (401, 403)
+{%- endif %}
 {%- endif %}
 {%- endfor %}
 {%- if c.jobs %}

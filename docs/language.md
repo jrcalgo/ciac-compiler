@@ -229,6 +229,28 @@ preconditions are `CIAC0019`.
 | `stream` | `subject` | string | `<service>.<stream>` | duplicate subjects are `CIAC0003` |
 | `crud` | `cache_ttl` | integer >= 1 | `300` | requires `cache` |
 | `crud` | `page_size` | integer >= 1 | `100` | |
+| `crud` | `read_scope` | string | none (v0.14 M6) | requires an `auth` capability |
+| `crud` | `write_scope` | string | none (v0.14 M6) | requires an `auth` capability |
+
+### Authorization scopes (v0.14 M6)
+
+`scope`/`read_scope`/`write_scope` are enforced, not just parsed: both
+backends check the token's `scope`/`scp` claim against the declared
+scope on every matching request, returning 403 if it's missing. A
+plain `api`'s `scope` requires `Auth` first in its pipeline
+(`CIAC0019` otherwise, checked at compile time); `crud`'s
+`read_scope`/`write_scope` require *some* `auth` capability on the
+service (also `CIAC0019`) — `crud` gates every route with that
+capability automatically once it's declared, `read_scope`/
+`write_scope` add a specific scope requirement on top for
+list/get vs. create/update/delete.
+
+Every scoped route gets a generated behavioral test proving both
+halves — a token missing the scope gets 403, a token carrying it
+clears the auth layer — in the project's own test suite, no live
+server needed (`tests/test_smoke.py` / `tests/scope_tests.rs`, JWT
+scheme only; OAuth2 needs a live JWKS issuer, so it's excluded from
+this no-infra suite).
 
 ### `stream <Name>: <Record>;`
 

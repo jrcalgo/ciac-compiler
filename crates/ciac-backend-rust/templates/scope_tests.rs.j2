@@ -1,0 +1,184 @@
+//! Generated behavioral test for scope enforcement. Regenerated on
+//! every build. Drives the real router directly via
+//! `tower::ServiceExt::oneshot` — no live server needed. Db pools are
+//! lazy (`connect_lazy`), so a request that clears the auth layer but
+//! then touches one may still come back as a 5xx; that's still proof
+//! the auth layer itself let it through, which is all these assert.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
+
+use {{ c.module }}::{config::Config, routes, state::AppState};
+
+async fn app() -> axum::Router {
+    let state = AppState::new(Config::from_env())
+        .await
+        .expect("lazy state construction needs no live infra");
+    routes::router().with_state(state)
+}
+
+fn bearer(scope: &str) -> String {
+    let claims = serde_json::json!({"sub": "test", "scope": scope});
+    let secret = Config::from_env().jwt_secret;
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .expect("token encodes");
+    format!("Bearer {token}")
+}
+{%- macro dummy_json(record, skip_id) -%}
+{%- if record %}{
+{%- for field in record.fields if not (skip_id and field.name == "id") %}
+{%- if not loop.first %},{% endif %}
+"{{ field.name }}":{% if field.is_enum %}"{{ field.type_kind.Enum.variants[0] }}"{% elif field.type_kind == "Int" %}0{% elif field.type_kind == "Float" %}0.0{% elif field.type_kind == "Bool" %}false{% elif field.type_kind == "Uuid" %}"00000000-0000-0000-0000-000000000000"{% elif field.type_kind == "Timestamp" %}"1970-01-01T00:00:00Z"{% elif field.type_kind == "Json" %}{}{% else %}"x"{% endif %}
+{%- endfor %}
+}{% else %}{}{% endif -%}
+{%- endmacro -%}
+{%- macro dummy_body(resource) -%}
+{# `resource.record`'s `In` schema always drops `id` (server-generated) — see models.rs.j2. #}
+{{ dummy_json(resource.record, true) }}
+{%- endmacro -%}
+{%- macro dummy_api_body(api) -%}
+{# a plain api's payload is the record itself, `id` included — unlike crud's stripped `In` schema. #}
+{%- if api.payload %}{{ dummy_json(c.records | selectattr("name", "equalto", api.payload.class_name) | first, false) }}{% else %}{}{% endif -%}
+{%- endmacro -%}
+{% for api in c.apis %}
+{%- if api.scope %}
+
+#[tokio::test]
+async fn {{ api.snake }}_rejects_missing_scope() {
+    // A well-formed body: axum extracts parameters in declaration
+    // order, so `Json<..>` extraction (and its own validation) still
+    // runs before the handler body's `require_scope` check — an
+    // ill-formed body would 422 there first, masking the 403 this
+    // test means to prove.
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("{{ api.method_upper }}")
+                .uri("{{ api.route }}")
+                .header("Authorization", bearer("not:{{ api.scope }}"))
+{%- if api.has_body %}
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{{ dummy_api_body(api) }}"#))
+{%- else %}
+                .body(Body::empty())
+{%- endif %}
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn {{ api.snake }}_accepts_granted_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("{{ api.method_upper }}")
+                .uri("{{ api.route }}")
+                .header("Authorization", bearer("{{ api.scope }}"))
+{%- if api.has_body %}
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{{ dummy_api_body(api) }}"#))
+{%- else %}
+                .body(Body::empty())
+{%- endif %}
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+{%- endif %}
+{%- endfor %}
+{% for resource in c.resources %}
+{%- if resource.read_scope %}
+
+#[tokio::test]
+async fn {{ resource.snake }}_read_rejects_missing_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/{{ resource.plural }}")
+                .header("Authorization", bearer("not:{{ resource.read_scope }}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn {{ resource.snake }}_read_accepts_granted_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/{{ resource.plural }}")
+                .header("Authorization", bearer("{{ resource.read_scope }}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+{%- endif %}
+{%- if resource.write_scope %}
+
+#[tokio::test]
+async fn {{ resource.snake }}_write_rejects_missing_scope() {
+    // A well-formed body: axum extracts parameters in declaration
+    // order, so `Json<..>` extraction (and its own validation) still
+    // runs before the handler body's `require_scope` check — an
+    // ill-formed body would 422 there first, masking the 403 this
+    // test means to prove.
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/{{ resource.plural }}")
+                .header("Content-Type", "application/json")
+                .header("Authorization", bearer("not:{{ resource.write_scope }}"))
+                .body(Body::from(r#"{{ dummy_body(resource) }}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn {{ resource.snake }}_write_accepts_granted_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/{{ resource.plural }}")
+                .header("Content-Type", "application/json")
+                .header("Authorization", bearer("{{ resource.write_scope }}"))
+                .body(Body::from(r#"{{ dummy_body(resource) }}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+{%- endif %}
+{%- endfor %}

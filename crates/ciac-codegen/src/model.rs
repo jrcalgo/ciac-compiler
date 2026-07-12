@@ -124,6 +124,13 @@ pub struct Ctx {
     pub typed_handlers: Vec<NodeId>,
     /// Downstream services invoked via `call`, one typed client each.
     pub call_targets: Vec<CallTargetCtx>,
+    /// Every distinct scope string declared anywhere in this service
+    /// (api `scope`, crud `read_scope`/`write_scope`) — v0.14 M6. Drives
+    /// the generated `require_scope`/`Claims::require_scope`
+    /// behavioral test: one 403-without/passes-with assertion pair per
+    /// entry, proving the *mechanism* every scoped route calls without
+    /// needing a live server per route shape.
+    pub scopes: Vec<String>,
 }
 
 /// A resolved `table <Name>: <Record>;` declaration, ready for a
@@ -619,6 +626,11 @@ pub struct ResourceCtx {
     pub has_cache: bool,
     pub cache_ttl: u32,
     pub page_size: u32,
+    /// Scope required on top of `has_auth`'s bearer-token check for
+    /// read (`GET` list/get) / write (`POST`/`PUT`/`PATCH`/`DELETE`)
+    /// routes — v0.14 M6. `None` means no specific scope is required.
+    pub read_scope: Option<String>,
+    pub write_scope: Option<String>,
     /// Session dependency backing this resource's store.
     pub db_session: SessionCtx,
     /// `get_cache(..)` expression when caching is enabled.
@@ -803,7 +815,7 @@ fn build_scoped(
                 name,
             }
         })
-        .collect();
+        .collect::<Vec<ApiCtx>>();
 
     let realtime_provider = capability(NodeKind::Realtime).and_then(|node| match &node.component {
         Component::Realtime { provider, .. } => Some(match provider {
@@ -1022,6 +1034,8 @@ fn build_scoped(
                 has_cache: access.cache_expr.is_some(),
                 cache_ttl: resource.config.cache_ttl,
                 page_size: resource.config.page_size,
+                read_scope: resource.config.read_scope.clone(),
+                write_scope: resource.config.write_scope.clone(),
                 db_session: access.db.unwrap_or(SessionCtx {
                     param: "session".to_owned(),
                     dep: "get_session".to_owned(),
@@ -1164,6 +1178,28 @@ fn build_scoped(
     };
     let field_types = all_fields(&records);
 
+    let scopes: Vec<String> = {
+        let mut scopes: Vec<String> = Vec::new();
+        for api in &apis {
+            if let Some(scope) = &api.scope {
+                if !scopes.contains(scope) {
+                    scopes.push(scope.clone());
+                }
+            }
+        }
+        for resource in &resources {
+            for scope in [&resource.read_scope, &resource.write_scope]
+                .into_iter()
+                .flatten()
+            {
+                if !scopes.contains(scope) {
+                    scopes.push(scope.clone());
+                }
+            }
+        }
+        scopes
+    };
+
     Ctx {
         service_name: base_name,
         package,
@@ -1259,6 +1295,7 @@ fn build_scoped(
         jobs,
         consumers,
         services,
+        scopes,
         resources,
         call_targets,
         module,

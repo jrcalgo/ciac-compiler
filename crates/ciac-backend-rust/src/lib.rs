@@ -211,6 +211,17 @@ fn emit_service(
     if ctx.has_auth {
         project.add_file(at("src/auth.rs"), render("auth.rs.j2", empty())?);
     }
+    // v0.14 M6: scope-enforcement behavioral test. Needs the JWT scheme
+    // specifically (OAuth2 constructs `AppState` by fetching a live
+    // JWKS) and no queue (its `connect()` isn't lazy like the db
+    // pools) — both would turn `AppState::new` into a live-infra
+    // dependency this no-infra suite can't have.
+    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() && !ctx.has_queue {
+        project.add_file(
+            at("tests/scope_tests.rs"),
+            render("scope_tests.rs.j2", empty())?,
+        );
+    }
     if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
         project.add_file(at("src/db.rs"), render("db.rs.j2", empty())?);
         project.add_file(at("src/models.rs"), render("models.rs.j2", empty())?);

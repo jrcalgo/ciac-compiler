@@ -38,6 +38,12 @@ uv run uvicorn app.main:app
 
 See each service's README for its endpoints, workers, and configuration.
 ============================================================
+billing/.dockerignore
+============================================================
+.venv
+__pycache__
+.pytest_cache
+============================================================
 billing/Dockerfile
 ============================================================
 FROM python:3.12-slim
@@ -417,6 +423,12 @@ services:
 
 volumes:
   transcoder-minio-media-data:
+============================================================
+notifier/.dockerignore
+============================================================
+.venv
+__pycache__
+.pytest_cache
 ============================================================
 notifier/Dockerfile
 ============================================================
@@ -920,6 +932,12 @@ async def test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 ============================================================
+progress-feed/.dockerignore
+============================================================
+.venv
+__pycache__
+.pytest_cache
+============================================================
 progress-feed/Dockerfile
 ============================================================
 FROM python:3.12-slim
@@ -1173,6 +1191,12 @@ async def test_health() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
+============================================================
+transcoder/.dockerignore
+============================================================
+.venv
+__pycache__
+.pytest_cache
 ============================================================
 transcoder/Dockerfile
 ============================================================
@@ -1612,6 +1636,12 @@ async def test_health() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
+============================================================
+upload-api/.dockerignore
+============================================================
+.venv
+__pycache__
+.pytest_cache
 ============================================================
 upload-api/Dockerfile
 ============================================================

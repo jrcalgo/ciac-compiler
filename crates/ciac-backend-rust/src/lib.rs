@@ -184,6 +184,12 @@ fn emit_service(
         );
     }
     project.add_file(at(".gitignore"), "/target\n");
+    // Docker doesn't read .gitignore — without this, a `target/` left
+    // behind by a native `cargo build`/`cargo test` run against this
+    // project (as `ciac verify` does before handing off to `docker
+    // compose`) becomes part of the build context, multiplying a
+    // multi-hundred-MB debug build into every image layer transfer.
+    project.add_file(at(".dockerignore"), "/target\n");
     project.add_file(
         at("src/lib.rs"),
         render(

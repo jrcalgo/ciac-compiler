@@ -548,14 +548,18 @@ fn verify_inner(
 }
 
 /// Boots the generated compose stack (`up -d --wait`), erroring out on
-/// a non-zero exit or a missing Docker binary.
+/// a non-zero exit or a missing Docker binary. `--wait-timeout` bounds
+/// the wait: without it, a service stuck in "starting" (a healthcheck
+/// that never resolves either way) blocks forever instead of failing
+/// — there's no other signal that distinguishes "still booting" from
+/// "hung" once this is running unattended in CI.
 fn compose_up(compose_file: &Path) -> Result<()> {
     let status = run_streamed(
         Command::new("docker")
             .arg("compose")
             .arg("-f")
             .arg(compose_file)
-            .args(["up", "-d", "--wait"]),
+            .args(["up", "-d", "--wait", "--wait-timeout", "180"]),
     )
     .map_err(|err| {
         anyhow::anyhow!("cannot run `docker compose` ({err}); this step requires Docker")

@@ -139,6 +139,11 @@ fn emit_service(
     project.add_file(at("pyproject.toml"), render("pyproject.toml.j2", empty())?);
     project.add_file(at("README.md"), render("README.md.j2", empty())?);
     project.add_file(at("Dockerfile"), render("Dockerfile.j2", empty())?);
+    // Docker doesn't read .gitignore — without this, a `.venv/` left
+    // behind by a native `uv sync` run against this project (as `ciac
+    // verify` does before handing off to `docker compose`) becomes
+    // part of the build context on every image layer transfer.
+    project.add_file(at(".dockerignore"), ".venv\n__pycache__\n.pytest_cache\n");
     if !multi {
         project.add_file(
             at("docker-compose.yml"),

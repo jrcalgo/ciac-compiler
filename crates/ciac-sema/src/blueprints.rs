@@ -9,16 +9,22 @@
 //!
 //! Scope (deliberately narrow — see 08UpdatePlan.md's own risk
 //! warnings about this feature): one generic type parameter per
-//! blueprint, constrained to `record` only; blueprint bodies may
-//! contain only `use`/`crud`/`stream`/`handler`; hygiene is a single
-//! rule (every name a blueprint body declares is suffixed with the
-//! concrete type argument's name).
+//! blueprint, constrained to `record` only; hygiene is a single rule
+//! (every name a blueprint body declares is suffixed with the
+//! concrete type argument's name, unless a caller-supplied `params`
+//! value overrides it). v0.8 M2 shipped `use`/`crud`/`stream`/
+//! `handler` bodies; v0.14 M5 grows this to `record`/`table`/`api`/
+//! `worker`/`pipeline`, so a body can declare a self-contained
+//! api-plus-pipeline shape — a `pipeline` in the body attaches to an
+//! `api`/`worker` in the *same* body because both share the same
+//! hygiene rename (see `instantiate`'s renames map).
 
 use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode};
 use ciac_syntax::ast::{
-    Attr, AttrValue, BlueprintDecl, BlueprintItem, CrudDecl, ExpandStmt, Expr, ExprArm, FieldInit,
-    HandlerDecl, Ident, Item, Param, PredTerm, Predicate, Program, ServiceBlock, ServiceItem, Stmt,
-    StreamDecl, TypeExpr,
+    ApiDecl, Arm, ArmLabel, Attr, AttrValue, BlueprintDecl, BlueprintItem, CrudDecl, ExpandStmt,
+    Expr, ExprArm, Field, FieldInit, HandlerDecl, Ident, Item, Param, PipelineDecl, PredTerm,
+    Predicate, Program, RecordDecl, ServiceBlock, ServiceItem, StepExpr, Stmt, StreamDecl,
+    TableDecl, TypeExpr, WorkerDecl,
 };
 use std::collections::HashMap;
 
@@ -92,6 +98,11 @@ fn expand_at_top_level(
             BlueprintItem::Crud(c) => Item::Crud(c),
             BlueprintItem::Stream(s) => Item::Stream(s),
             BlueprintItem::Handler(h) => Item::Handler(h),
+            BlueprintItem::Record(r) => Item::Record(r),
+            BlueprintItem::Table(t) => Item::Table(t),
+            BlueprintItem::Api(a) => Item::Api(a),
+            BlueprintItem::Worker(w) => Item::Worker(w),
+            BlueprintItem::Pipeline(p) => Item::Pipeline(p),
         })
         .collect()
 }
@@ -120,7 +131,17 @@ fn expand_service_block(
                         BlueprintItem::Use(u) => items.push(ServiceItem::Use(u)),
                         BlueprintItem::Crud(c) => items.push(ServiceItem::Crud(c)),
                         BlueprintItem::Handler(h) => items.push(ServiceItem::Handler(h)),
+                        BlueprintItem::Api(a) => items.push(ServiceItem::Api(a)),
+                        BlueprintItem::Worker(w) => items.push(ServiceItem::Worker(w)),
+                        BlueprintItem::Pipeline(p) => items.push(ServiceItem::Pipeline(p)),
+                        // `ServiceItem` has no `Stream`/`Record`/`Table`
+                        // variant — hand-written programs declare these
+                        // at the top level even inside a `service { .. }`
+                        // block, so a blueprint-produced one hoists the
+                        // same way.
                         BlueprintItem::Stream(s) => hoisted.push(Item::Stream(s)),
+                        BlueprintItem::Record(r) => hoisted.push(Item::Record(r)),
+                        BlueprintItem::Table(t) => hoisted.push(Item::Table(t)),
                     }
                 }
             }
@@ -248,6 +269,16 @@ fn instantiate(
             BlueprintItem::Crud(d) => &d.name,
             BlueprintItem::Stream(d) => &d.name,
             BlueprintItem::Handler(d) => &d.name,
+            BlueprintItem::Record(d) => &d.name,
+            BlueprintItem::Table(d) => &d.name,
+            BlueprintItem::Api(d) => &d.name,
+            BlueprintItem::Worker(d) => &d.name,
+            // A `pipeline`'s own name isn't a fresh declaration — it
+            // names the `api`/`worker` it attaches to, which already
+            // contributes (the same original name maps to the same
+            // renamed name either way, so this loop iteration is a
+            // no-op duplicate insert, not a conflict).
+            BlueprintItem::Pipeline(d) => &d.name,
             BlueprintItem::Use(_) => continue,
         };
         let replacement = match params.get(name.text.as_str()) {
@@ -296,13 +327,13 @@ fn substitute_item(
             record: d
                 .record
                 .as_ref()
-                .map(|r| substitute_type_ident(r, blueprint, stmt)),
+                .map(|r| substitute_reference(r, blueprint, stmt, renames)),
             attrs: substitute_attrs(&d.attrs, params),
             span: d.span,
         }),
         BlueprintItem::Stream(d) => BlueprintItem::Stream(StreamDecl {
             name: renamed_ident(&d.name, renames),
-            record: substitute_type_ident(&d.record, blueprint, stmt),
+            record: substitute_reference(&d.record, blueprint, stmt, renames),
             attrs: substitute_attrs(&d.attrs, params),
             span: d.span,
         }),
@@ -314,16 +345,61 @@ fn substitute_item(
                 .iter()
                 .map(|p| Param {
                     name: p.name.clone(),
-                    ty: substitute_type(&p.ty, blueprint, stmt),
+                    ty: substitute_type(&p.ty, blueprint, stmt, renames),
                     span: p.span,
                 })
                 .collect(),
             return_ty: d
                 .return_ty
                 .as_ref()
-                .map(|ty| substitute_type(ty, blueprint, stmt)),
-            body: d.body.as_ref().map(|stmts| rewrite_stmts(stmts, renames)),
+                .map(|ty| substitute_type(ty, blueprint, stmt, renames)),
+            body: d
+                .body
+                .as_ref()
+                .map(|stmts| rewrite_stmts(stmts, renames, params)),
             is_extern: d.is_extern,
+            span: d.span,
+        }),
+        BlueprintItem::Record(d) => BlueprintItem::Record(RecordDecl {
+            name: renamed_ident(&d.name, renames),
+            fields: d
+                .fields
+                .iter()
+                .map(|f| Field {
+                    name: f.name.clone(),
+                    ty: substitute_type(&f.ty, blueprint, stmt, renames),
+                    span: f.span,
+                })
+                .collect(),
+            kind: d.kind,
+            span: d.span,
+        }),
+        BlueprintItem::Table(d) => BlueprintItem::Table(TableDecl {
+            name: renamed_ident(&d.name, renames),
+            record: substitute_reference(&d.record, blueprint, stmt, renames),
+            span: d.span,
+        }),
+        BlueprintItem::Api(d) => BlueprintItem::Api(ApiDecl {
+            name: renamed_ident(&d.name, renames),
+            request: d
+                .request
+                .as_ref()
+                .map(|r| substitute_reference(r, blueprint, stmt, renames)),
+            attrs: substitute_attrs(&d.attrs, params),
+            span: d.span,
+        }),
+        BlueprintItem::Worker(d) => BlueprintItem::Worker(WorkerDecl {
+            name: renamed_ident(&d.name, renames),
+            stream: d
+                .stream
+                .as_ref()
+                .map(|s| substitute_reference(s, blueprint, stmt, renames)),
+            attrs: substitute_attrs(&d.attrs, params),
+            span: d.span,
+        }),
+        BlueprintItem::Pipeline(d) => BlueprintItem::Pipeline(PipelineDecl {
+            name: renamed_ident(&d.name, renames),
+            steps: d.steps.iter().map(|s| rewrite_step(s, renames)).collect(),
             span: d.span,
         }),
     }
@@ -339,25 +415,42 @@ fn renamed_ident(ident: &Ident, renames: &HashMap<String, String>) -> Ident {
     }
 }
 
-/// Substitutes the generic type parameter when `ident` names it
-/// exactly (e.g. `crud Resource: R;`'s `R`), otherwise leaves it as-is
-/// (e.g. `stream Audited: AuditEvent;`'s unrelated `AuditEvent`).
-fn substitute_type_ident(ident: &Ident, blueprint: &BlueprintDecl, stmt: &ExpandStmt) -> Ident {
+/// Resolves a name a body item refers to *by name* rather than
+/// declaring itself: the generic type parameter (e.g. `crud
+/// Resource: R;`'s `R`) substitutes to the concrete type argument;
+/// any other name falls back to `renames` (a body-local declaration,
+/// e.g. a `table`'s `record` naming a `record` declared earlier in
+/// the same body) and otherwise passes through unchanged (e.g.
+/// `stream Audited: AuditEvent;`'s unrelated, non-body-local
+/// `AuditEvent`).
+fn substitute_reference(
+    ident: &Ident,
+    blueprint: &BlueprintDecl,
+    stmt: &ExpandStmt,
+    renames: &HashMap<String, String>,
+) -> Ident {
     if ident.text == blueprint.type_param.text {
         Ident {
             text: stmt.type_arg.text.clone(),
             span: ident.span,
         }
     } else {
-        ident.clone()
+        renamed_ident(ident, renames)
     }
 }
 
-fn substitute_type(ty: &TypeExpr, blueprint: &BlueprintDecl, stmt: &ExpandStmt) -> TypeExpr {
+fn substitute_type(
+    ty: &TypeExpr,
+    blueprint: &BlueprintDecl,
+    stmt: &ExpandStmt,
+    renames: &HashMap<String, String>,
+) -> TypeExpr {
     match ty {
-        TypeExpr::Named(ident) => TypeExpr::Named(substitute_type_ident(ident, blueprint, stmt)),
+        TypeExpr::Named(ident) => {
+            TypeExpr::Named(substitute_reference(ident, blueprint, stmt, renames))
+        }
         TypeExpr::List { inner, span } => TypeExpr::List {
-            inner: Box::new(substitute_type(inner, blueprint, stmt)),
+            inner: Box::new(substitute_type(inner, blueprint, stmt, renames)),
             span: *span,
         },
         other => other.clone(),
@@ -385,29 +478,48 @@ fn substitute_attrs(attrs: &[Attr], params: &HashMap<String, AttrValue>) -> Vec<
 /// Rewrites every `publish <Stream>(..)` inside a blueprint-owned
 /// handler body whose `<Stream>` names one of the blueprint's *own*
 /// (hygienically renamed) streams, so the body stays internally
-/// consistent with the rest of the expansion. Nothing else in a body
-/// needs rewriting — see the module doc's scope note: generic-type
-/// substitution never reaches into statements/expressions, only
-/// declaration-level type positions.
-fn rewrite_stmts(stmts: &[Stmt], renames: &HashMap<String, String>) -> Vec<Stmt> {
-    stmts.iter().map(|s| rewrite_stmt(s, renames)).collect()
+/// consistent with the rest of the expansion; also substitutes any
+/// bare identifier matching a `params` name with the caller-supplied
+/// literal (v0.14 M5 — lets a body compare against/pass along a
+/// scalar the `expand` site configured, e.g. a rate limiter's request
+/// cap, the same way an attribute value already could). Nothing else
+/// in a body needs rewriting — generic-type substitution never
+/// reaches into statements/expressions beyond this, only
+/// declaration-level type positions. See `rewrite_step` below for the
+/// equivalent pass over pipeline steps.
+fn rewrite_stmts(
+    stmts: &[Stmt],
+    renames: &HashMap<String, String>,
+    params: &HashMap<String, AttrValue>,
+) -> Vec<Stmt> {
+    stmts
+        .iter()
+        .map(|s| rewrite_stmt(s, renames, params))
+        .collect()
 }
 
-fn rewrite_stmt(stmt: &Stmt, renames: &HashMap<String, String>) -> Stmt {
+fn rewrite_stmt(
+    stmt: &Stmt,
+    renames: &HashMap<String, String>,
+    params: &HashMap<String, AttrValue>,
+) -> Stmt {
     match stmt {
         Stmt::Let { name, value, span } => Stmt::Let {
             name: name.clone(),
-            value: rewrite_expr(value, renames),
+            value: rewrite_expr(value, renames, params),
             span: *span,
         },
-        Stmt::Expr(e) => Stmt::Expr(rewrite_expr(e, renames)),
+        Stmt::Expr(e) => Stmt::Expr(rewrite_expr(e, renames, params)),
         Stmt::Return { value, span } => Stmt::Return {
-            value: value.as_ref().map(|v| rewrite_expr(v, renames)),
+            value: value.as_ref().map(|v| rewrite_expr(v, renames, params)),
             span: *span,
         },
         Stmt::Fail { error, args, span } => Stmt::Fail {
-            error: error.clone(),
-            args: args.iter().map(|a| rewrite_expr(a, renames)).collect(),
+            error: renamed_ident(error, renames),
+            args: args
+                .iter()
+                .map(|a| rewrite_expr(a, renames, params))
+                .collect(),
             span: *span,
         },
         Stmt::Publish {
@@ -416,37 +528,56 @@ fn rewrite_stmt(stmt: &Stmt, renames: &HashMap<String, String>) -> Stmt {
             span,
         } => Stmt::Publish {
             stream: renamed_ident(stream, renames),
-            value: rewrite_expr(value, renames),
+            value: rewrite_expr(value, renames, params),
             span: *span,
         },
     }
 }
 
-fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
+fn rewrite_expr(
+    expr: &Expr,
+    renames: &HashMap<String, String>,
+    params: &HashMap<String, AttrValue>,
+) -> Expr {
     match expr {
-        Expr::Ident(_) | Expr::Number { .. } | Expr::Str { .. } | Expr::Bool { .. } => expr.clone(),
+        // A bare ident in a handler body is a local var/param name (not
+        // hygiene-tracked — lexically scoped to the handler, never
+        // collides across expansions), a `params` scalar, or a
+        // reference to one of the body's *own* declared names (a
+        // `table`/`record` named directly, e.g. `db.count(Tickets)`'s
+        // `Tickets` or a `RecordCons`'s `base`) — `renamed_ident`
+        // passes through anything not in `renames`, so this is safe to
+        // apply unconditionally once `params` has had first refusal.
+        Expr::Ident(ident) => match params.get(&ident.text) {
+            Some(value) => param_literal_expr(value, ident.span),
+            None => Expr::Ident(renamed_ident(ident, renames)),
+        },
+        Expr::Number { .. } | Expr::Str { .. } | Expr::Bool { .. } => expr.clone(),
         Expr::FieldAccess { base, field, span } => Expr::FieldAccess {
-            base: Box::new(rewrite_expr(base, renames)),
+            base: Box::new(rewrite_expr(base, renames, params)),
             field: field.clone(),
             span: *span,
         },
         Expr::Index { base, index, span } => Expr::Index {
-            base: Box::new(rewrite_expr(base, renames)),
-            index: Box::new(rewrite_expr(index, renames)),
+            base: Box::new(rewrite_expr(base, renames, params)),
+            index: Box::new(rewrite_expr(index, renames, params)),
             span: *span,
         },
         Expr::Call { callee, args, span } => Expr::Call {
-            callee: Box::new(rewrite_expr(callee, renames)),
-            args: args.iter().map(|a| rewrite_expr(a, renames)).collect(),
+            callee: Box::new(rewrite_expr(callee, renames, params)),
+            args: args
+                .iter()
+                .map(|a| rewrite_expr(a, renames, params))
+                .collect(),
             span: *span,
         },
         Expr::RecordCons { base, fields, span } => Expr::RecordCons {
-            base: Box::new(rewrite_expr(base, renames)),
+            base: Box::new(rewrite_expr(base, renames, params)),
             fields: fields
                 .iter()
                 .map(|f| FieldInit {
                     name: f.name.clone(),
-                    value: rewrite_expr(&f.value, renames),
+                    value: rewrite_expr(&f.value, renames, params),
                     span: f.span,
                 })
                 .collect(),
@@ -454,8 +585,8 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
         },
         Expr::Binary { op, lhs, rhs, span } => Expr::Binary {
             op: *op,
-            lhs: Box::new(rewrite_expr(lhs, renames)),
-            rhs: Box::new(rewrite_expr(rhs, renames)),
+            lhs: Box::new(rewrite_expr(lhs, renames, params)),
+            rhs: Box::new(rewrite_expr(rhs, renames, params)),
             span: *span,
         },
         Expr::Unary {
@@ -464,7 +595,7 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
             span,
         } => Expr::Unary {
             op: *op,
-            expr: Box::new(rewrite_expr(inner, renames)),
+            expr: Box::new(rewrite_expr(inner, renames, params)),
             span: *span,
         },
         Expr::If {
@@ -473,9 +604,11 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
             else_branch,
             span,
         } => Expr::If {
-            cond: Box::new(rewrite_expr(cond, renames)),
-            then_branch: rewrite_stmts(then_branch, renames),
-            else_branch: else_branch.as_ref().map(|b| rewrite_stmts(b, renames)),
+            cond: Box::new(rewrite_expr(cond, renames, params)),
+            then_branch: rewrite_stmts(then_branch, renames, params),
+            else_branch: else_branch
+                .as_ref()
+                .map(|b| rewrite_stmts(b, renames, params)),
             span: *span,
         },
         Expr::Match {
@@ -483,12 +616,12 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
             arms,
             span,
         } => Expr::Match {
-            scrutinee: Box::new(rewrite_expr(scrutinee, renames)),
+            scrutinee: Box::new(rewrite_expr(scrutinee, renames, params)),
             arms: arms
                 .iter()
                 .map(|arm| ExprArm {
                     label: arm.label.clone(),
-                    body: rewrite_stmts(&arm.body, renames),
+                    body: rewrite_stmts(&arm.body, renames, params),
                     span: arm.span,
                 })
                 .collect(),
@@ -499,7 +632,7 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
             predicate,
             span,
         } => Expr::Query {
-            call: Box::new(rewrite_expr(call, renames)),
+            call: Box::new(rewrite_expr(call, renames, params)),
             predicate: Predicate {
                 terms: predicate
                     .terms
@@ -507,7 +640,7 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
                     .map(|t| PredTerm {
                         field: t.field.clone(),
                         op: t.op,
-                        value: rewrite_expr(&t.value, renames),
+                        value: rewrite_expr(&t.value, renames, params),
                         span: t.span,
                     })
                     .collect(),
@@ -515,5 +648,59 @@ fn rewrite_expr(expr: &Expr, renames: &HashMap<String, String>) -> Expr {
             },
             span: *span,
         },
+    }
+}
+
+/// Renders a `params` value as the literal expression it stands for,
+/// at the span of the identifier it's replacing (so a type error in
+/// the substituted body still points at the reference site, not the
+/// distant `expand` statement).
+fn param_literal_expr(value: &AttrValue, span: ciac_diagnostics::Span) -> Expr {
+    match value {
+        AttrValue::Str { value, .. } => Expr::Str {
+            value: value.clone(),
+            span,
+        },
+        AttrValue::Number { value, .. } => Expr::Number {
+            text: value.to_string(),
+            span,
+        },
+        AttrValue::Ident(ident) => Expr::Ident(Ident {
+            text: ident.text.clone(),
+            span,
+        }),
+    }
+}
+
+/// Rewrites one pipeline step so it keeps pointing at the same
+/// (hygienically renamed) declaration after expansion. `Name` covers
+/// both a body-local handler reference and the three builtin step
+/// names (`Auth`/`Queue`/`Return`) — builtins are never in `renames`,
+/// so `renamed_ident` passes them through unchanged, same as any
+/// other name the body didn't itself declare. `Call` (`call
+/// <Service>.<Api>`) always names something outside the blueprint by
+/// construction — a *different* service's api — so it's never
+/// rewritten.
+fn rewrite_step(step: &StepExpr, renames: &HashMap<String, String>) -> StepExpr {
+    match step {
+        StepExpr::Name(ident) => StepExpr::Name(renamed_ident(ident, renames)),
+        StepExpr::Publish(ident) => StepExpr::Publish(renamed_ident(ident, renames)),
+        StepExpr::Call(target) => StepExpr::Call(target.clone()),
+        StepExpr::Match { field, arms, span } => StepExpr::Match {
+            field: field.clone(),
+            arms: arms.iter().map(|a| rewrite_arm(a, renames)).collect(),
+            span: *span,
+        },
+    }
+}
+
+fn rewrite_arm(arm: &Arm, renames: &HashMap<String, String>) -> Arm {
+    Arm {
+        label: match &arm.label {
+            ArmLabel::Variant(ident) => ArmLabel::Variant(ident.clone()),
+            ArmLabel::Default(span) => ArmLabel::Default(*span),
+        },
+        steps: arm.steps.iter().map(|s| rewrite_step(s, renames)).collect(),
+        span: arm.span,
     }
 }

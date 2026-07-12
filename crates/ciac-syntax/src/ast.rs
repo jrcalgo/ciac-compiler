@@ -128,21 +128,32 @@ pub struct BlueprintDecl {
     pub span: Span,
 }
 
-/// The closed set of declarations a `blueprint` body may contain
-/// (v0.8 M2). Not the full `Item`/`ServiceItem` grammar: no nested
-/// `record`/`table`/`api`/`worker`/`job`/`channel`/`events`/
-/// `blueprint`/`expand`/`import` — a deliberate scope limit, not an
-/// oversight. No `pipeline` either: a blueprint body declares no
-/// `api`/`worker`/`job` of its own for one to attach to (`crud`
-/// expands to a complete REST resource on its own, with no pipeline
-/// involved); a pipeline that attaches to something in the *enclosing*
-/// scope belongs there, not inside the template.
+/// The closed set of declarations a `blueprint` body may contain.
+/// v0.8 M2 shipped `use`/`crud`/`stream`/`handler`; v0.14 M5 grows
+/// this to `api`/`worker`/`pipeline`/`record`/`table` — enough to
+/// express a self-contained api-plus-pipeline shape (a webhook
+/// receiver, an outbox) inside a template. Still not the full
+/// `Item`/`ServiceItem` grammar: no `job`/`channel`/`events`/
+/// `blueprint`/`expand`/`import` nesting — a deliberate scope limit,
+/// not an oversight. A `pipeline` in the body may only attach to an
+/// `api`/`worker` declared in the *same* body (hygiene renames both
+/// under the same substitution, so the pair stays attached post
+/// expansion); referencing anything from the enclosing scope is not
+/// mechanically prevented here, but the expanded output still has to
+/// pass the ordinary graph-build/typeck resolution every hand-written
+/// program does, so a dangling or cross-scope reference surfaces as
+/// the same "unknown X" diagnostic it would outside a blueprint.
 #[derive(Debug, Clone, Serialize)]
 pub enum BlueprintItem {
     Use(UseBlock),
     Crud(CrudDecl),
     Stream(StreamDecl),
     Handler(HandlerDecl),
+    Record(RecordDecl),
+    Table(TableDecl),
+    Api(ApiDecl),
+    Worker(WorkerDecl),
+    Pipeline(PipelineDecl),
 }
 
 /// `expand <Blueprint><<Record>> { field: value; .. };` (v0.8).

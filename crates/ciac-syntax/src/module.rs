@@ -21,7 +21,14 @@ use std::path::{Path, PathBuf};
 /// `import "std/<name>.ciac";` resolves against this table instead of
 /// the filesystem, a reserved namespace independent of the user's own
 /// directory layout or working directory.
-const STD_BLUEPRINTS: &[(&str, &str)] = &[("std/crud.ciac", include_str!("../std/crud.ciac"))];
+const STD_BLUEPRINTS: &[(&str, &str)] = &[
+    ("std/crud.ciac", include_str!("../std/crud.ciac")),
+    ("std/webhook.ciac", include_str!("../std/webhook.ciac")),
+    (
+        "std/rate-limited-api.ciac",
+        include_str!("../std/rate-limited-api.ciac"),
+    ),
+];
 
 /// Parses `entry` and recursively resolves every `import "path";` it
 /// (transitively) contains into one flat [`Program`], registering each

@@ -182,3 +182,184 @@ fn std_crud_blueprint_is_byte_identical_to_hand_written_crud() {
     std::fs::remove_dir_all(&hand_dir).ok();
     std::fs::remove_dir_all(&std_dir).ok();
 }
+
+/// v0.14 M5: `BlueprintItem` grows to cover `record`/`table`/`api`/
+/// `worker`/`pipeline`, enough for a body to declare a complete,
+/// self-contained api-plus-pipeline shape (not just `crud`/`stream`/
+/// `handler` as in v0.8). This exercises all five new item kinds in
+/// one blueprint and proves the expansion generates cleanly on both
+/// backends.
+const SELF_CONTAINED_API: &str = r#"
+service S;
+
+use { db Postgres; queue NATS; }
+
+blueprint Ingest<Payload: record> {
+    params { path: String; }
+
+    record Receipt { id: Uuid; }
+    table Receipts: Receipt;
+    stream Accepted: Payload;
+
+    handler Accept(payload: Payload) -> Payload {
+        db.insert(Receipts, Receipt { id: Uuid.new() });
+        publish Accepted(payload);
+        return payload;
+    }
+
+    api Endpoint: Payload {
+        method: POST;
+        path: path;
+    }
+    pipeline Endpoint:
+        Accept
+        -> Return;
+
+    worker Drain on Accepted;
+}
+"#;
+
+#[test]
+fn blueprint_body_supports_record_table_api_worker_pipeline() {
+    let src = format!(
+        "{SELF_CONTAINED_API}\nrecord Order {{ id: Uuid; total: Int; }}\n\
+         expand Ingest<Order> {{ path: \"/orders\"; }}\n"
+    );
+    let (ir, diags) = compile(&src);
+    assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
+    let ir = ir.expect("expands and type-checks");
+
+    for backend in backends() {
+        backend
+            .generate(&ir, &GenOptions::default())
+            .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
+    }
+}
+
+/// Two expansions of the same api-plus-pipeline blueprint must not
+/// collide: each expansion's `pipeline` has to keep pointing at *its
+/// own* (hygienically renamed) `api`, its own table, and its own
+/// stream — the sharp edge the v0.14 plan called out by name.
+#[test]
+fn two_expansions_of_a_self_contained_api_blueprint_are_hygienic() {
+    let src = format!(
+        "{SELF_CONTAINED_API}\nrecord Order {{ id: Uuid; total: Int; }}\n\
+         record Refund {{ id: Uuid; amount: Int; }}\n\
+         expand Ingest<Order> {{ path: \"/orders\"; }}\n\
+         expand Ingest<Refund> {{ path: \"/refunds\"; }}\n"
+    );
+    let (ir, diags) = compile(&src);
+    assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
+    let ir = ir.expect("expands and type-checks");
+
+    for backend in backends() {
+        backend
+            .generate(&ir, &GenOptions::default())
+            .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
+    }
+}
+
+/// v0.14 M5: a blueprint's `params` now reach into handler-body
+/// expressions (not just attribute values and declaration-name
+/// overrides) — the substituted literal has to actually change the
+/// generated comparison, not just parse.
+#[test]
+fn blueprint_params_reach_handler_body_expressions() {
+    const CAPPED: &str = r#"
+service S;
+blueprint Capped<Payload: record> {
+    params { limit: Int; }
+    handler CheckCap(payload: Payload) -> Bool {
+        return 1 >= limit;
+    }
+    api Check: Payload;
+    pipeline Check:
+        CheckCap
+        -> Return;
+}
+"#;
+    let low =
+        format!("{CAPPED}\nrecord Item {{ id: Uuid; }}\nexpand Capped<Item> {{ limit: 1; }}\n");
+    let (ir, diags) = compile(&low);
+    assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
+    let ir = ir.expect("expands and type-checks");
+    for backend in backends() {
+        backend
+            .generate(&ir, &GenOptions::default())
+            .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
+    }
+}
+
+/// v0.14 M5 std library: a webhook receiver — `api` + `stream` +
+/// `handler` that publishes the validated payload. Proof that the
+/// blueprint actually generates real, buildable output on both
+/// backends (there's no hand-written equivalent to diff against, so
+/// this is the behavioral half of the "byte-equivalence-or-behavioral"
+/// discipline `std/crud.ciac` established).
+#[test]
+fn std_webhook_blueprint_generates_on_both_backends() {
+    use ciac_integration_tests::compile_file;
+    use std::path::PathBuf;
+
+    let dir = std::env::temp_dir().join(format!(
+        "ciac-std-webhook-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry: PathBuf = dir.join("entry.ciac");
+    std::fs::write(
+        &entry,
+        "service S;\nuse { queue NATS; }\nimport \"std/webhook.ciac\";\n\
+         record Event { id: Uuid; kind: String; }\n\
+         expand Webhook<Event> { path: \"/hooks/x\"; }\n",
+    )
+    .unwrap();
+
+    let ir = compile_file(&entry);
+    for backend in backends() {
+        backend
+            .generate(&ir, &GenOptions::default())
+            .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// v0.14 M5 std library: a request-capped api — table-backed quota
+/// (`db.count`/`db.insert`) guarding a typed handler, with the cap
+/// itself supplied per `expand` site via `params` reaching the
+/// handler body (see `blueprint_params_reach_handler_body_expressions`).
+#[test]
+fn std_rate_limited_api_blueprint_generates_on_both_backends() {
+    use ciac_integration_tests::compile_file;
+    use std::path::PathBuf;
+
+    let dir = std::env::temp_dir().join(format!(
+        "ciac-std-rate-limited-api-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry: PathBuf = dir.join("entry.ciac");
+    std::fs::write(
+        &entry,
+        "service S;\nuse { db Postgres; }\nimport \"std/rate-limited-api.ciac\";\n\
+         record Comment { body: String; }\n\
+         expand RateLimitedApi<Comment> { path: \"/comments\"; limit: 100; }\n",
+    )
+    .unwrap();
+
+    let ir = compile_file(&entry);
+    for backend in backends() {
+        backend
+            .generate(&ir, &GenOptions::default())
+            .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

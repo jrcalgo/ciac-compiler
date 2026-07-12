@@ -1049,7 +1049,8 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
     // Only import what the mocked-dependency setup below actually uses —
     // a handler with no capability calls (e.g. a pure transform) needs
     // neither, and an unused import fails `ruff check`.
-    let needs_async_mock = ctx.needs_db || ctx.needs_cache || !ctx.extras.is_empty();
+    let needs_async_mock =
+        ctx.needs_db || ctx.needs_cache || ctx.needs_queue || !ctx.extras.is_empty();
     let needs_magic_mock = ctx.needs_db;
     match (needs_async_mock, needs_magic_mock) {
         (true, true) => lines.push("from unittest.mock import AsyncMock, MagicMock".to_owned()),
@@ -1094,7 +1095,24 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
     lines.push(String::new());
     lines.push(String::new());
     lines.push("@pytest.mark.anyio".to_owned());
-    lines.push(format!("async def test_{}_handle() -> None:", ctx.module));
+    let test_params = if ctx.needs_queue { "monkeypatch" } else { "" };
+    lines.push(format!(
+        "async def test_{}_handle({test_params}) -> None:",
+        ctx.module
+    ));
+
+    // `publish` is a bare module-level function (`from app.queue import
+    // publish`), not a constructor-injected dependency like
+    // `session`/`cache`/the extras — a real connection attempt would
+    // need a live broker, so it's patched at the handler module's own
+    // name binding instead of passed as a kwarg.
+    if ctx.needs_queue {
+        lines.push("    mock_publish = AsyncMock()".to_owned());
+        lines.push(format!(
+            "    monkeypatch.setattr(\"app.logic.{}.publish\", mock_publish)",
+            ctx.module
+        ));
+    }
 
     let mut kwargs = Vec::new();
     if ctx.needs_db {
@@ -1169,6 +1187,9 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
     }
     if needs.cache_get {
         lines.push("    cache.get.assert_awaited_once()".to_owned());
+    }
+    if ctx.needs_queue {
+        lines.push("    mock_publish.assert_awaited_once()".to_owned());
     }
     for extra in &ctx.extras {
         if extra.kind == "object_store" {

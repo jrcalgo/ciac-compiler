@@ -1,0 +1,42 @@
+// Standard blueprint: a request-capped typed API. The v0.14 forecast
+// sketch imagined a cache-backed counter inspected with `if cache.get
+// k as V is v { .. }`-style optional unwrapping — that construct
+// doesn't exist yet (v0.14 M1 deliberately deferred `is`-unwrap over
+// verb-returned optionals, see docs/expressions.md), so this
+// blueprint reaches the same request-capping effect with what's
+// actually expressible today: a `Ticket` row per accepted request and
+// `db.count` against the running total. That makes it a cumulative
+// quota (accept up to `limit` requests, ever) rather than a
+// decaying time window — real windowed expiry needs timestamp
+// arithmetic the language doesn't have either. Still a genuine,
+// reusable guard: wrap any single-record-payload API with a hard cap
+// with one `expand`.
+blueprint RateLimitedApi<Payload: record> {
+    params { path: String; limit: Int; }
+
+    record Ticket {
+        id: Uuid;
+    }
+    table Tickets: Ticket;
+
+    error TooManyRequests {
+        limit: Int;
+    }
+
+    handler CheckLimit(payload: Payload) -> Payload {
+        let accepted = db.count(Tickets);
+        if accepted >= limit {
+            fail TooManyRequests(limit);
+        };
+        db.insert(Tickets, Ticket { id: Uuid.new() });
+        return payload;
+    }
+
+    api Limited: Payload {
+        method: POST;
+        path: path;
+    }
+    pipeline Limited:
+        CheckLimit
+        -> Return;
+}

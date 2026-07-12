@@ -484,9 +484,40 @@ impl Parser<'_> {
                         body.push(BlueprintItem::Handler(item));
                     }
                 }
+                TokenKind::Record => {
+                    if let Some(Item::Record(item)) = self.record_decl(RecordKind::Data) {
+                        body.push(BlueprintItem::Record(item));
+                    }
+                }
+                TokenKind::Error => {
+                    if let Some(Item::Record(item)) = self.record_decl(RecordKind::Error) {
+                        body.push(BlueprintItem::Record(item));
+                    }
+                }
+                TokenKind::Table => {
+                    if let Some(Item::Table(item)) = self.table_decl() {
+                        body.push(BlueprintItem::Table(item));
+                    }
+                }
+                TokenKind::Api => {
+                    if let Some(Item::Api(item)) = self.api_decl() {
+                        body.push(BlueprintItem::Api(item));
+                    }
+                }
+                TokenKind::Worker => {
+                    if let Some(Item::Worker(item)) = self.worker_decl() {
+                        body.push(BlueprintItem::Worker(item));
+                    }
+                }
+                TokenKind::Pipeline => {
+                    if let Some(Item::Pipeline(item)) = self.pipeline_decl() {
+                        body.push(BlueprintItem::Pipeline(item));
+                    }
+                }
                 _ => {
                     self.error_expected(
-                        "a blueprint item (`use`, `crud`, `stream`, `handler`) or `}`",
+                        "a blueprint item (`use`, `crud`, `stream`, `handler`, `record`, \
+                         `error`, `table`, `api`, `worker`, `pipeline`) or `}`",
                     );
                     self.recover_inside_block();
                 }

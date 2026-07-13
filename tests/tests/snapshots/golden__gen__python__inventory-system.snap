@@ -49,6 +49,7 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && uv pip install --system -r pyproject.toml
 
 COPY app ./app
+COPY openapi.json ./
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -351,6 +352,10 @@ catalog/app/main.py
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 
 from app.api.price import router as price_router
@@ -365,6 +370,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Catalog", lifespan=lifespan)
+
+# The document `ciac build` emitted alongside this app (openapi.json,
+# derived straight from the IR) is the single source of truth for the
+# API spec; FastAPI's own auto-generated one would be a second,
+# slightly-different opinion on the same routes.
+_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+
+def _openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = json.loads(_openapi_path.read_text())
+    return app.openapi_schema
+
+
+app.openapi = _openapi
 
 
 @app.get("/health")
@@ -555,6 +575,283 @@ import pytest
 def anyio_backend() -> str:
     return "asyncio"
 ============================================================
+catalog/openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "Item": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ItemIn": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "ItemOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Catalog",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/items": {
+      "get": {
+        "operationId": "list_items",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ItemOut"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_item",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/items/{id}": {
+      "delete": {
+        "operationId": "delete_item",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "get": {
+        "operationId": "get_item",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "put": {
+        "operationId": "update_item",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/price": {
+      "post": {
+        "operationId": "price",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Item"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Item"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    }
+  }
+}
+============================================================
 catalog/pyproject.toml
 ============================================================
 [project]
@@ -703,6 +1000,7 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && uv pip install --system -r pyproject.toml
 
 COPY app ./app
+COPY openapi.json ./
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -842,12 +1140,31 @@ gateway/app/main.py
 ============================================================
 """Application assembly for Gateway. Generated by CIaC."""
 
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 
 from app.api.quote import router as quote_router
 
 
 app = FastAPI(title="Gateway")
+
+# The document `ciac build` emitted alongside this app (openapi.json,
+# derived straight from the IR) is the single source of truth for the
+# API spec; FastAPI's own auto-generated one would be a second,
+# slightly-different opinion on the same routes.
+_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+
+def _openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = json.loads(_openapi_path.read_text())
+    return app.openapi_schema
+
+
+app.openapi = _openapi
 
 
 @app.get("/health")
@@ -881,6 +1198,102 @@ import pytest
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+============================================================
+gateway/openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "Item": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Gateway",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/quote": {
+      "post": {
+        "operationId": "quote",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Item"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Item"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    }
+  }
+}
 ============================================================
 gateway/pyproject.toml
 ============================================================
@@ -947,3 +1360,21 @@ async def test_health() -> None:
         response = await client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+============================================================
+openapi.json
+============================================================
+{
+  "openapi-index": "0.15",
+  "project": "inventory-system",
+  "services": [
+    {
+      "name": "Catalog",
+      "spec": "catalog/openapi.json"
+    },
+    {
+      "name": "Gateway",
+      "spec": "gateway/openapi.json"
+    }
+  ]
+}

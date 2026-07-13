@@ -9,14 +9,23 @@ pub mod channel_{{ channel.snake }};
 {% for resource in c.resources -%}
 pub mod {{ resource.snake }};
 {% endfor %}
+use axum::http::header;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 
 use crate::state::AppState;
 
+/// Emitted by `ciac build` alongside this crate (`openapi.json`,
+/// derived straight from the IR) and embedded at compile time — the
+/// single source of truth for the API spec, not a hand-maintained
+/// second opinion on the same routes.
+const OPENAPI_JSON: &str = include_str!("../../openapi.json");
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi_json))
 {%- for api in c.apis %}
         .merge({{ api.snake }}::router())
 {%- endfor %}
@@ -33,6 +42,10 @@ pub fn router() -> Router<AppState> {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+async fn openapi_json() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/json")], OPENAPI_JSON)
 }
 {% if c.has_metrics %}
 async fn metrics() -> String {

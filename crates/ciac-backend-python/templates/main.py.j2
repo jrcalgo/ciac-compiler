@@ -3,6 +3,10 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 {% endif %}
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 {% for api in c.apis %}
 from app.api.{{ api.snake }} import router as {{ api.snake }}_router
@@ -50,6 +54,21 @@ app = FastAPI(title="{{ c.service_name }}", lifespan=lifespan)
 
 app = FastAPI(title="{{ c.service_name }}")
 {%- endif %}
+
+# The document `ciac build` emitted alongside this app (openapi.json,
+# derived straight from the IR) is the single source of truth for the
+# API spec; FastAPI's own auto-generated one would be a second,
+# slightly-different opinion on the same routes.
+_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+
+def _openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = json.loads(_openapi_path.read_text())
+    return app.openapi_schema
+
+
+app.openapi = _openapi
 
 
 @app.get("/health")

@@ -105,6 +105,283 @@ docker compose up --build
 | `src/workers/` | Queue consumers and scheduled jobs | compiler |
 | `src/config.rs` | Environment-driven settings | compiler |
 ============================================================
+catalog/openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "Item": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ItemIn": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "ItemOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Catalog",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/items": {
+      "get": {
+        "operationId": "list_items",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ItemOut"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_item",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/items/{id}": {
+      "delete": {
+        "operationId": "delete_item",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "get": {
+        "operationId": "get_item",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "put": {
+        "operationId": "update_item",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/price": {
+      "post": {
+        "operationId": "price",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Item"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Item"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    }
+  }
+}
+============================================================
 catalog/src/config.rs
 ============================================================
 //! Runtime configuration for Catalog. Generated by CIaC.
@@ -370,20 +647,33 @@ catalog/src/routes/mod.rs
 pub mod price;
 pub mod item;
 
+use axum::http::header;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 
 use crate::state::AppState;
 
+/// Emitted by `ciac build` alongside this crate (`openapi.json`,
+/// derived straight from the IR) and embedded at compile time — the
+/// single source of truth for the API spec, not a hand-maintained
+/// second opinion on the same routes.
+const OPENAPI_JSON: &str = include_str!("../../openapi.json");
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi_json))
         .merge(price::router())
         .merge(item::router())
 }
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+async fn openapi_json() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/json")], OPENAPI_JSON)
 }
 
 ============================================================
@@ -742,6 +1032,102 @@ docker compose up --build
 | `src/workers/` | Queue consumers and scheduled jobs | compiler |
 | `src/config.rs` | Environment-driven settings | compiler |
 ============================================================
+gateway/openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "Item": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Gateway",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/quote": {
+      "post": {
+        "operationId": "quote",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Item"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Item"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    }
+  }
+}
+============================================================
 gateway/src/clients/catalog.rs
 ============================================================
 //! Typed HTTP client for the `Catalog` service. Generated by CIaC.
@@ -911,19 +1297,32 @@ gateway/src/routes/mod.rs
 
 pub mod quote;
 
+use axum::http::header;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 
 use crate::state::AppState;
 
+/// Emitted by `ciac build` alongside this crate (`openapi.json`,
+/// derived straight from the IR) and embedded at compile time — the
+/// single source of truth for the API spec, not a hand-maintained
+/// second opinion on the same routes.
+const OPENAPI_JSON: &str = include_str!("../../openapi.json");
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi_json))
         .merge(quote::router())
 }
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+async fn openapi_json() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/json")], OPENAPI_JSON)
 }
 
 ============================================================
@@ -989,4 +1388,21 @@ impl AppState {
             config,
         })
     }
+}
+============================================================
+openapi.json
+============================================================
+{
+  "openapi-index": "0.15",
+  "project": "inventory-system",
+  "services": [
+    {
+      "name": "Catalog",
+      "spec": "catalog/openapi.json"
+    },
+    {
+      "name": "Gateway",
+      "spec": "gateway/openapi.json"
+    }
+  ]
 }

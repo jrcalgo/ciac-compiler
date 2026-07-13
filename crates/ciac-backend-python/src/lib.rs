@@ -94,6 +94,11 @@ impl Backend for PythonBackend {
                 env.get_template("system-README.md.j2")?
                     .render(context! { m => m })?,
             );
+            project.add_file(
+                "openapi.json",
+                serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
+                    .map_err(|e| BackendError::Other(e.to_string()))?,
+            );
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
                  `docker compose up` runs them all together"
@@ -159,6 +164,11 @@ fn emit_service(
         ),
     );
     project.add_file(at("app/main.py"), render("main.py.j2", empty())?);
+    project.add_file(
+        at("openapi.json"),
+        serde_json::to_string_pretty(&ciac_codegen::openapi::build_document(ctx))
+            .map_err(|e| BackendError::Other(e.to_string()))?,
+    );
     project.add_file(at("app/config.py"), render("config.py.j2", empty())?);
     if ctx.has_auth {
         project.add_file(at("app/auth.py"), render("auth.py.j2", empty())?);

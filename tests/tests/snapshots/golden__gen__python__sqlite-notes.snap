@@ -19,6 +19,7 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && uv pip install --system -r pyproject.toml
 
 COPY app ./app
+COPY openapi.json ./
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -263,6 +264,10 @@ app/main.py
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 
 from app.api.note import router as note_router
@@ -276,6 +281,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="SqliteNotes", lifespan=lifespan)
+
+# The document `ciac build` emitted alongside this app (openapi.json,
+# derived straight from the IR) is the single source of truth for the
+# API spec; FastAPI's own auto-generated one would be a second,
+# slightly-different opinion on the same routes.
+_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+
+def _openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = json.loads(_openapi_path.read_text())
+    return app.openapi_schema
+
+
+app.openapi = _openapi
 
 
 @app.get("/health")
@@ -426,6 +446,244 @@ services:
 
 volumes:
   app-data:
+============================================================
+openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "Note": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "NoteIn": {
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
+      "NoteOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "SqliteNotes",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/notes": {
+      "get": {
+        "operationId": "list_notes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/NoteOut"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_note",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/notes/{id}": {
+      "delete": {
+        "operationId": "delete_note",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "get": {
+        "operationId": "get_note",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "put": {
+        "operationId": "update_note",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    }
+  }
+}
 ============================================================
 pyproject.toml
 ============================================================

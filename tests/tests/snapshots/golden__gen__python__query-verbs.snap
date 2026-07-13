@@ -19,6 +19,7 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && uv pip install --system -r pyproject.toml
 
 COPY app ./app
+COPY openapi.json ./
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -501,6 +502,10 @@ app/main.py
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 
 from app.api.list_active_api import router as list_active_api_router
@@ -519,6 +524,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="QueryVerbs", lifespan=lifespan)
+
+# The document `ciac build` emitted alongside this app (openapi.json,
+# derived straight from the IR) is the single source of truth for the
+# API spec; FastAPI's own auto-generated one would be a second,
+# slightly-different opinion on the same routes.
+_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+
+def _openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = json.loads(_openapi_path.read_text())
+    return app.openapi_schema
+
+
+app.openapi = _openapi
 
 
 @app.get("/health")
@@ -619,6 +639,305 @@ services:
 
 volumes:
   app-data:
+============================================================
+openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "ActiveFilter": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active"
+        ],
+        "type": "object"
+      },
+      "IdOnly": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "Note": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "active"
+        ],
+        "type": "object"
+      },
+      "NoteUpdate": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "active"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "QueryVerbs",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/count-active-api": {
+      "post": {
+        "operationId": "count_active_api",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActiveFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ActiveFilter"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/delete-by-active-api": {
+      "post": {
+        "operationId": "delete_by_active_api",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActiveFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ActiveFilter"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/list-active-api": {
+      "post": {
+        "operationId": "list_active_api",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActiveFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ActiveFilter"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/remove-api": {
+      "post": {
+        "operationId": "remove_api",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdOnly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IdOnly"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/replace-api": {
+      "post": {
+        "operationId": "replace_api",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/NoteUpdate"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    }
+  }
+}
 ============================================================
 pyproject.toml
 ============================================================

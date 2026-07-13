@@ -20,6 +20,7 @@ pub mod k8s;
 pub mod manifest;
 pub mod migrations;
 pub mod model;
+pub mod openapi;
 mod project;
 pub mod protocol;
 pub mod regen;

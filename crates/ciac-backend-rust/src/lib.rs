@@ -98,6 +98,11 @@ impl Backend for RustBackend {
                 env.get_template("system-README.md.j2")?
                     .render(context! { m => m })?,
             );
+            project.add_file(
+                "openapi.json",
+                serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
+                    .map_err(|e| BackendError::Other(e.to_string()))?,
+            );
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
                  `docker compose up` runs them all together"
@@ -177,6 +182,11 @@ fn emit_service(
     );
     project.add_file(at("README.md"), render("README.md.j2", empty())?);
     project.add_file(at("Dockerfile"), render("Dockerfile.j2", empty())?);
+    project.add_file(
+        at("openapi.json"),
+        serde_json::to_string_pretty(&ciac_codegen::openapi::build_document(ctx))
+            .map_err(|e| BackendError::Other(e.to_string()))?,
+    );
     if !multi {
         project.add_file(
             at("docker-compose.yml"),

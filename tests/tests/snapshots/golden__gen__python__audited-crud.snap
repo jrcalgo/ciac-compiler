@@ -49,6 +49,7 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && uv pip install --system -r pyproject.toml
 
 COPY app ./app
+COPY openapi.json ./
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -287,6 +288,10 @@ accounts/app/main.py
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 
 from app.api.resource_user import router as resource_user_router
@@ -300,6 +305,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Accounts", lifespan=lifespan)
+
+# The document `ciac build` emitted alongside this app (openapi.json,
+# derived straight from the IR) is the single source of truth for the
+# API spec; FastAPI's own auto-generated one would be a second,
+# slightly-different opinion on the same routes.
+_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+
+def _openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = json.loads(_openapi_path.read_text())
+    return app.openapi_schema
+
+
+app.openapi = _openapi
 
 
 @app.get("/health")
@@ -440,6 +460,276 @@ import pytest
 def anyio_backend() -> str:
     return "asyncio"
 ============================================================
+accounts/openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "AuditEvent": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "ResourceUserIn": {
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
+      "ResourceUserOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "User": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "Video": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Accounts",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/resource_users": {
+      "get": {
+        "operationId": "list_resource_users",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ResourceUserOut"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_resource_user",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResourceUserIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceUserOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/resource_users/{id}": {
+      "delete": {
+        "operationId": "delete_resource_user",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "get": {
+        "operationId": "get_resource_user",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceUserOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "put": {
+        "operationId": "update_resource_user",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResourceUserIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceUserOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    }
+  }
+}
+============================================================
 accounts/pyproject.toml
 ============================================================
 [project]
@@ -524,6 +814,7 @@ COPY pyproject.toml ./
 RUN pip install --no-cache-dir uv && uv pip install --system -r pyproject.toml
 
 COPY app ./app
+COPY openapi.json ./
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -762,6 +1053,10 @@ catalog/app/main.py
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import json
+from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI
 
 from app.api.resource_video import router as resource_video_router
@@ -775,6 +1070,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Catalog", lifespan=lifespan)
+
+# The document `ciac build` emitted alongside this app (openapi.json,
+# derived straight from the IR) is the single source of truth for the
+# API spec; FastAPI's own auto-generated one would be a second,
+# slightly-different opinion on the same routes.
+_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+
+def _openapi() -> dict[str, Any]:
+    if app.openapi_schema is None:
+        app.openapi_schema = json.loads(_openapi_path.read_text())
+    return app.openapi_schema
+
+
+app.openapi = _openapi
 
 
 @app.get("/health")
@@ -915,6 +1225,276 @@ import pytest
 def anyio_backend() -> str:
     return "asyncio"
 ============================================================
+catalog/openapi.json
+============================================================
+{
+  "components": {
+    "schemas": {
+      "AuditEvent": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "ResourceVideoIn": {
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
+      "ResourceVideoOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "User": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "Video": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Catalog",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Liveness check."
+          }
+        }
+      }
+    },
+    "/resource_videos": {
+      "get": {
+        "operationId": "list_resource_videos",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ResourceVideoOut"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      },
+      "post": {
+        "operationId": "create_resource_video",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResourceVideoIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceVideoOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/resource_videos/{id}": {
+      "delete": {
+        "operationId": "delete_resource_video",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "get": {
+        "operationId": "get_resource_video",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceVideoOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      },
+      "put": {
+        "operationId": "update_resource_video",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResourceVideoIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceVideoOut"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    }
+  }
+}
+============================================================
 catalog/pyproject.toml
 ============================================================
 [project]
@@ -1050,3 +1630,20 @@ services:
 volumes:
   catalog-db-main-data:
   accounts-db-main-data:
+============================================================
+openapi.json
+============================================================
+{
+  "openapi-index": "0.15",
+  "project": "audited-system",
+  "services": [
+    {
+      "name": "Catalog",
+      "spec": "catalog/openapi.json"
+    },
+    {
+      "name": "Accounts",
+      "spec": "accounts/openapi.json"
+    }
+  ]
+}

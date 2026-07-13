@@ -5,9 +5,10 @@
 //! to ciac's release number.
 
 use ciac_diagnostics::{Diagnostics, Severity, SourceMap};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-pub const JSON_VERSION: u32 = 1;
+/// v0.15 M7 bumped this from 1: `JsonDiagnostic` gained `fixes`.
+pub const JSON_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
 pub struct Envelope {
@@ -48,6 +49,11 @@ pub struct JsonDiagnostic {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
     pub labels: Vec<JsonLabel>,
+    /// Applyable fixes (v0.15 M7) — mechanical, unambiguous edits only.
+    /// Never applied by `ciac check` itself; an editor's quick-fix or
+    /// an agent's check → apply → re-check loop applies one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<JsonFix>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +65,28 @@ pub struct JsonLabel {
     pub end_line: u32,
     pub end_column: u32,
     pub message: String,
+}
+
+/// A [`ciac_diagnostics::Fix`] with every edit's span resolved to
+/// file/line/column, same shape as [`JsonLabel`] (v0.15 M7).
+/// `Deserialize` too: `ciac lsp`'s `codeAction` handler round-trips
+/// this through an LSP diagnostic's `data` field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonFix {
+    pub title: String,
+    pub edits: Vec<JsonEdit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonEdit {
+    pub file: String,
+    /// 1-based, inclusive. `line == end_line && column == end_column`
+    /// is a pure insertion.
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub replacement: String,
 }
 
 pub fn envelope(
@@ -92,6 +120,30 @@ pub fn envelope(
                         end_column,
                         message: label.message.clone(),
                     }
+                })
+                .collect(),
+            fixes: diag
+                .fixes
+                .iter()
+                .map(|fix| JsonFix {
+                    title: fix.title.clone(),
+                    edits: fix
+                        .edits
+                        .iter()
+                        .map(|edit| {
+                            let file = sources.file(edit.span.file);
+                            let (line, column) = file.line_col(edit.span.start);
+                            let (end_line, end_column) = file.line_col(edit.span.end);
+                            JsonEdit {
+                                file: file.name.clone(),
+                                line,
+                                column,
+                                end_line,
+                                end_column,
+                                replacement: edit.replacement.clone(),
+                            }
+                        })
+                        .collect(),
                 })
                 .collect(),
         })

@@ -29,7 +29,7 @@ fn check_json_reports_a_resolved_diagnostic_on_a_bad_fixture() {
 
     let doc: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout is exactly one JSON document");
-    assert_eq!(doc["json_version"], 1);
+    assert_eq!(doc["json_version"], 2);
     assert_eq!(doc["command"], "check");
     assert_eq!(doc["success"], false);
 

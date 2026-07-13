@@ -10,7 +10,7 @@
 //! step survives as sugar for publishing to an auto-created default
 //! stream (`<service>.events`).
 
-use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
+use ciac_diagnostics::{Diagnostic, Diagnostics, Edit, ErrorCode, Fix, Span};
 use ciac_ir::{
     ApiConfig, AuthScheme, CacheEngine, ChannelConfig, Component, CrudConfig, DbEngine, EdgeKind,
     EmailProvider, EventStream, FieldType, HandlerBody, HttpMethod, JobConfig, LoggingProvider,
@@ -22,7 +22,7 @@ use ciac_ir::{
 use ciac_syntax::ast::{
     ApiDecl, Attr, AttrValue, ChannelDecl, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item,
     JobDecl, PipelineDecl, Program, RecordDecl, RecordKind, ServiceBlock, ServiceItem, StepExpr,
-    StreamDecl, TableDecl, TypeExpr, UseEntry, WorkerDecl,
+    StreamDecl, TableDecl, TypeExpr, UseBlock, UseEntry, WorkerDecl,
 };
 use heck::{ToKebabCase, ToSnakeCase};
 use std::collections::{BTreeMap, HashMap};
@@ -74,6 +74,14 @@ pub(crate) struct Builder<'d> {
     /// arm of [`Self::use_entry`] accept a missing `issuer` attribute,
     /// since it defaults to the dev Keycloak container's URL instead.
     current_block_has_users: bool,
+    /// Per-service insertion point for "add a capability line to this
+    /// service's `use { .. }` block" fixes (v0.15 M7): a zero-width
+    /// span right before the first entry (or right before the closing
+    /// `}` when the block is empty). Absent when the service has no
+    /// `use { .. }` block at all -- `missing_capability_fix` then
+    /// offers no fix rather than synthesizing a new block, a disclosed
+    /// scope cut (see its doc comment).
+    use_block_insertion: HashMap<ServiceId, Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +112,7 @@ impl<'d> Builder<'d> {
             stream_subjects: BTreeMap::new(),
             default_stream: None,
             current_block_has_users: false,
+            use_block_insertion: HashMap::new(),
         }
     }
 
@@ -182,6 +191,10 @@ impl<'d> Builder<'d> {
                 if let Item::Use(block) = item {
                     self.current_block_has_users =
                         block.entries.iter().any(|e| e.capability.text == "users");
+                    if let Some(sid) = self.current_service {
+                        self.use_block_insertion
+                            .insert(sid, use_block_insertion_point(block));
+                    }
                     for entry in &block.entries {
                         self.use_entry(entry);
                     }
@@ -340,6 +353,10 @@ impl<'d> Builder<'d> {
             if let ServiceItem::Use(block) = item {
                 self.current_block_has_users =
                     block.entries.iter().any(|e| e.capability.text == "users");
+                if let Some(sid) = self.current_service {
+                    self.use_block_insertion
+                        .insert(sid, use_block_insertion_point(block));
+                }
                 for entry in &block.entries {
                     self.use_entry(entry);
                 }
@@ -510,6 +527,23 @@ impl<'d> Builder<'d> {
         }
     }
 
+    /// The "add `line` to the current service's `use { .. }` block"
+    /// fix for a missing-capability diagnostic (v0.15 M7). `None` when
+    /// this service has no `use { .. }` block to insert into at all --
+    /// synthesizing a brand-new block is out of scope (a disclosed cut,
+    /// same spirit as the plan's "fixes that can't meet the bar ship as
+    /// prose `help`, not a fix").
+    fn missing_capability_fix(&self, line: &str) -> Option<Fix> {
+        let at = *self.use_block_insertion.get(&self.current_service?)?;
+        Some(Fix {
+            title: format!("Add `{line}` to the use block"),
+            edits: vec![Edit {
+                span: at,
+                replacement: format!("{line}\n    "),
+            }],
+        })
+    }
+
     fn use_entry(&mut self, entry: &UseEntry) {
         let capability = entry.capability.text.as_str();
         let provider = entry.provider.as_ref().map(|p| p.text.as_str());
@@ -528,17 +562,34 @@ impl<'d> Builder<'d> {
             ("auth", Some("OAuth2")) => {
                 let issuer = attr_string(&entry.attrs, "issuer");
                 if issuer.is_none() && !self.current_block_has_users {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::UnsupportedProviderConfig,
-                            "auth OAuth2 requires an `issuer` string attribute",
-                        )
-                        .with_label(entry.span, "missing `issuer`")
-                        .with_help(
-                            "add `issuer: \"...\"`, or declare `users Keycloak;` in the \
-                             same `use { .. }` block to default to its dev issuer",
-                        ),
+                    let mut diag = Diagnostic::new(
+                        ErrorCode::UnsupportedProviderConfig,
+                        "auth OAuth2 requires an `issuer` string attribute",
+                    )
+                    .with_label(entry.span, "missing `issuer`")
+                    .with_help(
+                        "add `issuer: \"...\"`, or declare `users Keycloak;` in the \
+                         same `use { .. }` block to default to its dev issuer",
                     );
+                    // v0.15 M7: only the bare `auth OAuth2;` shape (no
+                    // `{ .. }` block at all yet) gets a fix -- rewriting
+                    // an existing `{ .. }` block (e.g. one that already
+                    // sets `audience`) would need to preserve every
+                    // other attribute, which the entry's span alone
+                    // doesn't give us a safe way to splice around.
+                    if entry.attrs.is_empty() {
+                        diag = diag.with_fix(Fix {
+                            title: "Add a placeholder `issuer`".to_owned(),
+                            edits: vec![Edit {
+                                span: entry.span,
+                                replacement: format!(
+                                    "auth {} {{ issuer: \"http://localhost:8080\"; }}",
+                                    provider.unwrap_or("OAuth2")
+                                ),
+                            }],
+                        });
+                    }
+                    self.diags.push(diag);
                     return;
                 }
                 Component::Auth {
@@ -638,15 +689,25 @@ impl<'d> Builder<'d> {
                 provider: RealtimeProvider::Sse,
             },
             _ => {
-                let provider = provider.unwrap_or("<none>");
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::UnknownProvider,
-                        format!("unknown capability `{capability} {provider}`"),
-                    )
-                    .with_label(entry.span, "not a supported capability/provider pair")
-                    .with_help(ErrorCode::UnknownProvider.explanation()),
-                );
+                let provider_str = provider.unwrap_or("<none>");
+                let mut diag = Diagnostic::new(
+                    ErrorCode::UnknownProvider,
+                    format!("unknown capability `{capability} {provider_str}`"),
+                )
+                .with_label(entry.span, "not a supported capability/provider pair")
+                .with_help(ErrorCode::UnknownProvider.explanation());
+                if let Some(provider_ident) = &entry.provider {
+                    if let Some((sc, sp)) = nearest_capability_provider(capability, provider_str) {
+                        diag = diag.with_fix(Fix {
+                            title: format!("Rename to `{sc} {sp}`"),
+                            edits: vec![Edit {
+                                span: entry.capability.span.to(provider_ident.span),
+                                replacement: format!("{sc} {sp}"),
+                            }],
+                        });
+                    }
+                }
+                self.diags.push(diag);
                 return;
             }
         };
@@ -767,14 +828,16 @@ impl<'d> Builder<'d> {
         match self.default_capability(NodeKind::Queue, what, span) {
             Some(queue) => Some(queue),
             None => {
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::MissingCapability,
-                        format!("{what} requires a queue capability"),
-                    )
-                    .with_label(span, "used here")
-                    .with_help("add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block"),
-                );
+                let mut diag = Diagnostic::new(
+                    ErrorCode::MissingCapability,
+                    format!("{what} requires a queue capability"),
+                )
+                .with_label(span, "used here")
+                .with_help("add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block");
+                if let Some(fix) = self.missing_capability_fix("queue NATS;") {
+                    diag = diag.with_fix(fix);
+                }
+                self.diags.push(diag);
                 None
             }
         }
@@ -1004,14 +1067,16 @@ impl<'d> Builder<'d> {
             &format!("job `{}`", decl.name.text),
             decl.span,
         ) else {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::MissingCapability,
-                    format!("job `{}` requires a scheduler capability", decl.name.text),
-                )
-                .with_label(decl.span, "declared here")
-                .with_help("add `scheduler Cron;` to the `use { .. }` block"),
-            );
+            let mut diag = Diagnostic::new(
+                ErrorCode::MissingCapability,
+                format!("job `{}` requires a scheduler capability", decl.name.text),
+            )
+            .with_label(decl.span, "declared here")
+            .with_help("add `scheduler Cron;` to the `use { .. }` block");
+            if let Some(fix) = self.missing_capability_fix("scheduler Cron;") {
+                diag = diag.with_fix(fix);
+            }
+            self.diags.push(diag);
             return;
         };
         self.graph.add_edge(node, scheduler, EdgeKind::DependsOn);
@@ -1049,14 +1114,16 @@ impl<'d> Builder<'d> {
             &format!("channel `{}`", decl.name.text),
             decl.span,
         ) else {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::MissingCapability,
-                    format!("channel `{}` requires a realtime capability", decl.name.text),
-                )
-                .with_label(decl.span, "declared here")
-                .with_help("add `realtime live WebSocket;` (or `realtime live SSE;`) to the `use { .. }` block"),
-            );
+            let mut diag = Diagnostic::new(
+                ErrorCode::MissingCapability,
+                format!("channel `{}` requires a realtime capability", decl.name.text),
+            )
+            .with_label(decl.span, "declared here")
+            .with_help("add `realtime live WebSocket;` (or `realtime live SSE;`) to the `use { .. }` block");
+            if let Some(fix) = self.missing_capability_fix("realtime WebSocket;") {
+                diag = diag.with_fix(fix);
+            }
+            self.diags.push(diag);
             return;
         };
         self.graph.add_edge(stream, node, EdgeKind::AsyncMessage);
@@ -1080,14 +1147,16 @@ impl<'d> Builder<'d> {
             &format!("`crud {}`", decl.name.text),
             decl.span,
         ) else {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::MissingCapability,
-                    format!("`crud {}` requires a database", decl.name.text),
-                )
-                .with_label(decl.span, "declared here")
-                .with_help("add `db Postgres;` to the `use { .. }` block"),
-            );
+            let mut diag = Diagnostic::new(
+                ErrorCode::MissingCapability,
+                format!("`crud {}` requires a database", decl.name.text),
+            )
+            .with_label(decl.span, "declared here")
+            .with_help("add `db Postgres;` to the `use { .. }` block");
+            if let Some(fix) = self.missing_capability_fix("db Postgres;") {
+                diag = diag.with_fix(fix);
+            }
+            self.diags.push(diag);
             return;
         };
         let name = decl.name.text.clone();
@@ -1345,14 +1414,16 @@ impl<'d> Builder<'d> {
                 match self.default_capability(NodeKind::Auth, "the `Auth` step", ident.span) {
                     Some(node) => Some(step(StepKind::Auth { node }, ident.span)),
                     None => {
-                        self.diags.push(
-                            Diagnostic::new(
-                                ErrorCode::MissingCapability,
-                                "the `Auth` step requires an auth capability",
-                            )
-                            .with_label(ident.span, "used here")
-                            .with_help("add `auth JWT;` to the `use { .. }` block"),
-                        );
+                        let mut diag = Diagnostic::new(
+                            ErrorCode::MissingCapability,
+                            "the `Auth` step requires an auth capability",
+                        )
+                        .with_label(ident.span, "used here")
+                        .with_help("add `auth JWT;` to the `use { .. }` block");
+                        if let Some(fix) = self.missing_capability_fix("auth JWT;") {
+                            diag = diag.with_fix(fix);
+                        }
+                        self.diags.push(diag);
                         None
                     }
                 }
@@ -1765,6 +1836,87 @@ impl<'d> Builder<'d> {
     }
 }
 
+/// The zero-width span a "add a capability line here" fix (v0.15 M7)
+/// can insert text at: right before the first entry (so the new line
+/// inherits its indentation), or -- for an empty `use {}` -- right
+/// before the closing brace.
+fn use_block_insertion_point(block: &UseBlock) -> Span {
+    match block.entries.first() {
+        Some(first) => Span::new(first.span.file, first.span.start, first.span.start),
+        None => {
+            let at = block.span.end.saturating_sub(1);
+            Span::new(block.span.file, at, at)
+        }
+    }
+}
+
+/// Every `capability Provider` pair the closed registry accepts
+/// (`use_entry`'s big match, above) -- the candidate set a v0.15 M7
+/// "did you mean" rename fix searches for the nearest match in.
+const KNOWN_CAPABILITY_PROVIDERS: &[(&str, &str)] = &[
+    ("auth", "JWT"),
+    ("auth", "OAuth2"),
+    ("db", "Postgres"),
+    ("db", "MySQL"),
+    ("db", "SQLite"),
+    ("cache", "Redis"),
+    ("queue", "NATS"),
+    ("queue", "Kafka"),
+    ("logging", "Structured"),
+    ("metrics", "Prometheus"),
+    ("tracing", "OpenTelemetry"),
+    ("users", "Keycloak"),
+    ("object_store", "S3"),
+    ("email", "SES"),
+    ("email", "SMTP"),
+    ("search", "OpenSearch"),
+    ("scheduler", "Cron"),
+    ("realtime", "WebSocket"),
+    ("realtime", "SSE"),
+];
+
+/// The closest known `(capability, provider)` pair to `(capability,
+/// provider)`, by Levenshtein distance over the lowercased `"cap
+/// provider"` string -- `None` when nothing is close enough to be a
+/// plausible typo rather than a coincidence.
+fn nearest_capability_provider(
+    capability: &str,
+    provider: &str,
+) -> Option<(&'static str, &'static str)> {
+    let query = format!("{capability} {provider}").to_lowercase();
+    KNOWN_CAPABILITY_PROVIDERS
+        .iter()
+        .map(|&(c, p)| {
+            (
+                c,
+                p,
+                levenshtein(&query, &format!("{c} {p}").to_lowercase()),
+            )
+        })
+        .min_by_key(|&(_, _, dist)| dist)
+        .and_then(|(c, p, dist)| (dist <= 5).then_some((c, p)))
+}
+
+/// Classic O(n*m) edit-distance, one row at a time -- these strings
+/// are always short (capability/provider names, record field names),
+/// so no need for anything smarter. `pub(crate)` for reuse by
+/// `typeck.rs`'s unknown-field "did you mean" fix (v0.15 M7).
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
 fn kind_noun(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Api => "api",
@@ -2173,5 +2325,30 @@ mod attrs {
             }
         };
         base_valid
+    }
+}
+
+#[cfg(test)]
+mod fix_tests {
+    use super::*;
+
+    #[test]
+    fn levenshtein_is_zero_for_equal_strings_and_counts_substitutions() {
+        assert_eq!(levenshtein("mysql", "mysql"), 0);
+        assert_eq!(levenshtein("mongo", "mysql"), 4);
+        assert_eq!(levenshtein("", "abc"), 3);
+    }
+
+    #[test]
+    fn nearest_capability_provider_finds_a_close_typo() {
+        assert_eq!(
+            nearest_capability_provider("db", "Mongo"),
+            Some(("db", "MySQL"))
+        );
+        assert_eq!(
+            nearest_capability_provider("qeue", "NATS"),
+            Some(("queue", "NATS"))
+        );
+        assert_eq!(nearest_capability_provider("wat", "ThisIsNotReal"), None);
     }
 }

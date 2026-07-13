@@ -15,7 +15,7 @@
 //! at a terminal), `graph`, `explain`, `describe`.
 
 use crate::commands;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -180,6 +180,20 @@ fn tools_list_result() -> Value {
             "The language and CLI's machine-facing vocabulary (capabilities, providers, field types, builtin steps, declaration kinds, error codes, scaffold templates) as one versioned JSON document.",
             json!({"type": "object", "properties": {}}),
         ),
+        tool(
+            "fix",
+            "Apply a named fix `check` offered for a diagnostic (v0.15 M7): `code` selects the diagnostic (e.g. CIAC0005), `index` selects among its offered fixes when it has more than one (default 0). Dry-run by default -- pass apply: true to write the patched source and re-check.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop,
+                    "code": {"type": "string", "description": "Diagnostic code carrying the fix, e.g. CIAC0005."},
+                    "index": {"type": "integer", "description": "Which of that diagnostic's offered fixes to use. Defaults to 0."},
+                    "apply": {"type": "boolean", "description": "Write the patched source to `file` and re-check. Defaults to false (preview only)."},
+                },
+                "required": ["file", "code"],
+            }),
+        ),
     ]})
 }
 
@@ -242,6 +256,44 @@ fn tools_call(params: &Value) -> Result<Value> {
             commands::explain_document(&code)?
         }
         "describe" => serde_json::to_string_pretty(&crate::describe::build())?,
+        "fix" => {
+            let file = arg_path(&args, "file")?;
+            let code = arg_str(&args, "code")?;
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let (_, _, _sources, diags) = commands::front_end_quiet(&file)?;
+            let diag = diags
+                .iter()
+                .find(|d| <&'static str>::from(d.code) == code)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no `{code}` diagnostic reported for {}", file.display())
+                })?;
+            let fix = diag.fixes.get(index).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`{code}` offers no fix at index {index} (has {})",
+                    diag.fixes.len()
+                )
+            })?;
+            let src = std::fs::read_to_string(&file)
+                .with_context(|| format!("cannot read {}", file.display()))?;
+            let patched = fix.apply(&src);
+            if apply {
+                std::fs::write(&file, &patched)
+                    .with_context(|| format!("cannot write {}", file.display()))?;
+                let (envelope, _code) = commands::check_envelope(&file)?;
+                serde_json::to_string_pretty(&json!({
+                    "applied": true,
+                    "fix": fix.title,
+                    "recheck": envelope,
+                }))?
+            } else {
+                serde_json::to_string_pretty(&json!({
+                    "applied": false,
+                    "fix": fix.title,
+                    "patched_source": patched,
+                }))?
+            }
+        }
         other => anyhow::bail!("unknown tool `{other}`"),
     };
     Ok(json!({"content": [{"type": "text", "text": text}], "isError": false}))

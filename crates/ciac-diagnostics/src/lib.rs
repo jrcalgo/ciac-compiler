@@ -29,6 +29,44 @@ pub struct Label {
     pub message: String,
 }
 
+/// A single textual edit: replace the byte range `span` with
+/// `replacement`. `span.start == span.end` is a pure insertion.
+#[derive(Debug, Clone, Serialize)]
+pub struct Edit {
+    pub span: Span,
+    pub replacement: String,
+}
+
+/// An applyable fix for a diagnostic (v0.15 M7): a human-readable
+/// title plus the edits it takes. `ciac check` only ever *offers*
+/// fixes -- an editor's quick-fix or an agent's check -> apply ->
+/// re-check loop is what actually applies one.
+#[derive(Debug, Clone, Serialize)]
+pub struct Fix {
+    pub title: String,
+    pub edits: Vec<Edit>,
+}
+
+impl Fix {
+    /// Applies every edit to `src`, which must be the single source
+    /// file every edit's span points into -- every v0.15 M7 mechanical
+    /// fix is single-file, so multi-file application isn't needed yet.
+    /// Edits are applied in descending `span.start` order so an
+    /// earlier edit's offsets stay valid while a later one is spliced.
+    pub fn apply(&self, src: &str) -> String {
+        let mut edits: Vec<&Edit> = self.edits.iter().collect();
+        edits.sort_by(|a, b| b.span.start.cmp(&a.span.start));
+        let mut out = src.to_owned();
+        for edit in edits {
+            out.replace_range(
+                edit.span.start as usize..edit.span.end as usize,
+                &edit.replacement,
+            );
+        }
+        out
+    }
+}
+
 /// A single structured compiler diagnostic.
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
@@ -37,6 +75,7 @@ pub struct Diagnostic {
     pub message: String,
     pub labels: Vec<Label>,
     pub help: Option<String>,
+    pub fixes: Vec<Fix>,
 }
 
 impl Diagnostic {
@@ -48,6 +87,7 @@ impl Diagnostic {
             message: message.into(),
             labels: Vec::new(),
             help: None,
+            fixes: Vec::new(),
         }
     }
 
@@ -63,6 +103,13 @@ impl Diagnostic {
     #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+
+    /// Offers an applyable fix (v0.15 M7). Never applied automatically.
+    #[must_use]
+    pub fn with_fix(mut self, fix: Fix) -> Self {
+        self.fixes.push(fix);
         self
     }
 

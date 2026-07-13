@@ -25,11 +25,12 @@
 //! like the parser does. Independent handlers/declarations are unaffected
 //! by one broken handler.
 
+use crate::build::levenshtein;
 use crate::build::Builder;
-use ciac_diagnostics::{Diagnostic, ErrorCode, Span};
+use ciac_diagnostics::{Diagnostic, Edit, ErrorCode, Fix, Span};
 use ciac_ir::{
     Builtin, EdgeKind, FieldType, HandlerBody, HirArm, HirExpr, HirPredTerm, HirPredicate, HirStmt,
-    HirType, NodeKind, RecordId, RecordKind, Verb,
+    HirType, NodeKind, RecordField, RecordId, RecordKind, Verb,
 };
 use ciac_syntax::ast::{self, ArmLabel, Expr, FieldInit, HandlerDecl, Ident, Stmt, TypeExpr};
 use std::collections::HashMap;
@@ -95,6 +96,22 @@ impl Scope {
 
 /// A value's type, as `FieldType` (the surface/record-field type set)
 /// mapped onto the HIR's superset.
+/// The closest field name to `field` among `fields` by Levenshtein
+/// distance (v0.15 M7 "did you mean" fix) -- `None` when nothing is
+/// close enough to be a plausible typo rather than a coincidence.
+fn nearest_field<'a>(fields: &'a [RecordField], field: &str) -> Option<&'a str> {
+    fields
+        .iter()
+        .map(|f| {
+            (
+                f.name.as_str(),
+                levenshtein(&f.name.to_lowercase(), &field.to_lowercase()),
+            )
+        })
+        .min_by_key(|&(_, dist)| dist)
+        .and_then(|(name, dist)| (dist <= 3).then_some(name))
+}
+
 fn field_type_to_hir(ty: &FieldType) -> HirType {
     match ty {
         FieldType::Str => HirType::Str,
@@ -455,13 +472,21 @@ impl Builder<'_> {
                 };
                 let record = self.graph.record(rid);
                 let Some(f) = record.fields.iter().find(|f| f.name == field.text) else {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::UnknownRecordField,
-                            format!("record `{}` has no field `{}`", record.name, field.text),
-                        )
-                        .with_label(field.span, "unknown field"),
-                    );
+                    let mut diag = Diagnostic::new(
+                        ErrorCode::UnknownRecordField,
+                        format!("record `{}` has no field `{}`", record.name, field.text),
+                    )
+                    .with_label(field.span, "unknown field");
+                    if let Some(nearest) = nearest_field(&record.fields, &field.text) {
+                        diag = diag.with_fix(Fix {
+                            title: format!("Rename to `{nearest}`"),
+                            edits: vec![Edit {
+                                span: field.span,
+                                replacement: nearest.to_owned(),
+                            }],
+                        });
+                    }
+                    self.diags.push(diag);
                     return None;
                 };
                 let ty = field_type_to_hir(&f.ty);
@@ -1637,5 +1662,25 @@ impl Builder<'_> {
             arms: hir_arms,
             ty,
         })
+    }
+}
+
+#[cfg(test)]
+mod fix_tests {
+    use super::*;
+
+    fn field(name: &str) -> RecordField {
+        RecordField {
+            name: name.to_owned(),
+            ty: FieldType::Str,
+        }
+    }
+
+    #[test]
+    fn nearest_field_finds_a_close_typo_but_not_a_stranger() {
+        let fields = vec![field("id"), field("name"), field("email")];
+        assert_eq!(nearest_field(&fields, "nam"), Some("name"));
+        assert_eq!(nearest_field(&fields, "emial"), Some("email"));
+        assert_eq!(nearest_field(&fields, "totally_unrelated_xyz"), None);
     }
 }

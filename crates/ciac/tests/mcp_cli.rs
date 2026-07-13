@@ -77,7 +77,7 @@ fn mcp_round_trip_initialize_tools_list_and_tool_calls() {
     let tools = listed["result"]["tools"].as_array().expect("tools array");
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for expected in [
-        "check", "build", "diff", "verify", "graph", "explain", "describe",
+        "check", "build", "diff", "verify", "graph", "explain", "describe", "fix",
     ] {
         assert!(
             names.contains(&expected),
@@ -134,10 +134,66 @@ fn mcp_round_trip_initialize_tools_list_and_tool_calls() {
     assert!(text.starts_with("CIAC0006:"), "{text}");
     assert!(text.contains("cycle"), "{text}");
 
+    // `fix` (v0.15 M7): dry-run by default (preview only, no write),
+    // then applied and re-checked -- on a scratch copy, never the
+    // checked-in fixture.
+    let scratch_dir = std::env::temp_dir().join(format!("ciac-mcp-fix-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let scratch_file = scratch_dir.join("missing-scheduler.ciac");
+    std::fs::copy(
+        fixture("tests/ui/missing-scheduler-with-use-block.ciac"),
+        &scratch_file,
+    )
+    .expect("copy fixture to scratch");
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": { "name": "fix", "arguments": {
+            "file": scratch_file.to_str().unwrap(), "code": "CIAC0005",
+        } }
+    }));
+    let previewed = server.recv();
+    assert_eq!(previewed["result"]["isError"], json!(false));
+    let text = previewed["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let doc: Value = serde_json::from_str(text).expect("fix preview text is JSON");
+    assert_eq!(doc["applied"], json!(false), "{doc}");
+    assert!(
+        doc["patched_source"]
+            .as_str()
+            .expect("patched_source")
+            .contains("scheduler Cron;"),
+        "{doc}"
+    );
+    // Dry-run must not have touched the file on disk.
+    assert!(!std::fs::read_to_string(&scratch_file)
+        .unwrap()
+        .contains("scheduler Cron;"));
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+        "params": { "name": "fix", "arguments": {
+            "file": scratch_file.to_str().unwrap(), "code": "CIAC0005", "apply": true,
+        } }
+    }));
+    let applied = server.recv();
+    assert_eq!(applied["result"]["isError"], json!(false));
+    let text = applied["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let doc: Value = serde_json::from_str(text).expect("fix apply text is JSON");
+    assert_eq!(doc["applied"], json!(true), "{doc}");
+    assert_eq!(doc["recheck"]["success"], json!(true), "{doc}");
+    assert!(std::fs::read_to_string(&scratch_file)
+        .unwrap()
+        .contains("scheduler Cron;"));
+    std::fs::remove_dir_all(&scratch_dir).ok();
+
     // An unknown tool comes back as a tool-level error, not a
     // JSON-RPC protocol error.
     server.send(json!({
-        "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
         "params": { "name": "not-a-tool", "arguments": {} }
     }));
     let unknown = server.recv();

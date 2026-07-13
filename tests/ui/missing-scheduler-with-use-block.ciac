@@ -1,0 +1,7 @@
+// expect: CIAC0005
+service X;
+use { db Postgres; }
+
+job Cleanup {
+    schedule: "0 3 * * *";
+}

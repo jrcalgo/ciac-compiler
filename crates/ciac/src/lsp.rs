@@ -24,19 +24,21 @@
 //! Rename, references, code actions, and incremental parsing are
 //! explicitly deferred.
 
+use crate::json_out::{JsonEdit, JsonFix};
 use crate::vocab;
 use anyhow::Result;
 use ciac_diagnostics::{Diagnostics, Severity, SourceMap};
 use ciac_syntax::ast;
 use lsp_server::{Connection, Message, Notification, Response};
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, Hover, HoverContents,
-    HoverProviderCapability, MarkupContent, MarkupKind, NumberOrString, Position,
-    PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Url,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+    CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, Hover, HoverContents, HoverProviderCapability, MarkupContent,
+    MarkupKind, NumberOrString, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url, WorkspaceEdit,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -73,6 +75,7 @@ pub fn run() -> Result<ExitCode> {
         )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions::default()),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         ..Default::default()
     })?;
     connection.initialize(capabilities)?;
@@ -104,6 +107,12 @@ fn main_loop(connection: &Connection) -> Result<()> {
                         let result = serde_json::from_value::<CompletionParams>(req.params)
                             .ok()
                             .map(|p| completion(&p, &docs));
+                        Response::new_ok(req.id, serde_json::to_value(result)?)
+                    }
+                    "textDocument/codeAction" => {
+                        let result = serde_json::from_value::<CodeActionParams>(req.params)
+                            .ok()
+                            .map(|p| code_actions(&p));
                         Response::new_ok(req.id, serde_json::to_value(result)?)
                     }
                     other => Response::new_err(
@@ -249,6 +258,34 @@ fn to_lsp_diagnostics(diags: &Diagnostics, sources: &SourceMap, path: &Path) -> 
             message.push_str("\nhelp: ");
             message.push_str(help);
         }
+        // v0.15 M7: fixes ride along in `data`, the one field LSP
+        // preserves between `publishDiagnostics` and `codeAction` --
+        // `code_actions` below reads it straight back out, so the
+        // server never needs to remember diagnostics itself.
+        let fixes: Vec<JsonFix> = diag
+            .fixes
+            .iter()
+            .map(|fix| JsonFix {
+                title: fix.title.clone(),
+                edits: fix
+                    .edits
+                    .iter()
+                    .map(|edit| {
+                        let file = sources.file(edit.span.file);
+                        let (line, column) = file.line_col(edit.span.start);
+                        let (end_line, end_column) = file.line_col(edit.span.end);
+                        JsonEdit {
+                            file: file.name.clone(),
+                            line,
+                            column,
+                            end_line,
+                            end_column,
+                            replacement: edit.replacement.clone(),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
         out.push(Diagnostic {
             range: range.unwrap_or_default(),
             severity,
@@ -257,10 +294,53 @@ fn to_lsp_diagnostics(diags: &Diagnostics, sources: &SourceMap, path: &Path) -> 
             )),
             source: Some("ciac".into()),
             message,
+            data: (!fixes.is_empty())
+                .then(|| serde_json::to_value(&fixes).ok())
+                .flatten(),
             ..Default::default()
         });
     }
     out
+}
+
+/// Turns each code-action-request diagnostic's `data` (the fixes
+/// [`to_lsp_diagnostics`] stashed there) into an offered quick-fix
+/// (v0.15 M7) -- the LSP quick-fix and the `--json`/MCP fix are the
+/// same edits, just carried over a different wire.
+fn code_actions(params: &CodeActionParams) -> CodeActionResponse {
+    let mut actions: CodeActionResponse = Vec::new();
+    for diag in &params.context.diagnostics {
+        let Some(data) = &diag.data else { continue };
+        let Ok(fixes) = serde_json::from_value::<Vec<JsonFix>>(data.clone()) else {
+            continue;
+        };
+        for fix in fixes {
+            let edits: Vec<TextEdit> = fix
+                .edits
+                .iter()
+                .map(|edit| TextEdit {
+                    range: Range {
+                        start: Position::new(edit.line - 1, edit.column - 1),
+                        end: Position::new(edit.end_line - 1, edit.end_column - 1),
+                    },
+                    new_text: edit.replacement.clone(),
+                })
+                .collect();
+            let mut changes = HashMap::new();
+            changes.insert(params.text_document.uri.clone(), edits);
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: fix.title,
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        }
+    }
+    actions
 }
 
 fn hover(params: &TextDocumentPositionParams, docs: &HashMap<Url, DocState>) -> Option<Hover> {

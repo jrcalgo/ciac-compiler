@@ -44,7 +44,12 @@ pub(crate) fn front_end(file: &Path) -> Result<(Option<NormalizedIr>, bool, Sour
 
 /// [`front_end`] without the ariadne rendering — `--json` callers
 /// (v0.10 M3) serialize the returned [`Diagnostics`] instead.
-fn front_end_quiet(file: &Path) -> Result<(Option<NormalizedIr>, bool, SourceMap, Diagnostics)> {
+/// `pub(crate)`: also `ciac mcp`'s `fix` tool's (v0.15 M7) entry point
+/// for a diagnostic's offered [`ciac_diagnostics::Fix`], which the
+/// resolved-position `--json` envelope doesn't carry `Span`s for.
+pub(crate) fn front_end_quiet(
+    file: &Path,
+) -> Result<(Option<NormalizedIr>, bool, SourceMap, Diagnostics)> {
     let mut sources = SourceMap::new();
     let mut diags = Diagnostics::new();
     let program = ciac_syntax::load(file, &mut sources, &mut diags)

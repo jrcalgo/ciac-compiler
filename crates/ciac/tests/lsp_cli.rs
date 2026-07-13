@@ -105,6 +105,10 @@ fn lsp_round_trip_diagnostics_hover_and_completion() {
     let caps = &init["result"]["capabilities"];
     assert!(caps["hoverProvider"].as_bool().unwrap_or(false), "{caps}");
     assert!(caps["completionProvider"].is_object(), "{caps}");
+    assert!(
+        caps["codeActionProvider"].as_bool().unwrap_or(false),
+        "{caps}"
+    );
     server.send(json!({
         "jsonrpc": "2.0", "method": "initialized", "params": {}
     }));
@@ -178,6 +182,72 @@ fn lsp_round_trip_diagnostics_hover_and_completion() {
     }
 
     // shutdown / exit — the server must terminate cleanly.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": null
+    }));
+    server.response(5);
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
+    let status = server.child.wait().expect("server exits");
+    assert!(status.success(), "clean exit after shutdown");
+}
+
+/// v0.15 M7: a diagnostic's fix rides the LSP `data` field from
+/// `publishDiagnostics` to `codeAction` -- the same edits `--json`/MCP
+/// expose, resolved into a `WorkspaceEdit` a client applies directly.
+#[test]
+fn lsp_code_action_offers_a_missing_capability_fix() {
+    let path = fixture("tests/ui/missing-scheduler-with-use-block.ciac");
+    let uri = format!("file://{}", path.display());
+    let text = std::fs::read_to_string(&path).expect("fixture readable");
+
+    let mut server = Server::start();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    server.response(1);
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "ciac", "version": 1, "text": text
+        }}
+    }));
+    let published = server.notification("textDocument/publishDiagnostics");
+    let diags = published["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    let diag = diags
+        .iter()
+        .find(|d| d["code"] == "CIAC0005")
+        .expect("CIAC0005 reported");
+    assert!(diag["data"].is_array(), "fix data attached: {diag}");
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/codeAction",
+        "params": {
+            "textDocument": { "uri": uri },
+            "range": diag["range"],
+            "context": { "diagnostics": [diag] },
+        }
+    }));
+    let response = server.response(2);
+    let actions = response["result"].as_array().expect("code action array");
+    assert!(!actions.is_empty(), "{response}");
+    let action = &actions[0];
+    assert_eq!(action["kind"], "quickfix");
+    let edits = action["edit"]["changes"][&uri]
+        .as_array()
+        .expect("workspace edit for this document");
+    assert!(
+        edits.iter().any(|e| e["newText"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("scheduler Cron;")),
+        "{edits:?}"
+    );
+
     server.send(json!({
         "jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": null
     }));

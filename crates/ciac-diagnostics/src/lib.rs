@@ -55,7 +55,7 @@ impl Fix {
     /// earlier edit's offsets stay valid while a later one is spliced.
     pub fn apply(&self, src: &str) -> String {
         let mut edits: Vec<&Edit> = self.edits.iter().collect();
-        edits.sort_by(|a, b| b.span.start.cmp(&a.span.start));
+        edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.start));
         let mut out = src.to_owned();
         for edit in edits {
             out.replace_range(

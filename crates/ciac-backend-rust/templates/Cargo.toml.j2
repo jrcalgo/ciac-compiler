@@ -70,6 +70,14 @@ uuid = { version = "1", features = ["v4"] }
 {%- if c.has_metrics %}
 metrics-exporter-prometheus = "0.16"
 {%- endif %}
+{%- if c.has_tracing %}
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
+opentelemetry-http = "0.32"
+tracing-opentelemetry = "0.33"
+tower-http = { version = "0.6", features = ["trace"] }
+{%- endif %}
 {%- if needs_thiserror %}
 thiserror = "2"
 {%- endif %}

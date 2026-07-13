@@ -17,10 +17,51 @@ pub fn prometheus() -> &'static PrometheusHandle {
 }
 
 {% endif -%}
+{% if c.has_tracing -%}
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::Resource;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+{% endif -%}
 pub fn init() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+{%- if c.has_tracing %}
+    let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4317".to_owned());
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(otlp_endpoint)
+        .build()
+        .expect("build otlp span exporter");
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name("{{ c.service_name }}")
+                .build(),
+        )
+        .build();
+    let tracer = provider.tracer("{{ c.service_name }}");
+    opentelemetry::global::set_tracer_provider(provider);
+    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 {%- if c.has_logging %}
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().json())
+        .with(otel_layer)
+        .init();
+{%- else %}
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .with(otel_layer)
+        .init();
+{%- endif %}
+{%- elif c.has_logging %}
     tracing_subscriber::fmt().with_env_filter(filter).json().init();
 {%- else %}
     tracing_subscriber::fmt().with_env_filter(filter).init();

@@ -38,6 +38,9 @@ pub fn router() -> Router<AppState> {
 {%- if c.has_metrics %}
         .route("/metrics", get(metrics))
 {%- endif %}
+{%- if c.has_tracing %}
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+{%- endif %}
 }
 
 async fn health() -> Json<serde_json::Value> {

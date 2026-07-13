@@ -204,11 +204,13 @@ pub(crate) fn build_inner(
     };
     let mut k8s_image = None;
     let mut terraform = None;
+    let mut ci = false;
     for kind in &deploy.deploy {
         match kind.as_str() {
             "k8s" => k8s_image = Some((deploy.image_prefix.as_deref(), deploy.image_tag.as_str())),
             "terraform" => terraform = Some(profile),
-            other => bail!("unknown --deploy target `{other}`; available: k8s, terraform"),
+            "ci" => ci = true,
+            other => bail!("unknown --deploy target `{other}`; available: k8s, terraform, ci"),
         }
     }
     let mut ts_client = false;
@@ -236,6 +238,8 @@ pub(crate) fn build_inner(
         profile,
         deploy.secrets,
         ts_client,
+        ci,
+        deploy.image_prefix.clone(),
     )?;
 
     if force {
@@ -415,6 +419,8 @@ fn diff_plan(file: &Path, target: &str, out: &Path, name: Option<String>) -> Res
         ciac_codegen::Profile::Dev,
         false,
         false,
+        false,
+        None,
     )?;
     let manifest_file = manifest_path(out);
     let manifest = if manifest_file.exists() {
@@ -493,6 +499,8 @@ fn verify_inner(
         ciac_codegen::Profile::Dev,
         false,
         false,
+        false,
+        None,
     )?;
 
     if !output_dir_nonempty(out)? {
@@ -833,6 +841,8 @@ fn generate(
     profile: ciac_codegen::Profile,
     secrets: bool,
     ts_client: bool,
+    ci: bool,
+    image_prefix: Option<String>,
 ) -> Result<Generated> {
     let all = backends();
     let backend: Box<dyn Backend> = match all.into_iter().find(|b| b.id() == target) {
@@ -907,6 +917,14 @@ fn generate(
     }
     if let Some(tf_profile) = terraform {
         for (path, content) in ciac_codegen::terraform::build(&ir, tf_profile) {
+            project.add_file(path, content);
+        }
+    }
+    // v0.15 M5: opt-in GitHub Actions workflow (`ciac build --deploy
+    // ci`) — mirrors what `ciac verify` runs locally, plus an image
+    // build/push and a compose smoke job.
+    if ci {
+        for (path, content) in ciac_codegen::ci::build(&ir, backend.id(), image_prefix.as_deref()) {
             project.add_file(path, content);
         }
     }

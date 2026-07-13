@@ -72,10 +72,13 @@ enum Command {
         #[arg(long)]
         adopt: bool,
         /// Also emit deployment artifacts: `k8s` (manifests under
-        /// `k8s/`) and/or `terraform` (AWS modules for stateful
-        /// capabilities under `terraform/`). Repeatable. Compose
-        /// remains the dev default; these are additive production
-        /// posture.
+        /// `k8s/`), `terraform` (AWS modules for stateful capabilities
+        /// under `terraform/`), and/or `ci` (a GitHub Actions workflow
+        /// at `.github/workflows/ci.yml` that runs the same checks
+        /// `ciac verify` runs locally, builds/pushes an image on a
+        /// version tag, and boots the compose stack for a health-check
+        /// smoke job). Repeatable. Compose remains the dev default;
+        /// these are additive production posture.
         #[arg(long, value_name = "TARGET")]
         deploy: Vec<String>,
         /// Sizing profile for `--deploy` artifacts (k8s replicas and

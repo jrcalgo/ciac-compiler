@@ -134,6 +134,11 @@ pub enum TracingProvider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum UsersProvider {
+    Keycloak,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ObjectStoreProvider {
     S3,
 }
@@ -176,6 +181,7 @@ pub enum NodeKind {
     Logging,
     Metrics,
     Tracing,
+    Users,
     ObjectStore,
     Email,
     Search,
@@ -268,6 +274,15 @@ pub enum Component {
         name: String,
         provider: TracingProvider,
     },
+    /// A dev/test identity provider (v0.15 M6): compose gains a seeded
+    /// Keycloak realm (a client plus two dev users), and `auth OAuth2`'s
+    /// `issuer` defaults to this container's dev URL when the program's
+    /// own `use { .. }` block omits one. Never emitted as a k8s/
+    /// Terraform resource -- dev-and-test only, not an identity product.
+    Users {
+        name: String,
+        provider: UsersProvider,
+    },
     ObjectStore {
         name: String,
         provider: ObjectStoreProvider,
@@ -311,6 +326,7 @@ impl Component {
             Component::Logging { .. } => NodeKind::Logging,
             Component::Metrics { .. } => NodeKind::Metrics,
             Component::Tracing { .. } => NodeKind::Tracing,
+            Component::Users { .. } => NodeKind::Users,
             Component::ObjectStore { .. } => NodeKind::ObjectStore,
             Component::Email { .. } => NodeKind::Email,
             Component::Search { .. } => NodeKind::Search,
@@ -336,6 +352,7 @@ impl Component {
             | Component::Logging { name, .. }
             | Component::Metrics { name, .. }
             | Component::Tracing { name, .. }
+            | Component::Users { name, .. }
             | Component::ObjectStore { name, .. }
             | Component::Email { name, .. }
             | Component::Search { name, .. }
@@ -361,6 +378,7 @@ impl Component {
             Component::Logging { name, provider } => format!("logging {name} {provider:?}"),
             Component::Metrics { name, provider } => format!("metrics {name} {provider:?}"),
             Component::Tracing { name, provider } => format!("tracing {name} {provider:?}"),
+            Component::Users { name, provider } => format!("users {name} {provider:?}"),
             Component::ObjectStore { name, provider, .. } => {
                 format!("object_store {name} {provider:?}")
             }

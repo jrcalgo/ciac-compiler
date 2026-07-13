@@ -108,12 +108,13 @@ impl Pass for Reachability {
                     }
                 }
                 // Services/channels are created by references; logging,
-                // metrics, and tracing apply system-wide.
+                // metrics, tracing, and users apply system-wide.
                 NodeKind::Service
                 | NodeKind::Channel
                 | NodeKind::Logging
                 | NodeKind::Metrics
-                | NodeKind::Tracing => {}
+                | NodeKind::Tracing
+                | NodeKind::Users => {}
             }
         }
     }

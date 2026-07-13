@@ -49,7 +49,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me}
 {%- endif %}
 {%- endif %}
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.has_tracing %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.has_tracing or (c.auth_scheme == "oauth2" and c.has_users) %}
     depends_on:
 {%- for inst in c.db_instances %}
 {%- if inst.db_engine != "sqlite" %}
@@ -81,6 +81,10 @@ services:
       otel-collector:
         condition: service_started
 {%- endif %}
+{%- if c.auth_scheme == "oauth2" and c.has_users %}
+      keycloak:
+        condition: service_healthy
+{%- endif %}
 {%- endif %}
 {%- if c.has_sqlite_db %}
     volumes:
@@ -91,7 +95,7 @@ services:
   {{ c.dir }}-workers:
     build: ./{{ c.dir }}
     command: {{ backend.workers_command }}
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets or c.has_tracing %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets or c.has_tracing or (c.auth_scheme == "oauth2" and c.has_users) %}
     environment:
 {%- for inst in c.db_instances %}
       {{ inst.env_var }}: {% if inst.db_engine == "sqlite" %}{{ backend.sqlite_url_prefix }}{{ inst.db_name }}.db{{ backend.sqlite_url_suffix }}{% elif inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% else %}{{ backend.db_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% endif %}
@@ -151,6 +155,10 @@ services:
 {%- if c.has_tracing %}
       otel-collector:
         condition: service_started
+{%- endif %}
+{%- if c.auth_scheme == "oauth2" and c.has_users %}
+      keycloak:
+        condition: service_healthy
 {%- endif %}
 {%- endif %}
 {%- if c.has_sqlite_db %}
@@ -282,6 +290,24 @@ services:
     depends_on:
       jaeger:
         condition: service_started
+{%- endif %}
+{%- if m.has_users %}
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak-realm.json:/opt/keycloak/data/import/dev-realm.json:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
 {%- endif %}
 {%- if m.has_db or m.has_object_store %}
 

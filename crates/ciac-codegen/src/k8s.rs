@@ -163,7 +163,17 @@ fn service_env(ctx: &Ctx) -> Vec<(String, String)> {
         }
     }
     if ctx.auth_scheme == "oauth2" {
-        env.push(("OAUTH_ISSUER".to_owned(), ctx.auth_issuer.clone()));
+        let issuer = if ctx.has_users {
+            // `users Keycloak` (v0.15 M6) only ever runs in dev compose
+            // -- there's no Service in the cluster to resolve
+            // `KEYCLOAK_DEV_ISSUER` against, so the ConfigMap ships an
+            // explicit placeholder instead of a dev URL that would
+            // silently fail to resolve against a real deployment.
+            "https://REPLACE-ME.example.com/realms/prod".to_owned()
+        } else {
+            ctx.auth_issuer.clone()
+        };
+        env.push(("OAUTH_ISSUER".to_owned(), issuer));
         if !ctx.auth_audience.is_empty() {
             env.push(("OAUTH_AUDIENCE".to_owned(), ctx.auth_audience.clone()));
         }

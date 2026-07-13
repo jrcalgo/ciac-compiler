@@ -1,0 +1,119 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "Accounts",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "Accounts"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "OAuth2",
+      "issuer": null,
+      "audience": null
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Users",
+      "name": "default",
+      "provider": "Keycloak"
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Api",
+      "name": "Account",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Service",
+      "name": "AccountStore",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 3,
+      "to": 1,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 1,
+      "from": 1,
+      "to": 4,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 2,
+      "from": 4,
+      "to": 0,
+      "kind": "DataFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Account",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "email",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [],
+  "resources": [
+    {
+      "name": "Account",
+      "service_owner": 0,
+      "api": 3,
+      "service": 4,
+      "database": 0,
+      "cache": null,
+      "auth": 1,
+      "record": 0,
+      "config": {
+        "cache_ttl": 300,
+        "page_size": 100,
+        "read_scope": "accounts:read",
+        "write_scope": "accounts:write"
+      }
+    }
+  ],
+  "event_streams": []
+}

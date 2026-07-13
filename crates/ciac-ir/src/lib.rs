@@ -16,7 +16,7 @@ pub use component::{
     ApiConfig, AuthScheme, CacheEngine, ChannelConfig, Component, CrudConfig, DbEngine,
     EmailProvider, HttpMethod, JobConfig, LoggingProvider, MetricsProvider, NodeKind,
     ObjectStoreProvider, QueueEngine, RealtimeProvider, SchedulerProvider, SearchProvider,
-    TracingProvider, WorkerConfig,
+    TracingProvider, UsersProvider, WorkerConfig,
 };
 pub use graph::{
     Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Service,

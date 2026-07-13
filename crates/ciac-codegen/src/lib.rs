@@ -29,6 +29,7 @@ pub mod system_tests;
 pub mod template;
 pub mod terraform;
 pub mod ts_client;
+pub mod users;
 
 pub use project::{FileRole, GeneratedProject};
 

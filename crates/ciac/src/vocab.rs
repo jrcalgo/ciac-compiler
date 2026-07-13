@@ -105,6 +105,10 @@ pub const CAPABILITIES: &[Capability] = &[
         name: "external_http",
         doc: "A typed client for an external HTTP service (`base_url` attr).",
     },
+    Capability {
+        name: "users",
+        doc: "Dev/test identity provider; `auth OAuth2`'s `issuer` defaults to it when omitted.",
+    },
 ];
 
 /// The closed provider registry. `targets` is the per-backend truth
@@ -128,6 +132,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { name: "Cron", capability: "scheduler", targets: BOTH, doc: "In-process cron scheduling (default when the provider is omitted)." },
     Provider { name: "WebSocket", capability: "realtime", targets: BOTH, doc: "WebSocket fan-out." },
     Provider { name: "SSE", capability: "realtime", targets: BOTH, doc: "Server-sent events (default when the provider is omitted)." },
+    Provider { name: "Keycloak", capability: "users", targets: BOTH, doc: "Dev-only Keycloak container seeded with a realm, a public client, and two dev users (`dev-admin`/`dev-user`); `scripts/token.sh` mints real tokens." },
 ];
 
 /// Pipeline steps with built-in meaning (everything else names a handler).

@@ -105,6 +105,11 @@ impl Backend for PythonBackend {
                     ciac_codegen::compose::OTEL_COLLECTOR_CONFIG,
                 );
             }
+            if model.has_users {
+                for (path, content) in ciac_codegen::users::build(&model) {
+                    project.add_file(path, content);
+                }
+            }
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
                  `docker compose up` runs them all together"
@@ -164,6 +169,16 @@ fn emit_service(
             project.add_file(
                 at("otel-collector-config.yaml"),
                 ciac_codegen::compose::OTEL_COLLECTOR_CONFIG,
+            );
+        }
+        if ctx.has_users {
+            project.add_file(
+                at("keycloak-realm.json"),
+                ciac_codegen::users::realm_json(&ctx.scopes),
+            );
+            project.add_file(
+                at("scripts/token.sh"),
+                ciac_codegen::users::token_script(&ctx.scopes),
             );
         }
     }

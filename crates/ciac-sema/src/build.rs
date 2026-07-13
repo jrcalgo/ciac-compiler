@@ -17,7 +17,7 @@ use ciac_ir::{
     MatchArm, MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine,
     RealtimeProvider, Record, RecordField, RecordId, RecordKind as IrRecordKind, Resource,
     SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph, Table, TableId,
-    TracingProvider,
+    TracingProvider, UsersProvider,
 };
 use ciac_syntax::ast::{
     ApiDecl, Attr, AttrValue, ChannelDecl, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item,
@@ -69,6 +69,11 @@ pub(crate) struct Builder<'d> {
     stream_subjects: BTreeMap<String, Span>,
     /// Lazily-created default stream backing the legacy `Queue` step.
     default_stream: Option<NodeId>,
+    /// True while processing entries of a `use { .. }` block that also
+    /// declares `users Keycloak` (v0.15 M6) — lets the `auth OAuth2`
+    /// arm of [`Self::use_entry`] accept a missing `issuer` attribute,
+    /// since it defaults to the dev Keycloak container's URL instead.
+    current_block_has_users: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +103,7 @@ impl<'d> Builder<'d> {
             channel_paths: BTreeMap::new(),
             stream_subjects: BTreeMap::new(),
             default_stream: None,
+            current_block_has_users: false,
         }
     }
 
@@ -174,9 +180,12 @@ impl<'d> Builder<'d> {
             self.current_service = self.graph.services().next().map(|service| service.id);
             for item in &program.items {
                 if let Item::Use(block) = item {
+                    self.current_block_has_users =
+                        block.entries.iter().any(|e| e.capability.text == "users");
                     for entry in &block.entries {
                         self.use_entry(entry);
                     }
+                    self.current_block_has_users = false;
                 }
             }
             for item in &program.items {
@@ -329,9 +338,12 @@ impl<'d> Builder<'d> {
     fn build_service_items(&mut self, items: &[ServiceItem]) {
         for item in items {
             if let ServiceItem::Use(block) = item {
+                self.current_block_has_users =
+                    block.entries.iter().any(|e| e.capability.text == "users");
                 for entry in &block.entries {
                     self.use_entry(entry);
                 }
+                self.current_block_has_users = false;
             }
         }
         for item in items {
@@ -514,20 +526,29 @@ impl<'d> Builder<'d> {
                 audience: None,
             },
             ("auth", Some("OAuth2")) => {
-                let Some(issuer) = attr_string(&entry.attrs, "issuer") else {
+                let issuer = attr_string(&entry.attrs, "issuer");
+                if issuer.is_none() && !self.current_block_has_users {
                     self.diags.push(
                         Diagnostic::new(
                             ErrorCode::UnsupportedProviderConfig,
                             "auth OAuth2 requires an `issuer` string attribute",
                         )
-                        .with_label(entry.span, "missing `issuer`"),
+                        .with_label(entry.span, "missing `issuer`")
+                        .with_help(
+                            "add `issuer: \"...\"`, or declare `users Keycloak;` in the \
+                             same `use { .. }` block to default to its dev issuer",
+                        ),
                     );
                     return;
-                };
+                }
                 Component::Auth {
                     name: name.to_owned(),
                     scheme: AuthScheme::OAuth2,
-                    issuer: Some(issuer),
+                    // `None` here means "defaulted from `users Keycloak`"
+                    // (v0.15 M6) -- `ciac-codegen::model` resolves the
+                    // dev issuer URL, not sema, since the URL is a
+                    // deployment-shape fact, not a language fact.
+                    issuer,
                     audience: attr_string(&entry.attrs, "audience"),
                 }
             }
@@ -566,6 +587,10 @@ impl<'d> Builder<'d> {
             ("tracing", Some("OpenTelemetry")) => Component::Tracing {
                 name: name.to_owned(),
                 provider: TracingProvider::OpenTelemetry,
+            },
+            ("users", Some("Keycloak")) => Component::Users {
+                name: name.to_owned(),
+                provider: UsersProvider::Keycloak,
             },
             ("object_store", Some("S3")) => Component::ObjectStore {
                 name: name.to_owned(),
@@ -1778,6 +1803,7 @@ pub(crate) fn binding_kind(capability: &str) -> Option<NodeKind> {
         "logging" => NodeKind::Logging,
         "metrics" => NodeKind::Metrics,
         "tracing" => NodeKind::Tracing,
+        "users" => NodeKind::Users,
         _ => return None,
     })
 }

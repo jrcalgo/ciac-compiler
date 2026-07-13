@@ -16,6 +16,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Dev-only issuer URL for the `users Keycloak` container (v0.15 M6):
+/// realm `dev` in the shared `keycloak` compose service, port 8080 --
+/// `ciac-codegen::users` seeds a realm import matching this exactly.
+pub const KEYCLOAK_DEV_ISSUER: &str = "http://keycloak:8080/realms/dev";
+
 /// The generated system: one deployable project per declared service, or
 /// a single unprefixed project for single-service programs.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -39,6 +44,15 @@ pub struct SystemModel {
     /// then runs one shared otel-collector + Jaeger every service's
     /// `otel_exporter_otlp_endpoint` points at).
     pub has_tracing: bool,
+    /// Any service declares `users Keycloak` (v0.15 M6): the system
+    /// compose then runs one shared Keycloak container seeded with a
+    /// dev realm covering every scope declared anywhere in the system.
+    pub has_users: bool,
+    /// Every distinct scope string declared anywhere in the system
+    /// (union of each service's [`Ctx::scopes`]) — the dev Keycloak
+    /// realm needs one client scope per entry regardless of which
+    /// service declared `users` itself, since the realm is shared.
+    pub all_scopes: Vec<String>,
 }
 
 /// Root template context for one deployable project.
@@ -99,6 +113,11 @@ pub struct Ctx {
     /// FastAPI/HTTPX auto-instrumentation, and `traceparent`
     /// propagation across broker publish/consume.
     pub has_tracing: bool,
+    /// `use { users Keycloak; }` (v0.15 M6): this service's `auth
+    /// OAuth2` issuer, when not explicitly set, defaults to the dev
+    /// Keycloak container's URL, and the shared compose stack seeds a
+    /// realm covering every declared scope.
+    pub has_users: bool,
     pub queue_engine: Option<String>,
     /// Subject of the default stream backing the legacy `Queue` step.
     pub events_subject: String,
@@ -715,6 +734,18 @@ pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
         has_db: services.iter().any(|c| c.has_db),
         has_object_store: services.iter().any(|c| c.has_object_store),
         has_tracing: services.iter().any(|c| c.has_tracing),
+        has_users: services.iter().any(|c| c.has_users),
+        all_scopes: {
+            let mut scopes: Vec<String> = Vec::new();
+            for ctx in &services {
+                for scope in &ctx.scopes {
+                    if !scopes.contains(scope) {
+                        scopes.push(scope.clone());
+                    }
+                }
+            }
+            scopes
+        },
         services,
     }
 }
@@ -1223,7 +1254,15 @@ fn build_scoped(
             _ => String::new(),
         },
         auth_issuer: match capability(NodeKind::Auth).map(|n| &n.component) {
-            Some(Component::Auth { issuer, .. }) => issuer.clone().unwrap_or_default(),
+            Some(Component::Auth {
+                issuer: Some(issuer),
+                ..
+            }) => issuer.clone(),
+            // `issuer` omitted only ever type-checks (v0.15 M6) when
+            // `users Keycloak` is declared in the same `use { .. }`
+            // block, so this is the dev Keycloak container's realm --
+            // never emitted by k8s.rs/terraform.rs (see there).
+            Some(Component::Auth { issuer: None, .. }) => KEYCLOAK_DEV_ISSUER.to_owned(),
             _ => String::new(),
         },
         auth_audience: match capability(NodeKind::Auth).map(|n| &n.component) {
@@ -1280,6 +1319,7 @@ fn build_scoped(
         has_logging: capability(NodeKind::Logging).is_some(),
         has_metrics: capability(NodeKind::Metrics).is_some(),
         has_tracing: capability(NodeKind::Tracing).is_some(),
+        has_users: capability(NodeKind::Users).is_some(),
         queue_engine: capability(NodeKind::Queue).map(|n| match n.component {
             Component::Queue {
                 engine: QueueEngine::Nats,
@@ -2194,6 +2234,7 @@ fn binding_kind(kind: NodeKind) -> Option<&'static str> {
         NodeKind::Logging => "logging",
         NodeKind::Metrics => "metrics",
         NodeKind::Tracing => "tracing",
+        NodeKind::Users => "users",
         NodeKind::Api
         | NodeKind::Service
         | NodeKind::Worker

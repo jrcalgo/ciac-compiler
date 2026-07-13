@@ -246,10 +246,15 @@ impl Parser<'_> {
                         items.push(ServiceItem::Expand(item));
                     }
                 }
+                TokenKind::Table => {
+                    if let Some(Item::Table(item)) = self.table_decl() {
+                        items.push(ServiceItem::Table(item));
+                    }
+                }
                 _ => {
                     self.error_expected(
                         "a service item (`use`, `api`, `worker`, `job`, `channel`, `crud`, `events`, \
-                         `handler`, `extern`, `pipeline`, `expand`) or `}`",
+                         `handler`, `extern`, `pipeline`, `expand`, `table`) or `}`",
                     );
                     self.recover_inside_block();
                 }
@@ -385,11 +390,21 @@ impl Parser<'_> {
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
         let record = self.expect_ident()?;
-        let semi = self.expect(TokenKind::Semi)?;
+        let (attrs, tail_span) = self.decl_tail()?;
+        let db = attrs.into_iter().find_map(|attr| {
+            (attr.name.text == "db").then_some(match attr.value {
+                AttrValue::Ident(ident) => ident,
+                other => Ident {
+                    text: String::new(),
+                    span: other.span(),
+                },
+            })
+        });
         Some(Item::Table(TableDecl {
-            span: kw.span.to(semi.span),
+            span: kw.span.to(tail_span),
             name,
             record,
+            db,
         }))
     }
 

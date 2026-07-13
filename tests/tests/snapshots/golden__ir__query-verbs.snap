@@ -594,7 +594,9 @@ expression: json
   "tables": [
     {
       "name": "Notes",
-      "record": 0
+      "record": 0,
+      "service": 0,
+      "db_instance": 0
     }
   ],
   "pipelines": [

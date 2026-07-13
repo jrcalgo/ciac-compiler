@@ -846,11 +846,15 @@ expression: json
   "tables": [
     {
       "name": "Orders",
-      "record": 1
+      "record": 1,
+      "service": 0,
+      "db_instance": 0
     },
     {
       "name": "TicketsOrder",
-      "record": 5
+      "record": 5,
+      "service": 0,
+      "db_instance": 0
     }
   ],
   "pipelines": [

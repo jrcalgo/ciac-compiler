@@ -124,6 +124,13 @@ fn field_type_to_hir(ty: &FieldType) -> HirType {
         FieldType::Enum { variants } => HirType::Enum {
             variants: variants.clone(),
         },
+        // v0.16 M2: a resolved `Reference<T>` field type-checks as a
+        // plain value of the target record's type inside handler-body
+        // expressions (`RecordCons`, `FieldAccess`, ...) for now — the
+        // eventual wire contract (a field carries the target's `id`,
+        // never an embedded object) is v0.16 M5/M6 codegen, not a
+        // typeck-level distinction this milestone needs to make.
+        FieldType::Reference { target, .. } => HirType::Record(*target),
     }
 }
 

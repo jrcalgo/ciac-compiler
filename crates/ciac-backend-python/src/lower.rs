@@ -986,6 +986,9 @@ fn dummy_field(ty: &ciac_ir::FieldType) -> String {
         FieldType::Enum { variants } => {
             format!("{:?}", variants.first().cloned().unwrap_or_default())
         }
+        FieldType::Reference { .. } => {
+            unreachable!("relation codegen is gated until v0.16 M3 lands")
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use ciac_codegen::regen::{
 use ciac_codegen::{Backend, GenOptions, GeneratedProject};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
-use ciac_ir::NormalizedIr;
+use ciac_ir::{FieldType, NormalizedIr};
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -882,6 +882,29 @@ fn generate(
 
     if let Err(err) = ciac_codegen::check_support(backend.as_ref(), &ir) {
         eprintln!("error[{}]: {err}", ErrorCode::UnsupportedConstruct);
+        bail!("unsupported construct");
+    }
+    // v0.16 M2: `Reference<T>` fields are fully resolved by sema (so
+    // `ciac check` already validates relations, cascades, and cycles),
+    // but no backend can render foreign keys/link tables/migrations for
+    // them yet -- that codegen is v0.16 M3+. Refuse cleanly here rather
+    // than let any of the (unreachable!()-guarded) codegen match arms
+    // downstream panic.
+    if let Some(name) = ir
+        .records()
+        .find(|(_, record)| {
+            record
+                .fields
+                .iter()
+                .any(|f| matches!(f.ty, FieldType::Reference { .. }))
+        })
+        .map(|(_, record)| record.name.clone())
+    {
+        eprintln!(
+            "error[{}]: record `{name}` has a `Reference<T>` field, which no backend can \
+             generate yet (relation codegen lands in v0.16 M3+)",
+            ErrorCode::UnsupportedConstruct
+        );
         bail!("unsupported construct");
     }
 

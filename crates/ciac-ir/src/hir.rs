@@ -8,6 +8,7 @@
 //! Backends (once they exist for this construct) consume only this HIR,
 //! never the raw AST.
 
+use crate::graph::{NodeId, ServiceId};
 use crate::record::RecordId;
 use serde::Serialize;
 
@@ -18,10 +19,21 @@ use serde::Serialize;
 pub struct TableId(pub u32);
 
 /// A resolved `table <Name>: <Record>;` declaration.
+///
+/// `service`/`db_instance` (v0.16 M2) are the table's ownership: which
+/// service declares it and which resolved `db` capability instance node
+/// backs it. `None` for a single-service program with no `service { .. }`
+/// blocks at all (there's exactly one implicit service, so ownership is
+/// unambiguous without recording it) — both are `Some` for every table
+/// registered inside an explicit `service { .. }` block or a
+/// multi-database single-service program. `Reference<T>` resolution
+/// compares two tables' `db_instance` to decide `CrossStorageReference`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Table {
     pub name: String,
     pub record: RecordId,
+    pub service: Option<ServiceId>,
+    pub db_instance: Option<NodeId>,
 }
 
 /// The type of a value inside a handler body. Extends [`crate::FieldType`]

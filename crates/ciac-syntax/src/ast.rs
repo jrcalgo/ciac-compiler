@@ -110,6 +110,11 @@ pub enum ServiceItem {
     /// `expand <Blueprint><<Record>> { .. };` (v0.8) inside a service
     /// block. See `Item::Expand`.
     Expand(ExpandStmt),
+    /// `table <Name>: <Record> [{ db: <instance>; }];` (v0.16 M2) inside
+    /// a service block — the owning-service form `Reference<T>`
+    /// resolution needs. See `Item::Table` for the single-service
+    /// top-level form.
+    Table(TableDecl),
 }
 
 /// `blueprint <Name><<TypeParam>: record> { params { .. } <body> }`
@@ -253,10 +258,15 @@ pub struct StreamDecl {
 
 /// `table <Name>: <Record>;` — a named, typed persistent table (v0.7).
 /// `db.*` verbs in handler bodies operate on tables, not raw records.
+/// `db: <instance>;` (v0.16 M2) names the owning database capability
+/// instance explicitly — required when a service has more than one
+/// unambiguous `db` instance; otherwise inferred the same way any other
+/// unqualified capability use is (`Builder::default_capability`).
 #[derive(Debug, Clone, Serialize)]
 pub struct TableDecl {
     pub name: Ident,
     pub record: Ident,
+    pub db: Option<Ident>,
     pub span: Span,
 }
 

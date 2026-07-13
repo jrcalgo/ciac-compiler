@@ -517,6 +517,9 @@ fn sample_value(ty: &FieldType) -> serde_json::Value {
         FieldType::Enum { variants } => {
             json!(variants.first().cloned().unwrap_or_default())
         }
+        FieldType::Reference { .. } => {
+            unreachable!("relation codegen is gated until v0.16 M3 lands")
+        }
     }
 }
 

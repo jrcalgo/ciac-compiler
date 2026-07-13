@@ -486,6 +486,12 @@ fn harvest(program: &ast::Program) -> Vec<Symbol> {
             }
             ast::ServiceItem::Handler(h) => handler(out, h),
             ast::ServiceItem::Pipeline(p) => pipeline(out, p),
+            ast::ServiceItem::Table(t) => push(
+                out,
+                &t.name,
+                "table",
+                format!("persistent table of record `{}`", t.record.text),
+            ),
             ast::ServiceItem::Use(_) | ast::ServiceItem::Expand(_) => {}
         }
     }

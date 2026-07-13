@@ -379,6 +379,7 @@ fn substitute_item(
         BlueprintItem::Table(d) => BlueprintItem::Table(TableDecl {
             name: renamed_ident(&d.name, renames),
             record: substitute_reference(&d.record, blueprint, stmt, renames),
+            db: d.db.as_ref().map(|db| renamed_ident(db, renames)),
             span: d.span,
         }),
         BlueprintItem::Api(d) => BlueprintItem::Api(ApiDecl {

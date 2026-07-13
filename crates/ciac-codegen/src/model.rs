@@ -2079,6 +2079,14 @@ pub fn field_sql_type(ty: &FieldType) -> &'static str {
         FieldType::Bool => "BOOLEAN",
         FieldType::Timestamp => "TIMESTAMPTZ",
         FieldType::Json => "JSONB",
+        // v0.16 M2 resolves `Reference<T>` fields in sema; the FK-column
+        // codegen mapping is M3. `commands::generate` refuses to reach
+        // any backend while a resolved reference exists in the program
+        // (a build-time gate, mirroring `Backend::supports`/CIAC0011),
+        // so this arm is unreachable today.
+        FieldType::Reference { .. } => {
+            unreachable!("relation codegen is gated until v0.16 M3 lands")
+        }
     }
 }
 
@@ -2112,6 +2120,9 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
                 });
                 (format!("Literal[{literal}]"), enum_name)
             }
+            FieldType::Reference { .. } => {
+                unreachable!("relation codegen is gated until v0.16 M3 lands")
+            }
         };
         let is_enum = matches!(field.ty, FieldType::Enum { .. });
         let type_kind = match &field.ty {
@@ -2128,6 +2139,9 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
                 name: rust_type.clone(),
                 variants: variants.clone(),
             },
+            FieldType::Reference { .. } => {
+                unreachable!("relation codegen is gated until v0.16 M3 lands")
+            }
         };
         fields.push(FieldCtx {
             name: field.name.clone(),

@@ -12,12 +12,12 @@
 
 use ciac_diagnostics::{Diagnostic, Diagnostics, Edit, ErrorCode, Fix, Span};
 use ciac_ir::{
-    ApiConfig, AuthScheme, CacheEngine, ChannelConfig, Component, CrudConfig, DbEngine, EdgeKind,
-    EmailProvider, EventStream, FieldType, HandlerBody, HttpMethod, JobConfig, LoggingProvider,
-    MatchArm, MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine,
-    RealtimeProvider, Record, RecordField, RecordId, RecordKind as IrRecordKind, Resource,
-    SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph, Table, TableId,
-    TracingProvider, UsersProvider,
+    ApiConfig, AuthScheme, CacheEngine, Cardinality, ChannelConfig, Component, CrudConfig,
+    DbEngine, EdgeKind, EmailProvider, EventStream, FieldType, HandlerBody, HttpMethod, JobConfig,
+    LoggingProvider, MatchArm, MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline,
+    QueueEngine, RealtimeProvider, Record, RecordField, RecordId, RecordKind as IrRecordKind,
+    Resource, SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph, Table,
+    TableId, TracingProvider, UsersProvider,
 };
 use ciac_syntax::ast::{
     ApiDecl, Attr, AttrValue, ChannelDecl, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item,
@@ -49,6 +49,16 @@ pub(crate) struct Builder<'d> {
     records: HashMap<String, (RecordId, Span)>,
     /// Table names → ids (v0.7 M2; own namespace, resolved after records).
     tables: HashMap<String, (TableId, Span)>,
+    /// Record → the (first) table backing it (v0.16 M2) — a
+    /// `Reference<T>` field's source record must be backed by typed
+    /// storage (`RefRequiresTypedStorage` otherwise), and its owning
+    /// table's service/database instance is what `CrossStorageReference`
+    /// compares against the target's.
+    record_tables: HashMap<RecordId, TableId>,
+    /// Every `Reference<T>` field seen during record registration,
+    /// deferred until every record and table in the program is
+    /// registered (v0.16 M2) — see `resolve_references`.
+    pending_references: Vec<PendingReference>,
     /// Handler service nodes created implicitly from pipeline steps.
     handlers: HashMap<String, NodeId>,
     /// Handler declarations by name; missing entries keep legacy implicit bindings.
@@ -91,6 +101,18 @@ struct BindingSpec {
     span: Span,
 }
 
+/// A `Reference<T>` field seen during record registration, deferred
+/// until `resolve_references` runs (v0.16 M2) — see
+/// `Builder::pending_references`.
+#[derive(Debug, Clone)]
+struct PendingReference {
+    record: RecordId,
+    field_index: usize,
+    target: Ident,
+    attrs: Vec<Attr>,
+    field_span: Span,
+}
+
 impl<'d> Builder<'d> {
     fn new(diags: &'d mut Diagnostics) -> Self {
         Self {
@@ -101,6 +123,8 @@ impl<'d> Builder<'d> {
             current_service: None,
             records: HashMap::new(),
             tables: HashMap::new(),
+            record_tables: HashMap::new(),
+            pending_references: Vec::new(),
             handlers: HashMap::new(),
             handler_bindings: HashMap::new(),
             handler_signatures: HashMap::new(),
@@ -122,17 +146,15 @@ impl<'d> Builder<'d> {
             .iter()
             .any(|item| matches!(item, Item::ServiceBlock(_)));
         self.project_name(program, has_service_blocks);
-        // Types first: streams and components reference them. Tables
-        // resolve after records (a table's backing record must already be
-        // registered).
+        // Records first: streams, tables, and `Reference<T>` fields all
+        // name them. Tables resolve after records but before `use`
+        // blocks/service registration is done per branch below (v0.16
+        // M2: a table's owning database instance must be resolved
+        // against capability instances that only exist once `use`
+        // entries for that service have been processed).
         for item in &program.items {
             if let Item::Record(decl) = item {
                 self.record(decl);
-            }
-        }
-        for item in &program.items {
-            if let Item::Table(decl) = item {
-                self.table(decl);
             }
         }
         self.register_services(program, has_service_blocks);
@@ -163,13 +185,27 @@ impl<'d> Builder<'d> {
                             "move this declaration into a service block",
                         ),
                     ),
+                    // v0.16 M2: a top-level table doesn't identify a
+                    // service/database ownership boundary in a
+                    // multi-service project — it must be declared inside
+                    // the owning `service { .. }` block.
+                    Item::Table(_) => self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidServiceScope,
+                            "in a multi-service project, `table` must be declared inside its \
+                             owning `service { .. }` block",
+                        )
+                        .with_label(
+                            item_span(item),
+                            "move this declaration into a service block",
+                        ),
+                    ),
                     Item::ServiceBlock(block) => self.build_service_block_decls(block),
                     Item::Import(_)
                     | Item::Project(_)
                     | Item::Service(_)
                     | Item::Record(_)
-                    | Item::Stream(_)
-                    | Item::Table(_) => {}
+                    | Item::Stream(_) => {}
                     // `blueprints::expand` (v0.8 M2) always runs before
                     // `build_graph` and eliminates every `Blueprint`/
                     // `Expand` item from its output — unlike `Import`
@@ -206,10 +242,20 @@ impl<'d> Builder<'d> {
                     self.stream(decl, true);
                 }
             }
+            // v0.16 M2: after `use` (capability instances now exist) so
+            // `{ db: <instance>; }` — or the implicit default — resolves;
+            // before `build_flat_items`, since `Reference<T>` resolution
+            // (deferred to `resolve_references` below) needs every table.
+            for item in &program.items {
+                if let Item::Table(decl) = item {
+                    self.table(decl);
+                }
+            }
             self.build_flat_items(&program.items);
         }
         self.check_scoped_apis();
         self.check_scoped_cruds();
+        self.resolve_references();
         self.graph
     }
 
@@ -363,6 +409,14 @@ impl<'d> Builder<'d> {
                 self.current_block_has_users = false;
             }
         }
+        // v0.16 M2: after `use` (capability instances exist to resolve
+        // `{ db: <instance>; }` — or the implicit default — against) and
+        // before handlers/api/etc, which don't depend on table order.
+        for item in items {
+            if let ServiceItem::Table(decl) = item {
+                self.table(decl);
+            }
+        }
         for item in items {
             if let ServiceItem::Handler(decl) = item {
                 self.handler_decl(decl);
@@ -376,7 +430,10 @@ impl<'d> Builder<'d> {
                 ServiceItem::Channel(decl) => self.channel(decl),
                 ServiceItem::Crud(decl) => self.crud(decl),
                 ServiceItem::Events(decl) => self.events(decl),
-                ServiceItem::Use(_) | ServiceItem::Handler(_) | ServiceItem::Pipeline(_) => {}
+                ServiceItem::Use(_)
+                | ServiceItem::Handler(_)
+                | ServiceItem::Pipeline(_)
+                | ServiceItem::Table(_) => {}
                 ServiceItem::Expand(_) => {
                     unreachable!("blueprints::expand did not eliminate this item")
                 }
@@ -397,6 +454,14 @@ impl<'d> Builder<'d> {
             return;
         }
         let mut fields: Vec<RecordField> = Vec::new();
+        // v0.16 M2: a `Reference<T>` field's real type isn't known until
+        // every record and table in the program is registered (the
+        // target might be declared later in the file, and its owning
+        // table's service/database instance must exist). A placeholder
+        // `Json` field holds the slot — same position, same name — so
+        // field order is preserved; `resolve_references` overwrites
+        // `fields[field_index].ty` once resolution runs.
+        let mut deferred: Vec<(usize, Ident, Vec<Attr>, Span)> = Vec::new();
         for field in &decl.fields {
             if fields.iter().any(|f| f.name == field.name.text) {
                 self.diags.push(
@@ -446,23 +511,9 @@ impl<'d> Builder<'d> {
                     );
                     continue;
                 }
-                // v0.16 M1: `Reference<T>` parses; resolving it against a
-                // declared record/table (cardinality, on_delete/on_update,
-                // service/database ownership) is the v0.16 M2 relation
-                // resolution pass, not yet implemented.
-                TypeExpr::Reference { span, .. } => {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::UnsupportedFieldType,
-                            "`Reference<T>` fields are not resolved yet",
-                        )
-                        .with_label(*span, "relation resolution lands in v0.16 M2")
-                        .with_help(
-                            "the surface syntax is frozen (v0.16 M1); relation semantics, \
-                             storage, and codegen are still being implemented",
-                        ),
-                    );
-                    continue;
+                TypeExpr::Reference { target, span } => {
+                    deferred.push((fields.len(), target.clone(), field.attrs.clone(), *span));
+                    FieldType::Json
                 }
             };
             fields.push(RecordField {
@@ -480,6 +531,15 @@ impl<'d> Builder<'d> {
             kind,
         });
         self.records.insert(decl.name.text.clone(), (id, decl.span));
+        for (field_index, target, attrs, field_span) in deferred {
+            self.pending_references.push(PendingReference {
+                record: id,
+                field_index,
+                target,
+                attrs,
+                field_span,
+            });
+        }
     }
 
     /// Resolves an optional record reference, reporting `CIAC0015` when
@@ -519,11 +579,214 @@ impl<'d> Builder<'d> {
         let Some(record) = self.resolve_record(&decl.record) else {
             return;
         };
+        // v0.16 M2: resolve the table's owning database instance — named
+        // (`{ db: primary; }`) or the service's unambiguous default,
+        // exactly like any other unqualified capability use. `None` only
+        // when the service has no `db` capability at all; existing
+        // programs with exactly one instance are unaffected.
+        let db_instance = match &decl.db {
+            Some(name) => self.resolve_capability(NodeKind::Database, &name.text, name.span),
+            None => self.default_capability(
+                NodeKind::Database,
+                &format!("table `{}`", decl.name.text),
+                decl.span,
+            ),
+        };
         let id = self.graph.add_table(Table {
             name: decl.name.text.clone(),
             record,
+            service: self.current_service,
+            db_instance,
         });
         self.tables.insert(decl.name.text.clone(), (id, decl.span));
+        self.record_tables.entry(record).or_insert(id);
+    }
+
+    /// Resolves every `Reference<T>` field deferred by `record()` (v0.16
+    /// M2). Runs once, after every record and table in the *entire*
+    /// program has been registered — a reference may target a record or
+    /// table declared later in the file, and cross-service/instance
+    /// checks need every table's ownership to already be known.
+    fn resolve_references(&mut self) {
+        let pending = std::mem::take(&mut self.pending_references);
+        let mut one_edges: Vec<(RecordId, RecordId, Span)> = Vec::new();
+        for pending_ref in &pending {
+            if let Some((target, cardinality)) = self.resolve_one_reference(pending_ref) {
+                if cardinality == Cardinality::One {
+                    one_edges.push((pending_ref.record, target, pending_ref.field_span));
+                }
+            }
+        }
+        find_reference_cycles(&one_edges, self.diags);
+    }
+
+    /// Resolves one deferred `Reference<T>` field. On success, patches
+    /// the record's placeholder `Json` field into the real
+    /// `FieldType::Reference` and returns `(target, cardinality)` so the
+    /// caller can fold it into the cycle-detection edge set. Every
+    /// failure path pushes exactly one diagnostic and leaves the
+    /// placeholder in place (the field's static type never becomes
+    /// visibly wrong; the build simply also reports the error).
+    fn resolve_one_reference(
+        &mut self,
+        pending: &PendingReference,
+    ) -> Option<(RecordId, Cardinality)> {
+        let Some((target_id, _)) = self.records.get(&pending.target.text).copied() else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownReferenceTarget,
+                    format!("unknown record `{}`", pending.target.text),
+                )
+                .with_label(pending.target.span, "not a declared record")
+                .with_help(format!(
+                    "declare it with `record {} {{ .. }}`",
+                    pending.target.text
+                )),
+            );
+            return None;
+        };
+
+        let parsed = attrs::apply_reference_attrs(&pending.attrs, self.diags);
+
+        let Some(references) = &parsed.references else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    "`Reference<T>` field is missing a `references` attribute",
+                )
+                .with_label(pending.field_span, "add `references: <Table>;`"),
+            );
+            return None;
+        };
+        let Some((table_id, _)) = self.tables.get(&references.text).copied() else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownReferenceTarget,
+                    format!("unknown table `{}`", references.text),
+                )
+                .with_label(references.span, "not a declared table"),
+            );
+            return None;
+        };
+        if self.graph.table(table_id).record != target_id {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownReferenceTarget,
+                    format!(
+                        "table `{}` is not backed by record `{}`",
+                        references.text, pending.target.text
+                    ),
+                )
+                .with_label(references.span, "backed by a different record"),
+            );
+            return None;
+        }
+
+        let mut missing = Vec::new();
+        if parsed.cardinality.is_none() {
+            missing.push("cardinality");
+        }
+        if parsed.on_delete.is_none() {
+            missing.push("on_delete");
+        }
+        if parsed.on_update.is_none() {
+            missing.push("on_update");
+        }
+        if !missing.is_empty() {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    format!(
+                        "`Reference<T>` field is missing required attribute(s): {}",
+                        missing.join(", ")
+                    ),
+                )
+                .with_label(
+                    pending.field_span,
+                    "every reference states cardinality and both actions explicitly",
+                ),
+            );
+            return None;
+        }
+        let cardinality = parsed.cardinality.unwrap();
+        let on_delete = parsed.on_delete.unwrap();
+        let on_update = parsed.on_update.unwrap();
+
+        if parsed.unique && cardinality == Cardinality::Many {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    "`unique: true` is only valid on a `cardinality: one` reference",
+                )
+                .with_label(pending.field_span, "not valid on a `many` reference"),
+            );
+            return None;
+        }
+
+        let target_has_id = self
+            .graph
+            .record(target_id)
+            .fields
+            .iter()
+            .any(|f| f.name == "id" && f.ty == FieldType::Uuid);
+        if !target_has_id {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    format!(
+                        "record `{}` has no `id: Uuid` field, which the stores are built on",
+                        pending.target.text
+                    ),
+                )
+                .with_label(pending.field_span, "target lacks an `id: Uuid` field"),
+            );
+            return None;
+        }
+
+        let Some(&source_table_id) = self.record_tables.get(&pending.record) else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::RefRequiresTypedStorage,
+                    "a record with a `Reference<T>` field must be backed by an explicit `table`",
+                )
+                .with_label(pending.field_span, "no `table` backs this record")
+                .with_help(
+                    "declare `table <Name>: <Record>;` for the record this field belongs to",
+                ),
+            );
+            return None;
+        };
+        let source_table = self.graph.table(source_table_id);
+        let target_table = self.graph.table(table_id);
+        if source_table.service != target_table.service
+            || source_table.db_instance != target_table.db_instance
+        {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::CrossStorageReference,
+                    format!(
+                        "`{}` and `{}` belong to different services or database instances",
+                        source_table.name, target_table.name
+                    ),
+                )
+                .with_label(
+                    pending.field_span,
+                    "cannot reference across services/instances",
+                ),
+            );
+            return None;
+        }
+
+        self.graph.record_mut(pending.record).fields[pending.field_index].ty =
+            FieldType::Reference {
+                target: target_id,
+                table: table_id,
+                cardinality,
+                on_delete,
+                on_update,
+                unique: parsed.unique,
+            };
+        Some((target_id, cardinality))
     }
 
     /// Resolves a bare table name (e.g. the first argument of a `db.*`
@@ -2011,6 +2274,61 @@ fn item_span(item: &Item) -> Span {
     }
 }
 
+/// Detects cycles in the directed graph of `cardinality: one`
+/// `Reference<T>` edges (v0.16 M2) — a `many` reference creates a
+/// separate link table and never requires the target to exist first, so
+/// it never participates in a cycle. A required-reference cycle (direct
+/// self-reference included) is uninsertable: no row in the cycle could
+/// ever be written first. Colored DFS; reports the back-edge that closes
+/// each cycle found, at that field's own span.
+fn find_reference_cycles(edges: &[(RecordId, RecordId, Span)], diags: &mut Diagnostics) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Color {
+        White,
+        Gray,
+        Black,
+    }
+
+    fn visit(
+        node: RecordId,
+        adj: &HashMap<RecordId, Vec<(RecordId, Span)>>,
+        color: &mut HashMap<RecordId, Color>,
+        diags: &mut Diagnostics,
+    ) {
+        color.insert(node, Color::Gray);
+        if let Some(targets) = adj.get(&node) {
+            for &(next, span) in targets {
+                match color.get(&next).copied().unwrap_or(Color::White) {
+                    Color::White => visit(next, adj, color, diags),
+                    Color::Gray => {
+                        diags.push(
+                            Diagnostic::new(
+                                ErrorCode::CyclicReferenceGraph,
+                                "this reference is part of a cycle of required references",
+                            )
+                            .with_label(span, "closes the cycle here"),
+                        );
+                    }
+                    Color::Black => {}
+                }
+            }
+        }
+        color.insert(node, Color::Black);
+    }
+
+    let mut adj: HashMap<RecordId, Vec<(RecordId, Span)>> = HashMap::new();
+    for &(from, to, span) in edges {
+        adj.entry(from).or_default().push((to, span));
+    }
+    let mut color: HashMap<RecordId, Color> = HashMap::new();
+    let nodes: Vec<RecordId> = adj.keys().copied().collect();
+    for start in nodes {
+        if color.get(&start).copied().unwrap_or(Color::White) == Color::White {
+            visit(start, &adj, &mut color, diags);
+        }
+    }
+}
+
 mod attrs {
     use super::*;
 
@@ -2224,6 +2542,81 @@ mod attrs {
             }
         }
         config
+    }
+
+    /// Parsed `Reference<T>` field attributes (v0.16 M2). All four of
+    /// `references`/`cardinality`/`on_delete`/`on_update` are `None`
+    /// when missing or invalid — the caller (`Builder::resolve_one_reference`)
+    /// reports `InvalidReferenceDefinition` naming exactly which are
+    /// absent, rather than this function guessing a default.
+    #[derive(Default)]
+    pub struct ReferenceAttrs {
+        pub references: Option<Ident>,
+        pub cardinality: Option<ciac_ir::Cardinality>,
+        pub on_delete: Option<ciac_ir::RefAction>,
+        pub on_update: Option<ciac_ir::RefAction>,
+        pub unique: bool,
+    }
+
+    pub fn apply_reference_attrs(attrs: &[Attr], diags: &mut Diagnostics) -> ReferenceAttrs {
+        let mut result = ReferenceAttrs::default();
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "references" => match &attr.value {
+                    AttrValue::Ident(ident) => result.references = Some(ident.clone()),
+                    _ => invalid_ref_value(attr, "`references` must name a declared table", diags),
+                },
+                "cardinality" => match ident_value(attr) {
+                    Some("one") => result.cardinality = Some(ciac_ir::Cardinality::One),
+                    Some("many") => result.cardinality = Some(ciac_ir::Cardinality::Many),
+                    _ => invalid_ref_value(attr, "`cardinality` must be `one` or `many`", diags),
+                },
+                "on_delete" => match ident_value(attr) {
+                    Some("restrict") => result.on_delete = Some(ciac_ir::RefAction::Restrict),
+                    Some("cascade") => result.on_delete = Some(ciac_ir::RefAction::Cascade),
+                    _ => invalid_ref_value(
+                        attr,
+                        "`on_delete` must be `restrict` or `cascade`",
+                        diags,
+                    ),
+                },
+                "on_update" => match ident_value(attr) {
+                    Some("restrict") => result.on_update = Some(ciac_ir::RefAction::Restrict),
+                    Some("cascade") => result.on_update = Some(ciac_ir::RefAction::Cascade),
+                    _ => invalid_ref_value(
+                        attr,
+                        "`on_update` must be `restrict` or `cascade`",
+                        diags,
+                    ),
+                },
+                "unique" => match bool_value(attr) {
+                    Some(value) => result.unique = value,
+                    None => invalid_ref_value(attr, "`unique` must be `true` or `false`", diags),
+                },
+                // Storage-attribute surface shared with scalar fields
+                // (Pillar 2, v0.16 M4): recognized here so a reference
+                // field carrying it doesn't spuriously fail as an
+                // "unknown attribute" before that milestone lands.
+                "index" => {
+                    if bool_value(attr).is_none() {
+                        invalid_ref_value(attr, "`index` must be `true` or `false`", diags);
+                    }
+                }
+                _ => unknown_attr(attr, "reference", diags),
+            }
+        }
+        result
+    }
+
+    fn invalid_ref_value(attr: &Attr, message: &str, diags: &mut Diagnostics) {
+        diags.push(
+            Diagnostic::new(ErrorCode::InvalidReferenceDefinition, message)
+                .with_label(attr.value.span(), "invalid value"),
+        );
     }
 
     fn duplicate_attr(

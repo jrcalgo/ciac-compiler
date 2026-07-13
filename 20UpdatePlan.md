@@ -10,6 +10,15 @@
 > minimal opt-in vertical slice and earn full coverage only at a measured
 > checkpoint.
 >
+> Confidence is intentionally different from the neighboring releases:
+> v0.16/v0.19 are structural, v0.17/v0.18 extend confirmed pillars, and
+> v0.20 is a hypothesis bet with a real narrow-down path.
+>
+> The highest-value first consumers are v0.17 simulation transcripts and
+> generated system-suite failures. Checkpoint slices A/B deliberately
+> prove an offline map and one end-to-end runtime join before the plan
+> spends the rest of the version annotating every artifact.
+>
 > No deployment maturity. v0.20 adds no hosted trace backend, production
 > collector, Kubernetes operator, Terraform observability stack, source-map
 > registry, retention service, or operational control plane. `ciac trace`
@@ -62,12 +71,32 @@ The missing artifact is an infrastructure source map linking:
 6. simulation/system-test assertions;
 7. trace spans returned by Jaeger.
 
+Seen as product loops:
+
+1. **compile-time** errors already terminate at `.ciac`;
+2. **design-time** change review terminates there after v0.18;
+3. **test-time** failures are only half-open—simulation/system assertions
+   know constructs but generated paths still leak through;
+4. **run-time** remains open—a 500 in a generated router, Jaeger HTTP
+   span, or worker retry log makes the user reverse-engineer generated
+   code.
+
+For an agent, that reverse mapping is additional generated code it must
+ingest before it can make the source edit. Provenance is not fundamentally
+new information; it is information the compiler already computes and
+currently throws away.
+
 **v0.20 theme: every compiler-owned thing can answer “which `.ciac`
 construct caused me to exist?”**
 
 ## The concrete starting point
 
 The compiler already has fragments of the answer:
+
+- `NormalizedIr` still contains `Node.span`/`Step.span`, while
+  `ciac-codegen/src/model.rs` projects them into name/string-heavy `Ctx`
+  values with no origin reference—the concrete discard boundary this
+  version removes;
 
 - `SourceMap` stores source text and line starts; `Span` is file plus
   byte range.
@@ -584,6 +613,10 @@ only when `--provenance` is enabled. Internal contexts may carry origin
 references unconditionally, but the ordinary renderer emits the same
 unmapped application bytes as v0.19.
 
+The sidecar map is deliberate: per-line source comments or construct IDs
+inside every generated file would churn goldens, regeneration diffs, and
+runtime code while still failing to express nested/shared origins.
+
 `GeneratedFile` becomes conceptually:
 
 ```rust
@@ -671,6 +704,12 @@ without the flag packages no runtime table, emits no CIaC provenance
 attributes or semantic wrapper spans, adds no `generated from` context,
 and preserves v0.19 stderr/log/span behavior exactly.
 
+Within a provenance-enabled build, this is attribute plumbing at the
+v0.15 HTTP/client/broker instrumentation points, not a second tracing
+system. If `tracing` or structured logging is absent, the map still serves
+offline/test consumers while the corresponding runtime channel emits
+nothing.
+
 ### Compact runtime table
 
 Generated applications package only:
@@ -702,6 +741,11 @@ public response shape.
 Source paths are not added to public HTTP responses by default. They
 appear in local stderr, structured logs, simulation/system reports, and
 traces. Repository layout is not leaked to callers.
+
+Structured logging binds site/construct/source into the generated
+per-request or per-message context, so the line an operator actually
+greps—“request returned 500” or “worker failed after retries”—contains the
+same stable join keys as a trace.
 
 ### OpenTelemetry attributes
 
@@ -841,6 +885,15 @@ generated from services/checkout.ciac:42
 JSON uses the same construct/site/edge/origin types as trace output.
 Blueprint failures include expansion and definition frames.
 
+Example human output is complete enough to reproduce and edit:
+
+```text
+seed 42, step 17
+generated from commerce.ciac:58
+  pipeline Submit
+  step call Billing.Charge
+```
+
 ### Generated system tests
 
 Every generated check carries:
@@ -862,6 +915,15 @@ generated test tests/system/test_delivery.py:51
 `verify --system --json` returns structured failures. A harness import or
 dependency failure remains distinct and is not attributed to a random
 DSL edge.
+
+Trace-continuity failures likewise name the tested construct and source
+location before provider detail:
+
+```text
+trace continuity for Checkout.Submit
+generated from traced-checkout.ciac:24
+expected one trace across call/publish; observed two roots
+```
 
 ## Stale-map lifecycle
 
@@ -934,6 +996,12 @@ ciac provenance --out ./build \
 Returns smallest/enclosing regions, ownership role, stale status, IDs,
 and full origin chain.
 
+This is the “locate” primitive even though the command remains
+`ciac provenance`: “I am staring at generated path/line; take me home.”
+Human output reuses the compiler's Ariadne-style source rendering where
+the source file is available, making trace/lookup results feel like
+diagnostics rather than a JSON database query.
+
 ### Build/diff/verify
 
 `build`, `diff`, `dev`, and `verify` accept provenance/path-policy
@@ -945,6 +1013,11 @@ Regeneration diff summarizes map churn by construct/artifact counts;
 If manifest says a provenance map exists, ordinary verify validates it.
 `verify --provenance` additionally requires the build to have one.
 
+The CLI JSON envelope version bumps and adds optional `construct_id`,
+`site_id`, and resolved-origin fields to diagnostics/failures where the
+span maps unambiguously. Existing diagnostic code/labels remain the
+primary contract; absent provenance leaves those fields null.
+
 ### Graph
 
 Default graph output stays compatible. Opt-in:
@@ -955,6 +1028,14 @@ ciac graph main.ciac --format dot --provenance
 ```
 
 Shows stable IDs and origins, never transient indices as public identity.
+
+### LSP
+
+Hover on a source construct may list its generated artifact/region paths
+from the current local map, giving editor navigation without teaching the
+LSP a second code generator. Publishing live trace state, p95 latency, or
+the last production error as editor diagnostics is explicitly outside
+v0.20.
 
 ### MCP
 
@@ -1040,6 +1121,16 @@ with whole-file guesses.
 - blueprint/external backend/AGENTS guidance;
 - checked-in provenance schema.
 
+`docs/provenance.md` states the ID boundary inherited from v0.18:
+an explicit rename plan can preserve/group identity according to its
+recorded alias; delete-and-recreate is a new construct. Generated
+`AGENTS.md` includes the operational playbook:
+
+```text
+symptom → trace/provenance lookup → construct → edit .ciac
+        → verify_sim → diff_semantic
+```
+
 ## Validation checkpoint
 
 Before annotating every template, one multi-file, blueprint-expanded
@@ -1059,6 +1150,14 @@ It must answer the same source question through:
 2. graph edge;
 3. runtime error/log site;
 4. real Jaeger trace.
+
+Checkpoint slice A (delivered by M3) is the independently shippable
+offline map/lookup. Slice B (the M4 Python vertical slice) boots
+`traced-checkout`, invokes its route, and proves one Jaeger span carries
+resolvable build/site/source attributes. If those slices do not reduce
+the real debugging path, the version narrows to offline lookup plus
+simulation/system-failure mapping and returns the remaining
+runtime-instrumentation budget.
 
 ### Go criteria
 
@@ -1171,8 +1270,13 @@ without inspecting generated code before default-on work is considered.
 - Production tracing backend/collector deployment or retention.
 - Default-on commitment.
 - User-authored stable IDs in DSL.
-- Automatic historical map archive.
+- Automatic historical map archive/storage: a map describes the build
+  that emitted it and must be retained with that artifact.
 - Universal trace-vendor abstraction.
+- Log-aggregator query clients for Loki, Datadog, or CloudWatch; CIaC
+  emits attributes but does not become their query SDK.
+- `kubectl`-aware generated-line lookup or live runtime state in LSP
+  diagnostics.
 - Source paths in public HTTP errors.
 - New deployment maturity of any kind.
 
@@ -1181,7 +1285,9 @@ without inspecting generated code before default-on work is considered.
 - **Origin propagation is invasive.** Mitigation: intern chains, keep
   `Span` cheap, exclude origins from semantic equality, land IR first.
 - **Stable IDs create expectations.** Mitigation: version key algorithm,
-  exhaustive perturbation corpus, document anonymous duplicate limit.
+  exhaustive perturbation corpus, document anonymous duplicate limit,
+  and report intentional ID changes as internal v0.18 semantic entries so
+  dashboards are not orphaned silently.
 - **Blueprint chains can confuse.** Mitigation: caller-oriented primary,
   typed frames, bounded human/full JSON.
 - **Template annotation can become busywork.** Mitigation: mapped
@@ -1192,6 +1298,9 @@ without inspecting generated code before default-on work is considered.
   source text, size gates.
 - **Runtime spans can alter latency/shape.** Mitigation: opt-in,
   low-cardinality constants, one-time table, benchmark gate.
+- **Attribute cardinality has a real observability cost.** Mitigation:
+  IDs are bounded by program constructs rather than requests/users, and
+  benchmark/size gates include a representative multi-service system.
 - **Paths can leak.** Mitigation: no absolute mode, relative/redacted,
   automated leak scans.
 - **Stale maps can mislead.** Mitigation: hashes/build IDs, strict joins,
@@ -1202,6 +1311,10 @@ without inspecting generated code before default-on work is considered.
   explicit CIaC parents; do not guess.
 - **The map may be correct but unused.** Mitigation: adoption/kill
   criteria; default-on must be earned.
+- **The hypothesis may not improve completion time.** Mitigation: the
+  offline/runtime checkpoint measures whether real failures reach the
+  editable source faster; technically impressive metadata alone does not
+  graduate the runtime claim.
 
 ## Confidence and v0.21 handoff
 
@@ -1211,6 +1324,12 @@ name one target-neutral construct and lead to the exact source origin
 chain. If it does not, the valuable internal result still remains:
 origins are no longer discarded before the places that need them.
 
+If it works, all four loops—compile, design, test, and run—terminate in
+the `.ciac` model rather than generated implementation detail.
+
 v0.21 spends one deliberate breadth token only after usage evidence is
-available. Provenance does not pre-commit that choice or turn deployment
-maturity back into the roadmap.
+available: a brownfield OpenAPI bridge, an end-user/admin surface, or a
+full TypeScript backend. Five versions of accumulated usage evidence,
+plus the v0.12/v0.15 precedent of re-asking breadth, decide. Provenance
+does not pre-commit that choice or turn deployment maturity back into the
+roadmap.

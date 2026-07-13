@@ -15,6 +15,11 @@
 > generated CI workflow gains a compile-time compatibility gate; there are
 > no canaries, rollout waves, automatic rollback, or production migration
 > orchestration.
+>
+> **Confidence:** semantic diff is a confirmed pillar; gates, explicit
+> rename identity, and a seeded backfill ladder are low-risk extensions of
+> machinery already present in `evolution.rs`, the migration differ,
+> regeneration manifest, and v0.15's structured edit engine.
 
 ## The gap this version closes
 
@@ -60,9 +65,21 @@ may rewrite many artifacts; a comment/import-layout edit may rewrite none.
 Reviewers and agents need the semantic fact, not a proxy based on output
 bytes.
 
+The same silence appears in data motion. A required field added to a
+populated table often needs three deliberate states—expand storage,
+backfill existing rows, then tighten the constraint. A default is not
+always the right value, and a guessed conversion is worse than a refusal.
+
+This is also the LSP debt explicitly deferred since v0.12: hand-renaming a
+field today can look like drop+add to migration tooling and leaves seeded
+host-language references discoverable only by grep.
+
 **v0.18 theme: make architecture change a typed, reviewable object and
 make the common mechanical rename safe across the complete local source
 set.**
+
+Change itself becomes a classified compiler artifact: the week-two loop
+gets the same treatment as week one.
 
 ## Four distinct artifacts
 
@@ -92,6 +109,17 @@ A target-independent, reviewable snapshot of a previously accepted
 hashes, migration sequence/state, record snapshots, and generation
 recipe. It is not silently promoted into the architectural baseline.
 
+For fast local inspection, manifest v2 may cache the exact canonical
+`SystemSnapshot` produced by its last successful build. That cache enables
+`ciac diff --semantic --out <tree>` as an advisory IR-to-snapshot mode;
+it never replaces the checked-in baseline used by generated CI and never
+advances on a failed build.
+
+`SystemSnapshot` is the same canonical `SemanticModel` payload produced by
+one serializer, wrapped in manifest-local build/target metadata. There is
+no second field vocabulary or comparator that can drift from the
+checked-in baseline.
+
 A successful `build` never updates the semantic baseline. Otherwise the
 change being checked could accept itself.
 
@@ -106,6 +134,11 @@ ciac diff current/main.ciac \
   --semantic \
   --against accepted/main.ciac
 ```
+
+`--against` also accepts a git ref (`main`, a tag, or commit). CIaC reads
+the entry/import set from that tree into an isolated source provider and
+builds a second `NormalizedIr`; it does not check out or mutate the
+working tree.
 
 Each side independently runs:
 
@@ -135,6 +168,15 @@ earlier `NormalizedIr`. The comparator is therefore the same typed
 model-to-model algorithm; the baseline avoids requiring an old checkout
 and mutable registry dependencies in CI.
 
+Resolution order is explicit: `--against` source/git ref, then
+`--baseline`, then (for local advisory use only) the cached snapshot under
+`--out`. Ambiguous combinations are rejected.
+
+Because a successful local build advances the advisory cache but never
+the accepted baseline, `--out` comparison may be newer than CI. Human and
+JSON output label that mode `advisory_last_build`; it is never presented
+as a substitute for the checked-in compatibility gate.
+
 ### Existing diff remains intact
 
 This command keeps its current behavior:
@@ -150,6 +192,21 @@ them.
 
 MCP also keeps the existing `diff` tool unchanged and adds a separate
 `diff_semantic` tool.
+
+Presentation remains a projection of the same typed changelist:
+
+```sh
+ciac diff main.ciac --semantic --format markdown
+ciac diff main.ciac --semantic --surface http
+```
+
+Markdown is suitable for a PR comment; `--surface http` filters to the
+OpenAPI/generated-client contract. Neither changes classification or the
+JSON result. The intended agent loop is explicit:
+
+```text
+check → apply offered fix → verify_sim → diff_semantic
+```
 
 ### Baseline lifecycle
 
@@ -221,6 +278,14 @@ Name changes are not heuristically inferred. Without an explicit
 persistent contract ID, a rename appears as removal plus addition. That
 is conservative and reviewable; structural similarity does not prove
 author intent.
+
+One exception is an explicit `ciac rename` transaction applied together
+with known output manifests. Its signed `plan_id` supplies the missing
+intent for that operation only: semantic output may group the remove/add
+as `renamed` (still breaking at public boundaries), and the migration
+differ may emit `ALTER TABLE/COLUMN ... RENAME` when engine preconditions
+prove data-preserving behavior. A hand edit or unrelated future diff
+never receives that identity automatically.
 
 The checked-in wrapper is independently versioned:
 
@@ -324,6 +389,25 @@ below. `--deny-breaking` and generated CI use that top-level value; the
 impact list explains why a change that broadens server acceptance can
 still break generated client source.
 
+An explicit rename groups identity without pretending compatibility:
+
+```json
+{
+  "kind": "record.field.renamed",
+  "classification": "breaking",
+  "before": {"key": "record/Order/field/total"},
+  "after": {"key": "record/Order/field/amount"},
+  "rename_plan_id": "sha256:...",
+  "impacts": [
+    {"dimension": "wire_contract", "classification": "breaking"},
+    {"dimension": "stored_data", "classification": "internal"}
+  ]
+}
+```
+
+That kind is emitted only while applying/verifying the explicit rename
+plan; ordinary source comparison remains remove plus add.
+
 ### Classifications
 
 **Breaking** means an existing modeled consumer, public contract, or
@@ -356,6 +440,9 @@ boundary uses:
 - stream/event payload;
 - realtime channel payload;
 - retained table state;
+- generated OpenAPI and TypeScript-client contracts;
+- the previous generated service binary during an overlapping rolling
+  deployment, modeled conservatively from the baseline contract;
 - external/unknown consumer where the model exposes a public route or
   subject.
 
@@ -427,14 +514,23 @@ shape. In that case the stricter directional result applies.
 |--------|----------------|
 | add table | additive |
 | safe additive column/index/link table | additive with migration note |
+| add required column to populated storage without a universal default | breaking; attach `backfill_plan_available` and the `ciac backfill plan` next step |
+| add unique constraint to an existing populated field | breaking until duplicate-data preflight/backfill is reviewed |
 | remove table/column/constraint | breaking |
 | retype column/reference | breaking |
-| rename table/column | remove+add; breaking without alias semantics |
+| rename table/column | remove+add and breaking for ordinary edits; an explicit `ciac rename` plan groups it as `renamed` (still breaking) and may authorize a data-preserving engine rename |
 | internal migration sequence/file change only | not a semantic change |
 
 Semantic diff reports meaning. `migrations.rs` remains authoritative for
 whether concrete SQL can be generated; semantic diff does not create or
 approve a migration.
+
+Persistence entries for required columns, conversion retypes, uniqueness,
+or constraint tightening may carry
+`"backfill_plan_available": true`. Initial classification remains
+breaking. The ladder later decomposes execution into an additive expand,
+user-reviewed data motion, and a hash-gated contract step; it does not
+retroactively relabel the original public change as harmless.
 
 #### Services, capabilities, pipelines, handlers
 
@@ -512,12 +608,97 @@ The job:
 - passes additive/internal changes while keeping them visible;
 - never updates or commits the baseline.
 
+Intentional breaks remain explicit in source control. The normal path is:
+
+```sh
+ciac baseline architecture/main.ciac --update --accept-breaking \
+  --reason "replace the v1 charge contract"
+```
+
+It updates the checked-in baseline and appends the typed changelist plus
+reason to source-owned `CHANGELOG.ciac.md`. Generated CI may recognize a
+`ciac-breaking: <same reason>` commit trailer only when that commit also
+contains the expected baseline/changelog update. The trailer never
+rewrites either artifact and cannot make an unchanged stale baseline
+pass.
+
 Image work cannot proceed after a failed compatibility gate.
 
 This is a source-contract check. It does not inspect a live environment,
 sequence a rollout, or guarantee an operationally safe deploy.
 
-## Pillar 5 — Mechanical rename
+## Pillar 5 — Expand, backfill, contract
+
+Semantic classification is useful but incomplete when a safe change
+requires data motion. v0.18 adds a narrow, user-controlled ladder for
+changes the migration differ can recognize but cannot compute:
+
+```text
+expand storage → run reviewed backfill → contract storage
+```
+
+Representative triggers:
+
+- add a required column with no valid universal default;
+- retype a column where conversion is domain-specific;
+- tighten a relation/ownership constraint after existing rows have been
+  repaired;
+- add uniqueness where existing duplicates may exist.
+
+This does not make semantic diff execute migrations. It creates a
+versioned plan and safe artifacts that remain subject to ordinary build,
+manifest, and seeded-file rules.
+
+### Backfill plan
+
+```sh
+ciac backfill plan architecture/main.ciac \
+  --baseline architecture/.ciac/baselines/main.semantic.json \
+  --out ./generated
+```
+
+The plan contains:
+
+1. an additive expansion migration (for example, a nullable staging
+   column or new unconstrained index target);
+2. a seeded target-native script:
+   `migrations/backfill_<sequence>.py` or
+   `migrations/backfill_<sequence>.rs`;
+3. a contract migration that tightens/retypes/removes old storage;
+4. exact semantic/storage preconditions and expected row invariants.
+
+The generated script includes typed model/table names and a bounded
+iteration skeleton, but no invented conversion expression. It becomes
+user-owned after first write and follows normal `.ciac-new` behavior.
+
+### Ledger gate
+
+Generated runtimes record completed plan ID, source/target schema hashes,
+row count, and script checksum in `_ciac_backfills`. A contract migration
+refuses to run until the matching backfill is complete and its preflight
+finds no violating rows.
+
+The final contract step additionally requires explicit
+`--allow-destructive <plan-id>` because it may drop old storage. The flag
+authorizes only the reviewed, hash-matched plan; it is not a global
+“accept arbitrary destructive SQL” switch.
+
+CIaC does not sequence production deployments, decide when old
+application versions stop writing the old shape, or run the backfill
+automatically.
+
+### Simulation and live rehearsal
+
+v0.17 simulation loads fixture rows and rehearses expansion, the seeded
+backfill function, invariant checks, and contraction against the
+in-memory relational engine. A generated system fixture repeats the
+ladder against a real database before release.
+
+The acceptance example changes a populated field type, proves the
+backfill preserves values, and verifies the contract step refuses both an
+unrun ledger entry and one remaining invalid row.
+
+## Pillar 6 — Mechanical rename
 
 ### CLI
 
@@ -529,6 +710,22 @@ ciac rename architecture/main.ciac \
   --line 3 --column 8 \
   --to PurchaseOrder
 ```
+
+For an unambiguous qualified symbol, a convenience interface resolves to
+the same position-based engine:
+
+```sh
+ciac rename architecture/main.ciac Order PurchaseOrder
+ciac rename architecture/main.ciac Order.total amount
+```
+
+Ambiguous names return candidates and require the position form; there is
+still one resolver and one edit plan.
+
+The core edit representation reuses v0.15's `Fix`/`Edit` application
+machinery, extended with a whole-program resolved reference walk and the
+multi-file staging/journal layer below. CLI, MCP, and LSP do not maintain
+separate rename patch engines.
 
 Apply explicitly:
 
@@ -681,7 +878,14 @@ Apply:
 No source edit is committed when a requested output cannot regenerate
 safely.
 
-## Pillar 6 — Generated ownership and seeded references
+Rename identity is transaction-scoped. `rename --apply` with requested
+`--out` roots passes its plan directly to migration/regeneration and may
+emit `ALTER ... RENAME`. A source-only rename records no durable alias for
+a later unrelated build, so that later build conservatively sees
+remove+add. Neither the semantic baseline nor manifest cache becomes a
+permanent user-authored contract-ID registry.
+
+## Pillar 7 — Generated ownership and seeded references
 
 Rename must replay the exact generation recipe. The current manifest
 records a target but not every generation-affecting option. A versioned
@@ -727,7 +931,7 @@ The operation may succeed with
 `manual_reconciliation_required: true`; preserving user work is more
 important than pretending it was ported.
 
-## Pillar 7 — JSON, MCP, and LSP
+## Pillar 8 — JSON, MCP, and LSP
 
 ### JSON
 
@@ -777,6 +981,11 @@ result is valid tool data rather than an MCP protocol error. `rename`
 previews by default; `apply: true` is required for writes and may include
 `plan_id`. The existing `diff` remains regeneration-only.
 
+Where a baseline gives one exact mechanical reversal—such as restoring a
+field to its previous type—the semantic result may carry the same
+structured edit shape as v0.15 diagnostics. It is offered, never applied
+by diff, and must clear that breaking entry after re-analysis.
+
 ### LSP rename
 
 The language server advertises:
@@ -820,6 +1029,10 @@ honor unsaved source.
 - Keep migration SQL generation separate.
 - Add baseline serializer/schema/differ and complete classification
   matrix.
+- Add versioned cached `SystemSnapshot` to manifest v2 for local
+  `--out` comparison without making it the CI baseline.
+- Add expand/backfill/contract planning, seeded scripts, ledger
+  preflight, and hash-scoped destructive authorization.
 
 ### Source and rename
 
@@ -835,7 +1048,8 @@ honor unsaved source.
 - `main.rs`: `baseline`, `rename`, disjoint semantic-diff args.
 - `commands.rs`: baseline/diff/rename internals.
 - `json_out.rs`: tagged result/tool errors.
-- `ci.rs`: semantic compatibility job.
+- `ci.rs`: semantic compatibility job, checked baseline/trailer
+  validation, and changelog artifact.
 - `mcp.rs`: two tools.
 - `lsp.rs`: VFS, prepare/rename, multi-file edits.
 - generated `AGENTS.md`: explain baseline versus manifest and seeded
@@ -844,6 +1058,10 @@ honor unsaved source.
 ### Documentation
 
 - New `docs/evolution.md`.
+- Treat changelist kinds/classifications as stable tooling vocabulary;
+  document baseline and cached-snapshot schemas, the
+  expand/backfill/contract ladder, explicit rename identity, and
+  intentional-break changelog discipline.
 - Update regeneration, deployment/CI, agents/MCP, authoring/LSP, and
   errors where applicable.
 - Check in semantic baseline JSON Schema.
@@ -895,6 +1113,20 @@ alone.
 - injected apply failure rollback/recovery;
 - exact generation recipe;
 - seeded files byte-identical and references reported.
+- explicit table/field rename emits the grouped semantic entry and a
+  real Postgres `ALTER ... RENAME` proof that preserves preexisting data;
+- the same textual hand edit, without a rename plan, remains remove+add.
+
+### Backfill ladder
+
+- required-field, conversion, uniqueness, and constraint-tightening plan
+  fixtures;
+- expansion migration is additive;
+- seeded script is never overwritten;
+- simulation rehearses fixture-row conversion;
+- contract step refuses missing/mismatched ledger and invalid rows;
+- `--allow-destructive` authorizes only the exact plan ID;
+- real generated-system proof preserves converted data.
 
 ### MCP/LSP
 
@@ -909,18 +1141,25 @@ alone.
 ## Milestones
 
 1. **M1 — Canonical model and baseline:** stable keys, typed projection,
-   deterministic hash/schema, baseline lifecycle.
+   deterministic hash/schema, baseline lifecycle, advisory manifest
+   snapshot.
 2. **M2 — Consumer-aware differ:** old/current boundary graph,
    classification matrix, cascade suppression, human/JSON rendering.
 3. **M3 — CLI and generated CI gate:** `diff --semantic`,
-   `--deny-breaking`, tagged JSON, pinned workflow job/artifact.
+   `--deny-breaking`, tagged JSON, pinned workflow job/artifact,
+   explicit baseline/changelog validation; a commit trailer is accepted
+   only as a matching secondary assertion, never alone.
 4. **M4 — Source index and rename engine:** namespaces, definitions,
    references, modules, blueprints, overlay validation.
 5. **M5 — Transactional apply and regeneration replay:** manifest recipe,
-   staging/journal/rollback, repeated output roots, seeded scanner.
-6. **M6 — MCP and LSP:** `diff_semantic`, rename preview/apply,
+   staging/journal/rollback, repeated output roots, seeded scanner,
+   explicit rename identity and live data-preserving rename proof.
+6. **M6 — Backfill ladder:** additive expansion, seeded target script,
+   ledger/preflight, simulation and real-database rehearsal, plan-scoped
+   contract authorization.
+7. **M7 — MCP and LSP:** `diff_semantic`, rename preview/apply,
    prepare/rename, multi-file versioned edits.
-7. **M7 — Reconciliation and v0.18.0:** schemas, docs, examples,
+8. **M8 — Reconciliation and v0.18.0:** schemas, docs, examples,
    goldens, full compiler/generated/system verification, whole-version
    analysis.
 
@@ -933,12 +1172,18 @@ alone.
 - Import/file/directory rename.
 - Rewriting seeded Python/Rust/TypeScript/SQL.
 - Porting extern implementations.
-- Generating destructive migrations.
+- Automatic data conversion or arbitrary destructive migration
+  generation; only the reviewed expand/backfill/contract plan may emit
+  its hash-scoped final contract step.
 - Behavioral equivalence of handler bodies.
 - Cross-repository/registry rename.
 - Editing `std/` or registry cache.
 - Selective rename of one expansion with no source identity.
 - General find-references UI.
+- Cross-system/federated compatibility between independent CIaC
+  programs.
+- A first-class API versioning language (`/v1`, `/v2`); semantic diff
+  tells a team when it broke a contract, not how that team versions it.
 - Deployment waves, canaries, rollback, or live rollout planning.
 - Claiming `internal` means operationally safe.
 
@@ -947,6 +1192,15 @@ alone.
 - **Compatibility rules can over-promise.** Mitigation: name modeled
   consumers, represent unknown external consumers, use conservative
   rolling-boundary rules, and state that behavior is not proven.
+- **The snapshot format becomes a compatibility surface.** Mitigation:
+  independent version/schema, staleness tests, explicit migrations, and
+  a checked-in baseline that is never silently rewritten.
+- **Teams can dispute classifications.** Mitigation: classification-table
+  changes are reviewable vocabulary changes with fixture pairs, not
+  hidden heuristics.
+- **Multi-branch repos can make “the baseline” ambiguous.** Mitigation:
+  explicit `--against`/`--baseline`/`--out` priority and a pinned generated
+  CI convention.
 - **Current IR lacks persistent user IDs.** Mitigation: no heuristic
   rename inference; remove+add stays visible.
 - **Blueprint provenance is subtle.** Mitigation: index before expansion,
@@ -965,6 +1219,10 @@ alone.
 - **Semantic diff and rename are each substantial.** Mitigation: land
   semantic comparison first; both MCP/LSP/CLI paths reuse one rename
   engine.
+- **A seeded backfill can be wrong.** Mitigation: user ownership is
+  explicit, simulation rehearses fixture rows, the ledger binds script
+  checksum/schema hashes, and contract preflight rejects remaining bad
+  rows.
 
 ## Confidence and v0.19 handoff
 
@@ -974,8 +1232,14 @@ demonstrably the wrong abstraction for contract review. Baseline gates
 and resolved rename are low-risk extensions only if identities,
 multi-file writes, and seeded ownership remain explicit.
 
-After v0.18, CIaC can say what changed and where manual work remains.
-v0.19 addresses the next, different question: whether the generated
-system remains correct when a process crashes between effects, a broker
+The three-version progression is now complete: express the domain in
+v0.16, verify it instantly in v0.17, and change it safely in v0.18.
+
+After v0.18, CIaC can say what changed, rehearse the bounded data-motion
+ladder, and show where manual work remains. v0.19 addresses the next,
+different question: whether the generated system remains correct when a
+process crashes between a database write and publish, a broker
 redelivers, a client repeats a request, or one authenticated subject
-tries to access another subject's row.
+tries to access another subject's row. Its outbox rides v0.16
+transactions, and its ownership/idempotency policy changes become
+first-class v0.18 semantic changes.

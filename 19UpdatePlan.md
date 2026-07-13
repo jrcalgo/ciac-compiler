@@ -12,11 +12,21 @@
 > machinery needed to uphold language guarantees, not a control plane,
 > cloud broker/database provisioning, rollout orchestration, autoscaling,
 > dashboards, or recovery UI.
+>
+> **Confidence:** outbox and idempotency are structural correctness work;
+> ownership is the first policy likely to move earlier if usage demands
+> it; architecture lints are cheap experiments that must earn signal.
 
 ## The gap this version closes
 
 The generated systems contain production correctness bugs that can be
 demonstrated from current output.
+
+The organizing advantage is the same across all four: frameworks see one
+component, while CIaC sees the database effect, publish edge, retrying
+worker, authenticated route, and transitive graph together. This version
+moves failure modes into compile-time structure precisely because only
+the whole-graph owner can.
 
 ### The dual-write window
 
@@ -32,6 +42,10 @@ crash or broker outage between them leaves committed data with no event.
 Publishing first would create the opposite bug: an event for data that
 later rolls back.
 
+v0.16 made this combination deliberately loud by rejecting publish inside
+a database transaction; v0.19 is the promised compiler-native resolution,
+not a framework patch applied after generation.
+
 ### Repeated work after retry
 
 Generated workers retry an entire pipeline. If an early write committed
@@ -45,6 +59,10 @@ Scopes answer “may this token call this operation?” They do not answer
 “may this token read or mutate this row?” Generated CRUD and typed
 `db.*` queries do not automatically constrain by the verified subject.
 Every application must remember the ownership predicate in every path.
+
+Every multi-tenant SaaS reaches this wall early; the current workaround is
+one hand-written filter per query and one missed filter away from a data
+leak.
 
 ### Graph correctness without design feedback
 
@@ -321,6 +339,12 @@ The portable claim algorithm:
 4. publish outside the claim transaction;
 5. mark published only when lease owner still matches.
 
+Unkeyed candidate selection is deterministic
+`(available_at_ms, created_at_ms, publish_ordinal, id)` order so both
+backends and the simulator agree. Concurrent relay completion may still
+reorder broker observation; this implementation order is not promoted to
+an unkeyed consumer-ordering guarantee.
+
 Provider-specific `SKIP LOCKED` may optimize later, but cannot define
 semantics SQLite lacks.
 
@@ -466,6 +490,10 @@ The same key with a different canonical payload is never replayed:
 - worker records terminal poison-message failure and acknowledges/commits
   so it does not loop forever.
 
+This follows the de-facto Stripe-style idempotency contract: a key
+identifies one canonical operation, not a mutable slot whose payload may
+change.
+
 Fingerprints include:
 
 - API method, route identity, path params, canonical body;
@@ -528,6 +556,11 @@ Rejected effects:
 The diagnostic labels the exact effect and suggests moving publish into
 the transaction/outbox or removing idempotency. There is no best-effort
 mode under the same attribute.
+
+Declaring idempotency without a resolvable database uses the existing
+v0.15 missing-capability fix machinery: when unambiguous, offer an edit
+that adds the default database entry to the service's `use` block, then
+re-run the full strict-effect check.
 
 ### Worker state machine
 
@@ -673,6 +706,11 @@ The guarantee requires exhaustive closure:
 The compiler does not sandbox hostile hand-edits to generated code;
 regeneration drift exposes them.
 
+One record has one ownership story. Projecting the same stored record
+through an owned table/CRUD path and an unowned CRUD path is a hard
+diagnostic; otherwise the unowned surface would be a compiler-generated
+bypass.
+
 ### Ownership migration
 
 New storage creates owner column/index normally. Enabling ownership on
@@ -745,6 +783,48 @@ Computes logical worker invocations caused by one publish:
 The graph is acyclic, so the value is finite. “Unbounded” means
 unbudgeted by `fanout_limit`, not mathematically infinite. The warning
 shows contributing paths.
+
+### `write_then_publish`
+
+When typed HIR proves that a pipeline handler commits a database write
+and a later pipeline step publishes directly, warn on the dual-write
+shape that motivated this version. The fix is not a magic attribute:
+move the write and typed publish into one explicit `transaction` so the
+outbox lowering owns both. Classic/extern handlers whose effects are
+unknown are reported as “cannot prove safe,” not falsely classified.
+
+There is no intermediate pipeline attribute that silently wraps an
+existing handler commit. Adoption is intentionally structural:
+
+```text
+legacy handler commit → direct pipeline publish
+    becomes
+one typed handler transaction { database write; publish; }
+```
+
+v0.18 semantic diff classifies that change as the breaking
+direct→transactional delivery-contract transition already listed below;
+the warning links to the affected consumers and migration recipe.
+
+### `missing_idempotency`
+
+Warn when `max_retries > 0` and a worker has a generated durable
+side-effecting verb but no idempotency declaration. A failed attempt is
+not itself called a duplicate; the warning is specifically about a
+previously committed effect observed again after redelivery/retry.
+
+### Seeded SQL references (experimental)
+
+A best-effort, off-by-default advisory may report seeded SQL text that
+mentions an ownership-aware generated table outside the policy-aware
+ports. It never claims complete host-language analysis and never rewrites
+the file.
+
+This experiment is not a graduated architecture lint: it has no default
+`warn`, cannot be promoted with `lint deny`, and appears in
+`describe`/MCP only under an `experimental` flag. If it later meets the
+same labeled-corpus bar, it receives an append-only code and joins the
+normal policy surface.
 
 ### Severity/suppression
 
@@ -855,8 +935,16 @@ Add:
 - ordering with two keys and one key sequence.
 
 JWT tests remain infrastructure-free. OAuth2 uses existing Keycloak
-system paths. Real provider matrix covers both targets, three database
-engines, Kafka, and NATS JetStream.
+system paths and the generated `dev-admin`/`dev-user` plus
+`scripts/token.sh` fixtures, making v0.15 M6's dev-identity work pay off
+in row-level isolation proofs. Real provider matrix covers both targets,
+three database engines, Kafka, and NATS JetStream.
+
+One compose fault test kills the producing service after database commit
+and before relay completion, restarts it, and asserts eventual delivery.
+The equivalent simulator test uses the exact semantic crash point; the
+pair demonstrates why deterministic simulation finds a window that a
+timing-based Docker kill can only approximate.
 
 Fault hooks exist only in generated system-test profile, never normal
 runtime configuration.
@@ -889,16 +977,20 @@ properties. No feature is called supported from template text alone.
 - Add outbox/idempotency/ownership/index contexts to normalized IR.
 - Hard passes: identity provenance, idempotent effect closure, ordered
   stream topology.
-- Advisory architecture-lint pass after hard validation.
+- Advisory architecture-lint pass after hard validation implementing
+  predicate/index, retrying-call, fan-out, write-then-publish, and
+  missing-idempotency analyses; seeded SQL remains a separate experiment.
 - Reserve `_ciac_*`.
 
 ### Diagnostics/tooling
 
-- Append hard errors and three warning codes after prior versions'
-  registry tail.
+- Append hard errors and one warning code per graduated lint after prior
+  versions' registry tail.
 - Update errors, vocab, describe, LSP hover/completion/code actions.
 - JSON reports effective lint severity.
 - `ciac explain` states at-least-once/effect boundaries.
+- Lint findings ride the existing `check` JSON/MCP envelope; no
+  lint-specific MCP tool or protocol is introduced.
 
 ### Shared codegen
 
@@ -944,6 +1036,10 @@ cannot compile until ownership semantics are decided.
 - Flagship combines authenticated owned table, transactional publish,
   ordered stream, `message:id` worker, idempotent API, indexed query,
   and one justified lint suppression.
+- The v0.16 commerce/domain flagship is upgraded rather than creating a
+  disconnected toy: the same order path now proves partial-failure
+  correctness. README language can then state the narrow, test-backed
+  claim “correct under partial failure, by construction.”
 
 ## Milestones
 
@@ -963,8 +1059,9 @@ cannot compile until ownership semantics are decided.
    Kafka explicit commit, crash-before-ack proof.
 7. **M7 — Ownership:** subject provenance, every DB/CRUD query, scoped
    cache, staged migration, two-user tests, bypass rejection.
-8. **M8 — Architecture lints:** three analyses, severity/suppression,
-   safe index fix, machine/editor surfaces.
+8. **M8 — Architecture lints:** the five graduated graph/effect analyses,
+   severity/suppression, safe index fix, machine/editor surfaces, plus the
+   explicitly separate seeded-SQL experiment.
 9. **M9 — Integrated matrix:** simulator exploration, generated system
    tests, provider/target parity, protocol/goldens/determinism.
 10. **M10 — Docs, reconciliation, v0.19.0:** full workspace/generated/
@@ -991,6 +1088,8 @@ database file. They do not generalize into a new deployment target.
 - No query statistics/plan analysis.
 - No dead-letter/replay control plane.
 - No general loops in `.ciac`.
+- No user-defined lint/plugin execution; the advisory registry remains
+  closed and compiler-owned.
 - No deployment maturity or new backend.
 
 ## Risks
@@ -1032,11 +1131,15 @@ database file. They do not generalize into a new deployment target.
 
 Outbox and idempotency are structural: the dual-write and retry bugs are
 present in generated control flow today. Ownership is the domain/security
-wall between route-level demos and multi-tenant systems. The three lints
-are intentionally cheap experiments and may remain advisory or be cut
-back if real examples produce poor signal.
+wall between route-level demos and multi-tenant systems. The architecture
+lints are intentionally cheap experiments and may remain advisory or be
+cut back if real examples produce poor signal.
+
+The depth sequence is now explicit: v0.16 made the system expressible,
+v0.17 made it fast to verify, v0.18 made it safe to evolve, and v0.19
+makes its generated effects correct under partial failure.
 
 v0.20 uses the effect taxonomy, stable message identities, simulator
 failure sites, and tracing already present here to close the final agent
-loop: a runtime failure must point back to the exact `.ciac` construct
-that generated it.
+loop. It is the provenance version: a runtime failure must point back to
+the exact `.ciac` construct that generated it.

@@ -22,6 +22,10 @@
 > No track is deployment maturity. There is no hosted control plane,
 > infrastructure application, admin hosting, CDN, gateway provisioning,
 > identity product, secret distribution, or rollout orchestration.
+>
+> Confidence follows the selected track, not its position in this file:
+> the bounded OpenAPI bridge is currently high-conviction; admin and a
+> third backend remain hypotheses with explicit evidence gates.
 
 ## The gap this version closes
 
@@ -38,6 +42,21 @@ By v0.15, CIaC already has:
 
 The assumed v0.16–v0.20 arc deepens domain semantics, simulation,
 evolution, failure correctness/policies, and provenance.
+
+Those five depth versions optimize time-to-completion for people already
+inside a CIaC system. Reach is about the walls faced by people and systems
+outside it:
+
+- **inbound:** no OpenAPI → checked `.ciac` skeleton path;
+- **outbound:** `external_http`, present since the early capability model,
+  still abandons CIaC's type discipline at a third-party boundary;
+- **agent:** third-party request/response glue is some of the
+  highest-error code an agent writes by hand;
+- **end user:** a generated backend has no usable non-developer surface,
+  despite the long-standing Django-admin lesson that records plus policy
+  can create enormous reach;
+- **runtime audience:** the TypeScript client de-risked type mapping, but
+  the third-backend decision cannot remain permanently unasked.
 
 The next adoption barrier could plausibly be any of three:
 
@@ -59,6 +78,10 @@ two unbounded products.
 **v0.21 theme: spend one breadth token where observed use reaches the
 current boundary. Deepen an existing surface or add one host, but do not
 quietly create three permanent maintenance lines.**
+
+The goal is to lower walls—integrate CIaC's typed world with existing
+systems, make a selected generated system usable to a new audience, or
+make an honest host-language decision.
 
 ## Factual starting points that survive the forecast
 
@@ -279,6 +302,13 @@ Require:
 Existing `--client ts` use is corroborating evidence, not proof of server
 runtime demand.
 
+The rejection criteria are equally explicit: if reported need is
+consuming CIaC output rather than running a TypeScript host, or if teams
+can sustainably author an external backend, Track C does not win. The
+decision record then names protocol conveniences, a conformance suite,
+and backend-template scaffolding as the external-backend-DX follow-up
+rather than beginning a hidden partial TypeScript target.
+
 ## Selection
 
 Every candidate passes hard gates:
@@ -346,6 +376,8 @@ These are feasibility instruments, not hidden implementation starts.
 - support-report by operation;
 - resolve supported local refs;
 - map live CIaC types/security;
+- apply an explicit operation allowlist and prove excluded operations do
+  not enter the normalized model;
 - generate one typed call signature;
 - no public syntax/import command unless selected.
 
@@ -411,6 +443,7 @@ service BillingBridge {
             spec: "./contracts/stripe.openapi.json";
             base_url: "https://api.stripe.example";
             security: BearerAuth;
+            operations: [CreatePayment, GetPayment, RefundPayment];
         }
     }
 
@@ -423,7 +456,12 @@ service BillingBridge {
 Rules:
 
 - `spec` opts in; existing base-URL-only behavior remains unchanged;
+- `operations` is a required audited allowlist; only those operation IDs
+  enter HIR/codegen;
 - instance name namespaces operations (`stripe.createPayment`);
+- operation IDs normalize deterministically to lower-camel handler
+  methods (`CreatePayment` → `createPayment`), with post-normalization
+  collisions rejected;
 - explicit `base_url` overrides the spec server;
 - one safe non-templated HTTPS server may be used when omitted;
 - credentials never appear in source/spec output; runtime env provides
@@ -432,6 +470,11 @@ Rules:
 
 Exact syntax freezes after spike, but opt-in and instance namespace are
 required.
+
+The allowlist is the dependency declaration. Vendor specs routinely
+contain thousands of operations; generating all of them would create an
+unauditable client, unstable output, and no answer to “which parts of this
+vendor API does the system depend on?”
 
 ### One normalizer
 
@@ -448,6 +491,11 @@ NormalizedOpenApi
 Typed verbs and `ciac import` consume the same representation. No second
 mapping exists.
 
+The type vocabulary is the same `FieldTypeKind` seam proven first by the
+v0.10 external-backend protocol and then in reverse by v0.15 OpenAPI
+emission. Inbound support extends that one mapping rather than inventing
+an importer-only type system.
+
 ### Inputs/dependencies
 
 Minimum:
@@ -457,6 +505,9 @@ Minimum:
 - spec included in source hash/manifest dependency;
 - `ciac dev` watches it;
 - diff/verify react to changes;
+- the normalized spec/allowlist digest appears in v0.18 semantic diff, so
+  a vendor contract bump is a typed review event rather than unexplained
+  generated churn;
 - normalized digest is reproducible;
 - missing/unreadable is source-located diagnostic;
 - no remote fetch.
@@ -562,6 +613,20 @@ Python/httpx and Rust/reqwest typed methods must equivalently:
 - redact credentials and bound error excerpts;
 - preserve tracing.
 
+Generated clients reuse the established inter-service layout:
+`app/clients/<instance>.py` and `src/clients/<instance>.rs`. They do not
+create a third SDK-shaped output tree for the same injected runtime
+dependency.
+
+### Simulation integration
+
+The v0.17 recording/scripted `external_http` fake becomes spec-aware for
+selected operations. Scenario responses are validated against the
+normalized vendor response schema before the handler runs, preventing a
+test from stubbing a response the real API could never produce. This
+makes third-party integration logic infrastructure-free without claiming
+the fake proves the vendor wire implementation.
+
 ### `ciac import`
 
 ```sh
@@ -577,9 +642,18 @@ ciac import openapi.json --name stripe --out contracts/stripe.ciac
 - nonzero when no usable skeleton/fatal contract error;
 - emits user-owned records and illustrative external declaration/handler
   signatures;
+- emits supported API declarations with method/path/request type and
+  explicit `TODO` pipelines rather than inventing behavior;
+- maps supported security schemes to commented suggested `use` entries,
+  never credentials;
 - comments list omitted constructs;
 - never infers DB, policy, worker, deployment, or business pipeline;
 - rerun-to-stdout plus review is the update workflow; no merge engine.
+
+Import is intentionally one-way, lossy scaffolding—the same v0.12
+`ciac new` ethos applied to a contract. Its output must pass
+`ciac check`; “80% starting point plus a complete unmapped report” is the
+claim, not OpenAPI round-tripping.
 
 ### Track A touchpoints
 
@@ -590,8 +664,9 @@ ciac import openapi.json --name stripe --out contracts/stripe.ciac
 - IR external contract side table;
 - shared model/protocol operations/security/types;
 - both lowerers/client templates/config;
-- CLI import command;
-- vocab/LSP/describe/docs/errors;
+- CLI and MCP `import` using the same normalizer/report;
+- vocab/LSP/describe/docs/errors, including `spec`/`operations`
+  completion and hover on imported operation names;
 - real-spec corpus, mock-server parity, protocol schema.
 
 ### Track A acceptance
@@ -606,6 +681,9 @@ ciac import openapi.json --name stripe --out contracts/stripe.ciac
 8. Generic no-spec programs remain byte-identical.
 9. External protocol independently describes operations.
 10. Live docs publish conspicuous supported/unsupported table.
+11. Imported skeletons pass `ciac check`, and minimized representative
+    Stripe, GitHub, and Petstore subsets remain in compatibility tests
+    where licensing permits.
 
 ### Track A permanent cost/cuts
 
@@ -615,12 +693,18 @@ name stability, two clients, diagnostics, protocol review.
 Cuts:
 
 - remote fetch;
+- registry-cached remote specs (a future option only after mutable-input
+  and trust semantics are designed);
 - arbitrary 3.1/YAML for convenience;
 - full SDK;
 - OAuth flows;
 - proxy/gateway/webhooks;
 - retry/rate-limit inference;
 - binary/file/AsyncAPI;
+- OpenAPI round-tripping; import is scaffolding and CIaC-emitted OpenAPI
+  remains the generated contract;
+- gRPC, GraphQL, and SOAP bridges, each of which needs its own type/wire
+  design;
 - deployment changes.
 
 ## Track B — Generated admin UI
@@ -678,6 +762,11 @@ Minimum:
 Reuse one refactored TS type/CRUD request core from the existing client.
 Framework choice is frozen from spike based on total maintenance, not
 preference.
+
+The preferred minimum is a dependency-free browser runtime and a
+TypeScript-only build: no framework runtime, CDN script, or second fetch
+stack. If the spike chooses a framework, it must demonstrate lower total
+security/maintenance cost than this baseline.
 
 ### Policy safety
 
@@ -759,6 +848,11 @@ Entire `admin/` is owned:
 - policy/record change regenerates deterministically;
 - removing admin uses normal orphan rules.
 
+The artifact is not a UI framework: no custom pages, dashboard widgets,
+or plugin API; bounded theming uses generated CSS variables only. A team
+that outgrows the surface keeps the generated TypeScript client and
+OpenAPI contract as the supported path to its own application.
+
 ### Track B touchpoints
 
 - v0.19 effective policy/ownership summary in IR/model;
@@ -787,6 +881,10 @@ No backend route gains admin bypass.
 11. no-opt-in output byte-identical.
 12. selected-browser and accessibility tests.
 13. no hosting/deployment/identity claim.
+14. emitted static browser artifact runs without an npm install or
+    runtime dependency; its source passes the pinned `tsc` check in CI.
+15. the v0.16 commerce/domain flagship is driven end-to-end through the
+    generated admin against both backend targets with two policy postures.
 
 ### Track B permanent cost/cuts
 
@@ -1007,6 +1105,21 @@ broken regeneration, AB does not fit.
 Selecting AB consumes the one token. TypeScript receives no
 implementation milestones.
 
+## Shared documentation and tool obligations
+
+Whichever adoption track wins:
+
+- add `docs/integration.md` for spec loading/allowlists, unsupported-
+  construct rejection/diagnostics, one-way import, and the exact admin
+  boundary where applicable;
+- extend v0.18 semantic diff so vendor-spec/operation allowlist changes
+  and admin-visible resource/operation changes are typed changelist
+  entries;
+- keep `vocab.rs`, `ciac describe`, LSP hover/completion, MCP schemas,
+  and generated `AGENTS.md` synchronized with the selected surface;
+- update the README reach story and publish a v0.16→v0.21 retrospective
+  explaining why this one breadth token earned its cost.
+
 ## Milestones by selected track
 
 ### Common
@@ -1023,8 +1136,10 @@ implementation milestones.
    dependency tracking, diagnostics.
 4. **A2 — typed IR surface:** instance verbs, operation-specific
    typechecking/HIR/model/protocol.
-5. **A3 — Python/Rust clients:** equivalent wire/auth/error behavior.
-6. **A4 — import command:** deterministic user-owned skeleton/report.
+5. **A3 — Python/Rust clients and simulation:** equivalent
+   wire/auth/error behavior plus spec-aware scripted fake validation.
+6. **A4 — CLI/MCP import:** deterministic user-owned skeleton/report
+   through one normalizer.
 7. **A5 — pilots/reconciliation:** real specs/servers, docs, examples,
    goldens, release.
 
@@ -1043,7 +1158,8 @@ implementation milestones.
 
 3. **AB1 — shared contract/type core:** bounded normalizer, TS mappings,
    dependencies, policy eligibility.
-4. **AB2 — OpenAPI minimum:** typed verbs and import.
+4. **AB2 — OpenAPI minimum:** typed verbs, spec-aware simulation, and
+   CLI/MCP import.
 5. **AB3 — admin minimum:** CRUD UI/auth/policy behavior.
 6. **AB4 — combined conformance:** mock server, both backends, two-user
    browser, determinism/security.
@@ -1064,7 +1180,9 @@ implementation milestones.
 ### Track 0
 
 3. **0.1 — publish non-selection:** retain evidence/feasibility report,
-   reconcile factual docs found in M0, add no breadth API.
+   reconcile factual docs found in M0, record whether external-backend
+   conformance/template DX is the right follow-up, and add no hidden
+   breadth API or partial target.
 
 ## Cross-track invariants
 
@@ -1095,8 +1213,17 @@ Whichever wins:
   only demonstrated shared code.
 - **Lossy contract temptation.** Mitigation: explicit subsets and hard
   diagnostics.
+- **Public vendor specs can carry incompatible licenses or enormous
+  fixtures.** Mitigation: retain minimized hand-written representative
+  subsets unless redistribution is explicitly permitted.
+- **`ciac import` can over-promise completeness.** Mitigation: command
+  help and emitted comments say seeded/one-way/lossy, and the unmapped
+  report is a required artifact.
 - **Browser policy drift.** Mitigation: server-only authority; no client
   policy interpreter.
+- **Admin requests can become an unbounded UI backlog.** Mitigation:
+  requests beyond typed CRUD/forms route to the generated TypeScript
+  client and OpenAPI as the supported custom-application path.
 - **Third backend under-scoping.** Mitigation: all-example/full-provider
   bar and portable HIR repair.
 - **Dependency churn.** Mitigation: cost steady-state ownership, pin one
@@ -1131,3 +1258,12 @@ lean. Track A, B, AB, C, and Track 0 are all legitimate checkpoint
 outcomes; a runner-up does not continue as a stretch goal after selection.
 
 This document assigns no v0.22 theme, sequence, or commitment.
+
+The completed arc is coherent whichever track wins: v0.16 makes real
+domains expressible; v0.17 verifies them instantly; v0.18 changes them
+safely; v0.19 preserves meaning under failure; v0.20 maps failures back
+to source; v0.21 lowers one evidence-selected adoption wall.
+
+The through-line remains CIaC's moat: it owns the whole graph. Depth stays
+the default use of that advantage, and breadth is spent deliberately and
+recorded in public.

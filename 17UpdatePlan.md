@@ -16,6 +16,18 @@
 The repository has two useful verification layers and a confidence cliff
 between them.
 
+That cliff has two audiences. For many coding agents Docker is absent,
+not merely slow—the v0.15 tracing and Keycloak work could be compiled in
+the sandbox but needed CI delegation for the first real capability proof.
+For developers who do have Docker, image startup, compose `--wait`, and
+bounded health probing turn an edit into roughly 30–90+ seconds rather
+than an inner loop; current command budgets allow compose wait up to 180
+seconds and health probing up to 60 seconds in
+`crates/ciac/src/commands.rs`. A `0 3 * * *` job, third retry, or
+`cache_ttl: 300` makes the
+problem worse: nobody writes the wall-clock test because waiting is the
+test.
+
 At the inner edge, plain `ciac verify` checks regeneration drift and runs
 the generated project's target-native static tests. Python emits useful
 mock-based tests for inline handler lowering; Rust does not have an
@@ -54,6 +66,12 @@ The missing middle is visible in the live implementation:
 6. **User-authored logic is the largest blind spot.** Inline handlers
    have compiler-generated tests, but classic and `extern` seeded code is
    outside the generated behavioral loop unless a human writes a test.
+
+Frameworks can fake one service's database; CIaC owns the whole system
+graph and can fake the topology, broker, service-call boundary, and clock
+together. The ambition is FoundationDB/Antithesis-style deterministic
+simulation as a compiler artifact, with a bounded semantic failure model
+rather than host-level chaos.
 
 **v0.17 theme: compile all services for one target into one deterministic
 process, install faithful in-memory capability implementations, and run
@@ -95,6 +113,10 @@ A successful simulation may not claim:
 
 Every report states that boundary. `verify --system` is not renamed
 legacy, optional truth, or a slower simulator.
+
+The compact distinction is: simulation proves generated logic and
+topology under the CIaC contract; system verification proves real drivers
+and wire protocols.
 
 ## Architecture: a compiler simulation plan, not a Python shortcut
 
@@ -182,6 +204,12 @@ server binary. A failed production connection never falls back to fake
 state. A missing fake fails preflight; it never reaches a real provider
 URL.
 
+The fake implementations and runner are generated test artifacts, not a
+production runtime mode. Python simulation modules are excluded from the
+production image/package; Rust puts them behind a `sim` cargo feature and
+`#[cfg(feature = "sim")]`, which the release binary does not enable. The
+shared ports remain because production and tests need one honest seam.
+
 ### Python shape
 
 Python keeps `Settings` as environment parsing and introduces a generated
@@ -232,6 +260,10 @@ Python's existing lazy behavior is preserved:
 
 The existing Rust scope-test restriction for queue/OAuth2 services must
 disappear.
+
+This retires the v0.14-era JWT-only/no-queue testing gate: a fake JWKS
+provider gives OAuth2 routes the same no-infrastructure scope proof while
+the real JWKS path remains in `verify --system`.
 
 ### Python multi-service package isolation
 
@@ -344,6 +376,13 @@ versioned result consumed by CLI JSON or MCP.
 
 There is no socket, but serialization and generated framework behavior
 remain observable.
+
+The target adapters reuse proven framework seams: Python routes execute
+through `httpx.ASGITransport` against the uniquely loaded app, while Rust
+uses `tower::ServiceExt::oneshot` (the existing generated scope-test
+pattern). Generated Python `app/clients/*.py` and Rust reqwest call
+clients receive in-process transport adapters rather than bypassing their
+request/response contracts.
 
 ### Actors, not infinite loops
 
@@ -491,7 +530,10 @@ It enforces:
 - deterministic relation hydration;
 - index maintenance after insert/update/delete/rollback;
 - atomic transaction commit/rollback;
-- read-your-writes inside a transaction.
+- read-your-writes inside a transaction;
+- the same normalized API error semantics as real adapters (for example,
+  unique/reference/restrict constraint failures map to the v0.16
+  409/422 shapes rather than fake-only exceptions).
 
 The model is deterministic serial transaction execution. It does not
 simulate MVCC, lock waits, deadlocks, write skew, provider-specific
@@ -541,6 +583,11 @@ The fake contract may be more adversarial than current Core NATS
 durability. That is useful for finding idempotency bugs, not proof that a
 real broker survives a crash.
 
+Python materializes eligible deliveries as scheduler-owned awaited tasks;
+Rust uses a `tokio::sync` channel fabric under the same scheduler. Those
+are adapter details only—the `SimPlan` ordering and acknowledgement rules,
+not asyncio or Tokio wake order, define observable behavior.
+
 ### Database/broker ordering
 
 The normal worker path is:
@@ -570,6 +617,12 @@ Virtual time drives:
 
 Generated UUIDs and tie-breaking entropy use a separate seeded stream.
 Production adapters still use host time/entropy.
+
+Rust may implement the adapter with Tokio's paused clock and explicit
+`advance`; Python routes every generated `croniter` job decision, worker
+retry, TTL check, and `Timestamp.now()` through the generated clock port.
+The harness does not monkeypatch the event loop, global `datetime`, or
+use `freezegun`.
 
 ### Scheduler order
 
@@ -613,6 +666,12 @@ The generated real schedulers and simulator must share one semantic rule:
 This also pays the current debt where `CATCH_UP` is generated but unused.
 Durable schedule history across process restarts is not part of v0.17.
 
+The fixture corpus includes direct assertions:
+
+- advance 24 hours and observe the 03:00 job once;
+- fail a worker twice and observe the third attempt without sleeping;
+- advance 301 seconds and observe a `cache_ttl: 300` entry miss.
+
 ### Replay
 
 A replay artifact contains:
@@ -633,6 +692,10 @@ changes.
 Failed CLI runs print a copyable target/scenario/seed command and write a
 bounded last-failure artifact under ignored `.ciac/sim/` state. MCP
 returns replay data without writing an arbitrary caller path.
+
+The human and JSON summaries include the first semantic event ordinal
+(`seed 42, step 17`) so an agent can report a complete reproducible bug
+without attaching target stack traces.
 
 ## Pillar 7 — Deterministic failure injection
 
@@ -726,8 +789,18 @@ Each seeded handler gets a one-time seeded simulation test scaffold:
 - examples of row/message/email-mailbox assertions;
 - clock/ID guidance.
 
-It is user-owned and follows `.ciac-new` reconciliation when signatures
-change.
+Python writes `tests/logic/test_<handler>.py`; Rust writes
+`tests/logic/<handler>_test.rs`. The scaffold reuses the typed
+`sample_json` machinery already used by generated system tests, contains
+one passing smoke assertion plus commented behavioral examples, and is
+explicitly `FileRole::Seeded`. It follows `.ciac-new` reconciliation when
+signatures change.
+
+In addition to portable whole-system scenarios, every declared job,
+retried worker, and TTL-bearing CRUD resource receives one small
+compiler-owned fake-backed unit proof. These locate a broken construct
+quickly; they do not replace the scenario that proves the cross-service
+path.
 
 ### Cross-target equivalence
 
@@ -799,6 +872,16 @@ regeneration/static → simulation → optional system/live
 Plain `verify` remains unchanged. `--sim --system` is legal and stops at
 the first failed phase. `--keep` applies only to Docker-backed phases.
 
+Artifact execution is unambiguous:
+
+- plain `verify` compiles/type-checks simulation scaffolds but runs only
+  the existing production-target test profile;
+- `verify --sim` enables the Rust `sim` feature/Python simulation test
+  environment, runs compiler-owned per-construct proofs and user-seeded
+  `tests/logic` scaffolds, then runs portable whole-system scenarios;
+- `ciac sim` runs selected/synthesized scenarios directly for speed and
+  does not first run the full generated test suite.
+
 ### JSON
 
 The envelope version increments from whatever v0.16 actually shipped.
@@ -850,6 +933,12 @@ verify_sim  = bounded in-process behavioral truth, no Docker/network
 server-side step/wall limits, cannot request Docker/live/keep, cannot
 write arbitrary replay paths, and states that user-authored target code
 will execute.
+
+Generated `--deploy ci` workflows place a `sim` job after static tests
+and before `compose-smoke`; a fast deterministic failure prevents the
+expensive stack from starting. Generated `AGENTS.md` uses blunt wording:
+`sim` is the fast logic/topology loop, while `verify --system` is the
+real-provider merge bar.
 
 ## Diagnostics and limits
 
@@ -946,6 +1035,12 @@ It depends on normalized IR, not on Python or Rust.
   guides.
 - Generated `AGENTS.md` explains the three truth layers.
 
+`docs/simulation.md` is the public contract, not a tutorial only. It
+contains per-capability fake/real tables, deterministic scheduling and
+replay guarantees, the fidelity-ratchet rule, limits, and an explicit
+“what simulation does not prove” section cross-linked to system
+verification.
+
 ## Verification strategy
 
 ### Infrastructure-free compiler tests
@@ -1007,6 +1102,17 @@ A focused subset also runs through existing compose verification:
 The comparison uses normalized external outcomes. These remain explicit
 Docker jobs.
 
+This becomes a permanent **fidelity ratchet**: wherever practical, the
+same generated assertion vector runs once against fakes and once against
+compose in `generated-system`. A disagreement is a fake/adapter bug and
+blocks merge; a fake without a corresponding parity vector is not
+considered complete.
+
+The shared vector is the normalized `expect` portion of a portable
+scenario, rendered once for the in-process runner and once for the
+compose/system harness. Per-construct unit tests remain fast diagnostic
+helpers and are not themselves required to run against compose.
+
 ### Performance acceptance
 
 After dependencies are present:
@@ -1062,11 +1168,13 @@ fixtures rather than being replaced.
 4. **M4 — Scheduler and virtual time:** stable actors, quiescence,
    retries, operational `catch_up`, deterministic IDs, failure engine.
 5. **M5 — Relational fake:** full v0.16 schema, constraints, indexes,
-   transactions, validation, fake-versus-real probes.
+   transactions, validation, fake-versus-real probes; the v0.16
+   domain-orders suite passes infrastructure-free.
 6. **M6 — Broker and temporal fakes:** ordering, groups, logical lanes,
    duplicate/lost-ack delivery, cache TTL, channels.
 7. **M7 — Remaining fakes:** external HTTP, auth/users, object, email,
-   search, log/metrics/tracing observations.
+   search, log/metrics/tracing observations; `dev-identity` scope
+   behavior passes with fake JWKS and no Keycloak process.
 8. **M8 — Python runner and handler scaffolds:** all services in one
    asyncio process, actual seeded code, generated cases, replay.
 9. **M9 — Rust runner and parity:** current-thread Tokio runner,
@@ -1092,6 +1200,8 @@ fixtures rather than being replaced.
 - No mixed-target project simulation.
 - No external-backend simulation without an explicit future protocol.
 - No `ciac dev --sim` requirement.
+- No interactive simulation REPL in the release-critical path.
+- No simulation of generated k8s/Terraform/other deploy artifacts.
 - No general-purpose scenario programming language.
 
 ## Risks
@@ -1110,6 +1220,9 @@ fixtures rather than being replaced.
   alias trick.
 - **Two adapters can drift.** Mitigation: one plan, one scenario corpus,
   normalized transcripts, and fake-versus-real vectors.
+- **Mock rot can create a faster lie.** Mitigation: the permanent fidelity
+  ratchet runs shared assertions against fakes and real providers; parity
+  coverage is required for every fake.
 - **The relational fake can become a database project.** Mitigation:
   implement only normalized CIaC semantics—no SQL parser or optimizer.
 - **User code can escape determinism.** Mitigation: explicit ports,
@@ -1119,6 +1232,14 @@ fixtures rather than being replaced.
   feature separation, shared targets, and separate warm/cold reporting.
 - **Retry/cron scenarios can fail to terminate.** Mitigation:
   quiescence plus hard step/time/catch-up limits.
+- **Python clock seams are easy to bypass accidentally.** Mitigation:
+  every generated clock call site is centralized and golden-tested; host
+  clock use in compiler-owned simulation paths is a failing test.
+- **Two test stacks can confuse users.** Mitigation: command/help/AGENTS
+  consistently say “sim = fast logic/topology; system = real wiring.”
+- **The fake matrix grows with the capability registry.** Mitigation:
+  one closed operation contract and one parity vector per capability;
+  future capability additions include fake maintenance in their cost.
 - **MCP executes user code.** Mitigation: separately named tool,
   documented policy, no network fallback, and strict server caps.
 
@@ -1139,6 +1260,14 @@ fails, the provider seams and stateful handler tests still ship; the
 project does not relabel a collection of mocks as whole-system
 simulation.
 
-Once it succeeds, v0.18 can focus on the next recurring cost: reviewing,
-gating, and mechanically applying change to a system that now already
-works.
+`traced-checkout.ciac` is the smaller early honesty check for the
+call→publish→worker boundary: if the generated call clients cannot run
+through the in-process transport without bypassing serialization, the
+whole-system claim is not ready. The fallback is explicitly per-service
+fake-backed tests, not a weaker feature marketed under the same name.
+
+Once it succeeds, v0.18's confirmed semantic-diff pillar can focus on the
+next recurring cost: reviewing, gating, and mechanically applying change
+to a system that now already works. The arc is intentional: express the
+domain in v0.16, verify it instantly in v0.17, then change it safely in
+v0.18.

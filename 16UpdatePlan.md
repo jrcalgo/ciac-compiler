@@ -46,10 +46,27 @@ falls through the language into seeded target code, handwritten SQL,
 handwritten validation, and handwritten tests. At that point the compiler
 no longer owns the meaning it claims to compile.
 
+The checked-in `examples/order-system.ciac` is the concrete witness: its
+customer/order links are plain, unenforced UUID-shaped data because the
+current `FieldType` cannot say more. Likewise, v0.14 made filtered
+`where` queries expressible without giving authors any way to state that
+the predicate column is indexed, and every registration flow still has to
+hand-write “email is unique.” Until those facts enter IR, parent-child
+domains have effectively unbounded time-to-completion in the model.
+
+Relations and transactions ship together deliberately. Once one logical
+operation writes a parent, child, and relationship, a compiler that adds
+foreign keys without adding an atomic boundary makes partial corruption
+easier to express, not harder.
+
 **v0.16 theme: make ordinary domain invariants compiler-owned. A
 relationship, constraint, transaction boundary, or field rule stated in
 `.ciac` must survive through semantic analysis, migrations, both runtimes,
 OpenAPI, the TypeScript client, evolution checks, and verification.**
+
+**Confidence: structural.** This is arithmetic rather than a hypothesis;
+later versions can experiment with workflow and reach only after the
+domain graph can represent ordinary stored relationships honestly.
 
 ## Where v0.15 actually leaves the implementation
 
@@ -297,6 +314,12 @@ handler StoreOrder(input: NewOrder) -> Order {
 There is no configurable isolation level in this release. The selected
 provider's default isolation applies.
 
+The cross-instance diagnostic explicitly states that satisfying the
+request would require two-phase commit, which CIaC does not synthesize.
+The `publish` diagnostic points forward without weakening the current
+rule: “transactional outbox is planned for v0.19; publish after commit or
+keep the publish outside this block.”
+
 ## Pillar 1 — Resolved relation semantics
 
 ### Semantic identity and storage ownership
@@ -335,6 +358,11 @@ The target table must be backed by the `Reference<T>` record, and that
 record must contain `id: Uuid`. The source record must also have
 `id: Uuid` when a many-valued relation needs a link table.
 
+Resolution is an explicit second semantic phase after all records and
+tables have been registered. Reference targets participate in blueprint
+hygiene exactly like record names in ordinary field positions; suffixing
+or substitution cannot leave an unresolved pre-expansion name.
+
 ### One-valued storage
 
 For:
@@ -361,6 +389,10 @@ The public model contains `customer: Customer`. Inserts and updates take
 the nested target's `id`; non-identity target fields are validated as
 wire data but do not mutate the target row. Reads hydrate the target from
 its table so stored target state remains authoritative.
+
+The storage mapping is part of the documented contract: a source field
+named `customer` becomes a scalar row column named `customer_id`.
+Backends never infer that mapping independently from casing.
 
 `unique: true` adds a unique constraint to the FK column, producing
 one-to-one ownership from the source side. Without it, several source
@@ -421,6 +453,11 @@ nests.
 Predicates remain local-column predicates. Relation traversal, joins,
 and nested `where` expressions are out of scope.
 
+Codegen also retains reverse metadata
+(`incoming_refs: Vec<IncomingRefCtx>` or an equivalent shared context)
+for delete error mapping, migration ordering, and generated system-test
+setup. This is metadata, not a generated inverse domain field.
+
 ### Relation graph restrictions
 
 v0.16 rejects:
@@ -440,6 +477,13 @@ different persistence/evolution paths. Applying a foreign key only on a
 fresh CRUD install while omitting it from migrations would violate the
 core build contract. Validation-only attributes do work on typed CRUD
 records; relation-aware CRUD waits for storage unification.
+
+The diagnostic names the keyed-document problem directly: `crud X;`
+stores an untyped JSON document and cannot uphold a typed reference;
+authors must use `crud X: Record`, an explicit `table`, or a hand-written
+join record. The join-record form remains the escape hatch when a
+many-to-many edge needs payload columns or domain-specific ordering that
+the compiler-owned link table intentionally does not model.
 
 ## Pillar 2 — Unique constraints, indexes, and migration evolution
 
@@ -467,6 +511,10 @@ Composite, partial, expression, full-text, and provider-specific indexes
 are deferred. v0.19's index lint initially reasons about the single-field
 indexes declared here.
 
+That narrow index surface is still load-bearing: it lets v0.19 answer the
+question v0.14's predicates introduced—whether a generated equality/range
+query is knowingly indexed or an accidental full scan.
+
 ### One target-neutral storage snapshot
 
 `evolution.rs` grows from boundary-record compatibility into the
@@ -492,6 +540,13 @@ is rewritten.
 Python and Rust must receive byte-identical migration SQL for the same
 database engine. SQL type rendering occurs after semantic comparison so
 the snapshot is not accidentally Postgres-shaped.
+
+Constraint operations are dependency ordered: columns/tables exist before
+foreign keys and indexes are added; a future manual constraint removal
+must precede a column removal. A property-style migration test applies
+every supported `(old, new)` pair to a real engine and compares the
+resulting schema with a fresh build of `new`, preventing ordering bugs
+from hiding behind SQL snapshots.
 
 ### Evolution safety matrix
 
@@ -643,6 +698,11 @@ models:
 - recursive validation of relation values;
 - deterministic field-path errors.
 
+The email/URI checks use generated Pydantic validators rather than
+silently introducing an optional `EmailStr` dependency whose accepted
+profile could differ from Rust's. Both hosts are held to the same fixture
+corpus and normalized error path.
+
 SQLAlchemy row models remain scalar. Relation loading is explicit async
 code; serialization cannot trigger hidden lazy I/O.
 
@@ -693,6 +753,11 @@ paths:
 
 Workers and jobs feed the same normalized cause into their existing
 failure/retry path after rolling back any open transaction.
+
+Backend adapters classify provider errors behind the existing
+engine-specific branch—Postgres `23503`, MySQL `1451`/`1452`, and the
+corresponding SQLite extended constraint code—then expose only the
+portable CIaC constraint kind/name above.
 
 Validation bounds are not translated into SQL `CHECK` constraints in
 v0.16. A manual database write may violate them; hydration then fails
@@ -781,9 +846,10 @@ Required new meanings include:
 | Symbolic code | Trigger |
 |---------------|---------|
 | `UnknownReferenceTarget` | Referenced record/table does not exist or does not match |
-| `InvalidReferenceDefinition` | Missing cardinality/action, invalid ID shape, or incompatible attribute |
+| `InvalidReferenceDefinition` | Missing cardinality/actions, invalid ID shape, or incompatible attribute |
 | `CrossStorageReference` | Source and target differ by service or database instance |
 | `CyclicReferenceGraph` | Self or indirect relation cycle |
+| `RefRequiresTypedStorage` | A relation-bearing record is projected through keyed-document `crud X;` storage |
 | `InvalidStorageConstraint` | Unsupported/unused `unique` or `index` declaration |
 | `InvalidFieldValidation` | Wrong attribute/type, contradictory bounds, or unknown format |
 | `InvalidTransactionBlock` | Nested/empty/multi-database block or illegal control flow |
@@ -799,6 +865,14 @@ Every code requires:
 
 Useful fixes may insert missing required reference attributes or rename a
 near-miss table. Cycles and cross-database ownership remain prose-only.
+
+For a missing delete or update action, the diagnostic offers separately
+titled `restrict` and `cascade` edits rather than choosing destructive
+behavior. If optional references and `set_null` land later, that becomes
+a third delete edit only for optional fields. Unknown record/table
+targets reuse the existing Levenshtein nearest-name machinery. Every
+offered edit retains the v0.15 property: apply it and the originating
+diagnostic disappears.
 
 ## Implementation map
 
@@ -822,6 +896,8 @@ near-miss table. Cycles and cross-database ownership remain prose-only.
 - Extend HIR with transaction blocks and recursive reference/list types.
 - Give tables concrete service/database ownership.
 - Predeclare records/tables before relation resolution.
+- Build references in a second pass after record/table registration,
+  rather than relying on declaration order.
 - Add a relation-validation pass for ownership, identity shape, and
   acyclicity.
 - Make type checking transaction-context aware.
@@ -850,6 +926,9 @@ near-miss table. Cycles and cross-database ownership remain prose-only.
 - `ts_client.rs`: recursive interfaces and validation JSDoc.
 - `system_tests.rs`: relation, cascade, uniqueness, validation, and
   rollback checks.
+- `Backend::supports` and `CIAC0011`: front-end constructs may land in M1
+  while build remains loudly gated until each backend milestone removes
+  that gate.
 
 ### Python backend
 
@@ -900,11 +979,13 @@ near-miss table. Cycles and cross-database ownership remain prose-only.
 Add `examples/domain-orders.ciac` containing:
 
 - one and many relations;
+- a Customer → Order → LineItem dependency chain;
 - restrict and cascade;
 - unique and ordinary indexes;
 - non-empty, length, numeric, email, and URI validation;
 - a successful two-table transaction;
 - a deliberate second-write failure;
+- a two-account transfer that `fail`s after the first balance update;
 - nested API/OpenAPI/TypeScript output.
 
 Keep `examples/order-system.ciac` as a useful witness of the existing
@@ -915,6 +996,8 @@ CRUD/table split rather than silently changing its meaning.
 - Parser recovery for malformed field attrs and transaction blocks.
 - Forward-reference and ownership resolution.
 - One negative fixture per new diagnostic.
+- A dedicated keyed-document CRUD fixture for
+  `RefRequiresTypedStorage`.
 - Relation-cycle and long-name determinism.
 - HIR transaction/effect restrictions.
 - Manifest v0.15 → v0.16 transition.
@@ -926,18 +1009,27 @@ CRUD/table split rather than silently changing its meaning.
 
 For both targets:
 
-1. insert target/source and read the nested target;
+1. generate sample JSON topologically, create parent rows first, then
+   insert target/source and read the nested target;
 2. insert/read a many relation with deterministic ordering;
 3. reject a missing target;
 4. reject duplicate unique data;
 5. prove restrict behavior;
 6. prove one-reference cascade behavior;
-7. prove link cleanup for many-reference cascade;
+7. prove link cleanup for many-reference cascade, including a second
+   independent database connection observing the deletion;
 8. commit both writes on transaction success;
 9. roll back the first write after a second failure;
 10. reject invalid nested input before handler execution;
 11. serve the same OpenAPI document;
 12. type-check the generated TypeScript client.
+
+The restrict system proof creates parent and child, verifies parent
+delete returns 409, then deletes child and parent successfully. The
+cascade proof deletes the parent and uses a second connection to prove
+the dependent row/link is gone. Transaction rollback is exercised on
+Postgres in `verify --system` and in focused MySQL/SQLite generated
+project suites.
 
 Postgres is the full reference matrix. MySQL and SQLite run focused
 parity fixtures, including SQLite FK enforcement and explicit evolution
@@ -959,7 +1051,7 @@ duration or safety of applying a migration to production data.
 
 1. **M1 — Surface freeze:** field tails, `Reference<T>`, validation
    profile, table ownership spelling, and `transaction`; parser/recovery
-   tests and exact grammar.
+   tests, exact grammar, and temporary backend support gates.
 2. **M2 — Resolved semantics:** relation/table predeclaration, IR
    metadata, transaction HIR, ownership/cycle checks, append-only
    diagnostics, blueprint preservation.
@@ -999,10 +1091,15 @@ behavioral matrix is the release bar.
   v0.19's failure model.
 - No automatic down migration, backfill, rename, duplicate cleanup, or
   table rebuild.
+- No `--allow-destructive` escape hatch in v0.16: unsupported destructive
+  changes remain refused rather than merely hidden behind a flag.
 - No online/concurrent migration guarantee.
 - No SQL `CHECK` generation for validation.
 - No custom regex, cross-field rule, transform, or default value.
 - No additional Kubernetes/Terraform/database deployment maturity.
+- No `?embed=customer`, lazy-loading switch, or generated ORM query
+  language. Nested relation values are one explicit compiled wire
+  contract, not an open-ended ORM surface.
 
 ## Risks
 
@@ -1019,6 +1116,16 @@ behavioral matrix is the release bar.
 - **Adding unique/FK constraints can fail against dirty data.**
   Mitigation: deterministic migrations, explicit warnings, no claim that
   the compiler inspected production rows.
+- **Per-engine SQLx transaction types tempt a generic runtime
+  abstraction.** Mitigation: follow the v0.13 database precedent and
+  generate monomorphic engine-specific code while keeping semantics in
+  shared IR.
+- **Migration dependency ordering can be subtly wrong.** Mitigation:
+  property-test supported old/new schemas against real engines and fresh
+  generation, not only expected SQL strings.
+- **Nested domain output can drift into ORM scope creep.** Mitigation:
+  no inverse field, lazy loading, embed query option, joins, or arbitrary
+  relationship mutation; those cuts are milestone acceptance criteria.
 - **A legacy commit path can leak into a transaction.** Mitigation:
   explicit executor/commit mode, golden checks for forbidden inner
   commits, and live rollback tests.
@@ -1043,3 +1150,9 @@ strongest infrastructure-free feedback loop: a whole-system simulator
 whose database fake enforces these references, cascades, constraints,
 validations, and transaction boundaries rather than replacing them with
 a dictionary.
+
+That richer domain raises the price of compose-backed verification—the
+fixture must now create rows in dependency order and exercise rollback
+and cascades. This is exactly why v0.17 follows v0.16: the fast simulator
+must implement the real relational rules rather than freezing an earlier,
+easier fake.

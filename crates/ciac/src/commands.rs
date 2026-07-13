@@ -153,17 +153,18 @@ pub fn build(
     force: bool,
     adopt: bool,
     deploy: DeployOpts,
+    client: Vec<String>,
     name: Option<String>,
     json: bool,
 ) -> Result<ExitCode> {
     if json {
         let (envelope, code) = with_json_envelope("build", file, || {
-            build_inner(file, target, out, force, adopt, deploy, name)
+            build_inner(file, target, out, force, adopt, deploy, client, name)
         })?;
         crate::json_out::emit(&envelope);
         return Ok(code);
     }
-    build_inner(file, target, out, force, adopt, deploy, name)
+    build_inner(file, target, out, force, adopt, deploy, client, name)
 }
 
 /// [`build`]'s JSON path as a value — `ciac mcp`'s `build` tool (always
@@ -177,10 +178,11 @@ pub(crate) fn build_envelope(
     name: Option<String>,
 ) -> Result<(crate::json_out::Envelope, ExitCode)> {
     with_json_envelope("build", file, || {
-        build_inner(file, target, out, false, false, deploy, name)
+        build_inner(file, target, out, false, false, deploy, Vec::new(), name)
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_inner(
     file: &Path,
     target: &str,
@@ -188,6 +190,7 @@ pub(crate) fn build_inner(
     force: bool,
     adopt: bool,
     deploy: DeployOpts,
+    client: Vec<String>,
     name: Option<String>,
 ) -> Result<ExitCode> {
     if force && adopt {
@@ -208,6 +211,13 @@ pub(crate) fn build_inner(
             other => bail!("unknown --deploy target `{other}`; available: k8s, terraform"),
         }
     }
+    let mut ts_client = false;
+    for kind in &client {
+        match kind.as_str() {
+            "ts" => ts_client = true,
+            other => bail!("unknown --client target `{other}`; available: ts"),
+        }
+    }
 
     let Generated {
         backend,
@@ -225,6 +235,7 @@ pub(crate) fn build_inner(
         terraform,
         profile,
         deploy.secrets,
+        ts_client,
     )?;
 
     if force {
@@ -403,6 +414,7 @@ fn diff_plan(file: &Path, target: &str, out: &Path, name: Option<String>) -> Res
         None,
         ciac_codegen::Profile::Dev,
         false,
+        false,
     )?;
     let manifest_file = manifest_path(out);
     let manifest = if manifest_file.exists() {
@@ -479,6 +491,7 @@ fn verify_inner(
         None,
         None,
         ciac_codegen::Profile::Dev,
+        false,
         false,
     )?;
 
@@ -819,6 +832,7 @@ fn generate(
     terraform: Option<ciac_codegen::Profile>,
     profile: ciac_codegen::Profile,
     secrets: bool,
+    ts_client: bool,
 ) -> Result<Generated> {
     let all = backends();
     let backend: Box<dyn Backend> = match all.into_iter().find(|b| b.id() == target) {
@@ -858,6 +872,17 @@ fn generate(
 
     let opts = GenOptions { project_name: name };
     let mut project = backend.generate(&ir, &opts)?;
+
+    // v0.15 M2: opt-in TypeScript client (`ciac build --client ts`),
+    // independent of `--target` — it talks to whichever backend serves
+    // the program's routes over HTTP, so it's generated from the same
+    // `SystemModel` every backend renders from rather than per-backend.
+    if ts_client {
+        let system = ciac_codegen::model::build_system(&ir, &opts);
+        for (path, content) in ciac_codegen::ts_client::build(&system) {
+            project.add_file(path, content);
+        }
+    }
 
     // v0.8 M4: compose-backed system tests, added the same way regardless
     // of target — they exercise wire-level contracts (HTTP/NATS/WS), not

@@ -98,6 +98,13 @@ enum Command {
         /// Image tag for `--deploy k8s` manifests.
         #[arg(long, default_value = "latest")]
         image_tag: String,
+        /// Also emit a generated API client: `ts` (dependency-free
+        /// typed `fetch` client under `clients/ts/`, from the IR
+        /// directly). Repeatable; independent of `--target`, since the
+        /// client talks to whichever backend serves the program's
+        /// routes over HTTP.
+        #[arg(long, value_name = "LANG")]
+        client: Vec<String>,
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
@@ -277,6 +284,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             deploy,
             image_prefix,
             image_tag,
+            client,
             name,
             json,
             profile,
@@ -294,6 +302,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 profile,
                 secrets,
             },
+            client,
             name,
             json,
         ),

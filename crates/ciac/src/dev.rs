@@ -147,6 +147,7 @@ fn rebuild(
             profile: "dev".to_owned(),
             secrets: false,
         },
+        Vec::new(),
         name,
     )?;
     if code != ExitCode::SUCCESS {

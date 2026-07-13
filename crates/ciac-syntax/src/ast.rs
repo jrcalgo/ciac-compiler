@@ -191,32 +191,54 @@ pub enum RecordKind {
     Error,
 }
 
-/// One `name: Type;` line of a record body.
+/// One `name: Type;` or `name: Type { attr: value; .. }` line of a record
+/// body (v0.16 M1 adds the attribute tail — `unique`, `index`,
+/// `non_empty`, `min`/`max`, the `Reference<T>` relation attributes, and
+/// so on all share this one syntactic slot).
 #[derive(Debug, Clone, Serialize)]
 pub struct Field {
     pub name: Ident,
     pub ty: TypeExpr,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
-/// A field type: a named type (primitive in v0.2), an inline enum, or a
-/// `[Type]` list (v0.14 M1). List types type-check as a handler
-/// parameter/return type; `ciac-sema` rejects them as a `record` field
-/// type for now (see `CIAC0053`) — lists only ever arise from a
-/// list-returning verb call (`db.query`, `object_store.list`,
-/// `search.query`), never as stored data shape.
+/// A field type: a named type (primitive in v0.2), an inline enum, a
+/// `[Type]` list (v0.14 M1), or a `Reference<T>` relation (v0.16 M1).
+/// List types type-check as a handler parameter/return type;
+/// `ciac-sema` rejects them as a `record` field type for now (see
+/// `CIAC0053`) — lists only ever arise from a list-returning verb call
+/// (`db.query`, `object_store.list`, `search.query`), never as stored
+/// data shape. `Reference<T>` is the opposite: legal only as a stored
+/// record field, resolved against another record/table in a second
+/// sema pass (see `ciac_sema::build`).
 #[derive(Debug, Clone, Serialize)]
 pub enum TypeExpr {
     Named(Ident),
-    Enum { variants: Vec<Ident>, span: Span },
-    List { inner: Box<TypeExpr>, span: Span },
+    Enum {
+        variants: Vec<Ident>,
+        span: Span,
+    },
+    List {
+        inner: Box<TypeExpr>,
+        span: Span,
+    },
+    /// `Reference<Customer>` — `target` names the referenced record;
+    /// cardinality/actions/storage are field attributes (`cardinality:
+    /// one;`, `on_delete: restrict;`, ...), not part of the type itself.
+    Reference {
+        target: Ident,
+        span: Span,
+    },
 }
 
 impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named(ident) => ident.span,
-            TypeExpr::Enum { span, .. } | TypeExpr::List { span, .. } => *span,
+            TypeExpr::Enum { span, .. }
+            | TypeExpr::List { span, .. }
+            | TypeExpr::Reference { span, .. } => *span,
         }
     }
 }
@@ -293,15 +315,30 @@ pub struct Attr {
 #[derive(Debug, Clone, Serialize)]
 pub enum AttrValue {
     Ident(Ident),
-    Number { value: u64, span: Span },
-    Str { value: String, span: Span },
+    Number {
+        value: i64,
+        span: Span,
+    },
+    /// A decimal literal (v0.16 M1: `min`/`max` bounds on `Float`
+    /// fields). Kept distinct from `Number` rather than folding integers
+    /// into `f64`, so an `Int` bound attribute stays exact.
+    Float {
+        value: f64,
+        span: Span,
+    },
+    Str {
+        value: String,
+        span: Span,
+    },
 }
 
 impl AttrValue {
     pub fn span(&self) -> Span {
         match self {
             AttrValue::Ident(ident) => ident.span,
-            AttrValue::Number { span, .. } | AttrValue::Str { span, .. } => *span,
+            AttrValue::Number { span, .. }
+            | AttrValue::Float { span, .. }
+            | AttrValue::Str { span, .. } => *span,
         }
     }
 }
@@ -455,6 +492,11 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    /// `transaction { <stmts> }` (v0.16 M1) — every database verb inside
+    /// the block shares one database transaction; `return` is rejected
+    /// inside the block (`ciac-sema`), since it could bypass the
+    /// generated commit/rollback epilogue.
+    Transaction { body: Vec<Stmt>, span: Span },
 }
 
 impl Stmt {
@@ -463,7 +505,8 @@ impl Stmt {
             Stmt::Let { span, .. }
             | Stmt::Return { span, .. }
             | Stmt::Fail { span, .. }
-            | Stmt::Publish { span, .. } => *span,
+            | Stmt::Publish { span, .. }
+            | Stmt::Transaction { span, .. } => *span,
             Stmt::Expr(expr) => expr.span(),
         }
     }

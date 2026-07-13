@@ -446,6 +446,24 @@ impl<'d> Builder<'d> {
                     );
                     continue;
                 }
+                // v0.16 M1: `Reference<T>` parses; resolving it against a
+                // declared record/table (cardinality, on_delete/on_update,
+                // service/database ownership) is the v0.16 M2 relation
+                // resolution pass, not yet implemented.
+                TypeExpr::Reference { span, .. } => {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::UnsupportedFieldType,
+                            "`Reference<T>` fields are not resolved yet",
+                        )
+                        .with_label(*span, "relation resolution lands in v0.16 M2")
+                        .with_help(
+                            "the surface syntax is frozen (v0.16 M1); relation semantics, \
+                             storage, and codegen are still being implemented",
+                        ),
+                    );
+                    continue;
+                }
             };
             fields.push(RecordField {
                 name: field.name.text.clone(),
@@ -1965,7 +1983,7 @@ fn attr_string(attrs: &[Attr], name: &str) -> Option<String> {
         (attr.name.text == name).then(|| match &attr.value {
             AttrValue::Str { value, .. } => Some(value.clone()),
             AttrValue::Ident(ident) => Some(ident.text.clone()),
-            AttrValue::Number { .. } => None,
+            AttrValue::Number { .. } | AttrValue::Float { .. } => None,
         })?
     })
 }

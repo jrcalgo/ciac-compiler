@@ -310,6 +310,7 @@ fn type_name(ty: &TypeExpr) -> String {
         TypeExpr::Named(ident) => ident.text.clone(),
         TypeExpr::Enum { .. } => "enum".to_owned(),
         TypeExpr::List { .. } => "list".to_owned(),
+        TypeExpr::Reference { target, .. } => format!("Reference<{}>", target.text),
     }
 }
 
@@ -368,6 +369,7 @@ fn substitute_item(
                 .map(|f| Field {
                     name: f.name.clone(),
                     ty: substitute_type(&f.ty, blueprint, stmt, renames),
+                    attrs: substitute_field_attrs(&f.attrs, params, renames),
                     span: f.span,
                 })
                 .collect(),
@@ -453,6 +455,13 @@ fn substitute_type(
             inner: Box::new(substitute_type(inner, blueprint, stmt, renames)),
             span: *span,
         },
+        // v0.16 M1: a `Reference<T>` target inside a blueprint body
+        // participates in hygiene exactly like a record mention in an
+        // ordinary field position.
+        TypeExpr::Reference { target, span } => TypeExpr::Reference {
+            target: substitute_reference(target, blueprint, stmt, renames),
+            span: *span,
+        },
         other => other.clone(),
     }
 }
@@ -471,6 +480,32 @@ fn substitute_attrs(attrs: &[Attr], params: &HashMap<String, AttrValue>) -> Vec<
                 }
             }
             attr.clone()
+        })
+        .collect()
+}
+
+/// Field-attribute substitution (v0.16 M1). Handles both mechanisms an
+/// attribute value can need: a scalar `params` placeholder (as
+/// `substitute_attrs` already does for `crud`/`api` attrs), and a
+/// hygienically-renamed body-local name — e.g. `references: Orders;`
+/// where `Orders` is a `table` declared earlier in the same blueprint
+/// body. `restrict`/`cascade`/`one`/`many`/`true`/`false` and any other
+/// non-body-local identifier simply aren't in `renames` and pass
+/// through unchanged.
+fn substitute_field_attrs(
+    attrs: &[Attr],
+    params: &HashMap<String, AttrValue>,
+    renames: &HashMap<String, String>,
+) -> Vec<Attr> {
+    substitute_attrs(attrs, params)
+        .into_iter()
+        .map(|attr| match attr.value {
+            AttrValue::Ident(ident) => Attr {
+                name: attr.name,
+                value: AttrValue::Ident(renamed_ident(&ident, renames)),
+                span: attr.span,
+            },
+            _ => attr,
         })
         .collect()
 }
@@ -529,6 +564,10 @@ fn rewrite_stmt(
         } => Stmt::Publish {
             stream: renamed_ident(stream, renames),
             value: rewrite_expr(value, renames, params),
+            span: *span,
+        },
+        Stmt::Transaction { body, span } => Stmt::Transaction {
+            body: rewrite_stmts(body, renames, params),
             span: *span,
         },
     }
@@ -663,6 +702,10 @@ fn param_literal_expr(value: &AttrValue, span: ciac_diagnostics::Span) -> Expr {
         },
         AttrValue::Number { value, .. } => Expr::Number {
             text: value.to_string(),
+            span,
+        },
+        AttrValue::Float { value, .. } => Expr::Number {
+            text: format!("{value}"),
             span,
         },
         AttrValue::Ident(ident) => Expr::Ident(Ident {

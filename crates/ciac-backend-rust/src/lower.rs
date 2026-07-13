@@ -117,6 +117,7 @@ fn scan_block(ir: &NormalizedIr, stmts: &[HirStmt], needs: &mut Needs) {
                 needs.queue = true;
                 scan_expr(ir, value, needs);
             }
+            HirStmt::Transaction { body } => scan_block(ir, body, needs),
         }
     }
 }
@@ -795,7 +796,7 @@ fn stmt_diverges(stmt: &HirStmt) -> bool {
     match stmt {
         HirStmt::Return(_) | HirStmt::Fail { .. } => true,
         HirStmt::Let { value, .. } | HirStmt::Expr(value) => value.ty() == HirType::Never,
-        HirStmt::Publish { .. } => false,
+        HirStmt::Publish { .. } | HirStmt::Transaction { .. } => false,
     }
 }
 
@@ -858,6 +859,15 @@ fn rust_stmt(ir: &NormalizedIr, body: &HandlerBody, stmt: &HirStmt, tail: Tail) 
                 "self.queue.publish({subject:?}, serde_json::to_vec(&{})?).await?;",
                 rust_expr(ir, body, value)
             )
+        }
+        // v0.16 M1/M2: sema fully validates `transaction` blocks; making
+        // it atomic (one `sqlx` transaction instead of each verb's own
+        // implicit autocommit) is v0.16 M6. Interim: lower the body
+        // exactly as if unwrapped — correct, just not yet atomic.
+        HirStmt::Transaction { body: inner } => {
+            let note = "// NOTE: v0.16 M6 will make this block atomic";
+            let inner_lines = rust_block(ir, body, inner, Tail::None);
+            format!("{note}\n{inner_lines}")
         }
     }
 }

@@ -449,6 +449,7 @@ fn harvest(program: &ast::Program) -> Vec<Symbol> {
                     .join(", ")
             ),
             ast::TypeExpr::List { inner, .. } => format!("[{}]", type_name(inner)),
+            ast::TypeExpr::Reference { target, .. } => format!("Reference<{}>", target.text),
         }
     }
 

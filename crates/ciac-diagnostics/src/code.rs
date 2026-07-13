@@ -491,6 +491,95 @@ error_codes! {
          `object_store.list`, or `search.query` call — but not yet as a \
          `record` field type."
     ),
+    UnknownReferenceTarget = (
+        "CIAC0054",
+        Error,
+        "unknown reference target",
+        "A `Reference<T>` field named a `T` that isn't a declared record, \
+         or whose `references:` attribute doesn't name a `table`/typed \
+         `crud` backed by that record (v0.16 M1)."
+    ),
+    InvalidReferenceDefinition = (
+        "CIAC0055",
+        Error,
+        "invalid reference definition",
+        "A `Reference<T>` field is missing a required attribute \
+         (`references`, `cardinality`, `on_delete`, `on_update`), has an \
+         invalid value for one of them, or combines `unique: true` with \
+         `cardinality: many` (v0.16 M1). Every `Reference<T>` field must \
+         state its cardinality and both referential actions explicitly — \
+         there is no default, so an author-chosen cascade is never \
+         accidental."
+    ),
+    CrossStorageReference = (
+        "CIAC0056",
+        Error,
+        "cross-storage reference",
+        "A `Reference<T>` field's source and target tables belong to \
+         different services or different database capability instances \
+         (v0.16 M1). A relational foreign key cannot cross a network or \
+         two physical databases; use a `call`/typed HTTP client instead."
+    ),
+    CyclicReferenceGraph = (
+        "CIAC0057",
+        Error,
+        "cyclic reference graph",
+        "A chain of required `Reference<T>` fields forms a cycle (a \
+         record that, through one or more required references, refers \
+         back to itself), which is uninsertable — no row in the cycle \
+         could ever be written first (v0.16 M1)."
+    ),
+    RefRequiresTypedStorage = (
+        "CIAC0058",
+        Error,
+        "reference requires typed storage",
+        "A record containing a `Reference<T>` field is stored through an \
+         untyped keyed-document `crud X;` (v0.16 M1). The document store \
+         has no columns to constrain a foreign key against; declare an \
+         explicit `table` or a typed `crud X: Record` instead."
+    ),
+    InvalidStorageConstraint = (
+        "CIAC0059",
+        Error,
+        "invalid storage constraint",
+        "A `unique: true` or `index: true` field attribute, or a \
+         top-level `index` declaration, names a field that doesn't exist, \
+         isn't backed by typed storage, or is a `Json` field (neither \
+         uniquely constrained nor indexed in the v0.16 portable profile)."
+    ),
+    InvalidFieldValidation = (
+        "CIAC0060",
+        Error,
+        "invalid field validation",
+        "A validation attribute (`non_empty`, `min_length`, `max_length`, \
+         `min`, `max`, `format`) was used on a field type it doesn't \
+         apply to, given a contradictory bound (e.g. `min` greater than \
+         `max`), or given an unknown `format` value (v0.16 M1)."
+    ),
+    InvalidTransactionBlock = (
+        "CIAC0061",
+        Error,
+        "invalid transaction block",
+        "A `transaction { .. }` block is empty, contains no database \
+         verb, nests another `transaction` block inside it, contains a \
+         `return` statement (which could bypass the generated \
+         commit/rollback epilogue), or contains database verbs against \
+         more than one database capability instance — CIaC does not \
+         synthesize two-phase commit, so every verb in one block must \
+         resolve to the same instance (v0.16 M1)."
+    ),
+    NonTransactionalEffect = (
+        "CIAC0062",
+        Error,
+        "non-transactional effect inside a transaction",
+        "A `publish`, `cache`, `http`, `email`, `object_store`, or \
+         `search` verb appeared inside a `transaction { .. }` block \
+         (v0.16 M1). None of these effects roll back with the database \
+         transaction, so a partial failure would leave them applied \
+         against rolled-back data. `publish` specifically: the \
+         transactional outbox is planned for v0.19 — publish after the \
+         transaction commits, or move the publish outside the block."
+    ),
 }
 
 impl std::fmt::Display for ErrorCode {

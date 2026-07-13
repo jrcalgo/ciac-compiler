@@ -448,6 +448,7 @@ impl Parser<'_> {
                         params.push(Field {
                             name: field_name,
                             ty,
+                            attrs: Vec::new(),
                             span,
                         });
                     }
@@ -588,13 +589,26 @@ impl Parser<'_> {
                     span: tok.span,
                 }))
             }
-            TokenKind::Number => {
-                let tok = self.bump();
-                let raw = &self.src[tok.span.range()];
-                let value = raw.parse::<u64>().unwrap_or(0);
-                Some(AttrValue::Number {
-                    value,
-                    span: tok.span,
+            TokenKind::Number => self.numeric_attr_value(false),
+            // v0.16 M1: signed numeric attribute literals (`min: -5;`).
+            // The lexer has no unary-minus number token, so a leading
+            // `Minus` immediately followed by `Number` is folded here.
+            TokenKind::Minus => {
+                let minus = self.bump();
+                if !self.at(TokenKind::Number) {
+                    self.error_expected("a number after `-`");
+                    return None;
+                }
+                self.numeric_attr_value(true).map(|v| match v {
+                    AttrValue::Number { value, span } => AttrValue::Number {
+                        value,
+                        span: minus.span.to(span),
+                    },
+                    AttrValue::Float { value, span } => AttrValue::Float {
+                        value,
+                        span: minus.span.to(span),
+                    },
+                    other => other,
                 })
             }
             TokenKind::Str => {
@@ -609,6 +623,29 @@ impl Parser<'_> {
                 self.error_expected("an attribute value");
                 None
             }
+        }
+    }
+
+    /// Parses the `Number` token itself (`self.peek()` must be
+    /// `TokenKind::Number`), applying `negative` and choosing
+    /// `AttrValue::Float` over `AttrValue::Number` when the literal text
+    /// contains a decimal point.
+    fn numeric_attr_value(&mut self, negative: bool) -> Option<AttrValue> {
+        let tok = self.bump();
+        let raw = &self.src[tok.span.range()];
+        let sign = if negative { "-" } else { "" };
+        if raw.contains('.') {
+            let value: f64 = format!("{sign}{raw}").parse().unwrap_or(0.0);
+            Some(AttrValue::Float {
+                value,
+                span: tok.span,
+            })
+        } else {
+            let value: i64 = format!("{sign}{raw}").parse().unwrap_or(0);
+            Some(AttrValue::Number {
+                value,
+                span: tok.span,
+            })
         }
     }
 
@@ -802,6 +839,14 @@ impl Parser<'_> {
                     span: kw.span.to(semi.span),
                     stream,
                     value,
+                })
+            }
+            TokenKind::Transaction => {
+                let kw = self.bump();
+                let (body, close_span) = self.block()?;
+                Some(Stmt::Transaction {
+                    span: kw.span.to(close_span),
+                    body,
                 })
             }
             _ => {
@@ -1174,14 +1219,17 @@ impl Parser<'_> {
                         self.recover_inside_block();
                         continue;
                     };
-                    let span = field_name.span.to(self.peek().span);
-                    if self.expect(TokenKind::Semi).is_none() {
+                    // v0.16 M1: fields gain the same `;` | `{ attrs }` tail
+                    // every other attributed declaration already has.
+                    let Some((attrs, tail_span)) = self.decl_tail() else {
                         self.recover_inside_block();
                         continue;
-                    }
+                    };
+                    let span = field_name.span.to(tail_span);
                     fields.push(Field {
                         name: field_name,
                         ty,
+                        attrs,
                         span,
                     });
                 }
@@ -1223,10 +1271,19 @@ impl Parser<'_> {
                 span: open.span.to(close.span),
             });
         }
+        if let Some(kw) = self.eat(TokenKind::Reference) {
+            self.expect(TokenKind::Lt)?;
+            let target = self.expect_ident()?;
+            let close = self.expect(TokenKind::Gt)?;
+            return Some(TypeExpr::Reference {
+                target,
+                span: kw.span.to(close.span),
+            });
+        }
         if self.at(TokenKind::Ident) {
             return Some(TypeExpr::Named(self.expect_ident()?));
         }
-        self.error_expected("a type like `String`, `enum { A, B }`, or `[String]`");
+        self.error_expected("a type like `String`, `enum { A, B }`, `[String]`, or `Reference<T>`");
         None
     }
 

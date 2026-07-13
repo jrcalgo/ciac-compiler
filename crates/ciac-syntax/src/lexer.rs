@@ -89,6 +89,12 @@ pub enum TokenKind {
     #[token("contains")]
     Contains,
 
+    // v0.16 M1: relations, transactions.
+    #[token("Reference")]
+    Reference,
+    #[token("transaction")]
+    Transaction,
+
     #[token("{")]
     LBrace,
     #[token("}")]
@@ -191,6 +197,8 @@ impl TokenKind {
             TokenKind::Fail => "`fail`",
             TokenKind::Where => "`where`",
             TokenKind::Contains => "`contains`",
+            TokenKind::Reference => "`Reference`",
+            TokenKind::Transaction => "`transaction`",
             TokenKind::LBrace => "`{`",
             TokenKind::RBrace => "`}`",
             TokenKind::Semi => "`;`",

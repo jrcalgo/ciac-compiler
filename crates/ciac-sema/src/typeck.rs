@@ -149,7 +149,186 @@ fn stmt_diverges(stmt: &HirStmt) -> bool {
     match stmt {
         HirStmt::Return(_) | HirStmt::Fail { .. } => true,
         HirStmt::Let { value, .. } | HirStmt::Expr(value) => value.ty() == HirType::Never,
-        HirStmt::Publish { .. } => false,
+        HirStmt::Publish { .. } | HirStmt::Transaction { .. } => false,
+    }
+}
+
+/// Recursively finds `return`, nested `transaction`, and `publish`
+/// statements anywhere inside a `transaction` body — including inside
+/// `if`/`match` branches — over the surface AST, before any type
+/// information exists (v0.16 M1/M2). Each would be legal syntax outside
+/// a transaction but breaks its atomicity guarantee: `return` could
+/// bypass the generated commit/rollback epilogue, a nested `transaction`
+/// has no meaning, and `publish` doesn't roll back with the database.
+fn scan_transaction_body(stmts: &[Stmt], violations: &mut Vec<(ErrorCode, String, Span)>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return { span, .. } => violations.push((
+                ErrorCode::InvalidTransactionBlock,
+                "`return` is not allowed inside `transaction`".to_owned(),
+                *span,
+            )),
+            Stmt::Transaction { span, .. } => violations.push((
+                ErrorCode::InvalidTransactionBlock,
+                "`transaction` blocks cannot nest".to_owned(),
+                *span,
+            )),
+            Stmt::Publish { span, .. } => violations.push((
+                ErrorCode::NonTransactionalEffect,
+                "`publish` does not roll back with a database transaction".to_owned(),
+                *span,
+            )),
+            Stmt::Let { value, .. } | Stmt::Expr(value) => scan_transaction_expr(value, violations),
+            Stmt::Fail { .. } => {}
+        }
+    }
+}
+
+fn scan_transaction_expr(expr: &Expr, violations: &mut Vec<(ErrorCode, String, Span)>) {
+    match expr {
+        Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            scan_transaction_body(then_branch, violations);
+            if let Some(else_branch) = else_branch {
+                scan_transaction_body(else_branch, violations);
+            }
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                scan_transaction_body(&arm.body, violations);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Walks an already-lowered transaction body's HIR looking for verb
+/// calls, classifying each as the single database capability (allowed)
+/// or one of the other capabilities (rejected — see
+/// `ErrorCode::NonTransactionalEffect`). `Return`/`Publish`/`Transaction`
+/// never appear here: `scan_transaction_body` already rejected them
+/// before this body was lowered.
+fn collect_transaction_verbs(
+    stmts: &[HirStmt],
+    has_db_verb: &mut bool,
+    non_db_verb: &mut Option<&'static str>,
+) {
+    for stmt in stmts {
+        match stmt {
+            HirStmt::Let { value, .. } | HirStmt::Expr(value) => {
+                collect_transaction_verbs_expr(value, has_db_verb, non_db_verb)
+            }
+            HirStmt::Fail { args, .. } => {
+                for arg in args {
+                    collect_transaction_verbs_expr(arg, has_db_verb, non_db_verb);
+                }
+            }
+            HirStmt::Return(_) | HirStmt::Publish { .. } | HirStmt::Transaction { .. } => {}
+        }
+    }
+}
+
+fn collect_transaction_verbs_expr(
+    expr: &HirExpr,
+    has_db_verb: &mut bool,
+    non_db_verb: &mut Option<&'static str>,
+) {
+    match expr {
+        HirExpr::VerbCall { verb, args, .. } => {
+            classify_transaction_verb(*verb, has_db_verb, non_db_verb);
+            for arg in args {
+                collect_transaction_verbs_expr(arg, has_db_verb, non_db_verb);
+            }
+        }
+        HirExpr::Query { verb, .. } => {
+            classify_transaction_verb(*verb, has_db_verb, non_db_verb);
+        }
+        HirExpr::FieldAccess { base, .. } => {
+            collect_transaction_verbs_expr(base, has_db_verb, non_db_verb)
+        }
+        HirExpr::Unary { expr, .. } => {
+            collect_transaction_verbs_expr(expr, has_db_verb, non_db_verb)
+        }
+        HirExpr::Index { base, index } => {
+            collect_transaction_verbs_expr(base, has_db_verb, non_db_verb);
+            collect_transaction_verbs_expr(index, has_db_verb, non_db_verb);
+        }
+        HirExpr::RecordCons {
+            base_value, fields, ..
+        } => {
+            if let Some(base) = base_value {
+                collect_transaction_verbs_expr(base, has_db_verb, non_db_verb);
+            }
+            for (_, value) in fields {
+                collect_transaction_verbs_expr(value, has_db_verb, non_db_verb);
+            }
+        }
+        HirExpr::Binary { lhs, rhs, .. } => {
+            collect_transaction_verbs_expr(lhs, has_db_verb, non_db_verb);
+            collect_transaction_verbs_expr(rhs, has_db_verb, non_db_verb);
+        }
+        HirExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_transaction_verbs_expr(cond, has_db_verb, non_db_verb);
+            collect_transaction_verbs(then_branch, has_db_verb, non_db_verb);
+            collect_transaction_verbs(else_branch, has_db_verb, non_db_verb);
+        }
+        HirExpr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_transaction_verbs_expr(scrutinee, has_db_verb, non_db_verb);
+            for arm in arms {
+                collect_transaction_verbs(&arm.body, has_db_verb, non_db_verb);
+            }
+        }
+        HirExpr::Local { .. }
+        | HirExpr::IntLit(_)
+        | HirExpr::FloatLit(_)
+        | HirExpr::StrLit(_)
+        | HirExpr::BoolLit(_)
+        | HirExpr::BuiltinCall(_)
+        | HirExpr::EnumLit { .. } => {}
+    }
+}
+
+fn classify_transaction_verb(
+    verb: Verb,
+    has_db_verb: &mut bool,
+    non_db_verb: &mut Option<&'static str>,
+) {
+    match verb {
+        Verb::DbInsert(_)
+        | Verb::DbGet(_)
+        | Verb::DbUpdate(_)
+        | Verb::DbDelete(_)
+        | Verb::DbQuery(_)
+        | Verb::DbCount(_)
+        | Verb::DbDeleteWhere(_) => *has_db_verb = true,
+        Verb::CacheGet | Verb::CacheSet | Verb::CacheDelete => {
+            non_db_verb.get_or_insert("cache");
+        }
+        Verb::ObjectStorePut
+        | Verb::ObjectStoreGet
+        | Verb::ObjectStoreDelete
+        | Verb::ObjectStoreList => {
+            non_db_verb.get_or_insert("object_store");
+        }
+        Verb::EmailSend => {
+            non_db_verb.get_or_insert("email");
+        }
+        Verb::SearchIndex | Verb::SearchQuery => {
+            non_db_verb.get_or_insert("search");
+        }
+        Verb::HttpCall => {
+            non_db_verb.get_or_insert("external_http");
+        }
     }
 }
 
@@ -222,6 +401,19 @@ impl Builder<'_> {
             }),
             TypeExpr::List { inner, .. } => {
                 Some(HirType::List(Box::new(self.resolve_hir_type(inner)?)))
+            }
+            TypeExpr::Reference { target, span } => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownType,
+                        format!(
+                            "`Reference<{}>` is only valid as a `record` field type",
+                            target.text
+                        ),
+                    )
+                    .with_label(*span, "not valid as a handler parameter/return type"),
+                );
+                None
             }
         }
     }
@@ -383,7 +575,73 @@ impl Builder<'_> {
                     value: hir_value,
                 })
             }
+            Stmt::Transaction { body, span } => self.check_transaction(body, *span, scope),
         }
+    }
+
+    /// Type-checks a `transaction { .. }` block (v0.16 M1/M2). Structural
+    /// rules (`return`/nested `transaction`/`publish` forbidden, empty
+    /// block forbidden) are checked over the surface AST first — they
+    /// need no type information — before the block is even lowered;
+    /// finding one aborts immediately, matching this module's "first
+    /// error aborts the handler" convention. Only after that does the
+    /// block get type-checked and its verb calls classified: at least
+    /// one `db.*` verb is required, and any `cache`/`object_store`/
+    /// `email`/`search`/`external_http` verb is rejected, since none of
+    /// those roll back with the database transaction.
+    fn check_transaction(
+        &mut self,
+        body: &[Stmt],
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirStmt> {
+        if body.is_empty() {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidTransactionBlock,
+                    "`transaction` block is empty",
+                )
+                .with_label(span, "add at least one `db.*` verb"),
+            );
+            return None;
+        }
+        let mut violations = Vec::new();
+        scan_transaction_body(body, &mut violations);
+        if !violations.is_empty() {
+            for (code, message, vspan) in violations {
+                self.diags
+                    .push(Diagnostic::new(code, message).with_label(vspan, "not allowed here"));
+            }
+            return None;
+        }
+        scope.push_frame();
+        let result = self.check_block(body, scope);
+        scope.pop_frame();
+        let (hir_body, _tail_ty) = result?;
+        let mut has_db_verb = false;
+        let mut non_db_verb: Option<&'static str> = None;
+        collect_transaction_verbs(&hir_body, &mut has_db_verb, &mut non_db_verb);
+        if let Some(name) = non_db_verb {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::NonTransactionalEffect,
+                    format!("`{name}` does not roll back with a database transaction"),
+                )
+                .with_label(span, "not allowed inside `transaction`"),
+            );
+            return None;
+        }
+        if !has_db_verb {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidTransactionBlock,
+                    "`transaction` block contains no database verb",
+                )
+                .with_label(span, "add at least one `db.*` verb"),
+            );
+            return None;
+        }
+        Some(HirStmt::Transaction { body: hir_body })
     }
 
     /// Checks `expr`, resolving a bare identifier as an enum-variant

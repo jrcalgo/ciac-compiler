@@ -69,6 +69,15 @@ rename). See `docs/agents.md`.
 | CIAC0051 | error | breaking record change |
 | CIAC0052 | error | `where` clause on a non-query verb |
 | CIAC0053 | error | unsupported field type |
+| CIAC0054 | error | unknown reference target |
+| CIAC0055 | error | invalid reference definition |
+| CIAC0056 | error | cross-storage reference |
+| CIAC0057 | error | cyclic reference graph |
+| CIAC0058 | error | reference requires typed storage |
+| CIAC0059 | error | invalid storage constraint |
+| CIAC0060 | error | invalid field validation |
+| CIAC0061 | error | invalid transaction block |
+| CIAC0062 | error | non-transactional effect inside a transaction |
 
 ## Notes
 
@@ -175,4 +184,43 @@ rename). See `docs/agents.md`.
 - **CIAC0053** means a `[Type]` list type was used somewhere the
   compiler doesn't yet support it: valid as a handler parameter/return
   type, or as the value of `db.query`/`object_store.list`/
-  `search.query`, but not yet as a `record` field type (v0.14 M1).
+  `search.query`, but not yet as a `record` field type (v0.14 M1). It
+  is also used, temporarily, for a `Reference<T>` field: the surface
+  grammar is frozen (v0.16 M1) but relation resolution is still being
+  implemented.
+- **CIAC0054** means a `Reference<T>` field named a `T` that isn't a
+  declared record, or whose `references:` attribute doesn't name a
+  `table`/typed `crud` backed by that record (v0.16).
+- **CIAC0055** means a `Reference<T>` field is missing a required
+  attribute (`references`, `cardinality`, `on_delete`, `on_update`),
+  has an invalid value for one of them, or combines `unique: true`
+  with `cardinality: many` (v0.16). Every reference states its
+  cardinality and both referential actions explicitly — there is no
+  default cascade.
+- **CIAC0056** means a `Reference<T>` field's source and target
+  belong to different services or different database capability
+  instances (v0.16). A foreign key cannot cross a network or two
+  physical databases; use a `call`/typed HTTP client instead.
+- **CIAC0057** means a chain of required `Reference<T>` fields forms a
+  cycle — no row in the cycle could ever be written first (v0.16).
+- **CIAC0058** means a record containing a `Reference<T>` field is
+  stored through an untyped keyed-document `crud X;` (v0.16); declare
+  an explicit `table` or a typed `crud X: Record` instead.
+- **CIAC0059** means a `unique: true`/`index: true` field attribute,
+  or a top-level `index` declaration, names a field that doesn't
+  exist, isn't backed by typed storage, or is a `Json` field (v0.16).
+- **CIAC0060** means a validation attribute (`non_empty`, `min_length`,
+  `max_length`, `min`, `max`, `format`) was used on a field type it
+  doesn't apply to, given a contradictory bound, or given an unknown
+  `format` value (v0.16).
+- **CIAC0061** means a `transaction { .. }` block is empty, contains
+  no database verb, nests another `transaction` inside it, contains a
+  `return` (which could bypass the generated commit/rollback
+  epilogue), or spans more than one database capability instance —
+  CIaC does not synthesize two-phase commit (v0.16).
+- **CIAC0062** means a `publish`, `cache`, `http`, `email`,
+  `object_store`, or `search` verb appeared inside a
+  `transaction { .. }` block (v0.16); none of these effects roll back
+  with the database transaction. `publish` specifically: the
+  transactional outbox is planned for v0.19 — publish after the
+  transaction commits, or move it outside the block.

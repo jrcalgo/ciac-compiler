@@ -114,6 +114,7 @@ fn scan_block(stmts: &[HirStmt], needs: &mut Needs) {
                 needs.queue = true;
                 scan_expr(value, needs);
             }
+            HirStmt::Transaction { body } => scan_block(body, needs),
         }
     }
 }
@@ -650,7 +651,7 @@ fn stmt_diverges(stmt: &HirStmt) -> bool {
     match stmt {
         HirStmt::Return(_) | HirStmt::Fail { .. } => true,
         HirStmt::Let { value, .. } | HirStmt::Expr(value) => value.ty() == HirType::Never,
-        HirStmt::Publish { .. } => false,
+        HirStmt::Publish { .. } | HirStmt::Transaction { .. } => false,
     }
 }
 
@@ -843,6 +844,18 @@ fn lower_stmt(
                 py_expr(ir, body, value)
             };
             out.push(format!("{indent}await publish({subject:?}, {payload})"));
+        }
+        // v0.16 M1/M2: sema fully validates `transaction` blocks (single
+        // instance, database-only verbs, no `return`/nested/`publish`),
+        // but executor-aware lowering — one `session.begin()` wrapping
+        // the block instead of each verb's own `session.commit()` — is
+        // v0.16 M5. Interim: lower the body exactly as if unwrapped, so
+        // the block is at least correct (just not yet atomic).
+        HirStmt::Transaction { body: inner } => {
+            out.push(format!(
+                "{indent}# NOTE: v0.16 M5 will make this block atomic"
+            ));
+            lower_block(ir, body, inner, indent, &Sink::Discard, out);
         }
     }
 }

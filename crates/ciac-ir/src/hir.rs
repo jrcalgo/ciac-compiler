@@ -329,6 +329,15 @@ pub enum HirStmt {
         stream: crate::NodeId,
         value: HirExpr,
     },
+    /// `transaction { .. }` (v0.16 M1/M2): every database verb in `body`
+    /// shares one database transaction. Sema (`typeck.rs`) has already
+    /// rejected `return`, nested `transaction`, `publish`, and every
+    /// non-database capability verb inside — `body` contains only
+    /// `Let`/`Expr`/`Fail` and (recursively, inside `if`/`match`) more of
+    /// the same, so lowering never has to re-check these invariants.
+    Transaction {
+        body: Vec<HirStmt>,
+    },
 }
 
 /// The type-checked body of a `handler Name(params) -> Type { .. }` or
@@ -372,6 +381,7 @@ fn capability_nodes_block(stmts: &[HirStmt], out: &mut Vec<crate::NodeId>) {
                 }
             }
             HirStmt::Publish { value, .. } => capability_nodes_expr(value, out),
+            HirStmt::Transaction { body } => capability_nodes_block(body, out),
         }
     }
 }

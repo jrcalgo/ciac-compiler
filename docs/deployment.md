@@ -21,6 +21,32 @@ a real dev container wired in by name (`db`, `cache`, `queue`, or
 every generated app's `app/config.py`/`config.rs` already points at by
 default. Nothing to configure before `docker compose up`.
 
+## OpenAPI and the TypeScript client (v0.15 M1/M2)
+
+Every `ciac build` already emits `openapi.json` at the project root
+(and `openapi.json` at the system root too for a multi-service
+program, indexing every service) — every `api` and every crud-expanded
+route, request/response records as component schemas (enums included),
+scoped routes carrying an `x-ciac-scope` extension and a `bearerAuth`
+security requirement, `/health` included. It's derived from the same
+IR every backend generates from, one serializer, so both targets serve
+one truth: the Python backend mounts it as FastAPI's own OpenAPI
+source (replacing FastAPI's auto-generated one) rather than shipping
+two near-duplicate specs.
+
+`ciac build --client ts` additionally emits a dependency-free,
+typed TypeScript `fetch` client under `clients/ts/` — one interface
+per record, one function per route, scope-bearing routes typed to
+require a token (`AuthenticatedClientOptions` vs. `ClientOptions`, so
+a missing token is a compile error, not a runtime surprise). Generated
+straight from the IR, not by shelling out to an external OpenAPI
+generator, so it's deterministic and golden-covered like everything
+else `ciac` emits:
+
+```sh
+ciac build video-platform.ciac --target python --out ./video-platform --client ts
+```
+
 ## Kubernetes (`ciac build --deploy k8s`)
 
 ```sh
@@ -72,6 +98,42 @@ call to make, the same way choosing a real image registry is.
   shape the roadmap asks for (Deployments/Services/ConfigMaps per
   service, one broker StatefulSet); front it with whatever ingress
   controller and autoscaling policy your cluster already uses.
+- **`tracing OpenTelemetry` and `users Keycloak` are compose-only**
+  (v0.15 M3/M4/M6) — neither gets a k8s resource. A traced service
+  still emits `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at `otel-collector`
+  in its `ConfigMap` (point a real collector Service at that hostname,
+  or edit the value); a `users`-backed OAuth2 service gets an explicit
+  `OAUTH_ISSUER: https://REPLACE-ME.example.com/realms/prod`
+  placeholder instead of the dev Keycloak URL, since there's no
+  Keycloak Service in the cluster to resolve it against — a
+  misconfigured deploy fails loudly at startup rather than silently
+  pointing at a container that was never provisioned.
+
+## Generated CI (`ciac build --deploy ci`, v0.15 M5)
+
+```sh
+ciac build video-platform.ciac --target python --out ./video-platform --deploy ci
+```
+
+Emits `.github/workflows/ci.yml`: a `test` job running exactly what
+`ciac verify` runs locally (`uv sync && uv run ruff check . && uv run
+pytest -q` for Python, `cargo check` with `RUSTFLAGS=-D warnings` and
+`cargo test -q --lib` for Rust), a `build-image` job per declared
+service (matrixed for multi-service systems) that builds the
+Dockerfile on every push and pushes only on a version tag, and a
+`compose-smoke` job that boots the full dev compose stack and polls
+every service's `/health` — the same acceptance bar `ciac verify
+--system --live` already proves locally, running in CI too.
+
+Registry credentials are never emitted, only referenced —
+`secrets.REGISTRY_URL`/`REGISTRY_USERNAME`/`REGISTRY_PASSWORD` are
+GitHub Actions repository secrets you configure yourself; `ciac`
+emits the shape, not a credentials pipeline. `--deploy` is repeatable
+alongside `k8s`/`terraform`: `--deploy k8s --deploy ci` emits both.
+GitHub Actions only for now — the shape is a template away from
+GitLab CI once real usage says that's worth it. `.github/workflows/
+ci.yml` is an owned file like any other: a hand-edited copy survives
+regeneration as a sidecar, never a silent overwrite.
 
 ## Terraform (`ciac build --deploy terraform`, v0.11)
 
@@ -120,6 +182,18 @@ target-language ones) proving whole-system behavior:
   not just to app-process state. Compose maps each db/cache instance
   to a unique host port (5432+, 6379+) so these direct connections
   are possible from outside the compose network.
+- **trace continuity (v0.15 M3/M4)**: on a `tracing OpenTelemetry`
+  service whose pipeline crosses a `call` and/or a `publish`→worker
+  hop, hits the entry route and polls Jaeger's query API for a trace
+  under that service's name, asserting the span count is consistent
+  with one continuous trace spanning every hop — not a dangling root
+  span per service.
+- **scope enforcement against a live IdP (v0.15 M6)**: on a
+  `users Keycloak`-backed OAuth2 service, every scoped CRUD resource
+  gets the same 403-without/200-with assertions the no-infra suite
+  already proves for the `jwt` scheme, but with real tokens minted
+  from the live dev realm via `scripts/token.sh` — the case the
+  no-infra suite can't cover, since OAuth2 needs a live JWKS issuer.
 
 ```sh
 ciac verify inventory-system.ciac --target python --out ./inventory --system

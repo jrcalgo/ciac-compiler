@@ -181,13 +181,38 @@ pairs (`CIAC0013` otherwise):
 | `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance |
 | `scheduler` | `Cron` | in-process scheduled jobs |
 | `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
+| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers (both: `traceparent` propagation across `call`/broker hops) |
+| `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6) |
 
 Every provider above generates on both bundled targets (as of v0.13 —
 `MySQL` and `Kafka` landed on Rust in v0.13 M1/M2, closing the last
 Python-only gap; `SQLite` is new in v0.13 M3 and needs no container at
 all, just a `data/` volume). `auth OAuth2` requires an `issuer`
 attribute (and optional `audience`): bearer RS256 tokens are validated
-against `{issuer}/.well-known/jwks.json` on both backends.
+against `{issuer}/.well-known/jwks.json` on both backends — unless
+`users Keycloak` is declared in the same `use { .. }` block, in which
+case `issuer` may be omitted and defaults to the dev Keycloak
+container's realm URL (v0.15 M6; still overridable with an explicit
+`issuer`).
+
+`tracing OpenTelemetry` (v0.15 M3/M4) adds an `otel-collector` +
+Jaeger to the dev compose stack; every service that declares it
+exports spans for its own HTTP server/client calls and broker
+produce/consume, so a `call`/`publish`→worker chain shows up as one
+continuous trace. `users Keycloak` (v0.15 M6) adds a `keycloak`
+container seeded with a `dev` realm — a public password-grant client,
+one client scope per distinct `scope`/`read_scope`/`write_scope`
+string declared anywhere in the system, and two dev users
+(`dev-admin`/`dev-user`, password `dev-password`). It's a dev/test
+identity provider only: no user CRUD in the model, no registration or
+login UI, no session management — the resource-server stance from
+`auth OAuth2` stands. Neither `tracing` nor `users` is emitted as a
+k8s/Terraform resource; both are compose-only, disclosed as dev-only
+(a `users`-backed OAuth2 service deployed with `--deploy k8s` gets an
+explicit `REPLACE-ME` issuer placeholder in its ConfigMap instead of
+the dev Keycloak URL, so a misconfigured deploy fails loudly rather
+than silently pointing at a container that doesn't exist in the
+cluster).
 
 Both `SES` and `SMTP` email providers send over SMTP — for SES, point
 the generated `SMTP_*` variables at your SES SMTP endpoint. Handlers
@@ -250,7 +275,12 @@ halves — a token missing the scope gets 403, a token carrying it
 clears the auth layer — in the project's own test suite, no live
 server needed (`tests/test_smoke.py` / `tests/scope_tests.rs`, JWT
 scheme only; OAuth2 needs a live JWKS issuer, so it's excluded from
-this no-infra suite).
+this no-infra suite). When `users Keycloak` is also declared, the
+generated `tests/system/` suite (v0.8 M4, compose-backed) gains the
+same 403-without/200-with assertions for OAuth2 too, using real
+tokens minted from the live dev realm via `scripts/token.sh` instead
+of a locally-signed JWT (v0.15 M6) — `ciac verify --system` is what
+proves it, not the no-infra suite above.
 
 ### `stream <Name>: <Record>;`
 

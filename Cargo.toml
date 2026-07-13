@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/jrcalgo/ciac"
@@ -21,13 +21,13 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # internal crates
-ciac-diagnostics = { path = "crates/ciac-diagnostics", version = "0.14.0" }
-ciac-syntax = { path = "crates/ciac-syntax", version = "0.14.0" }
-ciac-ir = { path = "crates/ciac-ir", version = "0.14.0" }
-ciac-sema = { path = "crates/ciac-sema", version = "0.14.0" }
-ciac-codegen = { path = "crates/ciac-codegen", version = "0.14.0" }
-ciac-backend-python = { path = "crates/ciac-backend-python", version = "0.14.0" }
-ciac-backend-rust = { path = "crates/ciac-backend-rust", version = "0.14.0" }
+ciac-diagnostics = { path = "crates/ciac-diagnostics", version = "0.15.0" }
+ciac-syntax = { path = "crates/ciac-syntax", version = "0.15.0" }
+ciac-ir = { path = "crates/ciac-ir", version = "0.15.0" }
+ciac-sema = { path = "crates/ciac-sema", version = "0.15.0" }
+ciac-codegen = { path = "crates/ciac-codegen", version = "0.15.0" }
+ciac-backend-python = { path = "crates/ciac-backend-python", version = "0.15.0" }
+ciac-backend-rust = { path = "crates/ciac-backend-rust", version = "0.15.0" }
 
 # external
 anyhow = "1"

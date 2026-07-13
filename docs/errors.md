@@ -5,6 +5,15 @@ published, a code's meaning never changes. `ciac explain <code>` prints
 the same explanations; this page is checked against the registry by a
 test.
 
+Some mechanical, unambiguous diagnostics also carry an applyable fix
+(v0.15 M7) — `--json`'s `fixes` field, `ciac lsp`'s quick-fix, `ciac
+mcp`'s `fix` tool. Today: `CIAC0005` (missing capability — inserts the
+right `capability Provider;` line into an existing `use { .. }`
+block), `CIAC0013` (unknown provider — a nearest-match rename),
+`CIAC0025`'s `auth OAuth2` missing-`issuer` case (inserts a
+placeholder), and `CIAC0041` (unknown record field — a nearest-match
+rename). See `docs/agents.md`.
+
 | Code | Severity | Title |
 |------|----------|-------|
 | CIAC0001 | error | invalid token |

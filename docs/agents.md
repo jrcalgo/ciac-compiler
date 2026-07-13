@@ -16,7 +16,7 @@ interleave in a captured pipe.
 
 ```json
 {
-  "json_version": 1,
+  "json_version": 2,
   "command": "check",
   "success": true,
   "diagnostics": []
@@ -28,6 +28,16 @@ Diagnostics carry the resolved file/line/column the human-mode
 `diff --json` additionally carries `entries`: the regeneration plan as
 data (status per path, optional sidecar, optional unified diff text
 under `--patch`).
+
+Mechanical, unambiguous diagnostics (`json_version` bumped 1 → 2 for
+this, v0.15 M7) also carry `fixes`: `[{title, edits: [{file, line,
+column, end_line, end_column, replacement}]}]` — never applied by
+`check` itself, but exactly the edits `ciac lsp`'s quick-fix and `ciac
+mcp`'s `fix` tool apply. An agent's tightest loop is `ciac check
+--json` → apply an offered fix mechanically → re-check; no fix is
+offered unless applying it is proven to clear that diagnostic (see
+`tests/tests/fixes.rs`'s property test over the negative-fixture
+corpus).
 
 ## `ciac describe`: the language as one document
 
@@ -65,6 +75,7 @@ framing, which is LSP's own wire format). It implements `initialize`,
 | `graph` | `ciac graph` |
 | `explain` | `ciac explain` |
 | `describe` | `ciac describe` |
+| `fix` | Applies a diagnostic's offered fix (v0.15 M7): `{file, code, index?, apply?}` — dry-run preview by default, `apply: true` writes the patched source and returns the re-checked envelope |
 
 Every tool result carries the same JSON envelope (or `graph`/`describe`
 document) as one text content block — an MCP client sees exactly what

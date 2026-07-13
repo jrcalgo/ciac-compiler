@@ -231,7 +231,8 @@ _sessionmakers: dict[str, async_sessionmaker[AsyncSession]] = {}
 def get_engine(instance: str = "default") -> AsyncEngine:
     if instance not in _engines:
         url = _urls()[instance]
-        _engines[instance] = create_async_engine(url)
+        engine = create_async_engine(url)
+        _engines[instance] = engine
     return _engines[instance]
 
 

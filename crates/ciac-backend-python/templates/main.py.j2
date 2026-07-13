@@ -23,8 +23,16 @@ from app.observability import configure_logging
 {%- if c.has_metrics %}
 from app.observability import metrics_app
 {%- endif %}
+{%- if c.has_tracing %}
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+from app.observability import configure_tracing
+{%- endif %}
 {% if c.has_logging %}
 configure_logging()
+{% endif %}
+{%- if c.has_tracing %}
+configure_tracing("{{ c.service_name }}")
 {% endif %}
 {%- if c.has_db %}
 
@@ -53,6 +61,9 @@ app = FastAPI(title="{{ c.service_name }}", lifespan=lifespan)
 {%- else %}
 
 app = FastAPI(title="{{ c.service_name }}")
+{%- endif %}
+{%- if c.has_tracing %}
+FastAPIInstrumentor.instrument_app(app)
 {%- endif %}
 
 # The document `ciac build` emitted alongside this app (openapi.json,

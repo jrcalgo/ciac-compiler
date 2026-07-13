@@ -35,6 +35,10 @@ pub struct SystemModel {
     /// Any service declares databases (drives the compose volume list).
     pub has_db: bool,
     pub has_object_store: bool,
+    /// Any service declares `tracing OpenTelemetry` (the system compose
+    /// then runs one shared otel-collector + Jaeger every service's
+    /// `otel_exporter_otlp_endpoint` points at).
+    pub has_tracing: bool,
 }
 
 /// Root template context for one deployable project.
@@ -91,6 +95,10 @@ pub struct Ctx {
     pub table_db_engine: String,
     pub has_logging: bool,
     pub has_metrics: bool,
+    /// `use { tracing OpenTelemetry; }` (v0.15 M3): OTel SDK wiring,
+    /// FastAPI/HTTPX auto-instrumentation, and `traceparent`
+    /// propagation across broker publish/consume.
+    pub has_tracing: bool,
     pub queue_engine: Option<String>,
     /// Subject of the default stream backing the legacy `Queue` step.
     pub events_subject: String,
@@ -706,6 +714,7 @@ pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
         has_queue: services.iter().any(|c| c.has_queue),
         has_db: services.iter().any(|c| c.has_db),
         has_object_store: services.iter().any(|c| c.has_object_store),
+        has_tracing: services.iter().any(|c| c.has_tracing),
         services,
     }
 }
@@ -1270,6 +1279,7 @@ fn build_scoped(
         has_queue: capability(NodeKind::Queue).is_some(),
         has_logging: capability(NodeKind::Logging).is_some(),
         has_metrics: capability(NodeKind::Metrics).is_some(),
+        has_tracing: capability(NodeKind::Tracing).is_some(),
         queue_engine: capability(NodeKind::Queue).map(|n| match n.component {
             Component::Queue {
                 engine: QueueEngine::Nats,
@@ -2183,6 +2193,7 @@ fn binding_kind(kind: NodeKind) -> Option<&'static str> {
         NodeKind::Realtime => "realtime",
         NodeKind::Logging => "logging",
         NodeKind::Metrics => "metrics",
+        NodeKind::Tracing => "tracing",
         NodeKind::Api
         | NodeKind::Service
         | NodeKind::Worker

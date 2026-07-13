@@ -287,7 +287,8 @@ def get_engine(instance: str = "default") -> AsyncEngine:
             import pathlib
 
             pathlib.Path("data").mkdir(exist_ok=True)
-        _engines[instance] = create_async_engine(url)
+        engine = create_async_engine(url)
+        _engines[instance] = engine
     return _engines[instance]
 
 

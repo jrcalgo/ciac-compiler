@@ -1,0 +1,189 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "TracedCheckout",
+  "multi_service": true,
+  "services": [
+    {
+      "id": 0,
+      "name": "Payments"
+    },
+    {
+      "id": 1,
+      "name": "Checkout"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": null,
+      "kind": "Stream",
+      "name": "Placed",
+      "subject": "traced_checkout.placed",
+      "record": 0
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Tracing",
+      "name": "default",
+      "provider": "OpenTelemetry"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "Charge",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/charge",
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 1,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 4,
+      "service": 1,
+      "kind": "Tracing",
+      "name": "default",
+      "provider": "OpenTelemetry"
+    },
+    {
+      "id": 5,
+      "service": 1,
+      "kind": "Api",
+      "name": "Submit",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/submit",
+        "scope": null
+      }
+    },
+    {
+      "id": 6,
+      "service": 1,
+      "kind": "Worker",
+      "name": "Ship",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 7,
+      "service": 1,
+      "kind": "Service",
+      "name": "ShipOrder",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 0,
+      "to": 3,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 0,
+      "to": 6,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 2,
+      "from": 5,
+      "to": 2,
+      "kind": "ServiceCall"
+    },
+    {
+      "id": 3,
+      "from": 5,
+      "to": 0,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 4,
+      "from": 6,
+      "to": 7,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "Charge",
+      "service": 0,
+      "owner": 2,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Submit",
+      "service": 1,
+      "owner": 5,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Call",
+          "target": 2
+        },
+        {
+          "step": "Publish",
+          "stream": 0
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Ship",
+      "service": 1,
+      "owner": 6,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 7
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

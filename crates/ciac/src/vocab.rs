@@ -78,6 +78,10 @@ pub const CAPABILITIES: &[Capability] = &[
         doc: "Metrics endpoint.",
     },
     Capability {
+        name: "tracing",
+        doc: "Distributed tracing across `call`/stream edges.",
+    },
+    Capability {
         name: "object_store",
         doc: "Blob storage.",
     },
@@ -116,6 +120,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { name: "Kafka", capability: "queue", targets: BOTH, doc: "Apache Kafka (aiokafka / rdkafka); topics reuse the `<service>.<stream>` subject names." },
     Provider { name: "Structured", capability: "logging", targets: BOTH, doc: "Structured logs (structlog / tracing)." },
     Provider { name: "Prometheus", capability: "metrics", targets: BOTH, doc: "Prometheus metrics endpoint." },
+    Provider { name: "OpenTelemetry", capability: "tracing", targets: BOTH, doc: "OTLP export to an otel-collector, with Jaeger wired in dev compose." },
     Provider { name: "S3", capability: "object_store", targets: BOTH, doc: "S3-compatible blob storage (MinIO in dev)." },
     Provider { name: "SES", capability: "email", targets: BOTH, doc: "AWS SES." },
     Provider { name: "SMTP", capability: "email", targets: BOTH, doc: "Plain SMTP (Mailpit in dev)." },

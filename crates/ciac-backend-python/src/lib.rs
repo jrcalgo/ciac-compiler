@@ -99,6 +99,12 @@ impl Backend for PythonBackend {
                 serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
                     .map_err(|e| BackendError::Other(e.to_string()))?,
             );
+            if model.has_tracing {
+                project.add_file(
+                    "otel-collector-config.yaml",
+                    ciac_codegen::compose::OTEL_COLLECTOR_CONFIG,
+                );
+            }
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
                  `docker compose up` runs them all together"
@@ -154,6 +160,12 @@ fn emit_service(
             at("docker-compose.yml"),
             ciac_codegen::compose::render_service_compose(ctx, &COMPOSE_OPTS)?,
         );
+        if ctx.has_tracing {
+            project.add_file(
+                at("otel-collector-config.yaml"),
+                ciac_codegen::compose::OTEL_COLLECTOR_CONFIG,
+            );
+        }
     }
     project.add_file(at("conftest.py"), render("conftest.py.j2", empty())?);
     project.add_file(
@@ -212,7 +224,7 @@ fn emit_service(
             );
         }
     }
-    if ctx.has_logging || ctx.has_metrics {
+    if ctx.has_logging || ctx.has_metrics || ctx.has_tracing {
         project.add_file(
             at("app/observability.py"),
             render("observability.py.j2", empty())?,

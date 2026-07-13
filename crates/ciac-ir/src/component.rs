@@ -129,6 +129,11 @@ pub enum MetricsProvider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum TracingProvider {
+    OpenTelemetry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ObjectStoreProvider {
     S3,
 }
@@ -170,6 +175,7 @@ pub enum NodeKind {
     Auth,
     Logging,
     Metrics,
+    Tracing,
     ObjectStore,
     Email,
     Search,
@@ -258,6 +264,10 @@ pub enum Component {
         name: String,
         provider: MetricsProvider,
     },
+    Tracing {
+        name: String,
+        provider: TracingProvider,
+    },
     ObjectStore {
         name: String,
         provider: ObjectStoreProvider,
@@ -300,6 +310,7 @@ impl Component {
             Component::Auth { .. } => NodeKind::Auth,
             Component::Logging { .. } => NodeKind::Logging,
             Component::Metrics { .. } => NodeKind::Metrics,
+            Component::Tracing { .. } => NodeKind::Tracing,
             Component::ObjectStore { .. } => NodeKind::ObjectStore,
             Component::Email { .. } => NodeKind::Email,
             Component::Search { .. } => NodeKind::Search,
@@ -324,6 +335,7 @@ impl Component {
             | Component::Auth { name, .. }
             | Component::Logging { name, .. }
             | Component::Metrics { name, .. }
+            | Component::Tracing { name, .. }
             | Component::ObjectStore { name, .. }
             | Component::Email { name, .. }
             | Component::Search { name, .. }
@@ -348,6 +360,7 @@ impl Component {
             Component::Auth { name, scheme, .. } => format!("auth {name} {scheme:?}"),
             Component::Logging { name, provider } => format!("logging {name} {provider:?}"),
             Component::Metrics { name, provider } => format!("metrics {name} {provider:?}"),
+            Component::Tracing { name, provider } => format!("tracing {name} {provider:?}"),
             Component::ObjectStore { name, provider, .. } => {
                 format!("object_store {name} {provider:?}")
             }

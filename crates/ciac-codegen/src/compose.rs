@@ -88,3 +88,33 @@ pub fn render_system_compose(
             backend => backend_value(opts),
         })
 }
+
+/// The otel-collector's config (v0.15 M3): receives OTLP from every
+/// service, forwards traces to Jaeger's own OTLP receiver, and logs
+/// them at `debug` verbosity too — the same "real dev container"
+/// convention every other capability follows, minus a vendor-baked
+/// image needing no config of its own. Same file regardless of
+/// single-/multi-service layout (both compose templates mount it
+/// unmodified), so it's a plain constant rather than a template.
+pub const OTEL_COLLECTOR_CONFIG: &str = r#"receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  otlp:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlp, debug]
+"#;

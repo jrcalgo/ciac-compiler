@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+{%- if c.has_tracing %}
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+{%- endif %}
 
 from app.config import get_settings
 
@@ -45,7 +48,11 @@ def get_engine(instance: str = "default") -> AsyncEngine:
 
             pathlib.Path("data").mkdir(exist_ok=True)
 {%- endif %}
-        _engines[instance] = create_async_engine(url)
+        engine = create_async_engine(url)
+{%- if c.has_tracing %}
+        SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
+{%- endif %}
+        _engines[instance] = engine
     return _engines[instance]
 
 

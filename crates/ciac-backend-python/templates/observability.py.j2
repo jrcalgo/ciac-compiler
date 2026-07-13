@@ -23,3 +23,31 @@ from prometheus_client import make_asgi_app
 # Mounted at /metrics by app.main.
 metrics_app = make_asgi_app()
 {% endif %}
+{%- if c.has_tracing %}
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+from app.config import get_settings
+
+
+def configure_tracing(service_name: str) -> None:
+    """OTLP export to the otel-collector (+ Jaeger in dev compose)."""
+    resource = Resource.create({"service.name": service_name})
+    provider = TracerProvider(resource=resource)
+    exporter = OTLPSpanExporter(
+        endpoint=get_settings().otel_exporter_otlp_endpoint, insecure=True
+    )
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    # Outgoing httpx calls (typed `call` clients and `external_http`
+    # instances both use httpx) get client spans automatically, with
+    # traceparent propagated to the callee for free.
+    HTTPXClientInstrumentor().instrument()
+
+
+tracer = trace.get_tracer(__name__)
+{% endif %}

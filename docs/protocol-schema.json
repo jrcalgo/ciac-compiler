@@ -518,6 +518,10 @@
           "has_sqlite_db": {
             "type": "boolean"
           },
+          "has_tracing": {
+            "description": "`use { tracing OpenTelemetry; }` (v0.15 M3): OTel SDK wiring,\nFastAPI/HTTPX auto-instrumentation, and `traceparent`\npropagation across broker publish/consume.",
+            "type": "boolean"
+          },
           "host_port": {
             "description": "Host port the system docker-compose maps to the app's port 8000.",
             "format": "uint16",
@@ -683,6 +687,7 @@
           "table_db_engine",
           "has_logging",
           "has_metrics",
+          "has_tracing",
           "events_subject",
           "records",
           "records_use_datetime",
@@ -1633,6 +1638,10 @@
             "description": "Any service publishes/consumes streams (the system compose then\nruns one shared broker every service's `nats_url` points at).",
             "type": "boolean"
           },
+          "has_tracing": {
+            "description": "Any service declares `tracing OpenTelemetry` (the system compose\nthen runs one shared otel-collector + Jaeger every service's\n`otel_exporter_otlp_endpoint` points at).",
+            "type": "boolean"
+          },
           "multi": {
             "description": "True when the program declares `service { .. }` blocks; the\nbackends then emit each service under `<dir>/` plus root\ndocker-compose/README files for the whole system.",
             "type": "boolean"
@@ -1661,7 +1670,8 @@
           "services",
           "has_queue",
           "has_db",
-          "has_object_store"
+          "has_object_store",
+          "has_tracing"
         ],
         "type": "object"
       },

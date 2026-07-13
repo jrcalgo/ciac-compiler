@@ -17,6 +17,7 @@ use ciac_ir::{
     MatchArm, MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine,
     RealtimeProvider, Record, RecordField, RecordId, RecordKind as IrRecordKind, Resource,
     SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph, Table, TableId,
+    TracingProvider,
 };
 use ciac_syntax::ast::{
     ApiDecl, Attr, AttrValue, ChannelDecl, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item,
@@ -561,6 +562,10 @@ impl<'d> Builder<'d> {
             ("metrics", Some("Prometheus")) => Component::Metrics {
                 name: name.to_owned(),
                 provider: MetricsProvider::Prometheus,
+            },
+            ("tracing", Some("OpenTelemetry")) => Component::Tracing {
+                name: name.to_owned(),
+                provider: TracingProvider::OpenTelemetry,
             },
             ("object_store", Some("S3")) => Component::ObjectStore {
                 name: name.to_owned(),
@@ -1772,6 +1777,7 @@ pub(crate) fn binding_kind(capability: &str) -> Option<NodeKind> {
         "realtime" => NodeKind::Realtime,
         "logging" => NodeKind::Logging,
         "metrics" => NodeKind::Metrics,
+        "tracing" => NodeKind::Tracing,
         _ => return None,
     })
 }

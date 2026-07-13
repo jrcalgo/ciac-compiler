@@ -386,7 +386,7 @@ impl SystemGraph {
                 NodeKind::ExternalHttp => "tab",
                 NodeKind::Scheduler => "oval",
                 NodeKind::Realtime => "doublecircle",
-                NodeKind::Logging | NodeKind::Metrics => "note",
+                NodeKind::Logging | NodeKind::Metrics | NodeKind::Tracing => "note",
             };
             let _ = writeln!(
                 out,

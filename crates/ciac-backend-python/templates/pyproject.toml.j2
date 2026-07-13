@@ -54,6 +54,15 @@ dependencies = [
 {%- if c.has_metrics %}
     "prometheus-client>=0.20",
 {%- endif %}
+{%- if c.has_tracing %}
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+{%- if c.has_db %}
+    "opentelemetry-instrumentation-sqlalchemy>=0.48b0",
+{%- endif %}
+{%- endif %}
 ]
 
 [dependency-groups]

@@ -54,6 +54,15 @@ precedes a table its own foreign keys reference — plain alphabetical
 (`BTreeMap`) order doesn't guarantee that the moment a referencing
 table's name sorts before its target's.
 
+Every `ciac build` also records a `recipe` (v0.18 M5): the exact
+`--target`/`--deploy`/`--profile`/`--secrets`/`--image-prefix`/
+`--image-tag`/`--client`/`--semantic-baseline` this tree was last built
+with. `ciac rename --out DIR` and `ciac backfill plan --out DIR` both
+read it to replay this tree's own regeneration against edited source
+without the caller having to repeat every flag — and both refuse a
+**legacy manifest** with no recorded recipe rather than guess. See
+[docs/evolution.md](evolution.md).
+
 ## File roles
 
 - **Owned** files are compiler-owned wiring: app assembly, routes,

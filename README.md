@@ -301,8 +301,12 @@ Full per-provider support lives in [docs/language.md](docs/language.md)
 | `ciac explain CIAC0005` | Explain an error code |
 | `ciac describe` | Print the language's full vocabulary as one versioned JSON document |
 | `ciac codegen-schema` | Print the external-backend wire-contract JSON Schema |
-| `ciac lsp` | Language Server Protocol server over stdio (diagnostics, hover, completion) |
-| `ciac mcp` | Model Context Protocol server over stdio (check/build/diff/verify/graph/explain/describe/fix as tools) |
+| `ciac lsp` | Language Server Protocol server over stdio (diagnostics, hover, completion, rename) |
+| `ciac mcp` | Model Context Protocol server over stdio (check/build/diff/verify/graph/explain/describe/fix/diff_semantic/rename as tools) |
+| `ciac diff file.ciac --semantic [--deny-breaking]` | Compare architecture (not generated files) against a baseline, classifying each change `Breaking`/`Additive`/`Internal` |
+| `ciac baseline file.ciac [--update --accept-breaking]` | Create/replace the checked-in semantic baseline `--semantic`/generated CI compare against |
+| `ciac rename entry.ciac Old New [--apply] [--out DIR]` | Whole-program, multi-file symbol rename, with transactional `--out` regeneration replay |
+| `ciac backfill plan file.ciac --out DIR [--allow-destructive ID]` | The expand/backfill/contract ladder for a breaking storage change |
 | `ciac targets` | List code-generation targets |
 
 `check`, `build`, `diff`, and `verify` all accept `--json`: one
@@ -322,6 +326,15 @@ pinnable to a git ref) are all accepted directly by `file.ciac` above
 [docs/authoring.md](docs/authoring.md). Deployment (compose, k8s,
 Terraform, and `ciac verify --system`) is covered end to end in
 [docs/deployment.md](docs/deployment.md).
+
+Architecture changes over time — not just generated-file drift — are
+a first-class comparison (v0.18): `ciac diff --semantic` classifies
+each change as `Breaking`/`Additive`/`Internal` against a checked-in
+baseline, `ciac rename` is a whole-program multi-file rename with
+transactional regeneration replay, and `ciac backfill plan` walks a
+breaking storage change through an expand/backfill/contract ladder a
+human completes one seeded step of. See
+[docs/evolution.md](docs/evolution.md).
 
 ## Building from source
 
@@ -346,7 +359,7 @@ cargo run -p ciac -- check examples/video-platform.ciac
 | `examples/` | valid example programs |
 | `editors/` | TextMate grammar + VS Code extension for `.ciac` |
 | `tests/` | golden snapshots, negative suite, determinism tests |
-| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [authoring](docs/authoring.md) · [dev loop](docs/dev-loop.md) · [agents](docs/agents.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [external backends](docs/external-backends.md) · [regeneration](docs/regeneration.md) · [deployment](docs/deployment.md) · [operations](docs/operations.md) · [errors](docs/errors.md) |
+| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [authoring](docs/authoring.md) · [dev loop](docs/dev-loop.md) · [agents](docs/agents.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [external backends](docs/external-backends.md) · [regeneration](docs/regeneration.md) · [evolution](docs/evolution.md) · [deployment](docs/deployment.md) · [operations](docs/operations.md) · [errors](docs/errors.md) |
 
 ## License
 

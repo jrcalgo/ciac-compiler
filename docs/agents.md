@@ -76,6 +76,8 @@ framing, which is LSP's own wire format). It implements `initialize`,
 | `explain` | `ciac explain` |
 | `describe` | `ciac describe` |
 | `fix` | Applies a diagnostic's offered fix (v0.15 M7): `{file, code, index?, apply?}` — dry-run preview by default, `apply: true` writes the patched source and returns the re-checked envelope |
+| `diff_semantic` | `ciac diff --semantic --json` (v0.18 M7) — the architecture changelist, classified `Breaking`/`Additive`/`Internal` |
+| `rename` | `ciac rename` (v0.18 M7): position-based (`target_file`/`line`/`column`/`to`) or qualified (`old`/`new_name`) lookup, dry-run preview by default, `apply: true` writes the files. Deliberately source-only — it never replays a `--out` tree's regeneration, unlike the CLI's own `--out` support; a human reviews and applies that separately. See [docs/evolution.md](evolution.md) |
 
 Every tool result carries the same JSON envelope (or `graph`/`describe`
 document) as one text content block — an MCP client sees exactly what
@@ -87,6 +89,13 @@ call the same envelope-returning functions in `crates/ciac/src/commands.rs`
 Point an MCP-capable client at `ciac mcp` as the server command; no
 arguments, no config file — the tool list and schemas are discovered
 via `tools/list`.
+
+`ciac lsp` gained the editor-native equivalent of the `rename` tool in
+the same milestone: `textDocument/prepareRename` and
+`textDocument/rename`, resolving through the identical whole-program
+symbol index and returning a multi-file `WorkspaceEdit` the editor
+applies. See [docs/evolution.md](evolution.md) for the rename engine
+itself.
 
 ## `AGENTS.md` everywhere
 

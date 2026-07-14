@@ -13,6 +13,11 @@
 //! Scope, per 13UpdatePlan.md: `check`, `build`, `diff`, `verify`
 //! (no `--system`/`--live` — those boot Docker and belong to a human
 //! at a terminal), `graph`, `explain`, `describe`.
+//!
+//! v0.18 M7 (18UpdatePlan.md Pillar 8) adds `diff_semantic` (reusing
+//! [`commands::diff_semantic_envelope`] verbatim) and `rename` (reusing
+//! [`crate::rename::rename_tool`]) — the same envelope-sharing
+//! discipline extended to the two new features.
 
 use crate::commands;
 use anyhow::{Context, Result};
@@ -194,6 +199,38 @@ fn tools_list_result() -> Value {
                 "required": ["file", "code"],
             }),
         ),
+        tool(
+            "diff_semantic",
+            "Compare this program's canonical semantic model against a baseline (checked-in by default), classifying each change as breaking, additive, or internal (v0.18 Pillar 1/2).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop,
+                    "against": {"type": "string", "description": "Compare against another .ciac source file instead of a baseline."},
+                    "baseline": {"type": "string", "description": "Compare against a specific checked-in baseline JSON file instead of the default."},
+                    "deny_breaking": {"type": "boolean", "description": "Fail if any breaking change is present. Defaults to false."},
+                },
+                "required": ["file"],
+            }),
+        ),
+        tool(
+            "rename",
+            "Rename a declared symbol across the whole program (v0.18 Pillar 6). Locate the symbol either by position (`target_file`+`line`+`column`) or by qualified name (`old`); `to`/`new_name` gives the replacement. Dry-run by default -- pass apply: true to stage, recompile-check, and commit the edits. Source-only: does not replay any generated --out tree's regeneration.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop,
+                    "target_file": {"type": "string", "description": "File containing the symbol, for position-based lookup."},
+                    "line": {"type": "integer", "description": "1-based line of the symbol, for position-based lookup."},
+                    "column": {"type": "integer", "description": "1-based column of the symbol, for position-based lookup."},
+                    "to": {"type": "string", "description": "New name, for position-based lookup."},
+                    "old": {"type": "string", "description": "Qualified old name, e.g. `Order` or `Order.total`, for name-based lookup."},
+                    "new_name": {"type": "string", "description": "New name, for name-based lookup."},
+                    "apply": {"type": "boolean", "description": "Write the renamed files. Defaults to false (preview only)."},
+                },
+                "required": ["file"],
+            }),
+        ),
     ]})
 }
 
@@ -294,6 +331,43 @@ fn tools_call(params: &Value) -> Result<Value> {
                     "patched_source": patched,
                 }))?
             }
+        }
+        "diff_semantic" => {
+            let file = arg_path(&args, "file")?;
+            let against = arg_opt_str(&args, "against").map(PathBuf::from);
+            let baseline = arg_opt_str(&args, "baseline").map(PathBuf::from);
+            let deny_breaking = args
+                .get("deny_breaking")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (envelope, _code) = commands::diff_semantic_envelope(
+                &file,
+                against.as_deref(),
+                baseline.as_deref(),
+                deny_breaking,
+            )?;
+            serde_json::to_string_pretty(&envelope)?
+        }
+        "rename" => {
+            let file = arg_path(&args, "file")?;
+            let target_file = arg_opt_str(&args, "target_file").map(PathBuf::from);
+            let line = args.get("line").and_then(Value::as_u64).map(|v| v as u32);
+            let column = args.get("column").and_then(Value::as_u64).map(|v| v as u32);
+            let to = arg_opt_str(&args, "to");
+            let old = arg_opt_str(&args, "old");
+            let new_name = arg_opt_str(&args, "new_name");
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let result = crate::rename::rename_tool(
+                &file,
+                target_file.as_deref(),
+                line,
+                column,
+                to.as_deref(),
+                old.as_deref(),
+                new_name.as_deref(),
+                apply,
+            )?;
+            serde_json::to_string_pretty(&result)?
         }
         other => anyhow::bail!("unknown tool `{other}`"),
     };

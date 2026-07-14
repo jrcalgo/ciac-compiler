@@ -160,19 +160,34 @@ impl SourceIndex {
     /// match, though in a well-formed program there is at most one,
     /// since spans of different symbols don't overlap.
     pub fn resolve_at(&self, file: FileId, offset: u32) -> Vec<ResolvedSymbol> {
-        let hits: Vec<SymbolId> = self
+        self.site_at(file, offset)
+            .into_iter()
+            .map(|(symbol, _span)| symbol)
+            .collect()
+    }
+
+    /// Like [`resolve_at`](Self::resolve_at), but also returns the
+    /// exact span that matched at `offset` — the specific reference or
+    /// declaration site under the cursor, which may differ from the
+    /// symbol's own declaration span. LSP's `prepareRename` needs this
+    /// to highlight the right token, not just identify the symbol.
+    pub fn site_at(&self, file: FileId, offset: u32) -> Vec<(ResolvedSymbol, Span)> {
+        let hits: Vec<(SymbolId, Span)> = self
             .definitions
             .iter()
             .filter(|d| d.span.file == file && d.span.start <= offset && offset < d.span.end)
-            .map(|d| d.id)
+            .map(|d| (d.id, d.span))
             .collect();
         if !hits.is_empty() {
-            return hits.into_iter().map(|id| self.resolved(id)).collect();
+            return hits
+                .into_iter()
+                .map(|(id, span)| (self.resolved(id), span))
+                .collect();
         }
         self.references
             .iter()
             .filter(|r| r.span.file == file && r.span.start <= offset && offset < r.span.end)
-            .map(|r| self.resolved(r.symbol))
+            .map(|r| (self.resolved(r.symbol), r.span))
             .collect()
     }
 

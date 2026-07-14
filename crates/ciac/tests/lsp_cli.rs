@@ -191,6 +191,122 @@ fn lsp_round_trip_diagnostics_hover_and_completion() {
     assert!(status.success(), "clean exit after shutdown");
 }
 
+/// v0.18 M7: `textDocument/prepareRename` and `textDocument/rename` over
+/// the same whole-program resolver `ciac rename` uses. Reads from disk
+/// (no VFS, same as diagnostics), so the fixture is a real temp file
+/// rather than a checked-in one.
+#[test]
+fn lsp_rename_round_trip() {
+    const SRC: &str = "service Billing;\nuse { db Postgres; }\nrecord Video {\n    id: Uuid;\n    title: String;\n}\ntable Videos: Video;\napi Create: Video { method: POST; path: \"/videos\"; }\nhandler CreateHandler(v: Video) -> Video {\n    db.insert(Videos, v);\n    return v;\n}\npipeline Create: CreateHandler -> Return;\n";
+
+    let dir = std::env::temp_dir().join(format!("ciac-lsp-rename-cli-test-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("main.ciac");
+    std::fs::write(&path, SRC).expect("write fixture");
+    let uri = format!("file://{}", path.display());
+
+    let mut server = Server::start();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let init = server.response(1);
+    let caps = &init["result"]["capabilities"];
+    assert_eq!(
+        caps["renameProvider"]["prepareProvider"],
+        json!(true),
+        "{caps}"
+    );
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "ciac", "version": 1, "text": SRC
+        }}
+    }));
+    server.notification("textDocument/publishDiagnostics");
+
+    // `record Video {` -- "Video" starts at 0-based line 2, character 7.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/prepareRename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 7 }
+        }
+    }));
+    let prepared = server.response(2);
+    assert_eq!(
+        prepared["result"]["placeholder"],
+        json!("Video"),
+        "{prepared}"
+    );
+    assert_eq!(
+        prepared["result"]["range"]["start"],
+        json!({"line": 2, "character": 7})
+    );
+    assert_eq!(
+        prepared["result"]["range"]["end"],
+        json!({"line": 2, "character": 12})
+    );
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 7 },
+            "newName": "Clip"
+        }
+    }));
+    let renamed = server.response(3);
+    let edits = renamed["result"]["changes"][&uri]
+        .as_array()
+        .unwrap_or_else(|| panic!("workspace edit for this document: {renamed}"));
+    assert_eq!(edits.len(), 5, "{edits:?}");
+    assert!(edits.iter().all(|e| e["newText"] == json!("Clip")));
+
+    // Every edit applies cleanly against the original text -- confirms
+    // the ranges the server computed are actually correct, not just
+    // present. Applied right-to-left within each line so earlier
+    // column offsets on the same line stay valid.
+    let mut lines: Vec<String> = SRC.lines().map(str::to_owned).collect();
+    let mut sorted_edits: Vec<&Value> = edits.iter().collect();
+    sorted_edits.sort_by_key(|e| {
+        (
+            e["range"]["start"]["line"].as_i64().unwrap(),
+            -(e["range"]["start"]["character"].as_i64().unwrap()),
+        )
+    });
+    for e in sorted_edits {
+        let line = e["range"]["start"]["line"].as_i64().unwrap() as usize;
+        let start = e["range"]["start"]["character"].as_i64().unwrap() as usize;
+        let end = e["range"]["end"]["character"].as_i64().unwrap() as usize;
+        lines[line].replace_range(start..end, e["newText"].as_str().unwrap());
+    }
+    let patched = lines.join("\n") + "\n";
+    assert!(patched.contains("record Clip {"), "{patched}");
+    assert!(patched.contains("table Videos: Clip;"), "{patched}");
+    assert!(
+        patched.contains("api Create: Clip { method: POST; path: \"/videos\"; }"),
+        "{patched}"
+    );
+    assert!(
+        patched.contains("handler CreateHandler(v: Clip) -> Clip {"),
+        "{patched}"
+    );
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": null
+    }));
+    server.response(5);
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
+    let status = server.child.wait().expect("server exits");
+    assert!(status.success(), "clean exit after shutdown");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// v0.15 M7: a diagnostic's fix rides the LSP `data` field from
 /// `publishDiagnostics` to `codeAction` -- the same edits `--json`/MCP
 /// expose, resolved into a `WorkspaceEdit` a client applies directly.

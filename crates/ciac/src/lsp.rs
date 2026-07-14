@@ -20,25 +20,33 @@
 //!   file's last good parse.
 //! * **completion** — the same shared vocabulary plus the harvested
 //!   declaration names.
+//! * **rename** (v0.18 M7, Pillar 8) — `textDocument/prepareRename` and
+//!   `textDocument/rename` over the same whole-program resolver
+//!   `ciac rename` uses ([`ciac_syntax::rename_index`]). Like
+//!   diagnostics, this reads the document's on-disk content (no VFS
+//!   overlay, same disclosed gap as above) and treats the requesting
+//!   document's own path as the resolution entry point — consistent
+//!   with how `revalidate` already parses each open document
+//!   independently rather than tracking a separate workspace root.
 //!
-//! Rename, references, code actions, and incremental parsing are
-//! explicitly deferred.
+//! References and incremental parsing are explicitly deferred.
 
 use crate::json_out::{JsonEdit, JsonFix};
 use crate::vocab;
 use anyhow::Result;
-use ciac_diagnostics::{Diagnostics, Severity, SourceMap};
+use ciac_diagnostics::{Diagnostics, FileId, Severity, SourceMap};
 use ciac_syntax::ast;
-use lsp_server::{Connection, Message, Notification, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Response};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams,
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, Hover, HoverContents, HoverProviderCapability, MarkupContent,
-    MarkupKind, NumberOrString, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url, WorkspaceEdit,
+    MarkupKind, NumberOrString, OneOf, Position, PrepareRenameResponse, PublishDiagnosticsParams,
+    Range, RenameOptions, RenameParams, ServerCapabilities, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -76,6 +84,10 @@ pub fn run() -> Result<ExitCode> {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions::default()),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
         ..Default::default()
     })?;
     connection.initialize(capabilities)?;
@@ -114,6 +126,33 @@ fn main_loop(connection: &Connection) -> Result<()> {
                             .ok()
                             .map(|p| code_actions(&p));
                         Response::new_ok(req.id, serde_json::to_value(result)?)
+                    }
+                    "textDocument/prepareRename" => {
+                        match serde_json::from_value::<TextDocumentPositionParams>(req.params) {
+                            Ok(p) => {
+                                Response::new_ok(req.id, serde_json::to_value(prepare_rename(&p))?)
+                            }
+                            Err(err) => Response::new_err(
+                                req.id,
+                                ErrorCode::InvalidParams as i32,
+                                err.to_string(),
+                            ),
+                        }
+                    }
+                    "textDocument/rename" => {
+                        match serde_json::from_value::<RenameParams>(req.params) {
+                            Ok(p) => match rename(&p) {
+                                Ok(edit) => Response::new_ok(req.id, serde_json::to_value(edit)?),
+                                Err(msg) => {
+                                    Response::new_err(req.id, ErrorCode::InvalidRequest as i32, msg)
+                                }
+                            },
+                            Err(err) => Response::new_err(
+                                req.id,
+                                ErrorCode::InvalidParams as i32,
+                                err.to_string(),
+                            ),
+                        }
                     }
                     other => Response::new_err(
                         req.id,
@@ -341,6 +380,117 @@ fn code_actions(params: &CodeActionParams) -> CodeActionResponse {
         }
     }
     actions
+}
+
+/// Resolves `position.text_document.uri`'s on-disk path to a `FileId`
+/// in a freshly loaded `sources`, converting the LSP (0-based) position
+/// to a byte offset via `offset_of`. Shared by `prepare_rename` and
+/// `rename` so both agree on exactly which site the cursor is on.
+fn locate(path: &Path, sources: &SourceMap, position: Position) -> Option<(FileId, u32)> {
+    let canonical = path.canonicalize().ok()?;
+    let canonical_str = canonical.display().to_string();
+    let file_id = sources
+        .files()
+        .enumerate()
+        .find(|(_, f)| f.name == canonical_str)
+        .map(|(i, _)| FileId(i as u32))?;
+    let offset = sources
+        .file(file_id)
+        .offset_of(position.line + 1, position.character + 1)?;
+    Some((file_id, offset))
+}
+
+/// `textDocument/prepareRename` — highlights the exact token under the
+/// cursor and seeds the client's rename box with its current name.
+/// Returns `None` (no rename here) for an unresolved position, a parse
+/// error, or a symbol the rename engine doesn't consider renamable at
+/// all (e.g. a keyword) — `ciac rename`'s own resolver is the single
+/// source of truth for "is this renamable", so this never duplicates
+/// that logic.
+fn prepare_rename(params: &TextDocumentPositionParams) -> Option<PrepareRenameResponse> {
+    let path = params.text_document.uri.to_file_path().ok()?;
+    let mut sources = SourceMap::new();
+    let mut diags = Diagnostics::new();
+    let program = ciac_syntax::load(&path, &mut sources, &mut diags).ok()?;
+    if diags.has_errors() {
+        return None;
+    }
+    let index = ciac_syntax::rename_index::build_index(&program);
+    let (file_id, offset) = locate(&path, &sources, params.position)?;
+    let (resolved, span) = index.site_at(file_id, offset).into_iter().next()?;
+    let file = sources.file(file_id);
+    let (start_line, start_col) = file.line_col(span.start);
+    let (end_line, end_col) = file.line_col(span.end);
+    Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range: Range {
+            start: Position::new(start_line - 1, start_col - 1),
+            end: Position::new(end_line - 1, end_col - 1),
+        },
+        placeholder: resolved.name,
+    })
+}
+
+/// `textDocument/rename` — resolves the symbol under the cursor and
+/// applies the same whole-program plan `ciac rename` would compute,
+/// turning it into a `WorkspaceEdit` the client applies across every
+/// affected file. Errors (parse failure, no symbol at the position, a
+/// reserved/invalid new name, a namespace collision) come back as a
+/// request error rather than a silent no-op, since — unlike
+/// `prepareRename` — the user has already committed to a specific new
+/// name and deserves to know why it didn't take.
+fn rename(params: &RenameParams) -> std::result::Result<WorkspaceEdit, String> {
+    let path = params
+        .text_document_position
+        .text_document
+        .uri
+        .to_file_path()
+        .map_err(|_| "not a file:// URI".to_string())?;
+    let mut sources = SourceMap::new();
+    let mut diags = Diagnostics::new();
+    let (program, origins) =
+        ciac_syntax::module::load_with_origins(&path, &mut sources, &mut diags)
+            .map_err(|err| format!("{err:#}"))?;
+    if diags.has_errors() {
+        return Err(format!("{} has parse/analysis errors", path.display()));
+    }
+    let index = ciac_syntax::rename_index::build_index(&program);
+    let (file_id, offset) = locate(&path, &sources, params.text_document_position.position)
+        .ok_or_else(|| "position is outside the resolved source set".to_string())?;
+    let resolved = index
+        .resolve_at(file_id, offset)
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no renamable symbol at this position".to_string())?;
+    let plan = index
+        .plan_rename(&origins, resolved.id, &params.new_name)
+        .map_err(|err| err.to_string())?;
+
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    for (edit_file_id, fix) in &plan.edits_by_file {
+        let file = sources.file(*edit_file_id);
+        let uri = Url::from_file_path(&file.name)
+            .map_err(|_| format!("cannot form a file:// URI for {}", file.name))?;
+        let edits = fix
+            .edits
+            .iter()
+            .map(|edit| {
+                let (l, c) = file.line_col(edit.span.start);
+                let (el, ec) = file.line_col(edit.span.end);
+                TextEdit {
+                    range: Range {
+                        start: Position::new(l - 1, c - 1),
+                        end: Position::new(el - 1, ec - 1),
+                    },
+                    new_text: edit.replacement.clone(),
+                }
+            })
+            .collect();
+        changes.insert(uri, edits);
+    }
+    Ok(WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    })
 }
 
 fn hover(params: &TextDocumentPositionParams, docs: &HashMap<Url, DocState>) -> Option<Hover> {

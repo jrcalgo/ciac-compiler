@@ -19,16 +19,26 @@
 
 use anyhow::{bail, Context, Result};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
-use ciac_diagnostics::{Diagnostics, SourceMap};
-use ciac_syntax::module::load_with_origins;
+use ciac_diagnostics::{Diagnostics, FileId, SourceMap};
+use ciac_syntax::module::{load_with_origins, SourceOrigin};
 use ciac_syntax::rename_index::{build_index, RenamePlan, ResolvedSymbol};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// The result of resolving a rename request to a concrete plan, shared
+/// by the CLI (`rename`) and the MCP tool (`rename_tool`) so both speak
+/// the exact same resolution rules.
+struct Resolution {
+    sources: SourceMap,
+    plan: RenamePlan,
+    symbol_kind: &'static str,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn rename(
+fn resolve(
     entry: &Path,
     target_file: Option<&Path>,
     line: Option<u32>,
@@ -36,9 +46,7 @@ pub fn rename(
     to: Option<&str>,
     old: Option<&str>,
     new_name_positional: Option<&str>,
-    out_roots: &[PathBuf],
-    apply: bool,
-) -> Result<ExitCode> {
+) -> Result<Resolution> {
     let position_mode = target_file.is_some() || line.is_some() || column.is_some() || to.is_some();
     let qualified_mode = old.is_some() || new_name_positional.is_some();
     if position_mode == qualified_mode {
@@ -47,17 +55,18 @@ pub fn rename(
              or `<Old> <New>` (qualified convenience form)"
         );
     }
-    if !out_roots.is_empty() && !apply {
-        bail!("--out only makes sense with --apply (a dry run never touches generated output)");
-    }
 
     let mut sources = SourceMap::new();
     let mut diags = Diagnostics::new();
-    let (program, origins) = load_with_origins(entry, &mut sources, &mut diags)
-        .with_context(|| format!("cannot read {}", entry.display()))?;
+    let (program, origins): (_, HashMap<FileId, SourceOrigin>) =
+        load_with_origins(entry, &mut sources, &mut diags)
+            .with_context(|| format!("cannot read {}", entry.display()))?;
     if !diags.is_empty() {
         render_diagnostics(&diags, &sources)?;
-        return Ok(ExitCode::FAILURE);
+        bail!(
+            "{} has parse/analysis errors; fix them before renaming",
+            entry.display()
+        );
     }
     let index = build_index(&program);
 
@@ -105,23 +114,63 @@ pub fn rename(
             0 => bail!("no symbol named `{old_name}`"),
             1 => (hits.into_iter().next().unwrap(), new_name),
             _ => {
-                eprintln!("`{old_name}` is ambiguous; candidates:");
+                let mut msg = format!("`{old_name}` is ambiguous; candidates:\n");
                 for hit in &hits {
                     let (l, c) = sources.file(hit.def_span.file).line_col(hit.def_span.start);
-                    eprintln!(
-                        "  {} ({}) at {}:{l}:{c}",
+                    msg.push_str(&format!(
+                        "  {} ({}) at {}:{l}:{c}\n",
                         hit.name,
                         hit.kind.label(),
                         sources.file(hit.def_span.file).name
-                    );
+                    ));
                 }
-                bail!("re-run with --file/--line/--column to pick one");
+                msg.push_str("re-run with --file/--line/--column to pick one");
+                bail!(msg);
             }
         }
     };
 
-    let plan = match index.plan_rename(&origins, resolved.id, new_name) {
-        Ok(plan) => plan,
+    let plan = index
+        .plan_rename(&origins, resolved.id, new_name)
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+
+    Ok(Resolution {
+        sources,
+        plan,
+        symbol_kind: resolved.kind.label(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn rename(
+    entry: &Path,
+    target_file: Option<&Path>,
+    line: Option<u32>,
+    column: Option<u32>,
+    to: Option<&str>,
+    old: Option<&str>,
+    new_name_positional: Option<&str>,
+    out_roots: &[PathBuf],
+    apply: bool,
+) -> Result<ExitCode> {
+    if !out_roots.is_empty() && !apply {
+        bail!("--out only makes sense with --apply (a dry run never touches generated output)");
+    }
+
+    let Resolution {
+        sources,
+        plan,
+        symbol_kind,
+    } = match resolve(
+        entry,
+        target_file,
+        line,
+        column,
+        to,
+        old,
+        new_name_positional,
+    ) {
+        Ok(resolution) => resolution,
         Err(err) => {
             eprintln!("error: {err}");
             return Ok(ExitCode::FAILURE);
@@ -135,7 +184,7 @@ pub fn rename(
         .sum::<usize>();
     eprintln!(
         "rename {} `{}` -> `{}` ({} file{}, {} site{})",
-        resolved.kind.label(),
+        symbol_kind,
         plan.old_name,
         plan.new_name,
         plan.edits_by_file.len(),
@@ -162,6 +211,92 @@ pub fn rename(
     }
 
     apply_plan(entry, &sources, &plan, out_roots)
+}
+
+/// The MCP `rename` tool's entry point: same resolution rules as the
+/// CLI, but returns a JSON value instead of printing/writing directly,
+/// and deliberately never touches `--out` regeneration — an agent-facing
+/// rename tool stays source-only, since replaying a build recipe needs a
+/// human present to review the regenerated tree.
+#[allow(clippy::too_many_arguments)]
+pub fn rename_tool(
+    entry: &Path,
+    target_file: Option<&Path>,
+    line: Option<u32>,
+    column: Option<u32>,
+    to: Option<&str>,
+    old: Option<&str>,
+    new_name_positional: Option<&str>,
+    apply: bool,
+) -> Result<serde_json::Value> {
+    let resolution = match resolve(
+        entry,
+        target_file,
+        line,
+        column,
+        to,
+        old,
+        new_name_positional,
+    ) {
+        Ok(resolution) => resolution,
+        Err(err) => {
+            return Ok(serde_json::json!({
+                "success": false,
+                "error": err.to_string(),
+            }))
+        }
+    };
+    let Resolution {
+        sources,
+        plan,
+        symbol_kind,
+    } = resolution;
+
+    let edits_by_file: Vec<serde_json::Value> = plan
+        .edits_by_file
+        .iter()
+        .map(|(file_id, fix)| {
+            let file = sources.file(*file_id);
+            let edits: Vec<serde_json::Value> = fix
+                .edits
+                .iter()
+                .map(|edit| {
+                    let (l, c) = file.line_col(edit.span.start);
+                    serde_json::json!({
+                        "line": l,
+                        "column": c,
+                        "replacement": edit.replacement,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "file": file.name,
+                "edits": edits,
+            })
+        })
+        .collect();
+
+    if apply {
+        match apply_plan(entry, &sources, &plan, &[])? {
+            ExitCode::SUCCESS => {}
+            _ => {
+                return Ok(serde_json::json!({
+                    "success": false,
+                    "error": "rename failed to apply — the renamed program no longer compiles \
+                              and was rolled back",
+                }))
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "success": true,
+        "kind": symbol_kind,
+        "old_name": plan.old_name,
+        "new_name": plan.new_name,
+        "edits_by_file": edits_by_file,
+        "applied": apply,
+    }))
 }
 
 /// See the module doc comment for the full transaction shape. Source

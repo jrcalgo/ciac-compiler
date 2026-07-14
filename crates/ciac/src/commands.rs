@@ -268,6 +268,25 @@ pub(crate) fn build_inner(
         }
     }
 
+    // v0.18 M5: recorded once, verbatim, so `ciac rename --out <tree>`
+    // (and any future tool needing to replay a build) never has to ask
+    // the user to re-supply flags they already gave once.
+    let recipe = ciac_codegen::manifest::BuildRecipe {
+        entry: file.display().to_string(),
+        target: target.to_owned(),
+        name: name.clone(),
+        deploy: deploy.deploy.clone(),
+        profile: deploy.profile.clone(),
+        secrets: deploy.secrets,
+        image_prefix: deploy.image_prefix.clone(),
+        image_tag: deploy.image_tag.clone(),
+        clients: client.clone(),
+        semantic_baseline: deploy
+            .semantic_baseline
+            .as_ref()
+            .map(|p| p.display().to_string()),
+    };
+
     let Generated {
         backend,
         project,
@@ -313,6 +332,7 @@ pub(crate) fn build_inner(
         manifest.next_migration_seq = next_migration_seq;
         manifest.records = records;
         manifest.semantic_snapshot = Some(semantic_snapshot);
+        manifest.recipe = Some(recipe.clone());
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     } else {
@@ -364,6 +384,7 @@ pub(crate) fn build_inner(
         manifest.next_migration_seq = next_migration_seq;
         manifest.records = records;
         manifest.semantic_snapshot = Some(semantic_snapshot);
+        manifest.recipe = Some(recipe.clone());
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     }
@@ -378,6 +399,101 @@ pub(crate) fn build_inner(
         eprintln!("note: {note}");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// v0.18 M5: replays a checked-in [`ciac_codegen::manifest::BuildRecipe`]
+/// against `file` (the entry a rename just edited), reporting the
+/// regeneration plan against `out`'s existing manifest — `ciac rename
+/// --out <tree>`'s conflict check. With `commit: false` this never
+/// writes anything; the caller decides whether the plan is safe to
+/// proceed on. With `commit: true` it additionally applies the plan and
+/// writes the updated manifest, exactly like `ciac build`'s own
+/// non-force path — called only after the caller has already confirmed
+/// the plan has no conflicts.
+pub(crate) fn replay_recipe(
+    file: &Path,
+    out: &Path,
+    recipe: &ciac_codegen::manifest::BuildRecipe,
+    commit: bool,
+) -> Result<RegenPlan> {
+    let Some(profile) = ciac_codegen::Profile::parse(&recipe.profile) else {
+        bail!(
+            "recorded recipe has an unknown profile `{}`",
+            recipe.profile
+        );
+    };
+    let mut k8s_image = None;
+    let mut terraform = None;
+    let mut ci = false;
+    for kind in &recipe.deploy {
+        match kind.as_str() {
+            "k8s" => k8s_image = Some((recipe.image_prefix.as_deref(), recipe.image_tag.as_str())),
+            "terraform" => terraform = Some(profile),
+            "ci" => ci = true,
+            other => bail!("recorded recipe has an unknown --deploy target `{other}`"),
+        }
+    }
+    let semantic_gate = recipe
+        .semantic_baseline
+        .as_ref()
+        .map(|baseline| (recipe.entry.clone(), baseline.clone()));
+    let ts_client = recipe.clients.iter().any(|c| c == "ts");
+
+    let Generated {
+        project,
+        source_hash,
+        backend,
+        tables,
+        next_migration_seq,
+        records,
+        semantic_snapshot,
+    } = generate(
+        file,
+        &recipe.target,
+        out,
+        recipe.name.clone(),
+        k8s_image,
+        terraform,
+        profile,
+        recipe.secrets,
+        ts_client,
+        ci,
+        recipe.image_prefix.clone(),
+        semantic_gate,
+    )?;
+
+    let existing_manifest = if manifest_path(out).exists() {
+        Some(load_manifest(out).with_context(|| {
+            format!(
+                "cannot read regeneration manifest {}",
+                manifest_path(out).display()
+            )
+        })?)
+    } else {
+        None
+    };
+    let plan = plan_regeneration(&project, out, existing_manifest.as_ref(), RegenMode::Normal)
+        .with_context(|| format!("cannot compare generated files with {}", out.display()))?;
+
+    if commit {
+        apply_regeneration(&plan, out, ApplyMode::Full)
+            .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
+        let mut manifest = build_manifest(
+            &project,
+            env!("CARGO_PKG_VERSION"),
+            source_hash,
+            backend.id(),
+        );
+        manifest.tables = tables;
+        manifest.next_migration_seq = next_migration_seq;
+        manifest.records = records;
+        manifest.semantic_snapshot = Some(semantic_snapshot);
+        manifest.recipe = Some(recipe.clone());
+        write_manifest(out, &manifest)
+            .with_context(|| format!("cannot write manifest in {}", out.display()))?;
+    }
+
+    Ok(plan)
 }
 
 pub fn diff(

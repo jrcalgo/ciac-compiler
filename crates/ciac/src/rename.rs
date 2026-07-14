@@ -1,24 +1,28 @@
-//! v0.18 M4: `ciac rename` — the CLI front door onto
+//! v0.18 M4/M5: `ciac rename` — the CLI front door onto
 //! `ciac_syntax::rename_index`'s whole-program resolver. Dry-run by
-//! default; `--apply` writes the affected source files directly and
-//! re-verifies the edited program compiles, rolling back every touched
-//! file on failure.
+//! default; `--apply` stages every affected source file (sibling temp
+//! write + backup + a recovery journal), re-verifies the edited
+//! program compiles, and — for each `--out <tree>` given — replays that
+//! tree's checked-in build recipe against the renamed source and
+//! refuses the whole rename (source included) if the tree can't
+//! regenerate safely. Only once every check passes does it commit:
+//! rename the staged files into place, apply each `--out` tree's
+//! regeneration, and remove the backups/journal.
 //!
 //! Deliberately out of scope for this milestone (18UpdatePlan.md Pillar
-//! 6/7, tracked as v0.18 M5): the transactional staging/journal/rollback
-//! layer for crash safety across many files, `--out` participation
-//! (replaying generated-output regeneration and emitting `ALTER ...
-//! RENAME`), and scanning seeded files for stale old-name references.
-//! `--apply` here is a direct, single-shot write-then-verify-then-
-//! rollback-in-memory — safe against a failed *recompile*, not against
-//! the process being killed mid-write across multiple files. JSON/MCP/
-//! LSP surfaces are v0.18 M7 (Pillar 8).
+//! 6/7): recognizing a rename as an explicit identity in the migration
+//! differ (emitting `ALTER ... RENAME` instead of drop+add) and the live
+//! Postgres data-preservation proof that identity would enable — both
+//! need surgery inside `ciac-codegen::migrations` deep enough to risk
+//! v0.16's relational-migration work, so they're deferred rather than
+//! rushed. JSON/MCP/LSP surfaces are v0.18 M7 (Pillar 8).
 
 use anyhow::{bail, Context, Result};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
 use ciac_diagnostics::{Diagnostics, SourceMap};
 use ciac_syntax::module::load_with_origins;
-use ciac_syntax::rename_index::{build_index, ResolvedSymbol};
+use ciac_syntax::rename_index::{build_index, RenamePlan, ResolvedSymbol};
+use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -32,6 +36,7 @@ pub fn rename(
     to: Option<&str>,
     old: Option<&str>,
     new_name_positional: Option<&str>,
+    out_roots: &[PathBuf],
     apply: bool,
 ) -> Result<ExitCode> {
     let position_mode = target_file.is_some() || line.is_some() || column.is_some() || to.is_some();
@@ -41,6 +46,9 @@ pub fn rename(
             "specify exactly one form: `--file/--line/--column --to <name>` (position-based) \
              or `<Old> <New>` (qualified convenience form)"
         );
+    }
+    if !out_roots.is_empty() && !apply {
+        bail!("--out only makes sense with --apply (a dry run never touches generated output)");
     }
 
     let mut sources = SourceMap::new();
@@ -120,6 +128,11 @@ pub fn rename(
         }
     };
 
+    let site_count = plan
+        .edits_by_file
+        .iter()
+        .map(|(_, f)| f.edits.len())
+        .sum::<usize>();
     eprintln!(
         "rename {} `{}` -> `{}` ({} file{}, {} site{})",
         resolved.kind.label(),
@@ -131,21 +144,8 @@ pub fn rename(
         } else {
             "s"
         },
-        plan.edits_by_file
-            .iter()
-            .map(|(_, f)| f.edits.len())
-            .sum::<usize>(),
-        if plan
-            .edits_by_file
-            .iter()
-            .map(|(_, f)| f.edits.len())
-            .sum::<usize>()
-            == 1
-        {
-            ""
-        } else {
-            "s"
-        },
+        site_count,
+        if site_count == 1 { "" } else { "s" },
     );
     for (file_id, fix) in &plan.edits_by_file {
         let file = sources.file(*file_id);
@@ -161,29 +161,60 @@ pub fn rename(
         return Ok(ExitCode::SUCCESS);
     }
 
-    apply_plan(entry, &sources, &plan)
+    apply_plan(entry, &sources, &plan, out_roots)
 }
 
-/// Writes every affected file's edited text directly (no staging/
-/// journal — see module doc comment), then re-runs the full compiler
-/// front end against the now-edited files. On failure, every touched
-/// file is restored from the pre-edit snapshot already held in
-/// `sources` and the diagnostics are rendered; the source tree is never
-/// left in a half-renamed state on disk.
+/// See the module doc comment for the full transaction shape. Source
+/// edits are staged (backup + atomic tmp-then-rename) and journaled
+/// before any real file is touched; a compile-check failure or an
+/// unsafe `--out` regeneration plan rolls every staged file back to its
+/// backup. Once every check passes, each `--out` tree's regeneration is
+/// applied and the transaction is closed (backups and journal removed).
 fn apply_plan(
     entry: &Path,
     sources: &SourceMap,
-    plan: &ciac_syntax::rename_index::RenamePlan,
+    plan: &RenamePlan,
+    out_roots: &[PathBuf],
 ) -> Result<ExitCode> {
-    let mut written: Vec<(PathBuf, String)> = Vec::new();
+    let journal_path = journal_path(entry);
+    if journal_path.exists() {
+        let journal: Journal = serde_json::from_slice(&std::fs::read(&journal_path)?)
+            .with_context(|| format!("cannot read stale journal {}", journal_path.display()))?;
+        bail!(
+            "a previous `ciac rename --apply` did not finish cleanly (journal at {}); inspect \
+             and manually restore from these backups before retrying, then delete the journal:\n{}",
+            journal_path.display(),
+            journal
+                .entries
+                .iter()
+                .map(|e| format!("  {} (backup: {})", e.path, e.backup))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    let mut staged: Vec<(PathBuf, PathBuf, String)> = Vec::new(); // (real, backup, edited)
+    let mut journal_entries = Vec::new();
     for (file_id, fix) in &plan.edits_by_file {
         let file = sources.file(*file_id);
         let path = PathBuf::from(&file.name);
-        let original = file.src.clone();
-        let edited = fix.apply(&original);
-        std::fs::write(&path, &edited)
-            .with_context(|| format!("cannot write {}", path.display()))?;
-        written.push((path, original));
+        let edited = fix.apply(&file.src);
+        let backup = sibling_path(&path, "ciac-rename-bak");
+        std::fs::write(&backup, &file.src)
+            .with_context(|| format!("cannot write backup {}", backup.display()))?;
+        journal_entries.push(JournalEntry {
+            path: path.display().to_string(),
+            backup: backup.display().to_string(),
+        });
+        staged.push((path, backup, edited));
+    }
+    write_journal(&journal_path, &journal_entries)?;
+
+    for (path, _backup, edited) in &staged {
+        let tmp = sibling_path(path, "ciac-rename-tmp");
+        std::fs::write(&tmp, edited).with_context(|| format!("cannot write {}", tmp.display()))?;
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("cannot replace {}", path.display()))?;
     }
 
     let mut verify_sources = SourceMap::new();
@@ -194,19 +225,172 @@ fn apply_plan(
         let _ = ciac_sema::analyze(&recompiled, &mut verify_diags);
     }
     verify_diags.sort();
-
-    if !verify_diags.has_errors() {
-        eprintln!("applied: {} file(s) written", written.len());
-        return Ok(ExitCode::SUCCESS);
+    if verify_diags.has_errors() {
+        rollback(&staged, &journal_path)?;
+        eprintln!("error: the renamed program no longer compiles — rolled back");
+        render_diagnostics(&verify_diags, &verify_sources)?;
+        return Ok(ExitCode::FAILURE);
     }
 
-    eprintln!("error: the renamed program no longer compiles — rolling back");
-    for (path, original) in &written {
-        std::fs::write(path, original)
+    // --out conflict check (dry, no writes) before anything is committed.
+    let mut recipes = Vec::new();
+    for out in out_roots {
+        let manifest = match ciac_codegen::manifest::load_manifest(out) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                rollback(&staged, &journal_path)?;
+                return Err(err)
+                    .with_context(|| format!("cannot read manifest at {}", out.display()));
+            }
+        };
+        let Some(recipe) = manifest.recipe else {
+            rollback(&staged, &journal_path)?;
+            bail!(
+                "{} has a legacy manifest with no recorded build recipe; rename refuses to guess \
+                 --target/--profile/--deploy for it (run `ciac build` on it once with this ciac \
+                 to upgrade it)",
+                out.display()
+            );
+        };
+        match crate::commands::replay_recipe(entry, out, &recipe, false) {
+            Ok(regen_plan) => {
+                if regen_plan.has_errors() {
+                    rollback(&staged, &journal_path)?;
+                    eprintln!(
+                        "error: {} cannot regenerate safely after this rename:",
+                        out.display()
+                    );
+                    for e in &regen_plan.entries {
+                        if e.status.as_str() != "unchanged" {
+                            eprintln!("  {:13} {}", e.status.as_str(), e.path);
+                        }
+                    }
+                    return Ok(ExitCode::FAILURE);
+                }
+                recipes.push((out.clone(), recipe));
+            }
+            Err(err) => {
+                rollback(&staged, &journal_path)?;
+                return Err(err);
+            }
+        }
+    }
+
+    // Every check passed: commit each `--out` tree's regeneration, then
+    // scan its seeded files for the old name (informational only).
+    for (out, recipe) in &recipes {
+        crate::commands::replay_recipe(entry, out, recipe, true)?;
+        let hits = scan_seeded_references(out, &plan.old_name)?;
+        if !hits.is_empty() {
+            eprintln!(
+                "note: {} possible_reference site(s) to the old name `{}` in {}'s seeded files \
+                 (manual_reconciliation_required — CIaC does not parse target-language source):",
+                hits.len(),
+                plan.old_name,
+                out.display()
+            );
+            for (path, line, text) in &hits {
+                eprintln!("  {path}:{line}: {text}");
+            }
+        }
+    }
+
+    for (_, backup, _) in &staged {
+        std::fs::remove_file(backup).ok();
+    }
+    std::fs::remove_file(&journal_path).ok();
+    eprintln!(
+        "applied: {} file(s) written{}",
+        staged.len(),
+        if out_roots.is_empty() {
+            String::new()
+        } else {
+            format!(", {} output tree(s) regenerated", out_roots.len())
+        }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn rollback(staged: &[(PathBuf, PathBuf, String)], journal_path: &Path) -> Result<()> {
+    for (path, backup, _) in staged {
+        let original = std::fs::read(backup)
+            .with_context(|| format!("cannot read backup {}", backup.display()))?;
+        std::fs::write(path, &original)
             .with_context(|| format!("cannot restore {}", path.display()))?;
+        std::fs::remove_file(backup).ok();
     }
-    render_diagnostics(&verify_diags, &verify_sources)?;
-    Ok(ExitCode::FAILURE)
+    std::fs::remove_file(journal_path).ok();
+    Ok(())
+}
+
+/// Every seeded (owned-by-the-user) file under `out`, grepped for the
+/// literal old-name text. Labeled `possible_reference` deliberately —
+/// CIaC does not parse arbitrary Python/Rust/TypeScript/SQL, so this is
+/// a heuristic surfaced for human review, never a compile gate.
+fn scan_seeded_references(out: &Path, old_name: &str) -> Result<Vec<(String, u32, String)>> {
+    let manifest = ciac_codegen::manifest::load_manifest(out)
+        .with_context(|| format!("cannot read manifest at {}", out.display()))?;
+    let mut hits = Vec::new();
+    for (path, file) in &manifest.files {
+        if !matches!(file.role, ciac_codegen::FileRole::Seeded) {
+            continue;
+        }
+        let full = out.join(path);
+        let Ok(text) = std::fs::read_to_string(&full) else {
+            continue;
+        };
+        for (i, line) in text.lines().enumerate() {
+            if line.contains(old_name) {
+                hits.push((path.clone(), (i + 1) as u32, line.trim().to_owned()));
+            }
+        }
+    }
+    Ok(hits)
+}
+
+fn journal_path(entry: &Path) -> PathBuf {
+    entry
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".ciac")
+        .join("rename-journal.json")
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct JournalEntry {
+    path: String,
+    backup: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Journal {
+    entries: Vec<JournalEntry>,
+}
+
+fn write_journal(path: &Path, entries: &[JournalEntry]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create {}", parent.display()))?;
+    }
+    let journal = Journal {
+        entries: entries.to_vec(),
+    };
+    std::fs::write(path, serde_json::to_vec_pretty(&journal)?)
+        .with_context(|| format!("cannot write journal {}", path.display()))
+}
+
+/// A same-directory sibling path with an extra suffix appended to the
+/// file name (not the extension) — `order.ciac` -> `order.ciac.<suffix>`
+/// — so the atomic tmp-then-rename and the backup always live on the
+/// same filesystem as the real file, whatever its own extension is.
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".");
+    name.push(suffix);
+    path.with_file_name(name)
 }
 
 fn render_diagnostics(diags: &Diagnostics, sources: &SourceMap) -> Result<()> {

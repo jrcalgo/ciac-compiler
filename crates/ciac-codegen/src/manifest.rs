@@ -44,6 +44,32 @@ pub struct Manifest {
     /// if a build never reached this point.
     #[serde(default)]
     pub semantic_snapshot: Option<SemanticModel>,
+    /// v0.18 M5: the exact `ciac build` invocation that produced this
+    /// tree — `ciac rename --out <tree>` replays this recipe against
+    /// the renamed source rather than guessing target/profile/deploy
+    /// flags. `None` for manifests written before v0.18 M5 (a "legacy
+    /// recipe"); rename refuses `--out` against one of those rather
+    /// than guessing (18UpdatePlan.md Pillar 7).
+    #[serde(default)]
+    pub recipe: Option<BuildRecipe>,
+}
+
+/// See [`Manifest::recipe`]. Every field a fresh `ciac build` needs to
+/// reproduce this exact tree, recorded once so a later tool (rename
+/// today; anything else that needs to replay a build tomorrow) never
+/// has to ask the user to re-supply flags they already gave once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildRecipe {
+    pub entry: String,
+    pub target: String,
+    pub name: Option<String>,
+    pub deploy: Vec<String>,
+    pub profile: String,
+    pub secrets: bool,
+    pub image_prefix: Option<String>,
+    pub image_tag: String,
+    pub clients: Vec<String>,
+    pub semantic_baseline: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +121,7 @@ pub fn build_manifest(
         next_migration_seq: first_migration_seq(),
         records: BTreeMap::new(),
         semantic_snapshot: None,
+        recipe: None,
     }
 }
 

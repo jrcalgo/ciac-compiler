@@ -254,6 +254,13 @@ enum Command {
         old: Option<String>,
         /// Qualified convenience form: the new name.
         new_name: Option<String>,
+        /// Known generated output(s) to replay this rename's checked-in
+        /// build recipe against and regenerate (v0.18 M5). Repeatable;
+        /// requires `--apply`. Refuses the whole rename, source edit
+        /// included, if any listed tree can't regenerate safely, or has
+        /// a legacy manifest with no recorded recipe.
+        #[arg(long, value_name = "DIR")]
+        out: Vec<PathBuf>,
         /// Write the affected files (default is dry-run: print the plan
         /// only).
         #[arg(long)]
@@ -469,6 +476,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             to,
             old,
             new_name,
+            out,
             apply,
         } => rename::rename(
             &entry,
@@ -478,6 +486,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             to.as_deref(),
             old.as_deref(),
             new_name.as_deref(),
+            &out,
             apply,
         ),
         Command::Verify {

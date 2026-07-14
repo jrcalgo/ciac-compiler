@@ -31,7 +31,11 @@ use sha2::{Digest, Sha256};
 /// simply additive-with-defaults — a reader must refuse a baseline
 /// stamped with a version it doesn't understand rather than silently
 /// dropping fields it doesn't recognize (18UpdatePlan.md Pillar 2).
-pub const SEMANTIC_MODEL_VERSION: u32 = 1;
+/// `2` (v0.18 M2): added `edges` — the resolved graph-edge identity row
+/// the plan's own key-scheme table calls for, needed to determine a
+/// stream's actual cross-service consumers (an `AsyncMessage` edge, not
+/// a pipeline step) for the differ's consumer-aware comparison.
+pub const SEMANTIC_MODEL_VERSION: u32 = 2;
 
 /// Bumped whenever the checked-in baseline *wrapper* shape changes
 /// (independent of the model payload it carries).
@@ -277,6 +281,40 @@ pub struct MatchArmModel {
     pub steps: Vec<StepModel>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum EdgeKindModel {
+    RequestFlow,
+    DataFlow,
+    AsyncMessage,
+    ServiceCall,
+    DependsOn,
+}
+
+impl From<ciac_ir::EdgeKind> for EdgeKindModel {
+    fn from(value: ciac_ir::EdgeKind) -> Self {
+        match value {
+            ciac_ir::EdgeKind::RequestFlow => EdgeKindModel::RequestFlow,
+            ciac_ir::EdgeKind::DataFlow => EdgeKindModel::DataFlow,
+            ciac_ir::EdgeKind::AsyncMessage => EdgeKindModel::AsyncMessage,
+            ciac_ir::EdgeKind::ServiceCall => EdgeKindModel::ServiceCall,
+            ciac_ir::EdgeKind::DependsOn => EdgeKindModel::DependsOn,
+        }
+    }
+}
+
+/// A resolved graph edge — 18UpdatePlan.md Pillar 2's own key-scheme
+/// table names this as its own identity row ("kind + stable endpoint
+/// identities"). Its main consumer today is the differ's stream-
+/// consumer discovery: which worker/channel actually consumes a
+/// stream is an `AsyncMessage` edge from the stream node, not a
+/// pipeline step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EdgeModel {
+    pub kind: EdgeKindModel,
+    pub from: Key,
+    pub to: Key,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineModel {
     pub key: Key,
@@ -344,6 +382,7 @@ pub struct SemanticModel {
     pub capabilities: Vec<CapabilityModel>,
     pub pipelines: Vec<PipelineModel>,
     pub handlers: Vec<HandlerModel>,
+    pub edges: Vec<EdgeModel>,
 }
 
 impl SemanticModel {
@@ -538,6 +577,22 @@ impl SemanticModel {
             .collect();
         pipelines.sort_by(|a, b| a.key.cmp(&b.key));
 
+        let mut edges: Vec<EdgeModel> = ir
+            .edges()
+            .map(|e| EdgeModel {
+                kind: e.kind.into(),
+                from: node_key(e.from),
+                to: node_key(e.to),
+            })
+            .collect();
+        edges.sort_by(|a, b| {
+            (&a.from, &a.to, format!("{:?}", a.kind)).cmp(&(
+                &b.from,
+                &b.to,
+                format!("{:?}", b.kind),
+            ))
+        });
+
         SemanticModel {
             semantic_model_version: SEMANTIC_MODEL_VERSION,
             project: ProjectModel {
@@ -554,6 +609,7 @@ impl SemanticModel {
             capabilities,
             pipelines,
             handlers,
+            edges,
         }
     }
 

@@ -61,6 +61,36 @@
         ],
         "type": "object"
       },
+      "EdgeKindModel": {
+        "enum": [
+          "RequestFlow",
+          "DataFlow",
+          "AsyncMessage",
+          "ServiceCall",
+          "DependsOn"
+        ],
+        "type": "string"
+      },
+      "EdgeModel": {
+        "description": "A resolved graph edge — 18UpdatePlan.md Pillar 2's own key-scheme\ntable names this as its own identity row (\"kind + stable endpoint\nidentities\"). Its main consumer today is the differ's stream-\nconsumer discovery: which worker/channel actually consumes a\nstream is an `AsyncMessage` edge from the stream node, not a\npipeline step.",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/EdgeKindModel"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
       "FieldModel": {
         "properties": {
           "key": {
@@ -619,6 +649,12 @@
             },
             "type": "array"
           },
+          "edges": {
+            "items": {
+              "$ref": "#/$defs/EdgeModel"
+            },
+            "type": "array"
+          },
           "handlers": {
             "items": {
               "$ref": "#/$defs/HandlerModel"
@@ -681,7 +717,8 @@
           "channels",
           "capabilities",
           "pipelines",
-          "handlers"
+          "handlers",
+          "edges"
         ],
         "type": "object"
       },
@@ -902,5 +939,5 @@
     "type": "object"
   },
   "semantic_baseline_version": 1,
-  "semantic_model_version": 1
+  "semantic_model_version": 2
 }

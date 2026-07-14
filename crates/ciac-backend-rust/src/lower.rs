@@ -860,12 +860,25 @@ fn rust_stmt(ir: &NormalizedIr, body: &HandlerBody, stmt: &HirStmt, tail: Tail) 
                 rust_expr(ir, body, value)
             )
         }
-        // v0.16 M1/M2: sema fully validates `transaction` blocks; making
-        // it atomic (one `sqlx` transaction instead of each verb's own
-        // implicit autocommit) is v0.16 M6. Interim: lower the body
-        // exactly as if unwrapped — correct, just not yet atomic.
+        // v0.16 M6 (assessed, deliberately deferred): sema fully
+        // validates `transaction` blocks, but making this genuinely
+        // atomic needs every `db.*` verb inside to execute against a
+        // held `sqlx::Transaction<'_, _>` instead of `self.db` — sqlx's
+        // `Transaction` has no `Deref`-to-pool trick that lets already-
+        // generated `.execute(self.db)` call sites transparently keep
+        // working, so real atomicity means threading an executor choice
+        // through `rust_expr`'s entire recursive call graph (30+ sites:
+        // every arm that can nest a db verb, not just the db-verb arms
+        // themselves) rather than the one `tx: bool` flag that sufficed
+        // for the Python backend's uniform `self.session`. That's a
+        // materially larger, riskier change to code every existing Rust
+        // example depends on, so it's tracked as a follow-up rather than
+        // attempted here. Interim: lower the body exactly as if
+        // unwrapped — correct per-statement, just not yet atomic across
+        // the whole block. See docs/language.md's transactions section.
         HirStmt::Transaction { body: inner } => {
-            let note = "// NOTE: v0.16 M6 will make this block atomic";
+            let note =
+                "// NOTE: this block is not yet atomic on the Rust backend (see docs/language.md)";
             let inner_lines = rust_block(ir, body, inner, Tail::None);
             format!("{note}\n{inner_lines}")
         }

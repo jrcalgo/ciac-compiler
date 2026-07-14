@@ -1,4 +1,4 @@
-# Handler-Body Expressions (v0.7, extended v0.14)
+# Handler-Body Expressions (v0.7, extended v0.14, v0.16)
 
 Through v0.6, a pipeline handler was always an opaque business-logic
 unit: the compiler generated a typed constructor and a `handle` stub,
@@ -46,12 +46,14 @@ list, not a representative sample. Anything outside it is `extern`.
 ## Statements
 
 ```ebnf
-stmt      = let-stmt | expr-stmt | return-stmt | fail-stmt | publish-stmt ;
+stmt      = let-stmt | expr-stmt | return-stmt | fail-stmt | publish-stmt
+          | transaction-stmt ;
 let-stmt    = "let" IDENT "=" expr ";" ;
 expr-stmt   = expr ";" ;
 return-stmt = "return" [ expr ] ";" ;
 fail-stmt   = "fail" IDENT "(" [ expr { "," expr } ] ")" ";" ;
 publish-stmt = "publish" IDENT "(" expr ")" ";" ;
+transaction-stmt = "transaction" "{" { stmt } "}" ;
 ```
 
 - **`let <name> = <expr>;`** — single-assignment, block-scoped binding.
@@ -204,6 +206,70 @@ capability bindings:
 | `Uuid.new()` | a fresh `Uuid` |
 | `Timestamp.now()` | the current `Timestamp` |
 
+## `transaction { .. }` blocks (v0.16)
+
+Wraps a sequence of statements so their `db.*` writes commit or roll
+back together:
+
+```ciac
+handler PlaceOrder(order: Order) -> Order {
+    transaction {
+        db.insert(Orders, order);
+        if order.total < 0.0 {
+            fail InvalidOrder("order total must not be negative");
+        };
+        db.insert(OrderAudits, OrderAudit { id: Uuid.new(), note: "order placed", total: order.total });
+    }
+    return order;
+}
+```
+
+A `transaction` block may contain `let`/bare-expression statements,
+`if`/`match` (nested arbitrarily), and `fail` — but not `return`, a
+nested `transaction`, or `publish` (`CIAC0061`, `InvalidTransactionBlock`,
+for an empty block, a nested `transaction`, or a `return` inside one).
+Every capability verb it calls must be a `db.*` verb — `cache`,
+`object_store`, `email`, `search`, and `external_http` calls are
+`CIAC0062` (`NonTransactionalEffect`) inside a `transaction`, since
+none of them roll back with the database (an email already sent can't
+be un-sent). A block with no `db.*` verb at all is also `CIAC0061` —
+there'd be nothing for the transaction to make atomic.
+
+**The exact guarantee differs by backend today, and that's disclosed,
+not hidden:**
+
+- **Python**: real atomicity. Every verb inside the block shares one
+  `AsyncSession`; individual verbs' own commits are suppressed while
+  inside a `transaction`, and the whole block is wrapped in a single
+  `try`/`except` that commits once on success or rolls back on any
+  exception (including a `fail`'s raised error) — proven live: a
+  negative-`total` `PlaceOrder` call leaves *neither* the `Orders` nor
+  the `OrderAudits` row behind.
+- **Rust**: validated, but not yet atomic. Sema fully enforces every
+  rule above, and the block lowers correctly — but each `db.*` verb
+  still executes (and commits) against `self.db` independently, exactly
+  as if the `transaction { .. }` wrapper weren't there. Real atomicity
+  needs every verb inside the block to run against a held
+  `sqlx::Transaction<'_, _>` instead, and `sqlx`'s `Transaction` type
+  has no transparent substitute for `self.db` in already-generated
+  `.execute(self.db)` call sites — doing this properly means choosing
+  an executor per call site across `rust_expr`'s entire recursive call
+  graph (every arm that can nest a `db.*` verb, not just the verb arms
+  themselves), a much larger and riskier change than the Python
+  backend's single `tx: bool` flag threaded through three lowering
+  functions. The generated Rust source carries the same disclosure
+  inline (`// NOTE: this block is not yet atomic on the Rust backend`)
+  above the lowered body. Proven live with the same negative-`total`
+  request against the Rust backend: the invalid `Orders` row it wrote
+  before the `fail` survives, unlike the Python backend's rollback.
+
+Neither backend maps a failure — a `fail`'s typed error, or a
+database-rejected foreign-key/unique-constraint violation — to a
+structured HTTP status; it's an unhandled exception today (a raw 500).
+There is also no whole-handler, whole-pipeline, or distributed
+transaction: a `transaction` block covers exactly the statements
+written inside its braces, nothing implicit before or after.
+
 ## `table <Name>: <Record>;` and migrations
 
 A `table` declaration (see `docs/language.md`) gives a handler body
@@ -223,5 +289,7 @@ behavior.
 ## Errors
 
 Every error this document mentions (`CIAC0038`-`CIAC0046`,
-`CIAC0052`-`CIAC0053`) is documented in full in `docs/errors.md`,
-including which are warnings vs. hard errors and how to fix each one.
+`CIAC0052`-`CIAC0053`, `CIAC0061`-`CIAC0062`) is documented in full in
+`docs/errors.md`, including which are warnings vs. hard errors and how
+to fix each one. `Reference<T>`'s own errors (`CIAC0054`-`CIAC0060`)
+are covered in `docs/language.md`'s `Reference<T>` section instead.

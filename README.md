@@ -177,6 +177,21 @@ check → apply → re-check loop both consume. Details in
 [docs/operations.md](docs/operations.md) and
 [docs/deployment.md](docs/deployment.md).
 
+v0.16 adds relations and explicit database transactions: a
+`Reference<T>` field on a `table`-backed record gets a real, named
+foreign-key constraint (`restrict`/`cascade`, enforced by the database
+engine) and an optional `unique` constraint, on both targets; a
+`transaction { .. }` block groups a handler body's `db.*` writes so
+they succeed or fail together — real end to end on the Python backend,
+validated-but-not-yet-atomic on Rust (disclosed, not hidden — see
+[docs/expressions.md](docs/expressions.md)). The wire contract stays
+deliberately narrow: a relation is a flat foreign-key id everywhere
+(`customer_id: string`), never a nested embedded object, and
+`cardinality: many` has real sema/migration support but no wire
+exposure yet. Details in [docs/language.md](docs/language.md)'s
+`Reference<T>` section and [docs/expressions.md](docs/expressions.md)'s
+`transaction` section.
+
 ## Quick start
 
 ```sh

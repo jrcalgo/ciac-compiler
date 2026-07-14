@@ -57,8 +57,28 @@ a `DependsOn` edge to the queue instance it uses.
 `record` declarations resolve into a side table (`SystemGraph::records`)
 of `Record { name, fields }` values with a closed `FieldType` set
 (`Str`, `Int`, `Float`, `Bool`, `Uuid`, `Timestamp`, `Json`,
-`Enum { variants }`). Types are not nodes: they carry no edges and are
-referenced by `RecordId` from apis, streams, resources, and pipelines.
+`Enum { variants }`, `Reference { target, table, cardinality,
+on_delete, on_update, unique }` — v0.16). Types are not nodes: they
+carry no edges and are referenced by `RecordId` from apis, streams,
+resources, and pipelines.
+
+`Reference` fields resolve in two passes (v0.16): every record first
+registers with a `FieldType::Json` placeholder in the field's declared
+position (so field order/index is stable regardless of forward
+references), deferred into the builder's `pending_references`; once
+every record, table, service, and capability instance in the whole
+program exists, `Builder::resolve_references()` makes one final pass
+patching each placeholder in place via `SystemGraph::record_mut` —
+`references`/`cardinality`/`on_delete`/`on_update`/`unique` are only
+known correct once every table exists to check them against.
+`Cardinality` (`One`/`Many`) and `RefAction` (`Restrict`/`Cascade`) are
+their own small enums, not string-typed. `Table` itself carries the
+resolved `service: Option<ServiceId>`/`db_instance: Option<NodeId>` it
+belongs to, resolved by the same capability-resolution machinery a
+handler body's own `db.*` calls use. A colored-DFS cycle check
+(`find_reference_cycles`) walks `Cardinality::One` edges only —
+`Many`-relations use a link table and can't produce this kind of
+insertion-order cycle.
 
 ## Configs
 

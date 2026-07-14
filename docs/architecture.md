@@ -77,7 +77,12 @@ graph, and run in fixed order:
 
 Name resolution, capability checks (`CIAC0005`), and duplicate detection
 (`CIAC0003`/`CIAC0012`) run during graph building, where declaration
-spans are at hand.
+spans are at hand. `Reference<T>` resolution (v0.16) runs the same
+way, but in its own final pass after every record/table/service exists
+(`Builder::resolve_references`) rather than during initial per-item
+building — `find_reference_cycles` (`CIAC0057`) walks the resolved
+graph's `Cardinality::One` edges as part of that pass, not as a
+separate `Pass` impl.
 
 ## Testing strategy
 

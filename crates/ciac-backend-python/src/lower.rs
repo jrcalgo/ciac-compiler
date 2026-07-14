@@ -604,19 +604,26 @@ fn py_where_chain(
 pub fn lower_body(ir: &NormalizedIr, body: &HandlerBody, indent: &str) -> Vec<String> {
     let mut out = Vec::new();
     let stmts = body.body.as_deref().unwrap_or(&[]);
-    lower_block(ir, body, stmts, indent, &Sink::Discard, &mut out);
+    lower_block(ir, body, stmts, indent, &Sink::Discard, false, &mut out);
     if out.is_empty() {
         out.push(format!("{indent}pass"));
     }
     out
 }
 
+/// `tx`: true for a block lexically inside a `transaction { .. }`
+/// (v0.16 M5) — every `db.*` verb lowered underneath skips its own
+/// `session.commit()` (see `lower_tail`'s db-verb arms), since the
+/// enclosing `async with self.session.begin():` (see `HirStmt::Transaction`
+/// below) commits once for the whole block on success and rolls back on
+/// any exception.
 fn lower_block(
     ir: &NormalizedIr,
     body: &HandlerBody,
     stmts: &[HirStmt],
     indent: &str,
     sink: &Sink,
+    tx: bool,
     out: &mut Vec<String>,
 ) {
     if stmts.is_empty() {
@@ -628,12 +635,12 @@ fn lower_block(
         if is_last {
             if let HirStmt::Expr(e) = stmt {
                 if e.ty() != HirType::Never {
-                    lower_tail(ir, body, e, indent, sink, out);
+                    lower_tail(ir, body, e, indent, sink, tx, out);
                     continue;
                 }
             }
         }
-        lower_stmt(ir, body, stmt, indent, out);
+        lower_stmt(ir, body, stmt, indent, tx, out);
         // The type checker still type-checks (and the HIR still
         // contains) statements after one that diverges — e.g. a
         // `return described;` following a `let described = match { ..
@@ -665,6 +672,7 @@ fn lower_tail(
     expr: &HirExpr,
     indent: &str,
     sink: &Sink,
+    tx: bool,
     out: &mut Vec<String>,
 ) {
     match expr {
@@ -676,9 +684,9 @@ fn lower_tail(
         } => {
             out.push(format!("{indent}if {}:", py_expr(ir, body, cond)));
             let inner = format!("{indent}    ");
-            lower_block(ir, body, then_branch, &inner, sink, out);
+            lower_block(ir, body, then_branch, &inner, sink, tx, out);
             out.push(format!("{indent}else:"));
-            lower_block(ir, body, else_branch, &inner, sink, out);
+            lower_block(ir, body, else_branch, &inner, sink, tx, out);
         }
         HirExpr::Match {
             scrutinee, arms, ..
@@ -692,7 +700,7 @@ fn lower_tail(
                 };
                 let kw = if i == 0 { "if" } else { "elif" };
                 out.push(format!("{indent}{kw} {cond}:"));
-                lower_block(ir, body, &arm.body, &inner, sink, out);
+                lower_block(ir, body, &arm.body, &inner, sink, tx, out);
             }
         }
         HirExpr::VerbCall {
@@ -705,7 +713,9 @@ fn lower_tail(
             out.push(format!(
                 "{indent}self.session.add({model}(**{value}.model_dump()))"
             ));
-            out.push(format!("{indent}await self.session.commit()"));
+            if !tx {
+                out.push(format!("{indent}await self.session.commit()"));
+            }
             match sink {
                 Sink::Assign(name) => out.push(format!("{indent}{name} = {value}")),
                 Sink::Return => out.push(format!("{indent}return {value}")),
@@ -729,7 +739,9 @@ fn lower_tail(
                 "{indent}    for _k, _v in {value}.model_dump().items():"
             ));
             out.push(format!("{indent}        setattr(_row, _k, _v)"));
-            out.push(format!("{indent}    await self.session.commit()"));
+            if !tx {
+                out.push(format!("{indent}    await self.session.commit()"));
+            }
             apply_sink(
                 sink,
                 &format!("{record}.model_validate(_row, from_attributes=True)"),
@@ -751,7 +763,9 @@ fn lower_tail(
             ));
             out.push(format!("{indent}if _row is not None:"));
             out.push(format!("{indent}    await self.session.delete(_row)"));
-            out.push(format!("{indent}    await self.session.commit()"));
+            if !tx {
+                out.push(format!("{indent}    await self.session.commit()"));
+            }
             apply_sink(sink, "True", &format!("{indent}    "), out);
             out.push(format!("{indent}else:"));
             apply_sink(sink, "False", &format!("{indent}    "), out);
@@ -803,7 +817,9 @@ fn lower_tail(
             out.push(format!(
                 "{indent}_result = await self.session.execute(_stmt)"
             ));
-            out.push(format!("{indent}await self.session.commit()"));
+            if !tx {
+                out.push(format!("{indent}await self.session.commit()"));
+            }
             apply_sink(sink, "_result.rowcount", indent, out);
         }
         HirExpr::Query { verb, .. } => {
@@ -821,16 +837,17 @@ fn lower_stmt(
     body: &HandlerBody,
     stmt: &HirStmt,
     indent: &str,
+    tx: bool,
     out: &mut Vec<String>,
 ) {
     match stmt {
         HirStmt::Let { slot, value } => {
             let name = slot_name(body, *slot);
-            lower_tail(ir, body, value, indent, &Sink::Assign(name), out);
+            lower_tail(ir, body, value, indent, &Sink::Assign(name), tx, out);
         }
-        HirStmt::Expr(e) => lower_tail(ir, body, e, indent, &Sink::Discard, out),
+        HirStmt::Expr(e) => lower_tail(ir, body, e, indent, &Sink::Discard, tx, out),
         HirStmt::Return(None) => out.push(format!("{indent}return")),
-        HirStmt::Return(Some(e)) => lower_tail(ir, body, e, indent, &Sink::Return, out),
+        HirStmt::Return(Some(e)) => lower_tail(ir, body, e, indent, &Sink::Return, tx, out),
         HirStmt::Fail { error, args } => {
             let exc = record_class_name(ir, *error);
             let arg_strs: Vec<String> = args.iter().map(|a| py_expr(ir, body, a)).collect();
@@ -845,17 +862,21 @@ fn lower_stmt(
             };
             out.push(format!("{indent}await publish({subject:?}, {payload})"));
         }
-        // v0.16 M1/M2: sema fully validates `transaction` blocks (single
-        // instance, database-only verbs, no `return`/nested/`publish`),
-        // but executor-aware lowering — one `session.begin()` wrapping
-        // the block instead of each verb's own `session.commit()` — is
-        // v0.16 M5. Interim: lower the body exactly as if unwrapped, so
-        // the block is at least correct (just not yet atomic).
+        // v0.16 M5: every `db.*` verb underneath (see `lower_tail`'s
+        // db-verb arms) skips its own commit when `tx` is set; `try`/
+        // `except` — not a nested `session.begin()` — commits once on
+        // success and rolls back on any exception (a `fail`'s `raise`
+        // included), because `AsyncSession` autobegins its own
+        // transaction on first use, and an *explicit* `begin()` on a
+        // session that already has one active raises `InvalidRequestError`.
         HirStmt::Transaction { body: inner } => {
-            out.push(format!(
-                "{indent}# NOTE: v0.16 M5 will make this block atomic"
-            ));
-            lower_block(ir, body, inner, indent, &Sink::Discard, out);
+            out.push(format!("{indent}try:"));
+            let block_indent = format!("{indent}    ");
+            lower_block(ir, body, inner, &block_indent, &Sink::Discard, true, out);
+            out.push(format!("{indent}    await self.session.commit()"));
+            out.push(format!("{indent}except Exception:"));
+            out.push(format!("{indent}    await self.session.rollback()"));
+            out.push(format!("{indent}    raise"));
         }
     }
 }

@@ -12,10 +12,21 @@
 use crate::ast::{Item, Program};
 use crate::parser::parse;
 use crate::registry;
-use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, SourceMap};
-use std::collections::BTreeSet;
+use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, FileId, SourceMap};
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
+
+/// Where a spliced-in file's source came from (v0.18 M4, rename engine):
+/// rename must never edit `std/` or `registry:` text, since neither is
+/// the user's to change. `Local` is the only origin the rename engine
+/// (or any other future source-editing tool) may write back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceOrigin {
+    Local,
+    EmbeddedStd,
+    Registry,
+}
 
 /// The `std` blueprint library (v0.8 M3), embedded at compile time —
 /// `import "std/<name>.ciac";` resolves against this table instead of
@@ -35,12 +46,35 @@ const STD_BLUEPRINTS: &[(&str, &str)] = &[
 /// file's source text in `sources` as it's read so diagnostics render
 /// against the right file regardless of which one raised them.
 pub fn load(entry: &Path, sources: &mut SourceMap, diags: &mut Diagnostics) -> io::Result<Program> {
-    let mut loaded = BTreeSet::new();
-    let mut stack = Vec::new();
-    let items = resolve_file(entry, None, sources, diags, &mut loaded, &mut stack)?;
-    Ok(Program { items })
+    let (program, _origins) = load_with_origins(entry, sources, diags)?;
+    Ok(program)
 }
 
+/// Like [`load`], but also reports which [`SourceOrigin`] each resolved
+/// file came from (v0.18 M4) — the rename engine needs this to refuse
+/// editing `std/`/`registry:` text, which the existing splice-only
+/// [`load`] never tracked.
+pub fn load_with_origins(
+    entry: &Path,
+    sources: &mut SourceMap,
+    diags: &mut Diagnostics,
+) -> io::Result<(Program, HashMap<FileId, SourceOrigin>)> {
+    let mut loaded = BTreeSet::new();
+    let mut stack = Vec::new();
+    let mut origins = HashMap::new();
+    let items = resolve_file(
+        entry,
+        None,
+        sources,
+        diags,
+        &mut loaded,
+        &mut stack,
+        &mut origins,
+    )?;
+    Ok((Program { items }, origins))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn resolve_file(
     path: &Path,
     importer: Option<&Path>,
@@ -48,6 +82,7 @@ fn resolve_file(
     diags: &mut Diagnostics,
     loaded: &mut BTreeSet<PathBuf>,
     stack: &mut Vec<PathBuf>,
+    origins: &mut HashMap<FileId, SourceOrigin>,
 ) -> io::Result<Vec<Item>> {
     let canonical = path.canonicalize().map_err(|err| {
         let msg = match importer {
@@ -80,6 +115,7 @@ fn resolve_file(
 
     let src = std::fs::read_to_string(&canonical)?;
     let file_id = sources.add_file(canonical.display().to_string(), src.clone());
+    origins.insert(file_id, SourceOrigin::Local);
     let program = parse(&src, file_id, diags);
 
     stack.push(canonical.clone());
@@ -91,7 +127,14 @@ fn resolve_file(
     for item in program.items {
         match item {
             Item::Import(import) if import.path.starts_with("std/") => {
-                items.extend(resolve_std(&import.path, sources, diags, loaded, stack)?);
+                items.extend(resolve_std(
+                    &import.path,
+                    sources,
+                    diags,
+                    loaded,
+                    stack,
+                    origins,
+                )?);
             }
             Item::Import(import) if import.path.starts_with("registry:") => {
                 items.extend(resolve_registry(
@@ -100,6 +143,7 @@ fn resolve_file(
                     diags,
                     loaded,
                     stack,
+                    origins,
                 )?);
             }
             Item::Import(import) => {
@@ -111,6 +155,7 @@ fn resolve_file(
                     diags,
                     loaded,
                     stack,
+                    origins,
                 )?);
             }
             other => items.push(other),
@@ -133,6 +178,7 @@ fn resolve_std(
     diags: &mut Diagnostics,
     loaded: &mut BTreeSet<PathBuf>,
     stack: &mut Vec<PathBuf>,
+    origins: &mut HashMap<FileId, SourceOrigin>,
 ) -> io::Result<Vec<Item>> {
     let key = PathBuf::from(path);
 
@@ -165,6 +211,7 @@ fn resolve_std(
         })?;
 
     let file_id = sources.add_file(path.to_string(), src.to_string());
+    origins.insert(file_id, SourceOrigin::EmbeddedStd);
     let program = parse(src, file_id, diags);
 
     stack.push(key.clone());
@@ -172,7 +219,14 @@ fn resolve_std(
     for item in program.items {
         match item {
             Item::Import(import) if import.path.starts_with("std/") => {
-                items.extend(resolve_std(&import.path, sources, diags, loaded, stack)?);
+                items.extend(resolve_std(
+                    &import.path,
+                    sources,
+                    diags,
+                    loaded,
+                    stack,
+                    origins,
+                )?);
             }
             Item::Import(import) => {
                 return Err(io::Error::new(
@@ -204,6 +258,7 @@ fn resolve_registry(
     diags: &mut Diagnostics,
     loaded: &mut BTreeSet<PathBuf>,
     stack: &mut Vec<PathBuf>,
+    origins: &mut HashMap<FileId, SourceOrigin>,
 ) -> io::Result<Vec<Item>> {
     let key = PathBuf::from(spec);
 
@@ -226,6 +281,7 @@ fn resolve_registry(
 
     let src = registry::resolve(spec)?;
     let file_id = sources.add_file(spec.to_string(), src.clone());
+    origins.insert(file_id, SourceOrigin::Registry);
     let program = parse(&src, file_id, diags);
 
     stack.push(key.clone());
@@ -233,7 +289,14 @@ fn resolve_registry(
     for item in program.items {
         match item {
             Item::Import(import) if import.path.starts_with("std/") => {
-                items.extend(resolve_std(&import.path, sources, diags, loaded, stack)?);
+                items.extend(resolve_std(
+                    &import.path,
+                    sources,
+                    diags,
+                    loaded,
+                    stack,
+                    origins,
+                )?);
             }
             Item::Import(import) if import.path.starts_with("registry:") => {
                 items.extend(resolve_registry(
@@ -242,6 +305,7 @@ fn resolve_registry(
                     diags,
                     loaded,
                     stack,
+                    origins,
                 )?);
             }
             Item::Import(import) => {

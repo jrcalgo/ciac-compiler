@@ -6,6 +6,7 @@ mod dev;
 mod json_out;
 mod lsp;
 mod mcp;
+mod rename;
 mod scaffold;
 mod vocab;
 
@@ -228,6 +229,36 @@ enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Whole-program symbol rename (v0.18 M4). Dry-run by default;
+    /// `--apply` writes the affected source files and re-verifies the
+    /// edited program compiles, rolling back on failure. Position-based
+    /// (`--file/--line/--column --to`) or, for an unambiguous name, the
+    /// qualified convenience form (`<Old> <New>`). See `docs/evolution.md`.
+    Rename {
+        /// Entry source file (module resolution root).
+        entry: PathBuf,
+        /// Position-based form: the file the symbol is declared/used in.
+        #[arg(long = "file", value_name = "PATH")]
+        target_file: Option<PathBuf>,
+        /// Position-based form: 1-based line.
+        #[arg(long)]
+        line: Option<u32>,
+        /// Position-based form: 1-based column.
+        #[arg(long)]
+        column: Option<u32>,
+        /// Position-based form: the new name.
+        #[arg(long = "to", value_name = "NAME")]
+        to: Option<String>,
+        /// Qualified convenience form: the current name, e.g. `Order`
+        /// or `Order.total`.
+        old: Option<String>,
+        /// Qualified convenience form: the new name.
+        new_name: Option<String>,
+        /// Write the affected files (default is dry-run: print the plan
+        /// only).
+        #[arg(long)]
+        apply: bool,
+    },
     /// Verify an existing generated project still matches its CIaC source.
     Verify {
         /// Path to the `.ciac` source file.
@@ -429,6 +460,25 @@ fn run(cli: Cli) -> Result<ExitCode> {
             update,
             accept_breaking,
             reason.as_deref(),
+        ),
+        Command::Rename {
+            entry,
+            target_file,
+            line,
+            column,
+            to,
+            old,
+            new_name,
+            apply,
+        } => rename::rename(
+            &entry,
+            target_file.as_deref(),
+            line,
+            column,
+            to.as_deref(),
+            old.as_deref(),
+            new_name.as_deref(),
+            apply,
         ),
         Command::Verify {
             file,

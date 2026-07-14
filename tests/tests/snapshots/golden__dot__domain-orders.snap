@@ -1,0 +1,20 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph DomainOrders {
+    rankdir=LR;
+    n0 [label="database default Postgres", shape=cylinder];
+    n1 [label="api CreateCustomerRoute", shape=rarrow];
+    n2 [label="api Checkout", shape=rarrow];
+    n3 [label="api Items", shape=rarrow];
+    n4 [label="service CreateCustomer", shape=box];
+    n5 [label="service PlaceOrder", shape=box];
+    n6 [label="service AddLineItem", shape=box];
+    n4 -> n0 [label="DataFlow", style=bold];
+    n1 -> n4 [label="RequestFlow", style=solid];
+    n5 -> n0 [label="DataFlow", style=bold];
+    n2 -> n5 [label="RequestFlow", style=solid];
+    n6 -> n0 [label="DataFlow", style=bold];
+    n3 -> n6 [label="RequestFlow", style=solid];
+}

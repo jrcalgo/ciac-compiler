@@ -151,7 +151,7 @@ fn successive_builds_add_incremental_migrations_only() {
         .expect("first build has no prior schema to conflict with")
         .expect("a brand-new table produces a migration");
     assert!(
-        sql1.contains("CREATE TABLE IF NOT EXISTS Videos"),
+        sql1.contains("CREATE TABLE IF NOT EXISTS videos"),
         "expected a CREATE TABLE for the new table: {sql1}"
     );
     let first_migration = dir.join("migrations/0001_migration.sql");
@@ -163,7 +163,7 @@ fn successive_builds_add_incremental_migrations_only() {
         .expect("adding a column is additive")
         .expect("a new column produces a migration");
     assert!(
-        sql2.contains("ALTER TABLE Videos ADD COLUMN summary"),
+        sql2.contains("ALTER TABLE videos ADD COLUMN summary"),
         "expected an ADD COLUMN for the new field: {sql2}"
     );
     assert!(
@@ -213,7 +213,7 @@ fn dropped_column_is_refused_between_builds() {
     let err = migrate_step(&dir, SCHEMA_V3_DROPPED)
         .expect_err("dropping `title`/`summary` must be refused, not silently migrated");
     assert!(
-        matches!(&err, SchemaChange::ColumnRemoved { table, column } if table == "Videos" && (column == "title" || column == "summary")),
+        matches!(&err, SchemaChange::ColumnRemoved { table, column } if table == "videos" && (column == "title" || column == "summary")),
         "expected a ColumnRemoved refusal: {err:?}"
     );
     assert!(

@@ -36,7 +36,12 @@ pub struct Needs {
     pub datetime: bool,
     pub queue: bool,
     /// Precise verb usage, for the behavioral test's mock assertions.
-    pub db_insert: bool,
+    /// `db_insert` counts occurrences (not just presence) so the
+    /// generated test can assert the exact `session.add` call count —
+    /// a handler legitimately inserting into more than one table in a
+    /// single `transaction` block is real (v0.16), not a single-call
+    /// shape.
+    pub db_insert: usize,
     pub db_get: bool,
     pub cache_get: bool,
     pub cache_set: bool,
@@ -178,7 +183,7 @@ fn scan_expr(expr: &HirExpr, needs: &mut Needs) {
             match verb {
                 Verb::DbInsert(table) => {
                     needs.db = true;
-                    needs.db_insert = true;
+                    needs.db_insert += 1;
                     needs.table(*table);
                 }
                 Verb::DbGet(table) => {
@@ -1253,9 +1258,18 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
     if let Some(assertion) = assert_result(ir, &hir.return_ty) {
         lines.push(assertion);
     }
-    if needs.db_insert {
+    if needs.db_insert == 1 {
         lines.push("    session.add.assert_called_once()".to_owned());
         lines.push("    session.commit.assert_awaited_once()".to_owned());
+    } else if needs.db_insert > 1 {
+        // v0.16: a `transaction` block may legitimately insert into more
+        // than one table, so the call count isn't always 1 — but it's
+        // still exactly `needs.db_insert`, known at codegen time.
+        lines.push(format!(
+            "    assert session.add.call_count == {}",
+            needs.db_insert
+        ));
+        lines.push("    session.commit.assert_awaited()".to_owned());
     }
     if needs.db_get {
         lines.push("    session.get.assert_awaited_once()".to_owned());

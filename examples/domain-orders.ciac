@@ -1,0 +1,140 @@
+// v0.16 flagship: `Reference<T>` relations and explicit database
+// `transaction` blocks. A `Customer` -> `Order` -> `LineItem` chain
+// exercises both `on_delete` actions (`restrict` on the order's
+// customer reference, `cascade` on the line item's order reference)
+// plus a `unique` reference (one line item per order, a 1:1 shape).
+// `PlaceOrder` wraps two different tables' writes in one `transaction`
+// block with a conditional `fail` between them — a live rollback
+// proof, not just parsed syntax.
+//
+// Deliberately narrower than 16UpdatePlan.md's literal text, each
+// disclosed in docs/language.md and docs/expressions.md rather than
+// silently shipped as if complete:
+//
+// - `cardinality: many` has no wire exposure yet (no wire wouldn't be a
+//   complete example of the compiler-owned link table this version's
+//   sema/migrations do support) — this file uses only `cardinality:
+//   one` relations, the only cardinality real end-to-end since M4.
+// - A `Reference<T>` field is a flat FK id everywhere (`customer_id:
+//   string`), never a nested embedded object — deliberate, disclosed
+//   in M4's commit and in docs/language.md's relations section.
+// - The validation-attribute profile 16UpdatePlan.md's surface syntax
+//   section sketches (`non_empty`, `length`, `email`, ...) was never
+//   implemented on scalar fields; only `Reference<T>`'s own attributes
+//   (`references`/`cardinality`/`on_delete`/`on_update`/`unique`) and
+//   `index` are recognized. `PlaceOrder`'s business-rule check
+//   (`order.total < 0.0`) is ordinary handler-body logic, not a
+//   declared field constraint.
+// - `InvalidOrder`/insufficient-funds-style failures surface as a raw
+//   500, not a mapped 409/422 — no FK/unique/domain-error-to-HTTP-status
+//   mapping exists yet.
+// - Real rollback (both writes undone) is Python-only. The Rust
+//   backend validates and lowers `transaction` correctly but the block
+//   isn't yet atomic there — see the `// NOTE` comment `logic/place_order.rs`
+//   itself carries, and docs/expressions.md.
+service DomainOrders;
+
+use {
+    db Postgres;
+}
+
+record Customer {
+    id: Uuid;
+    name: String;
+    email: String;
+}
+table Customers: Customer;
+
+record Order {
+    id: Uuid;
+    customer: Reference<Customer> {
+        references: Customers;
+        cardinality: one;
+        on_delete: restrict;
+        on_update: cascade;
+    }
+    total: Float;
+}
+table Orders: Order;
+
+// A plain audit row (no relation of its own) — `PlaceOrder`'s second
+// write, so the transaction below genuinely spans two tables rather
+// than writing the same row twice.
+record OrderAudit {
+    id: Uuid;
+    note: String;
+    total: Float;
+}
+table OrderAudits: OrderAudit;
+
+// `unique: true` makes this a 1:1 shape: at most one line item per
+// order. `on_delete: cascade` means deleting an `Order` deletes its
+// `LineItem` too, in contrast to `Order.customer`'s `restrict` above —
+// both real FK-level behavior, live-verified against Postgres.
+record LineItem {
+    id: Uuid;
+    order: Reference<Order> {
+        references: Orders;
+        cardinality: one;
+        on_delete: cascade;
+        on_update: cascade;
+        unique: true;
+    }
+    sku: String;
+    quantity: Int;
+}
+table LineItems: LineItem;
+
+error InvalidOrder {
+    reason: String;
+}
+
+handler CreateCustomer(c: Customer) -> Customer {
+    db.insert(Customers, c);
+    return c;
+}
+
+// Two writes, two different tables, one `transaction`. A negative
+// `total` fails after the `Orders` insert but before the `OrderAudits`
+// insert — on the Python backend both writes roll back together; on
+// the Rust backend (interim, non-atomic lowering) the first write
+// survives. Both behaviors are exercised live, not assumed.
+handler PlaceOrder(order: Order) -> Order {
+    transaction {
+        db.insert(Orders, order);
+        if order.total < 0.0 {
+            fail InvalidOrder("order total must not be negative");
+        };
+        db.insert(OrderAudits, OrderAudit { id: Uuid.new(), note: "order placed", total: order.total });
+    }
+    return order;
+}
+
+handler AddLineItem(item: LineItem) -> LineItem {
+    db.insert(LineItems, item);
+    return item;
+}
+
+api CreateCustomerRoute: Customer {
+    method: POST;
+    path: "/customers";
+}
+pipeline CreateCustomerRoute:
+    CreateCustomer
+    -> Return;
+
+api Checkout: Order {
+    method: POST;
+    path: "/orders";
+}
+pipeline Checkout:
+    PlaceOrder
+    -> Return;
+
+api Items: LineItem {
+    method: POST;
+    path: "/line-items";
+}
+pipeline Items:
+    AddLineItem
+    -> Return;

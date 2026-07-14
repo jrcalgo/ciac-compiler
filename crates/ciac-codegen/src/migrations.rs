@@ -15,8 +15,23 @@
 
 use crate::model::field_sql_type;
 use ciac_ir::{Cardinality, FieldType, NormalizedIr, RefAction};
+use heck::ToSnakeCase;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// The physical SQL identifier for a declared table/record name.
+/// Both backends already query tables by their snake-cased name (the
+/// Python ORM's `__tablename__`, the Rust backend's `table_snake`) —
+/// this keeps the migration DDL's `CREATE TABLE`/`REFERENCES` naming
+/// consistent with that, rather than the literal declared identifier.
+/// A single-word name (`Orders`) round-trips unchanged; a multi-word
+/// one (`OrderAudits`) doesn't — Postgres case-folds an unquoted
+/// identifier to lowercase without ever inserting a separator, so
+/// `OrderAudits` used verbatim becomes `orderaudits`, not the
+/// `order_audits` the ORM/query code actually addresses.
+fn physical_table_name(name: &str) -> String {
+    name.to_snake_case()
+}
 
 /// One foreign key a table's schema carries (v0.16 M3): a `cardinality:
 /// one` `Reference<T>` field's column, or (for a compiler-owned link
@@ -171,13 +186,15 @@ pub fn snapshot_schema(ir: &NormalizedIr) -> BTreeMap<String, TableSchema> {
                     unique,
                     ..
                 } => {
+                    let table_name = physical_table_name(&table.name);
                     let target_table = ir.table(*target_table_id);
+                    let target_name = physical_table_name(&target_table.name);
                     let column = format!("{}_id", field.name);
                     columns.push((column.clone(), field_sql_type(&FieldType::Uuid).to_owned()));
                     foreign_keys.push(ForeignKeySchema {
-                        name: constraint_name("fk", &[&table.name, &column, &target_table.name]),
+                        name: constraint_name("fk", &[&table_name, &column, &target_name]),
                         column: column.clone(),
-                        target_table: target_table.name.clone(),
+                        target_table: target_name,
                         on_delete: ref_action_sql(*on_delete).to_owned(),
                         on_update: ref_action_sql(*on_update).to_owned(),
                     });
@@ -192,8 +209,11 @@ pub fn snapshot_schema(ir: &NormalizedIr) -> BTreeMap<String, TableSchema> {
                     on_update,
                     ..
                 } => {
+                    let table_name = physical_table_name(&table.name);
                     let target_table = ir.table(*target_table_id);
-                    let link_name = format!("{}__{}", table.name, field.name);
+                    let target_name = physical_table_name(&target_table.name);
+                    let link_name =
+                        format!("{}__{}", table_name, field.name.as_str().to_snake_case());
                     let uuid_ty = field_sql_type(&FieldType::Uuid).to_owned();
                     out.insert(
                         link_name.clone(),
@@ -206,10 +226,10 @@ pub fn snapshot_schema(ir: &NormalizedIr) -> BTreeMap<String, TableSchema> {
                                 ForeignKeySchema {
                                     name: constraint_name(
                                         "fk",
-                                        &[&link_name, "source_id", &table.name],
+                                        &[&link_name, "source_id", &table_name],
                                     ),
                                     column: "source_id".to_owned(),
-                                    target_table: table.name.clone(),
+                                    target_table: table_name.clone(),
                                     // Deleting the source always removes
                                     // compiler-owned links (16UpdatePlan.md
                                     // Pillar 1) — not user-configurable.
@@ -219,10 +239,10 @@ pub fn snapshot_schema(ir: &NormalizedIr) -> BTreeMap<String, TableSchema> {
                                 ForeignKeySchema {
                                     name: constraint_name(
                                         "fk",
-                                        &[&link_name, "target_id", &target_table.name],
+                                        &[&link_name, "target_id", &target_name],
                                     ),
                                     column: "target_id".to_owned(),
-                                    target_table: target_table.name.clone(),
+                                    target_table: target_name,
                                     on_delete: ref_action_sql(*on_delete).to_owned(),
                                     on_update: ref_action_sql(*on_update).to_owned(),
                                 },
@@ -236,7 +256,7 @@ pub fn snapshot_schema(ir: &NormalizedIr) -> BTreeMap<String, TableSchema> {
             }
         }
         out.insert(
-            table.name.clone(),
+            physical_table_name(&table.name),
             TableSchema {
                 columns,
                 foreign_keys,
@@ -265,9 +285,10 @@ pub fn diff_schema(
     }
 
     let mut statements = Vec::new();
+    let mut new_tables = Vec::new();
     for (table, schema) in new {
         match old.get(table) {
-            None => statements.push(create_table_sql(table, schema)),
+            None => new_tables.push((table.as_str(), schema)),
             Some(old_schema) => {
                 let old_cols: BTreeMap<&str, &str> = old_schema
                     .columns
@@ -348,11 +369,61 @@ pub fn diff_schema(
         }
     }
 
+    let mut creates: Vec<String> = order_new_tables(new_tables)
+        .into_iter()
+        .map(|(table, schema)| create_table_sql(table, schema))
+        .collect();
+    creates.append(&mut statements);
+    let statements = creates;
+
     if statements.is_empty() {
         Ok(None)
     } else {
         Ok(Some(format!("{};\n", statements.join(";\n"))))
     }
+}
+
+/// Orders newly-created tables so a table's `CREATE TABLE` never
+/// precedes a table its foreign keys reference — plain `BTreeMap`
+/// (alphabetical) order breaks the moment a referencing table's name
+/// sorts before its target's (e.g. `LineItems` referencing `Orders`).
+/// Only dependencies on another table in this same new-table batch
+/// matter; a reference to a table that already existed before this
+/// migration needs no reordering. Cycles among direct (non-link)
+/// foreign keys are rejected earlier by sema's relation-graph check
+/// (`find_reference_cycles`), so this never needs to break one — the
+/// leftover-node fallback only guards against that invariant somehow
+/// not holding, rather than a case this function expects to hit.
+fn order_new_tables<'a>(
+    tables: Vec<(&'a str, &'a TableSchema)>,
+) -> Vec<(&'a str, &'a TableSchema)> {
+    let mut remaining: BTreeMap<&str, &TableSchema> = tables.iter().copied().collect();
+    let mut ordered = Vec::with_capacity(tables.len());
+    while !remaining.is_empty() {
+        let ready: Vec<&str> = remaining
+            .iter()
+            .filter(|(_, schema)| {
+                schema
+                    .foreign_keys
+                    .iter()
+                    .all(|fk| !remaining.contains_key(fk.target_table.as_str()))
+            })
+            .map(|(name, _)| *name)
+            .collect();
+        if ready.is_empty() {
+            // Defensive fallback only: emit whatever remains in
+            // deterministic (alphabetical) order rather than looping
+            // forever.
+            for (name, schema) in remaining {
+                ordered.push((name, schema));
+            }
+            break;
+        }
+        for name in ready {
+            ordered.push((name, remaining.remove(name).unwrap()));
+        }
+    }
+    ordered
 }
 
 fn create_table_sql(table: &str, schema: &TableSchema) -> String {

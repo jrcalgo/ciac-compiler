@@ -1,0 +1,578 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "DomainOrders",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "DomainOrders"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Api",
+      "name": "CreateCustomerRoute",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/customers",
+        "scope": null
+      }
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "Checkout",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": "/orders",
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Api",
+      "name": "Items",
+      "request": 3,
+      "config": {
+        "method": "Post",
+        "path": "/line-items",
+        "scope": null
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Service",
+      "name": "CreateCustomer",
+      "signature": {
+        "params": [
+          [
+            "c",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbInsert": 0
+                },
+                "args": [
+                  {
+                    "Local": {
+                      "slot": 0,
+                      "ty": {
+                        "Record": 0
+                      }
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Service",
+      "name": "PlaceOrder",
+      "signature": {
+        "params": [
+          [
+            "order",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 1
+        },
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Transaction": {
+              "body": [
+                {
+                  "Expr": {
+                    "VerbCall": {
+                      "capability": 0,
+                      "verb": {
+                        "DbInsert": 1
+                      },
+                      "args": [
+                        {
+                          "Local": {
+                            "slot": 0,
+                            "ty": {
+                              "Record": 1
+                            }
+                          }
+                        }
+                      ],
+                      "ty": {
+                        "Record": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "Expr": {
+                    "If": {
+                      "cond": {
+                        "Binary": {
+                          "op": "Lt",
+                          "lhs": {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 1
+                                  }
+                                }
+                              },
+                              "field": "total",
+                              "ty": "Float"
+                            }
+                          },
+                          "rhs": {
+                            "FloatLit": 0.0
+                          },
+                          "ty": "Bool"
+                        }
+                      },
+                      "then_branch": [
+                        {
+                          "Fail": {
+                            "error": 4,
+                            "args": [
+                              {
+                                "StrLit": "order total must not be negative"
+                              }
+                            ]
+                          }
+                        }
+                      ],
+                      "else_branch": [],
+                      "ty": "Unit"
+                    }
+                  }
+                },
+                {
+                  "Expr": {
+                    "VerbCall": {
+                      "capability": 0,
+                      "verb": {
+                        "DbInsert": 2
+                      },
+                      "args": [
+                        {
+                          "RecordCons": {
+                            "record": 2,
+                            "base_value": null,
+                            "fields": [
+                              [
+                                "id",
+                                {
+                                  "BuiltinCall": "UuidNew"
+                                }
+                              ],
+                              [
+                                "note",
+                                {
+                                  "StrLit": "order placed"
+                                }
+                              ],
+                              [
+                                "total",
+                                {
+                                  "FieldAccess": {
+                                    "base": {
+                                      "Local": {
+                                        "slot": 0,
+                                        "ty": {
+                                          "Record": 1
+                                        }
+                                      }
+                                    },
+                                    "field": "total",
+                                    "ty": "Float"
+                                  }
+                                }
+                              ]
+                            ]
+                          }
+                        }
+                      ],
+                      "ty": {
+                        "Record": 2
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Service",
+      "name": "AddLineItem",
+      "signature": {
+        "params": [
+          [
+            "item",
+            {
+              "Record": 3
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 3
+        },
+        "locals": [
+          {
+            "Record": 3
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbInsert": 3
+                },
+                "args": [
+                  {
+                    "Local": {
+                      "slot": 0,
+                      "ty": {
+                        "Record": 3
+                      }
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 3
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 3
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 4,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 1,
+      "from": 1,
+      "to": 4,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 2,
+      "from": 5,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 2,
+      "to": 5,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 4,
+      "from": 6,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 5,
+      "from": 3,
+      "to": 6,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Customer",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "name",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "email",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "customer",
+          "ty": {
+            "type": "Reference",
+            "target": 0,
+            "table": 0,
+            "cardinality": "One",
+            "on_delete": "Restrict",
+            "on_update": "Cascade",
+            "unique": false
+          }
+        },
+        {
+          "name": "total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "OrderAudit",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "note",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "LineItem",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "order",
+          "ty": {
+            "type": "Reference",
+            "target": 1,
+            "table": 1,
+            "cardinality": "One",
+            "on_delete": "Cascade",
+            "on_update": "Cascade",
+            "unique": true
+          }
+        },
+        {
+          "name": "sku",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "quantity",
+          "ty": {
+            "type": "Int"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "InvalidOrder",
+      "fields": [
+        {
+          "name": "reason",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Error"
+    }
+  ],
+  "tables": [
+    {
+      "name": "Customers",
+      "record": 0,
+      "service": 0,
+      "db_instance": 0
+    },
+    {
+      "name": "Orders",
+      "record": 1,
+      "service": 0,
+      "db_instance": 0
+    },
+    {
+      "name": "OrderAudits",
+      "record": 2,
+      "service": 0,
+      "db_instance": 0
+    },
+    {
+      "name": "LineItems",
+      "record": 3,
+      "service": 0,
+      "db_instance": 0
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "CreateCustomerRoute",
+      "service": 0,
+      "owner": 1,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 4
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Checkout",
+      "service": 0,
+      "owner": 2,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 5
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Items",
+      "service": 0,
+      "owner": 3,
+      "payload": 3,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 6
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

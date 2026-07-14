@@ -1,5 +1,6 @@
 //! The `ciac` command-line interface.
 
+mod backfill;
 mod commands;
 mod describe;
 mod dev;
@@ -362,6 +363,43 @@ enum Command {
     /// `verify` (no `--system`/`--live`), `graph`, `explain`, and
     /// `describe` as MCP tools for an agent client to call.
     Mcp,
+    /// The expand/backfill/contract ladder for a change the semantic
+    /// differ recognizes but can't compute (v0.18 M6). See
+    /// `docs/evolution.md`.
+    #[command(subcommand)]
+    Backfill(BackfillCommand),
+}
+
+#[derive(Subcommand)]
+enum BackfillCommand {
+    /// Plans a backfill for every `backfill_plan_available` change
+    /// between `--baseline` and the current program: writes a seeded
+    /// backfill script for each, and — with `--allow-destructive
+    /// <plan-id>` — the guarded contract migration that tightens the
+    /// column once that exact plan's script has recorded completion in
+    /// `_ciac_backfills`. The expand step itself needs no new command:
+    /// an ordinary `ciac build`/`ciac verify` on `--out` already writes
+    /// and applies it.
+    Plan {
+        /// Path to the `.ciac` source file.
+        file: PathBuf,
+        /// Baseline file path. Defaults to the same entry-relative
+        /// `.ciac/baselines/` path `ciac baseline`/`ciac diff --semantic`
+        /// use.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// The generated output tree to plan against — its manifest
+        /// supplies the build recipe (target/etc.) and the schema
+        /// snapshot confirming the expand migration already landed.
+        #[arg(long)]
+        out: PathBuf,
+        /// Materializes the contract migration for this exact plan id.
+        /// Refused unless a plan with this id was already recorded by
+        /// an earlier `ciac backfill plan` invocation against the same
+        /// baseline/program.
+        #[arg(long, value_name = "PLAN_ID")]
+        allow_destructive: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -510,5 +548,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Targets => commands::targets(),
         Command::Describe => describe::run(),
         Command::Mcp => mcp::run(),
+        Command::Backfill(BackfillCommand::Plan {
+            file,
+            baseline,
+            out,
+            allow_destructive,
+        }) => backfill::plan(
+            &file,
+            baseline.as_deref(),
+            &out,
+            allow_destructive.as_deref(),
+        ),
     }
 }

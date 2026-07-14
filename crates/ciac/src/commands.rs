@@ -709,7 +709,7 @@ pub(crate) fn diff_semantic_envelope(
 /// baseline` itself would use. The inner `Result` distinguishes a
 /// clean, expected refusal (bad/missing baseline, incompatible
 /// version) from an unexpected I/O error the outer `Result` carries.
-fn load_comparison_baseline(
+pub(crate) fn load_comparison_baseline(
     file: &Path,
     against: Option<&Path>,
     baseline: Option<&Path>,

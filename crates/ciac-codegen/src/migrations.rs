@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 /// identifier to lowercase without ever inserting a separator, so
 /// `OrderAudits` used verbatim becomes `orderaudits`, not the
 /// `order_audits` the ORM/query code actually addresses.
-fn physical_table_name(name: &str) -> String {
+pub(crate) fn physical_table_name(name: &str) -> String {
     name.to_snake_case()
 }
 

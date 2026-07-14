@@ -220,6 +220,7 @@ fn tools_call(params: &Value) -> Result<Value> {
                 image_tag: "latest".to_owned(),
                 profile: "dev".to_owned(),
                 secrets: false,
+                semantic_baseline: None,
             };
             let (envelope, _code) = commands::build_envelope(&file, &target, &out, deploy, name)?;
             serde_json::to_string_pretty(&envelope)?

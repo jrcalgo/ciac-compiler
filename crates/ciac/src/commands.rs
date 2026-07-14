@@ -13,7 +13,7 @@ use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
 use ciac_ir::{FieldType, NormalizedIr};
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 /// All registered code-generation backends, in stable order.
@@ -148,6 +148,11 @@ pub struct DeployOpts {
     pub image_tag: String,
     pub profile: String,
     pub secrets: bool,
+    /// `--deploy ci`'s breaking-change gate (v0.18 M3, 18UpdatePlan.md
+    /// Pillar 4): path to the checked-in semantic baseline the
+    /// generated `semantic-compat` job diffs against. Ignored unless
+    /// `deploy` contains `"ci"`.
+    pub semantic_baseline: Option<PathBuf>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -218,6 +223,43 @@ pub(crate) fn build_inner(
             other => bail!("unknown --deploy target `{other}`; available: k8s, terraform, ci"),
         }
     }
+    // v0.18 M3: `--deploy ci --semantic-baseline <path>` (18UpdatePlan.md
+    // Pillar 4). The source entry and baseline must resolve beneath the
+    // generated workflow's repository root — a developer's absolute
+    // path can never mean anything there, so it's refused up front
+    // rather than baked into YAML that would only work on this machine.
+    let semantic_gate = match &deploy.semantic_baseline {
+        Some(baseline) => {
+            if !ci {
+                bail!("--semantic-baseline requires --deploy ci");
+            }
+            if file.is_absolute() {
+                bail!(
+                    "--semantic-baseline requires the source file to be a relative path (got {}); \
+                     invoke `ciac build` with a path relative to the repository root",
+                    file.display()
+                );
+            }
+            if baseline.is_absolute() {
+                bail!(
+                    "--semantic-baseline must be a relative path (got {}); it is embedded in the \
+                     generated workflow, which runs against the repository root",
+                    baseline.display()
+                );
+            }
+            let Some(source_file) = file.to_str() else {
+                bail!("source file path {} is not valid UTF-8", file.display());
+            };
+            let Some(baseline_str) = baseline.to_str() else {
+                bail!(
+                    "--semantic-baseline path {} is not valid UTF-8",
+                    baseline.display()
+                );
+            };
+            Some((source_file.to_owned(), baseline_str.to_owned()))
+        }
+        None => None,
+    };
     let mut ts_client = false;
     for kind in &client {
         match kind.as_str() {
@@ -246,6 +288,7 @@ pub(crate) fn build_inner(
         ts_client,
         ci,
         deploy.image_prefix.clone(),
+        semantic_gate,
     )?;
 
     if force {
@@ -416,6 +459,232 @@ pub(crate) fn diff_envelope(
     Ok((envelope, code))
 }
 
+/// `ciac diff --semantic` (v0.18 M3): compares the current program's
+/// canonical architecture against a baseline, disjoint from the
+/// regeneration-diff mode above (that one requires `--target`/`--out`;
+/// this one requires neither). Exactly one of `--against`/`--baseline`
+/// is expected; with neither, falls back to the default checked-in
+/// baseline path `ciac baseline` itself would use, refusing cleanly if
+/// nothing is there yet. `--against` currently accepts a source file
+/// path only — a git-ref form is 18UpdatePlan.md's own stated
+/// direction, not implemented this milestone (disclosed, not silent).
+#[allow(clippy::too_many_arguments)]
+pub fn diff_semantic(
+    file: &Path,
+    against: Option<&Path>,
+    baseline: Option<&Path>,
+    deny_breaking: bool,
+    format: &str,
+    json: bool,
+) -> Result<ExitCode> {
+    if against.is_some() && baseline.is_some() {
+        bail!("`--against` and `--baseline` are mutually exclusive; pass at most one");
+    }
+    if json {
+        let (envelope, code) = diff_semantic_envelope(file, against, baseline, deny_breaking)?;
+        crate::json_out::emit(&envelope);
+        return Ok(code);
+    }
+
+    let (ir, has_errors, _sources) = front_end(file)?;
+    let Some(ir) = ir.filter(|_| !has_errors) else {
+        return Ok(ExitCode::FAILURE);
+    };
+    let new_model = ciac_codegen::semantic_model::SemanticModel::from_ir(&ir);
+
+    let old_model = match load_comparison_baseline(file, against, baseline)? {
+        Ok(model) => model,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    let changes = ciac_codegen::semantic_diff::diff_models(&old_model, &new_model);
+    print_semantic_diff(&changes, format);
+
+    let breaking = ciac_codegen::semantic_diff::overall_classification(&changes)
+        == Some(ciac_codegen::semantic_diff::Classification::Breaking);
+    if deny_breaking && breaking {
+        eprintln!(
+            "policy: --deny-breaking failed ({} breaking change(s))",
+            changes
+                .iter()
+                .filter(
+                    |c| c.classification == ciac_codegen::semantic_diff::Classification::Breaking
+                )
+                .count()
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn diff_semantic_envelope(
+    file: &Path,
+    against: Option<&Path>,
+    baseline: Option<&Path>,
+    deny_breaking: bool,
+) -> Result<(crate::json_out::Envelope, ExitCode)> {
+    JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
+    if has_errors || ir.is_none() {
+        let envelope = crate::json_out::envelope("diff", false, &diags, &sources);
+        return Ok((envelope, ExitCode::FAILURE));
+    }
+    let new_model = ciac_codegen::semantic_model::SemanticModel::from_ir(ir.as_ref().unwrap());
+
+    let (changes, success) = match load_comparison_baseline(file, against, baseline) {
+        Ok(Ok(old_model)) => {
+            let changes = ciac_codegen::semantic_diff::diff_models(&old_model, &new_model);
+            let breaking = ciac_codegen::semantic_diff::overall_classification(&changes)
+                == Some(ciac_codegen::semantic_diff::Classification::Breaking);
+            (Some(changes), !(deny_breaking && breaking))
+        }
+        Ok(Err(message)) => {
+            eprintln!("error: {message}");
+            (None, false)
+        }
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            (None, false)
+        }
+    };
+
+    let mut envelope = crate::json_out::envelope("diff", success, &diags, &sources);
+    if let Some(changes) = changes {
+        let breaking = changes
+            .iter()
+            .filter(|c| c.classification == ciac_codegen::semantic_diff::Classification::Breaking)
+            .count();
+        let additive = changes
+            .iter()
+            .filter(|c| c.classification == ciac_codegen::semantic_diff::Classification::Additive)
+            .count();
+        let internal = changes
+            .iter()
+            .filter(|c| c.classification == ciac_codegen::semantic_diff::Classification::Internal)
+            .count();
+        envelope.semantic = Some(crate::json_out::SemanticDiffResult {
+            semantic_diff_version: 1,
+            policy: crate::json_out::SemanticDiffPolicy {
+                deny_breaking,
+                passed: !(deny_breaking && breaking > 0),
+            },
+            summary: crate::json_out::SemanticDiffSummary {
+                breaking,
+                additive,
+                internal,
+            },
+            changes,
+        });
+    }
+    let code = if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    Ok((envelope, code))
+}
+
+/// Resolves the "old" side of a semantic comparison: `--against`
+/// (another source file, compiled fresh), `--baseline` (a checked-in
+/// baseline JSON file), or — with neither — the default path `ciac
+/// baseline` itself would use. The inner `Result` distinguishes a
+/// clean, expected refusal (bad/missing baseline, incompatible
+/// version) from an unexpected I/O error the outer `Result` carries.
+fn load_comparison_baseline(
+    file: &Path,
+    against: Option<&Path>,
+    baseline: Option<&Path>,
+) -> Result<std::result::Result<ciac_codegen::semantic_model::SemanticModel, String>> {
+    if let Some(against) = against {
+        let (ir, has_errors, _sources) = front_end(against)?;
+        let Some(ir) = ir.filter(|_| !has_errors) else {
+            return Ok(Err(format!(
+                "{} (the --against source) failed to compile",
+                against.display()
+            )));
+        };
+        return Ok(Ok(ciac_codegen::semantic_model::SemanticModel::from_ir(
+            &ir,
+        )));
+    }
+    let path = baseline
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_baseline_path(file));
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Err(format!(
+                "no baseline at {} -- pass --against/--baseline, or run `ciac baseline` first",
+                path.display()
+            )));
+        }
+        Err(err) => return Err(err).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let parsed: ciac_codegen::semantic_model::SemanticBaseline =
+        match serde_json::from_slice(&bytes) {
+            Ok(b) => b,
+            Err(err) => {
+                return Ok(Err(format!(
+                    "{} is not a valid semantic baseline: {err}",
+                    path.display()
+                )))
+            }
+        };
+    if parsed.semantic_baseline_version > ciac_codegen::semantic_model::SEMANTIC_BASELINE_VERSION {
+        return Ok(Err(format!(
+            "{} was written by a newer, incompatible baseline format (version {}, this build \
+             understands up to {})",
+            path.display(),
+            parsed.semantic_baseline_version,
+            ciac_codegen::semantic_model::SEMANTIC_BASELINE_VERSION
+        )));
+    }
+    Ok(Ok(parsed.model))
+}
+
+fn print_semantic_diff(changes: &[ciac_codegen::semantic_diff::Change], format: &str) {
+    if changes.is_empty() {
+        println!("no architecture changes detected");
+        return;
+    }
+    match format {
+        "markdown" => {
+            println!("| Classification | Kind | Symbol | Message |");
+            println!("|---|---|---|---|");
+            for c in changes {
+                println!(
+                    "| {:?} | {} | `{}` | {} |",
+                    c.classification, c.kind, c.symbol.display, c.message
+                );
+            }
+        }
+        _ => {
+            for c in changes {
+                println!(
+                    "{:9} {:30} {}",
+                    format!("{:?}", c.classification),
+                    c.kind,
+                    c.symbol.display
+                );
+                println!("          {}", c.message);
+                for consumer in &c.consumers {
+                    println!(
+                        "          consumer: {} ({})",
+                        consumer.service.as_deref().unwrap_or("?"),
+                        consumer.kind
+                    );
+                }
+                if c.backfill_plan_available {
+                    println!("          note: `ciac backfill plan` is available for this change");
+                }
+            }
+        }
+    }
+}
+
 fn diff_plan(file: &Path, target: &str, out: &Path, name: Option<String>) -> Result<RegenPlan> {
     let Generated { project, .. } = generate(
         file,
@@ -428,6 +697,7 @@ fn diff_plan(file: &Path, target: &str, out: &Path, name: Option<String>) -> Res
         false,
         false,
         false,
+        None,
         None,
     )?;
     let manifest_file = manifest_path(out);
@@ -509,6 +779,7 @@ fn verify_inner(
         false,
         false,
         false,
+        None,
         None,
     )?;
 
@@ -1055,6 +1326,7 @@ fn generate(
     ts_client: bool,
     ci: bool,
     image_prefix: Option<String>,
+    semantic_gate: Option<(String, String)>,
 ) -> Result<Generated> {
     let all = backends();
     let backend: Box<dyn Backend> = match all.into_iter().find(|b| b.id() == target) {
@@ -1164,7 +1436,16 @@ fn generate(
     // ci`) — mirrors what `ciac verify` runs locally, plus an image
     // build/push and a compose smoke job.
     if ci {
-        for (path, content) in ciac_codegen::ci::build(&ir, backend.id(), image_prefix.as_deref()) {
+        let gate =
+            semantic_gate
+                .as_ref()
+                .map(|(source_file, baseline)| ciac_codegen::ci::SemanticGate {
+                    source_file,
+                    baseline,
+                });
+        for (path, content) in
+            ciac_codegen::ci::build(&ir, backend.id(), image_prefix.as_deref(), gate)
+        {
             project.add_file(path, content);
         }
     }

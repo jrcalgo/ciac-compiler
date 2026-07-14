@@ -19,6 +19,38 @@ pub struct Envelope {
     /// `diff --json` only (v0.10 M4): the regeneration plan as data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entries: Option<Vec<DiffEntry>>,
+    /// `diff --semantic --json` only (v0.18 M3): the typed architecture
+    /// changelist. Disjoint from `entries` — a given `diff` invocation
+    /// is regeneration-diff or semantic-diff, never both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SemanticDiffResult>,
+}
+
+/// `ciac diff --semantic`'s result payload (v0.18 M3).
+#[derive(Debug, Serialize)]
+pub struct SemanticDiffResult {
+    pub semantic_diff_version: u32,
+    pub policy: SemanticDiffPolicy,
+    pub summary: SemanticDiffSummary,
+    pub changes: Vec<ciac_codegen::semantic_diff::Change>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SemanticDiffPolicy {
+    pub deny_breaking: bool,
+    /// `false` only when `deny_breaking` is set and at least one
+    /// `Breaking` change was found — a policy failure still returns
+    /// the complete valid result (18UpdatePlan.md Pillar 8), it's
+    /// never folded into `success` alone without also being visible
+    /// here.
+    pub passed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SemanticDiffSummary {
+    pub breaking: usize,
+    pub additive: usize,
+    pub internal: usize,
 }
 
 /// One regeneration-plan entry — what a real `ciac build` would do to
@@ -154,6 +186,7 @@ pub fn envelope(
         success,
         diagnostics,
         entries: None,
+        semantic: None,
     }
 }
 

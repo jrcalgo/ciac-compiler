@@ -81,6 +81,14 @@ enum Command {
         /// these are additive production posture.
         #[arg(long, value_name = "TARGET")]
         deploy: Vec<String>,
+        /// With `--deploy ci`: path (relative to the repository root)
+        /// to the checked-in semantic baseline (see `ciac baseline`).
+        /// The generated workflow gains a `semantic-compat` job that
+        /// installs this exact `ciac` release, runs `ciac diff
+        /// --semantic --deny-breaking` against this baseline before
+        /// `test` runs, and fails the workflow on a breaking change.
+        #[arg(long, value_name = "PATH")]
+        semantic_baseline: Option<PathBuf>,
         /// Sizing profile for `--deploy` artifacts (k8s replicas and
         /// resources, Terraform instance classes): dev, staging, prod.
         #[arg(long, default_value = "dev")]
@@ -152,23 +160,46 @@ enum Command {
     Diff {
         /// Path to the `.ciac` source file.
         file: PathBuf,
-        /// Code-generation target.
+        /// Code-generation target. Required unless `--semantic`.
         #[arg(short, long)]
-        target: String,
-        /// Output directory to compare against.
+        target: Option<String>,
+        /// Output directory to compare against. Required unless
+        /// `--semantic`.
         #[arg(short, long)]
-        out: PathBuf,
+        out: Option<PathBuf>,
         /// Print unified diffs for changed/conflicting files.
+        /// Regeneration-diff only.
         #[arg(long)]
         patch: bool,
         /// Override the generated project's name.
+        /// Regeneration-diff only.
         #[arg(long)]
         name: Option<String>,
-        /// Emit the regeneration plan as one machine-readable JSON
-        /// document on stdout (with `--patch`, including unified diff
-        /// text per changed entry).
+        /// Emit the regeneration plan (or, with `--semantic`, the
+        /// architecture changelist) as one machine-readable JSON
+        /// document on stdout.
         #[arg(long)]
         json: bool,
+        /// Compare architecture (v0.18 M1-M3) instead of generated
+        /// files: conflicts with `--target`/`--out`/`--patch`. See
+        /// `docs/evolution.md`.
+        #[arg(long)]
+        semantic: bool,
+        /// `--semantic` only: compare against another source file
+        /// instead of the checked-in baseline.
+        #[arg(long, conflicts_with = "baseline")]
+        against: Option<PathBuf>,
+        /// `--semantic` only: compare against a specific checked-in
+        /// baseline file instead of the default path.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// `--semantic` only: exit non-zero if any breaking change is
+        /// found — the check generated CI's compatibility gate runs.
+        #[arg(long)]
+        deny_breaking: bool,
+        /// `--semantic` only: human-output rendering.
+        #[arg(long, default_value = "text", value_parser = ["text", "markdown"])]
+        format: String,
     },
     /// Create or update the checked-in semantic baseline (v0.18 M1)
     /// generated CI's breaking-change gate compares against. See
@@ -317,6 +348,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             force,
             adopt,
             deploy,
+            semantic_baseline,
             image_prefix,
             image_tag,
             client,
@@ -336,6 +368,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
                 image_tag,
                 profile,
                 secrets,
+                semantic_baseline,
             },
             client,
             name,
@@ -357,7 +390,33 @@ fn run(cli: Cli) -> Result<ExitCode> {
             patch,
             name,
             json,
-        } => commands::diff(&file, &target, &out, patch, name, json),
+            semantic,
+            against,
+            baseline,
+            deny_breaking,
+            format,
+        } => {
+            if semantic {
+                if target.is_some() || out.is_some() || patch {
+                    eprintln!("error: `--semantic` conflicts with `--target`/`--out`/`--patch`");
+                    return Ok(ExitCode::FAILURE);
+                }
+                commands::diff_semantic(
+                    &file,
+                    against.as_deref(),
+                    baseline.as_deref(),
+                    deny_breaking,
+                    &format,
+                    json,
+                )
+            } else {
+                let (Some(target), Some(out)) = (target, out) else {
+                    eprintln!("error: `--target`/`--out` are required unless `--semantic`");
+                    return Ok(ExitCode::FAILURE);
+                };
+                commands::diff(&file, &target, &out, patch, name, json)
+            }
+        }
         Command::Baseline {
             file,
             out,

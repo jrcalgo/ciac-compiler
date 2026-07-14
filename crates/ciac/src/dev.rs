@@ -146,6 +146,7 @@ fn rebuild(
             image_tag: "latest".to_owned(),
             profile: "dev".to_owned(),
             secrets: false,
+            semantic_baseline: None,
         },
         Vec::new(),
         name,

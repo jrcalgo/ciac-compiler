@@ -959,6 +959,31 @@
               "variants"
             ],
             "type": "object"
+          },
+          {
+            "description": "A `cardinality: one` `Reference<T>` field (v0.16 M4). Wire and\nrow shape are identical: a plain id (`FieldCtx::py_type`/\n`rust_type` are the same as `Uuid`'s) named `<field>_id`. This\nvariant exists so OpenAPI/the TS client/external backends can\nstill see *which* record it targets and what happens on\ndelete/update, without the compiler ever embedding the target's\nown fields inline. `cardinality: many` has no `FieldCtx` at all\nyet — it isn't part of a record's own row, and wire exposure is\nv0.16 M5/M6.",
+            "properties": {
+              "kind": {
+                "const": "reference",
+                "type": "string"
+              },
+              "on_delete": {
+                "type": "string"
+              },
+              "on_update": {
+                "type": "string"
+              },
+              "target_record": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "target_record",
+              "on_delete",
+              "on_update"
+            ],
+            "type": "object"
           }
         ]
       },

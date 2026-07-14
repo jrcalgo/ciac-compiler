@@ -517,17 +517,56 @@ fn sample_value(ty: &FieldType) -> serde_json::Value {
         FieldType::Enum { variants } => {
             json!(variants.first().cloned().unwrap_or_default())
         }
-        FieldType::Reference { .. } => {
-            unreachable!("relation codegen is gated until v0.16 M3 lands")
-        }
+        // v0.16 M4: a to-one reference is a plain id on the wire (see
+        // `ciac_codegen::model::FieldTypeKind::Reference`); a fixed
+        // placeholder is exactly as synthetic as every other sample
+        // value here. Real per-build topological ids (create the
+        // target first, thread its actual id through) are v0.16 M7's
+        // flagship work, not this generator's job.
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::One,
+            ..
+        } => json!("00000000-0000-0000-0000-000000000000"),
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::Many,
+            ..
+        } => unreachable!("many-relation codegen is gated until v0.16 M5/M6 land"),
     }
+}
+
+/// The wire property name for a field (v0.16 M4): a to-one reference's
+/// declared name (`customer`) maps to `customer_id`, matching
+/// `ciac_codegen::model::build_record`'s field-name computation exactly
+/// — kept as one small helper rather than risking the two drifting.
+fn wire_field_name(field: &RecordField) -> String {
+    match &field.ty {
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::One,
+            ..
+        } => format!("{}_id", field.name),
+        _ => field.name.clone(),
+    }
+}
+
+/// A to-many reference has no wire exposure yet (v0.16 M4; it isn't
+/// part of a record's own row — see `build_record`), so it's excluded
+/// from the sample payload rather than sampled at all.
+fn is_wire_field(field: &RecordField) -> bool {
+    !matches!(
+        field.ty,
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::Many,
+            ..
+        }
+    )
 }
 
 fn sample_json(record: &Record) -> String {
     let fields: Vec<(String, serde_json::Value)> = record
         .fields
         .iter()
-        .map(|f: &RecordField| (f.name.clone(), sample_value(&f.ty)))
+        .filter(|f| is_wire_field(f))
+        .map(|f: &RecordField| (wire_field_name(f), sample_value(&f.ty)))
         .collect();
     let object: serde_json::Map<String, serde_json::Value> = fields.into_iter().collect();
     serde_json::to_string(&serde_json::Value::Object(object)).expect("json map always serializes")
@@ -539,8 +578,8 @@ fn sample_json_without_id(record: &Record) -> String {
     let object: serde_json::Map<String, serde_json::Value> = record
         .fields
         .iter()
-        .filter(|f| f.name != "id")
-        .map(|f| (f.name.clone(), sample_value(&f.ty)))
+        .filter(|f| f.name != "id" && is_wire_field(f))
+        .map(|f| (wire_field_name(f), sample_value(&f.ty)))
         .collect();
     serde_json::to_string(&serde_json::Value::Object(object)).expect("json map always serializes")
 }

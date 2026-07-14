@@ -884,25 +884,30 @@ fn generate(
         eprintln!("error[{}]: {err}", ErrorCode::UnsupportedConstruct);
         bail!("unsupported construct");
     }
-    // v0.16 M2: `Reference<T>` fields are fully resolved by sema (so
-    // `ciac check` already validates relations, cascades, and cycles),
-    // but no backend can render foreign keys/link tables/migrations for
-    // them yet -- that codegen is v0.16 M3+. Refuse cleanly here rather
-    // than let any of the (unreachable!()-guarded) codegen match arms
-    // downstream panic.
+    // v0.16 M4: `cardinality: one` references are fully resolved by sema
+    // *and* now have real codegen (a plain FK-id field/column, migrations
+    // from M3) — but `cardinality: many` is still gated: it needs a
+    // separate link-table read/write path in both backends, which is
+    // v0.16 M5/M6. Refuse cleanly here rather than let any of the
+    // (unreachable!()-guarded) codegen match arms downstream panic.
     if let Some(name) = ir
         .records()
         .find(|(_, record)| {
-            record
-                .fields
-                .iter()
-                .any(|f| matches!(f.ty, FieldType::Reference { .. }))
+            record.fields.iter().any(|f| {
+                matches!(
+                    f.ty,
+                    FieldType::Reference {
+                        cardinality: ciac_ir::Cardinality::Many,
+                        ..
+                    }
+                )
+            })
         })
         .map(|(_, record)| record.name.clone())
     {
         eprintln!(
-            "error[{}]: record `{name}` has a `Reference<T>` field, which no backend can \
-             generate yet (relation codegen lands in v0.16 M3+)",
+            "error[{}]: record `{name}` has a `cardinality: many` `Reference<T>` field, which \
+             no backend can generate yet (relation codegen lands in v0.16 M5/M6)",
             ErrorCode::UnsupportedConstruct
         );
         bail!("unsupported construct");

@@ -986,9 +986,17 @@ fn dummy_field(ty: &ciac_ir::FieldType) -> String {
         FieldType::Enum { variants } => {
             format!("{:?}", variants.first().cloned().unwrap_or_default())
         }
-        FieldType::Reference { .. } => {
-            unreachable!("relation codegen is gated until v0.16 M3 lands")
-        }
+        // v0.16 M4: a to-one reference's generated Pydantic attribute is
+        // a plain id string (`ciac_codegen::model::FieldTypeKind::Reference`'s
+        // doc comment), so a dummy `str(uuid4())` matches it exactly.
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::One,
+            ..
+        } => "str(uuid4())".to_owned(),
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::Many,
+            ..
+        } => unreachable!("many-relation codegen is gated until v0.16 M5/M6 land"),
     }
 }
 
@@ -1012,7 +1020,28 @@ fn dummy_value(ir: &NormalizedIr, ty: &HirType) -> String {
             let args = record
                 .fields
                 .iter()
-                .map(|f| format!("{}={}", f.name, dummy_field(&f.ty)))
+                // A to-many reference has no generated Pydantic
+                // attribute yet (v0.16 M4 — see `build_record`), so it
+                // isn't a constructor kwarg here either.
+                .filter(|f| {
+                    !matches!(
+                        f.ty,
+                        ciac_ir::FieldType::Reference {
+                            cardinality: ciac_ir::Cardinality::Many,
+                            ..
+                        }
+                    )
+                })
+                .map(|f| {
+                    let name = match &f.ty {
+                        ciac_ir::FieldType::Reference {
+                            cardinality: ciac_ir::Cardinality::One,
+                            ..
+                        } => format!("{}_id", f.name),
+                        _ => f.name.clone(),
+                    };
+                    format!("{name}={}", dummy_field(&f.ty))
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{}({args})", record.name)
@@ -1032,6 +1061,12 @@ fn dummy_value_needs(ir: &NormalizedIr, ty: &HirType, uuid: &mut bool, datetime:
                 match field.ty {
                     FieldType::Uuid => *uuid = true,
                     FieldType::Timestamp => *datetime = true,
+                    // A to-one reference's dummy value is `str(uuid4())`
+                    // (v0.16 M4), so it needs the same import.
+                    FieldType::Reference {
+                        cardinality: ciac_ir::Cardinality::One,
+                        ..
+                    } => *uuid = true,
                     _ => {}
                 }
             }

@@ -231,6 +231,20 @@ pub enum FieldTypeKind {
         name: String,
         variants: Vec<String>,
     },
+    /// A `cardinality: one` `Reference<T>` field (v0.16 M4). Wire and
+    /// row shape are identical: a plain id (`FieldCtx::py_type`/
+    /// `rust_type` are the same as `Uuid`'s) named `<field>_id`. This
+    /// variant exists so OpenAPI/the TS client/external backends can
+    /// still see *which* record it targets and what happens on
+    /// delete/update, without the compiler ever embedding the target's
+    /// own fields inline. `cardinality: many` has no `FieldCtx` at all
+    /// yet — it isn't part of a record's own row, and wire exposure is
+    /// v0.16 M5/M6.
+    Reference {
+        target_record: String,
+        on_delete: String,
+        on_update: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -2071,6 +2085,16 @@ fn rust_variant(
 /// Postgres column type for a field's declared `FieldType`. Shared by
 /// `build_record` (schema/model codegen) and `ciac-codegen::migrations`
 /// (the v0.7 table migration differ) so the two never drift apart.
+fn ref_action_name(action: ciac_ir::RefAction) -> &'static str {
+    match action {
+        ciac_ir::RefAction::Restrict => "restrict",
+        ciac_ir::RefAction::Cascade => "cascade",
+    }
+}
+
+/// Postgres column type for a field's declared `FieldType`. Shared by
+/// `build_record` (schema/model codegen) and `ciac-codegen::migrations`
+/// (the v0.7 table migration differ) so the two never drift apart.
 pub fn field_sql_type(ty: &FieldType) -> &'static str {
     match ty {
         FieldType::Str | FieldType::Uuid | FieldType::Enum { .. } => "TEXT",
@@ -2079,13 +2103,24 @@ pub fn field_sql_type(ty: &FieldType) -> &'static str {
         FieldType::Bool => "BOOLEAN",
         FieldType::Timestamp => "TIMESTAMPTZ",
         FieldType::Json => "JSONB",
-        // v0.16 M2 resolves `Reference<T>` fields in sema; the FK-column
-        // codegen mapping is M3. `commands::generate` refuses to reach
-        // any backend while a resolved reference exists in the program
-        // (a build-time gate, mirroring `Backend::supports`/CIAC0011),
-        // so this arm is unreachable today.
-        FieldType::Reference { .. } => {
-            unreachable!("relation codegen is gated until v0.16 M3 lands")
+        // v0.16 M4: a `cardinality: one` reference's FK column is a
+        // plain Uuid-shaped column (same SQL type as `FieldType::Uuid`)
+        // — `snapshot_schema` (migrations.rs) already renders it that
+        // way independently; this keeps the two in agreement.
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::One,
+            ..
+        } => "TEXT",
+        // `cardinality: many` has no column on this table at all (it's
+        // a separate compiler-owned link table, v0.16 M3) — wire
+        // exposure lands in M5/M6. `commands::generate` refuses to
+        // reach any backend while one exists in the program, so this
+        // arm is unreachable today.
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::Many,
+            ..
+        } => {
+            unreachable!("many-relation codegen is gated until v0.16 M5/M6 land")
         }
     }
 }
@@ -2120,9 +2155,21 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
                 });
                 (format!("Literal[{literal}]"), enum_name)
             }
-            FieldType::Reference { .. } => {
-                unreachable!("relation codegen is gated until v0.16 M3 lands")
-            }
+            // v0.16 M4: a `cardinality: one` reference is, at the wire
+            // and row level, a plain Uuid-shaped id — the disclosed
+            // contract is `customer: Reference<Customer>` maps to a
+            // `customer_id` property/column, not a nested object; the
+            // target's own fields are reached with a second request/
+            // query, never embedded. `cardinality: many` has no wire
+            // exposure yet (gated below, same as `field_sql_type`).
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::One,
+                ..
+            } => ("str".to_owned(), "String".to_owned()),
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::Many,
+                ..
+            } => unreachable!("many-relation codegen is gated until v0.16 M5/M6 land"),
         };
         let is_enum = matches!(field.ty, FieldType::Enum { .. });
         let type_kind = match &field.ty {
@@ -2139,12 +2186,35 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
                 name: rust_type.clone(),
                 variants: variants.clone(),
             },
-            FieldType::Reference { .. } => {
-                unreachable!("relation codegen is gated until v0.16 M3 lands")
-            }
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::One,
+                target,
+                on_delete,
+                on_update,
+                ..
+            } => FieldTypeKind::Reference {
+                target_record: ir.record(*target).name.clone(),
+                on_delete: ref_action_name(*on_delete).to_owned(),
+                on_update: ref_action_name(*on_update).to_owned(),
+            },
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::Many,
+                ..
+            } => unreachable!("many-relation codegen is gated until v0.16 M5/M6 land"),
+        };
+        // A `cardinality: one` reference's declared field name (e.g.
+        // `customer`) names the property/column `customer_id` — the
+        // storage mapping is part of the documented contract (see
+        // `docs/language.md`), never inferred by casing downstream.
+        let field_name = match &field.ty {
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::One,
+                ..
+            } => format!("{}_id", field.name),
+            _ => field.name.clone(),
         };
         fields.push(FieldCtx {
-            name: field.name.clone(),
+            name: field_name,
             type_kind,
             is_json: matches!(field.ty, FieldType::Json),
             py_out_type: if is_enum {

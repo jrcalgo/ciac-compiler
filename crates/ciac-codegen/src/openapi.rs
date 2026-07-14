@@ -344,6 +344,22 @@ fn field_schema(field: &FieldCtx) -> Value {
         FieldTypeKind::Enum { name, .. } => {
             json!({"$ref": format!("#/components/schemas/{name}")})
         }
+        // v0.16 M4: a to-one reference is a plain uuid id on the wire
+        // (see `FieldTypeKind::Reference`'s own doc comment); the
+        // `x-ciac-ref`/`x-ciac-on-delete`/`x-ciac-on-update` extensions
+        // let a generated client (or an external backend) still see
+        // which record it targets without a `$ref`-based nested object.
+        FieldTypeKind::Reference {
+            target_record,
+            on_delete,
+            on_update,
+        } => json!({
+            "type": "string",
+            "format": "uuid",
+            "x-ciac-ref": target_record,
+            "x-ciac-on-delete": on_delete,
+            "x-ciac-on-update": on_update,
+        }),
     }
 }
 

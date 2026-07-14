@@ -139,12 +139,20 @@ fn ts_scalar(kind: &FieldTypeKind) -> String {
         FieldTypeKind::Bool => "boolean".to_owned(),
         FieldTypeKind::Json => "Record<string, unknown>".to_owned(),
         FieldTypeKind::Enum { name, .. } => name.clone(),
+        // v0.16 M4: a to-one reference is a plain id on the wire (see
+        // `FieldTypeKind::Reference`'s own doc comment) — same TS shape
+        // as `Uuid`. `interface_body` below adds the doc comment naming
+        // which record it targets.
+        FieldTypeKind::Reference { .. } => "string".to_owned(),
     }
 }
 
 fn interface_body<'a>(fields: impl IntoIterator<Item = &'a FieldCtx>) -> String {
     let mut body = String::new();
     for field in fields {
+        if let FieldTypeKind::Reference { target_record, .. } = &field.type_kind {
+            let _ = writeln!(body, "  /** References `{target_record}` by id. */");
+        }
         let _ = writeln!(body, "  {}: {};", field.name, ts_scalar(&field.type_kind));
     }
     body

@@ -233,6 +233,7 @@ pub(crate) fn build_inner(
         tables,
         next_migration_seq,
         records,
+        semantic_snapshot,
     } = generate(
         file,
         target,
@@ -268,6 +269,7 @@ pub(crate) fn build_inner(
         manifest.tables = tables;
         manifest.next_migration_seq = next_migration_seq;
         manifest.records = records;
+        manifest.semantic_snapshot = Some(semantic_snapshot);
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     } else {
@@ -318,6 +320,7 @@ pub(crate) fn build_inner(
         manifest.tables = tables;
         manifest.next_migration_seq = next_migration_seq;
         manifest.records = records;
+        manifest.semantic_snapshot = Some(semantic_snapshot);
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     }
@@ -494,6 +497,7 @@ fn verify_inner(
         tables,
         next_migration_seq,
         records,
+        semantic_snapshot,
     } = generate(
         file,
         target,
@@ -521,6 +525,7 @@ fn verify_inner(
         manifest.tables = tables;
         manifest.next_migration_seq = next_migration_seq;
         manifest.records = records;
+        manifest.semantic_snapshot = Some(semantic_snapshot);
         write_manifest(out, &manifest)
             .with_context(|| format!("cannot write manifest in {}", out.display()))?;
     } else {
@@ -795,6 +800,205 @@ pub fn codegen_schema() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// v0.18 M1: prints the JSON Schema for the checked-in semantic
+/// baseline document — mirrors [`codegen_schema`]'s pattern.
+/// `docs/semantic-baseline-schema.json` is this output checked in, held
+/// identical by an integration test.
+pub fn semantic_baseline_schema() -> Result<ExitCode> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&ciac_codegen::semantic_model::baseline_schema_document())?
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The default checked-in baseline path for an entry file with no
+/// explicit `--out` (18UpdatePlan.md Pillar 1): `<entry-dir>/.ciac/
+/// baselines/<entry-stem>.semantic.json`.
+fn default_baseline_path(file: &Path) -> std::path::PathBuf {
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    let stem = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "main".to_owned());
+    dir.join(".ciac")
+        .join("baselines")
+        .join(format!("{stem}.semantic.json"))
+}
+
+/// Writes `baseline` to `path` via a sibling temporary file and atomic
+/// rename (18UpdatePlan.md Pillar 1: "writes use a sibling temporary
+/// file and atomic replacement") — a crash mid-write can never leave a
+/// half-written baseline where a reader expects a complete one.
+fn write_baseline_atomically(
+    path: &Path,
+    baseline: &ciac_codegen::semantic_model::SemanticBaseline,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create {}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(baseline)?;
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp-{}",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("json"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, [bytes, b"\n".to_vec()].concat())
+        .with_context(|| format!("cannot write {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, path)
+        .with_context(|| format!("cannot replace {}", path.display()))?;
+    Ok(())
+}
+
+/// `ciac baseline <file> [--out <path>] [--update] [--accept-breaking]
+/// [--reason <text>]` (v0.18 M1, 18UpdatePlan.md Pillar 1): creates or
+/// replaces the checked-in semantic baseline generated CI gates on.
+///
+/// Lifecycle: first creation always succeeds; an unchanged
+/// `semantic_hash` recreation is a true no-op (the file is never
+/// rewritten, so it stays byte-identical); any detected architecture
+/// change requires `--update`. Distinguishing a *breaking* change from
+/// an additive/internal one (and therefore only requiring
+/// `--accept-breaking` for the former) is v0.18 M2's classifier, which
+/// doesn't exist yet — until then, this milestone conservatively
+/// requires `--accept-breaking` alongside `--update` for *any* detected
+/// change, disclosed here rather than silently guessed at.
+pub fn baseline(
+    file: &Path,
+    out: Option<&Path>,
+    update: bool,
+    accept_breaking: bool,
+    reason: Option<&str>,
+) -> Result<ExitCode> {
+    let (ir, has_errors, sources) = front_end(file)?;
+    let Some(ir) = ir.filter(|_| !has_errors) else {
+        return Ok(ExitCode::FAILURE);
+    };
+    let source_hash = {
+        let mut buf = String::new();
+        for f in sources.files() {
+            buf.push_str(&f.name);
+            buf.push('\0');
+            buf.push_str(&f.src);
+            buf.push('\0');
+        }
+        hash_bytes(buf.as_bytes())
+    };
+    let model = ciac_codegen::semantic_model::SemanticModel::from_ir(&ir);
+    let entry = file.display().to_string();
+    let new_baseline = ciac_codegen::semantic_model::SemanticBaseline::new(
+        env!("CARGO_PKG_VERSION"),
+        entry,
+        source_hash,
+        model,
+    );
+
+    let out_path = out
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_baseline_path(file));
+
+    match std::fs::read(&out_path) {
+        Ok(existing_bytes) => {
+            let existing: ciac_codegen::semantic_model::SemanticBaseline =
+                serde_json::from_slice(&existing_bytes).with_context(|| {
+                    format!("{} is not a valid semantic baseline", out_path.display())
+                })?;
+            if existing.semantic_baseline_version
+                > ciac_codegen::semantic_model::SEMANTIC_BASELINE_VERSION
+            {
+                bail!(
+                    "{} was written by a newer, incompatible baseline format (version {}, this \
+                     build understands up to {}) -- refusing to guess at its contents",
+                    out_path.display(),
+                    existing.semantic_baseline_version,
+                    ciac_codegen::semantic_model::SEMANTIC_BASELINE_VERSION
+                );
+            }
+            if existing.semantic_hash == new_baseline.semantic_hash {
+                eprintln!(
+                    "{}: unchanged (semantic_hash {})",
+                    out_path.display(),
+                    new_baseline.semantic_hash
+                );
+                return Ok(ExitCode::SUCCESS);
+            }
+            if !update {
+                bail!(
+                    "{} already exists and the architecture changed (semantic_hash {} -> {}); \
+                     pass --update to replace it",
+                    out_path.display(),
+                    existing.semantic_hash,
+                    new_baseline.semantic_hash
+                );
+            }
+            if !accept_breaking {
+                bail!(
+                    "{} would change (semantic_hash {} -> {}); pass --accept-breaking to \
+                     confirm -- v0.18 M1's baseline lifecycle doesn't yet classify a change's \
+                     severity (that's v0.18 M2), so every detected change conservatively needs \
+                     explicit confirmation",
+                    out_path.display(),
+                    existing.semantic_hash,
+                    new_baseline.semantic_hash
+                );
+            }
+            write_baseline_atomically(&out_path, &new_baseline)?;
+            if let Some(reason) = reason {
+                append_intentional_break_changelog(file, &existing, &new_baseline, reason)?;
+            }
+            eprintln!(
+                "{}: updated ({} -> {})",
+                out_path.display(),
+                existing.semantic_hash,
+                new_baseline.semantic_hash
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            write_baseline_atomically(&out_path, &new_baseline)?;
+            eprintln!(
+                "{}: created (semantic_hash {})",
+                out_path.display(),
+                new_baseline.semantic_hash
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => Err(err).with_context(|| format!("cannot read {}", out_path.display())),
+    }
+}
+
+/// Appends a one-line entry to source-owned `CHANGELOG.ciac.md`
+/// (18UpdatePlan.md Pillar 4) alongside an accepted-breaking baseline
+/// update — the human-reviewable trail a generated CI job's
+/// `ciac-breaking: <reason>` commit trailer cross-checks against. Lives
+/// next to the baseline's entry file so a multi-service project keeps
+/// one changelog per baseline rather than one at the repo root.
+fn append_intentional_break_changelog(
+    entry: &Path,
+    before: &ciac_codegen::semantic_model::SemanticBaseline,
+    after: &ciac_codegen::semantic_model::SemanticBaseline,
+    reason: &str,
+) -> Result<()> {
+    let dir = entry.parent().unwrap_or_else(|| Path::new("."));
+    let path = dir.join("CHANGELOG.ciac.md");
+    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.is_empty() {
+        existing.push_str("# Accepted breaking changes\n\n");
+        existing.push_str(
+            "Appended by `ciac baseline --update --accept-breaking --reason \"...\"`. \
+             Each entry records why an intentionally breaking architecture change was \
+             accepted into the checked-in semantic baseline.\n\n",
+        );
+    }
+    existing.push_str(&format!(
+        "- `{}` -> `{}`: {reason}\n",
+        before.semantic_hash, after.semantic_hash
+    ));
+    std::fs::write(&path, existing).with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(())
+}
+
 pub fn explain(code: &str) -> Result<ExitCode> {
     println!("{}", explain_document(code)?);
     Ok(ExitCode::SUCCESS)
@@ -833,6 +1037,9 @@ struct Generated {
     tables: BTreeMap<String, TableSchema>,
     next_migration_seq: u32,
     records: BTreeMap<String, RecordSchema>,
+    /// v0.18 M1: this build's canonical semantic model, stamped onto
+    /// the manifest's advisory `semantic_snapshot` cache.
+    semantic_snapshot: ciac_codegen::semantic_model::SemanticModel,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1012,6 +1219,8 @@ fn generate(
         bail!("breaking record change");
     }
 
+    let semantic_snapshot = ciac_codegen::semantic_model::SemanticModel::from_ir(&ir);
+
     Ok(Generated {
         backend,
         project,
@@ -1019,6 +1228,7 @@ fn generate(
         tables: new_tables,
         next_migration_seq,
         records: new_records,
+        semantic_snapshot,
     })
 }
 

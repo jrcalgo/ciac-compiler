@@ -25,6 +25,7 @@ pub mod openapi;
 mod project;
 pub mod protocol;
 pub mod regen;
+pub mod semantic_model;
 pub mod system_tests;
 pub mod template;
 pub mod terraform;

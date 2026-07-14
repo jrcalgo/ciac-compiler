@@ -170,6 +170,33 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Create or update the checked-in semantic baseline (v0.18 M1)
+    /// generated CI's breaking-change gate compares against. See
+    /// `docs/evolution.md`.
+    Baseline {
+        /// Path to the `.ciac` source file.
+        file: PathBuf,
+        /// Baseline file path. Defaults to
+        /// `<entry-dir>/.ciac/baselines/<entry-stem>.semantic.json`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Required to replace an existing baseline whose architecture
+        /// changed; a first creation or a byte-for-byte-unchanged
+        /// recreation never needs it.
+        #[arg(long)]
+        update: bool,
+        /// Required alongside `--update` to confirm the replacement is
+        /// intentional. v0.18 M1 doesn't yet classify a change's
+        /// severity (that's M2), so this is currently required for
+        /// every detected change, not only breaking ones.
+        #[arg(long)]
+        accept_breaking: bool,
+        /// With `--update --accept-breaking`: appends this reason,
+        /// plus the before/after semantic hash, to source-owned
+        /// `CHANGELOG.ciac.md` next to the entry file.
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Verify an existing generated project still matches its CIaC source.
     Verify {
         /// Path to the `.ciac` source file.
@@ -228,6 +255,11 @@ enum Command {
     /// real payloads. `docs/protocol-schema.json` is this output,
     /// checked in.
     CodegenSchema,
+    /// Print the JSON Schema for the checked-in semantic baseline
+    /// document `ciac baseline` writes and generated CI's
+    /// breaking-change gate reads. `docs/semantic-baseline-schema.json`
+    /// is this output, checked in.
+    SemanticBaselineSchema,
     /// Dump the external-backend wire contract for a target, without
     /// running any backend — a `ciac-backend-<name>` executable (not
     /// yet implemented by any target) would receive this same JSON on
@@ -326,6 +358,19 @@ fn run(cli: Cli) -> Result<ExitCode> {
             name,
             json,
         } => commands::diff(&file, &target, &out, patch, name, json),
+        Command::Baseline {
+            file,
+            out,
+            update,
+            accept_breaking,
+            reason,
+        } => commands::baseline(
+            &file,
+            out.as_deref(),
+            update,
+            accept_breaking,
+            reason.as_deref(),
+        ),
         Command::Verify {
             file,
             target,
@@ -339,6 +384,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Lsp => lsp::run(),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::CodegenSchema => commands::codegen_schema(),
+        Command::SemanticBaselineSchema => commands::semantic_baseline_schema(),
         Command::CodegenRequest { file, target, name } => {
             commands::codegen_request(&file, &target, name)
         }

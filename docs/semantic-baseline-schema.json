@@ -1,0 +1,906 @@
+{
+  "schema": {
+    "$defs": {
+      "CapabilityModel": {
+        "description": "Every other node-backed component: worker/job/service(handler) and\nevery infrastructure capability instance (database, cache, queue,\nauth, logging, metrics, tracing, users, object_store, email,\nsearch, external_http, scheduler, realtime). `config` is the\ncomponent's own typed configuration, rendered as canonical JSON\n(already a typed `serde_json::Value` derived from typed structs —\nnot a `Debug` string) so kind-specific fields don't need one model\ntype per `NodeKind`.",
+        "properties": {
+          "config": true,
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "name",
+          "config"
+        ],
+        "type": "object"
+      },
+      "CardinalityModel": {
+        "enum": [
+          "One",
+          "Many"
+        ],
+        "type": "string"
+      },
+      "ChannelModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "path"
+        ],
+        "type": "object"
+      },
+      "FieldModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ty": {
+            "$ref": "#/$defs/FieldTypeModel"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "ty"
+        ],
+        "type": "object"
+      },
+      "FieldTypeModel": {
+        "description": "[`FieldType`] with every index (`RecordId`/`TableId`) resolved to a\nlogical [`Key`] — the same closed set, serialized as a typed enum\nrather than a `Debug` string (unlike the older, narrower\n`evolution::RecordSchema`, which predates this canonical model).",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "Str",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Int",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Float",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Bool",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Timestamp",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Json",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Enum",
+                "type": "string"
+              },
+              "variants": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "type",
+              "variants"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "cardinality": {
+                "$ref": "#/$defs/CardinalityModel"
+              },
+              "on_delete": {
+                "$ref": "#/$defs/RefActionModel"
+              },
+              "on_update": {
+                "$ref": "#/$defs/RefActionModel"
+              },
+              "table": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "type": {
+                "const": "Reference",
+                "type": "string"
+              },
+              "unique": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "target",
+              "table",
+              "cardinality",
+              "on_delete",
+              "on_update",
+              "unique"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "HandlerModel": {
+        "description": "A typed inline/`extern` handler's signature (v0.7+). `body_digest`\nis a stable hash of the body's canonical (span-free) HIR when one\nexists — a structural digest, not a behavioral proof: two\nbody_digests differing means *something* in the handler's logic\nchanged, classified (as `internal`, per 18UpdatePlan.md — this\nversion does not claim behavioral equivalence) by v0.18 M2's\ndiffer, not here.",
+        "properties": {
+          "body_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_body": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "params": {
+            "items": {
+              "$ref": "#/$defs/HandlerParamModel"
+            },
+            "type": "array"
+          },
+          "return_ty": {
+            "$ref": "#/$defs/HirTypeModel"
+          }
+        },
+        "required": [
+          "key",
+          "params",
+          "return_ty",
+          "has_body"
+        ],
+        "type": "object"
+      },
+      "HandlerParamModel": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "ty": {
+            "$ref": "#/$defs/HirTypeModel"
+          }
+        },
+        "required": [
+          "name",
+          "ty"
+        ],
+        "type": "object"
+      },
+      "HirTypeModel": {
+        "description": "[`HirType`] projected the same way [`FieldTypeModel`] projects\n[`FieldType`] — every `RecordId` resolved to a logical [`Key`].",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "Str",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Int",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Float",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Bool",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Timestamp",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Json",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Enum",
+                "type": "string"
+              },
+              "variants": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "type",
+              "variants"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "type": {
+                "const": "Record",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "key"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "of": {
+                "$ref": "#/$defs/HirTypeModel"
+              },
+              "type": {
+                "const": "Option",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "of"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "of": {
+                "$ref": "#/$defs/HirTypeModel"
+              },
+              "type": {
+                "const": "List",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "of"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Unit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "Never",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MatchArmModel": {
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/StepModel"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "steps"
+        ],
+        "type": "object"
+      },
+      "PipelineModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "payload": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/$defs/StepModel"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "steps"
+        ],
+        "type": "object"
+      },
+      "ProjectModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "multi_service": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "multi_service"
+        ],
+        "type": "object"
+      },
+      "RecordKindModel": {
+        "enum": [
+          "Data",
+          "Error"
+        ],
+        "type": "string"
+      },
+      "RecordModel": {
+        "properties": {
+          "fields": {
+            "items": {
+              "$ref": "#/$defs/FieldModel"
+            },
+            "type": "array"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/RecordKindModel"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "kind",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "RefActionModel": {
+        "enum": [
+          "Restrict",
+          "Cascade"
+        ],
+        "type": "string"
+      },
+      "RouteModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "method"
+        ],
+        "type": "object"
+      },
+      "SemanticModel": {
+        "description": "The canonical, target-independent projection of a validated\nprogram. Collections are sorted by logical `key` so serialization\nis deterministic regardless of declaration order — the property\n`semantic_hash` depends on.",
+        "properties": {
+          "capabilities": {
+            "items": {
+              "$ref": "#/$defs/CapabilityModel"
+            },
+            "type": "array"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/$defs/ChannelModel"
+            },
+            "type": "array"
+          },
+          "handlers": {
+            "items": {
+              "$ref": "#/$defs/HandlerModel"
+            },
+            "type": "array"
+          },
+          "pipelines": {
+            "items": {
+              "$ref": "#/$defs/PipelineModel"
+            },
+            "type": "array"
+          },
+          "project": {
+            "$ref": "#/$defs/ProjectModel"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/$defs/RecordModel"
+            },
+            "type": "array"
+          },
+          "routes": {
+            "items": {
+              "$ref": "#/$defs/RouteModel"
+            },
+            "type": "array"
+          },
+          "semantic_model_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/$defs/ServiceModel"
+            },
+            "type": "array"
+          },
+          "streams": {
+            "items": {
+              "$ref": "#/$defs/StreamModel"
+            },
+            "type": "array"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/$defs/TableModel"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "semantic_model_version",
+          "project",
+          "services",
+          "records",
+          "tables",
+          "routes",
+          "streams",
+          "channels",
+          "capabilities",
+          "pipelines",
+          "handlers"
+        ],
+        "type": "object"
+      },
+      "ServiceModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name"
+        ],
+        "type": "object"
+      },
+      "StepModel": {
+        "oneOf": [
+          {
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "step": {
+                "const": "Auth",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "node"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "step": {
+                "const": "Publish",
+                "type": "string"
+              },
+              "stream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "stream"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "step": {
+                "const": "Return",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "node": {
+                "type": "string"
+              },
+              "step": {
+                "const": "Handler",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "node"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "step": {
+                "const": "Call",
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "target"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arms": {
+                "items": {
+                  "$ref": "#/$defs/MatchArmModel"
+                },
+                "type": "array"
+              },
+              "field": {
+                "type": "string"
+              },
+              "step": {
+                "const": "Match",
+                "type": "string"
+              }
+            },
+            "required": [
+              "step",
+              "field",
+              "arms"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StreamModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "record": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "subject"
+        ],
+        "type": "object"
+      },
+      "TableModel": {
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "record": {
+            "type": "string"
+          },
+          "service": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "record"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The checked-in baseline wrapper (18UpdatePlan.md Pillar 2):\nindependently versioned from the `SemanticModel` payload it\ncarries, with audit metadata (`compiler_version`, `entry`,\n`source_hash`) that does not participate in `semantic_hash` itself\n— formatting, comments, source path movement, and equivalent\nblueprint expansion all leave `semantic_hash` unchanged.",
+    "properties": {
+      "compiler_version": {
+        "type": "string"
+      },
+      "entry": {
+        "type": "string"
+      },
+      "model": {
+        "$ref": "#/$defs/SemanticModel"
+      },
+      "semantic_baseline_version": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "semantic_hash": {
+        "type": "string"
+      },
+      "semantic_model_version": {
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "source_hash": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "semantic_baseline_version",
+      "semantic_model_version",
+      "compiler_version",
+      "entry",
+      "source_hash",
+      "semantic_hash",
+      "model"
+    ],
+    "title": "SemanticBaseline",
+    "type": "object"
+  },
+  "semantic_baseline_version": 1,
+  "semantic_model_version": 1
+}

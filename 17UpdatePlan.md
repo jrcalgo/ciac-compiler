@@ -175,6 +175,68 @@ model. Mixed-host simulation remains outside the release.
 routers and actors. The short-lived `ciac` launcher is naturally a
 separate parent.
 
+## Rollout strategy: a checkpoint before the full build
+
+The milestone list below intentionally departs from a flat "build
+everything, then prove it" sequence. Threading explicit `production()`/
+`simulation()` ports through nearly every generated runtime file in two
+backends is the single largest, most invasive commitment in this
+document, and an earlier draft of this plan only checked whether the bet
+paid off *after* both targets and every capability fake were built. That
+is backwards: the architecture should be proven cheaply before it is
+generalized expensively.
+
+**Checkpoint (M5 below):** build the port abstraction for exactly one
+capability (database) plus the minimum slice of the broker fake and
+virtual clock needed to run the existing vertical-slice scenario
+(API → transaction → call → publish → third worker attempt → virtual-time
+job), on **Python only**, and hold it to this document's own stated bar:
+replay-equivalent transcripts and the 1.0 s p95 / 500 ms virtual-week
+budgets defined in Verification strategy. This is roughly M1–M4 plus a
+narrow cut of the relational/broker fakes and a minimal runner, not the
+whole version.
+
+**Go/no-go, explicitly:** if the checkpoint holds, continue building out
+the full capability-fake matrix and the complete Python runner (M6–M10).
+If it does not, the fallback already described in this document's
+Confidence section applies without modification: the provider-port
+refactor and stateful handler tests still ship, and the project does not
+relabel a collection of mocks as whole-system simulation. There is no
+sunk-cost obligation to finish every downstream milestone once the
+checkpoint's answer is known.
+
+**Rust is a second, separately gated bet, not a co-requirement.**
+Python's clients are already lazy (see Pillar 1), so its seam refactor is
+strictly smaller than Rust's; nothing in "one simulation run uses one
+backend for every service" requires both targets to ship together. v0.17
+now ships `ciac sim`/`verify --sim`/`verify_sim` for Python once the
+checkpoint and the full Python capability matrix are proven, and Rust
+parity (originally folded into M3/M9) becomes its own later milestone
+(M11 below), undertaken only once the Python-only tool surface is live.
+If Rust parity is deferred past this version, that is a disclosed, not
+silent, gap — the same discipline this compiler already applies to every
+other target-parity gap (see docs/backends.md's status table).
+
+**Two decisions frozen at M1, not left implicit:**
+
+1. *Anti-drift port design.* `production()` and `simulation()` must not
+   be two adapters that can silently diverge. In Rust, the port is a
+   trait both implementations satisfy — a divergent signature is a
+   compile error, not a review finding. In Python, both are generated
+   from one shared interface stub, checked by a golden parity test. This
+   converts "two adapters can drift" (see Risks) from a review problem
+   into a compile/lint-time one.
+2. *What backs the relational fake (Pillar 4).* The default in this
+   document is a small hand-written reference engine — portable by
+   construction, with no real SQL dialect leaking into what is supposed
+   to be a provider-neutral fake. The alternative is backing it with
+   SQLite `:memory:`, which gets constraints/cascades/indexes for free
+   at the cost of quietly reintroducing one specific dialect's behavior
+   into the fake. This is a deliberate trade-off, not an implementation
+   detail; M1 records the decision and the reasoning, rather than
+   defaulting into the larger hand-rolled build without having weighed
+   the cheaper option.
+
 ## Pillar 1 — A generated runtime seam for real and fake providers
 
 ### One explicit dependency boundary
@@ -203,6 +265,12 @@ Simulation is never selected by an environment variable in the normal
 server binary. A failed production connection never falls back to fake
 state. A missing fake fails preflight; it never reaches a real provider
 URL.
+
+Per Rollout strategy above, this boundary is not two independently
+maintained adapters: Rust expresses it as one trait both `production()`
+and `simulation()` implement, so a divergent signature fails to compile
+rather than silently drifting; Python generates both from one shared
+interface stub with a golden parity test.
 
 The fake implementations and runner are generated test artifacts, not a
 production runtime mode. Python simulation modules are excluded from the
@@ -300,6 +368,15 @@ Arbitrary direct SQLAlchemy, SQLx, HTTP, filesystem, subprocess,
 threading, host-clock, or random calls remain escape hatches. They are
 not silently intercepted. The generated scaffold teaches users to stay
 inside the ports when they want deterministic simulation.
+
+Two layers keep an escape from quietly producing false confidence
+instead of a loud gap: a runtime backstop (`SIM0009`, "effect escaped
+generated seam" — see Pillar 7/Diagnostics) fails the case the moment a
+real provider call slips through during a run, and a static advisory
+lint (reusing the same seeded-file-scanning approach `ciac rename --out`
+already uses) flags a seeded/`extern` handler importing a raw provider
+SDK directly at `ciac check` time, before any scenario happens to
+exercise that path.
 
 ## Pillar 2 — `SimPlan` and whole-system assembly
 
@@ -934,6 +1011,15 @@ server-side step/wall limits, cannot request Docker/live/keep, cannot
 write arbitrary replay paths, and states that user-authored target code
 will execute.
 
+The claim boundary ("simulation proves generated logic and topology
+under the CIaC contract; it does not prove SQL dialect, broker
+durability, cryptography, or network correctness") is not only prose in
+`docs/simulation.md`: it is stated inline in the MCP tool's own
+`description` field returned by `tools/list`, so an agent sees the limit
+before ever calling `verify_sim`, the same way `check`/`build`/`diff`
+already describe their own scope in-line rather than deferring to
+external docs.
+
 Generated `--deploy ci` workflows place a `sim` job after static tests
 and before `compose-smoke`; a fast deterministic failure prevents the
 expensive stack from starting. Generated `AGENTS.md` uses blunt wording:
@@ -1108,6 +1194,15 @@ compose in `generated-system`. A disagreement is a fake/adapter bug and
 blocks merge; a fake without a corresponding parity vector is not
 considered complete.
 
+The ratchet is an enforced release gate, not a described practice: a
+capability fake cannot appear in the documented capability-support
+matrix (Pillar 8's table) until its parity vector passes — the same
+graduation discipline v0.19's architecture lints later apply to their
+labeled corpus. Results are published as a checked-in, CI-regenerated
+parity report (pass/fail per capability) rather than asserted only in
+prose, so the claim is auditable by anyone reading the repository, not
+just trusted from a milestone's own commit message.
+
 The shared vector is the normalized `expect` portion of a portable
 scenario, rendered once for the in-process runner and once for the
 compose/system harness. Per-construct unit tests remain fast diagnostic
@@ -1157,33 +1252,59 @@ fixtures rather than being replaced.
 
 ## Milestones
 
+Per the Rollout strategy above, M1–M5 form the checkpoint: a narrow,
+Python-only vertical slice that must hold before the rest of the version
+is undertaken. M6–M10 are the full Python build, gated on the checkpoint
+passing. M11 (Rust parity) is a second, separately gated bet undertaken
+only once the Python-only tool surface has shipped. M12 closes the
+version out.
+
 1. **M1 — Semantic freeze and confidence gate:** reconcile actual v0.16
    IR; freeze scheduling, retry, clock, failure, scenario, and replay
-   semantics.
+   semantics; record the two frozen decisions from Rollout strategy
+   (anti-drift port design; relational-fake backing store).
 2. **M2 — `ciac-sim` contracts:** plan/scenario/replay/transcript schemas,
    hashes, validation, codes, deterministic tests.
-3. **M3 — Production dependency seams:** Python app/state factories,
-   Rust ports/adapters and lazy broker/JWKS, Python package isolation;
-   production generation remains green.
+3. **M3 — Python production dependency seams:** Python app/state
+   factories and Python package isolation; production generation remains
+   green. (Rust ports/adapters move to M11.)
 4. **M4 — Scheduler and virtual time:** stable actors, quiescence,
    retries, operational `catch_up`, deterministic IDs, failure engine.
-5. **M5 — Relational fake:** full v0.16 schema, constraints, indexes,
-   transactions, validation, fake-versus-real probes; the v0.16
+5. **M5 — Checkpoint: minimal Python vertical slice, go/no-go.** The
+   narrowest cut of the relational fake (insert/query/transaction commit-
+   rollback only — not yet the full constraint/index/cascade matrix) and
+   the broker fake (single publish + one worker retry — not yet ordering/
+   groups/duplicate delivery), wired through a minimal Python runner
+   sufficient to execute one scenario end to end. Run the checked-in
+   `sim/vertical-slice.ciac-sim.json` and `sim/virtual-week.ciac-sim.json`
+   against this slice only, on Python only, and hold them to this
+   document's stated replay-equivalence and 1.0 s p95 / 500 ms budgets.
+   **Decision point:** pass → continue to M6; fail → ship the M1–M4
+   seam/scheduler work and stateful handler-test groundwork without the
+   `ciac sim`/simulation label, and stop here for this version.
+6. **M6 — Full relational fake:** complete v0.16 schema, constraints,
+   indexes, transactions, validation, fake-versus-real probes; the v0.16
    domain-orders suite passes infrastructure-free.
-6. **M6 — Broker and temporal fakes:** ordering, groups, logical lanes,
-   duplicate/lost-ack delivery, cache TTL, channels.
-7. **M7 — Remaining fakes:** external HTTP, auth/users, object, email,
+7. **M7 — Full broker and temporal fakes:** ordering, groups, logical
+   lanes, duplicate/lost-ack delivery, cache TTL, channels.
+8. **M8 — Remaining fakes:** external HTTP, auth/users, object, email,
    search, log/metrics/tracing observations; `dev-identity` scope
    behavior passes with fake JWKS and no Keycloak process.
-8. **M8 — Python runner and handler scaffolds:** all services in one
-   asyncio process, actual seeded code, generated cases, replay.
-9. **M9 — Rust runner and parity:** current-thread Tokio runner,
-   fake-backed tests, normalized transcript equivalence.
-10. **M10 — CLI/JSON/MCP:** `ciac sim`, `verify --sim`, `verify_sim`,
-    bounded child protocol and generated guidance.
-11. **M11 — examples, CI, docs, performance, v0.17.0:** all-example sim
+9. **M9 — Python runner and handler scaffolds, complete:** all services
+   in one asyncio process, actual seeded code, generated cases, replay,
+   full fidelity-ratchet parity report.
+10. **M10 — CLI/JSON/MCP (Python):** `ciac sim`, `verify --sim`,
+    `verify_sim` (with the inline claim-boundary description), bounded
+    child protocol and generated guidance.
+11. **M11 — Rust ports/adapters and runner parity (second gated bet):**
+    Rust ports/adapters, lazy broker/JWKS, current-thread Tokio runner,
+    fake-backed tests, normalized transcript equivalence with Python.
+    Undertaken only after M10 ships; if not pursued this version, the
+    gap is disclosed in docs/backends.md and docs/simulation.md, not
+    silently dropped.
+12. **M12 — examples, CI, docs, performance, v0.17.0:** all-example sim
     jobs, no-Docker guard, outer-truth reconciliation, whole-version
-    analysis.
+    analysis covering whichever of M1–M11 actually shipped.
 
 ## Explicit cuts
 
@@ -1219,10 +1340,16 @@ fixtures rather than being replaced.
   unique package identities are a release gate; no contextual global
   alias trick.
 - **Two adapters can drift.** Mitigation: one plan, one scenario corpus,
-  normalized transcripts, and fake-versus-real vectors.
+  normalized transcripts, and fake-versus-real vectors — sharpened by the
+  Rollout strategy's anti-drift port design: a Rust trait both
+  `production()`/`simulation()` must satisfy (compile-time enforcement,
+  not review), and a golden parity test over Python's shared interface
+  stub.
 - **Mock rot can create a faster lie.** Mitigation: the permanent fidelity
   ratchet runs shared assertions against fakes and real providers; parity
-  coverage is required for every fake.
+  coverage is required for every fake, enforced as a release gate — no
+  capability enters the documented support matrix without a passing
+  parity vector, and results are a checked-in, CI-regenerated report.
 - **The relational fake can become a database project.** Mitigation:
   implement only normalized CIaC semantics—no SQL parser or optimizer.
 - **User code can escape determinism.** Mitigation: explicit ports,
@@ -1250,15 +1377,21 @@ and skipped no-infrastructure paths are direct implementation facts.
 Whole-system one-process simulation with virtual time is a
 high-conviction bet, not arithmetic.
 
-It earns the full version only if the checked-in
-`sim/vertical-slice.ciac-sim.json` executes an API → transaction → call
-→ publish → third worker attempt plus a virtual-time job on both targets,
-produces equivalent replay transcripts, and is the canonical prebuilt
-100-effect benchmark that meets the 1.0 s p95 cap above. Its companion
+Per Rollout strategy and M5, the version now earns its continued
+investment in two separately gated steps rather than one all-or-nothing
+proof at the end. First: the checked-in `sim/vertical-slice.ciac-sim.json`
+must execute an API → transaction → call → publish → third worker attempt
+plus a virtual-time job **on Python only**, against the minimal M5 slice,
+produce equivalent replay transcripts across repeated runs, and meet the
+canonical prebuilt 100-effect 1.0 s p95 benchmark; its companion
 `sim/virtual-week.ciac-sim.json` must meet the 500 ms cap. If either gate
-fails, the provider seams and stateful handler tests still ship; the
-project does not relabel a collection of mocks as whole-system
-simulation.
+fails, the provider seams and stateful handler-test groundwork from
+M1–M4 still ship; the project does not relabel a collection of mocks as
+whole-system simulation, and the version stops there. Second, only after
+the full Python build (M6–M10) has shipped: Rust parity (M11) is its own
+bet, undertaken with the same vertical-slice and virtual-week gates
+re-run on Rust and checked for transcript equivalence with Python, not
+assumed from the Python result.
 
 `traced-checkout.ciac` is the smaller early honesty check for the
 call→publish→worker boundary: if the generated call clients cannot run

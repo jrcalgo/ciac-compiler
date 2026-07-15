@@ -1386,6 +1386,29 @@ version out.
    job, not M3's.
 4. **M4 — Scheduler and virtual time:** stable actors, quiescence,
    retries, operational `catch_up`, deterministic IDs, failure engine.
+   **Shipped:** `ciac-sim`'s target-neutral deterministic primitives —
+   `VirtualClock` (monotonic epoch-ms, panics on backward movement) and
+   a separately-seeded `Entropy` stream (splitmix64; drives UUIDs and
+   scheduler tie-breaking) so advancing time never perturbs which ID a
+   handler generates, per Pillar 6's "one clock, two streams" split; a
+   from-scratch 5-field `CronSchedule` evaluator matching
+   `ciac-sema`'s own `valid_cron` grammar exactly (not the generated
+   Rust project's `cron` crate, which expects a different 6/7-field
+   grammar), bounded by a 5-year lookahead so an impossible schedule
+   (`0 0 31 2 *`) resolves to `None` instead of spinning; the
+   `SchedulingKey` total order (`virtual_timestamp_ms, phase, service,
+   actor, stream_sequence, delivery_attempt, local_occurrence`) with
+   `Phase{Publish < Tick < Deliver}` as this session's own documented
+   resolution of an ordering the plan's prose names but never closes;
+   a generic `Scheduler<E>` event queue over that order; and a
+   `FailureEngine` matching the plan's own worked failure-injection
+   example verbatim, tracking per-`(effect, subject)` occurrence
+   counts and reporting unmatched required rules (`SIM0007`). All of
+   it is pure, independently tested logic (44 tests, including the
+   plan's own literal fixture — advance 24 hours, observe the 03:00
+   job exactly once) with **no wiring to a real running Python or
+   Rust program yet** — that connection is M8/M9's job, gated by the
+   M5 checkpoint immediately below.
 5. **M5 — Checkpoint: minimal Python vertical slice, go/no-go.** The
    narrowest cut of the relational fake (insert/query/transaction commit-
    rollback only — not yet the full constraint/index/cascade matrix) and

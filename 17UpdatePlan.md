@@ -1687,6 +1687,83 @@ version out.
 9. **M9 — Python runner and handler scaffolds, complete:** all services
    in one asyncio process, actual seeded code, generated cases, replay,
    full fidelity-ratchet parity report.
+
+   **Shipped — the generic scenario interpreter every prior milestone
+   disclosed as missing:** `sim/pyrunner/scenario_runner.py`'s
+   `ScenarioRunner` reads a `ciac_sim::Scenario`-shaped JSON document
+   and executes its closed step vocabulary
+   (`request`/`publish`/`advance`/`drain`/`expect`) directly — no
+   hand-written per-step translation. The caller supplies a small
+   registry (`ApiEntry`/`WorkerEntry`/`JobEntry`/`StreamEntry`) mapping
+   the scenario's own names to real generated callables; resolving
+   those names automatically against a live `SimPlan` is M10's bounded-
+   child-protocol job, not this interpreter's. `sim/pyrunner/cron.py`
+   is a narrow Python restatement of `ciac_sim::cron::CronSchedule`
+   (same disclosed status as `FailureEngine`/`VirtualClock`), needed so
+   `advance` can fire due cron instants without shelling out to Rust
+   per tick.
+
+   Fixing this exposed a real gap in M4/M5's own design that needed
+   completing, not just consuming: `world.deliver()` (M7) delegates to
+   the generated `handle_message`'s own internal retry loop, which
+   hides its attempt count from the caller — insufficient for a
+   scenario's `worker_attempts` expectation, which needs the real
+   count. `SimWorld.deliver_counting_attempts()` drives
+   `handle_message_once` (M1's confirmed real per-attempt entry point)
+   through its own retry loop instead, using the exact bound M4's
+   `retry_eligible` was built for and explicitly named as future work
+   ("used by a future scheduler that drives `handle_message_once`
+   directly rather than delegating to the generated retry loop") —
+   this is that scheduler landing.
+
+   **Replay, for real:** `sim/pyrunner/replay.py` builds and checks
+   `ciac_sim::Replay`-shaped JSON artifacts. `plan_hash`/`source_hash`
+   are never recomputed in Python — reproducing `serde_json::to_vec`'s
+   exact byte output would be fragile and pointless when `dump_plan
+   --hash` (a small, additive `dump_plan.rs` change) already computes
+   the canonical value in Rust. `check_compatible` mirrors `Replay::
+   is_compatible_with` exactly: a stale `plan_hash` is refused, not
+   guessed compatible, live-proved by mutating one on purpose.
+
+   **A significant, previously-undisclosed determinism gap this work
+   surfaced:** `Uuid.new()` in generated handler bodies lowers to
+   Python's real `uuid.uuid4()` (`from uuid import uuid4`, unconditional,
+   traced in `app/logic/*.py`), not a seeded entropy stream — `ciac-sim`'s
+   own `Entropy` (Rust, v0.17 M4) exists for exactly this, but nothing
+   routes generated Python's ID generation through it. Replay-
+   equivalence as built and proved here holds over the *transcript*
+   (ordered `(effect, subject)` entries, which never carry a row's
+   actual generated ID) — not over row-level data. A scenario asserting
+   a specific generated ID's value would not be reproducible today;
+   none of the checked-in scenarios do, so this is a real, disclosed
+   limit on what "replay" currently proves, not a silent one.
+
+   **Deliberately out of scope, disclosed:** multi-service, all-in-
+   one-process unification. Every generated project's top-level Python
+   package is named `app` — loading two services' generated packages
+   into one interpreter process means resolving that namespace
+   collision (via `sys.path` manipulation, package renaming at
+   generation time, or per-service subinterpreters), a distinct,
+   substantial engineering problem this milestone did not attempt to
+   solve on top of everything else it shipped. Every proof in M5-M9
+   remains single-service. "Generated cases" (synthesizing standard
+   scenario fixtures automatically from a `SimPlan`, rather than only
+   running hand-written checked-in ones) and the full CI-regenerated
+   fidelity-ratchet parity report (still Docker-delegated, same
+   disclosed gap as every milestone since M6) are likewise not
+   attempted here.
+
+   Live proof (`sim/pyrunner/run_scenario.py`: real `ciac build`, real
+   `dump_plan --hash`, real `uv sync`, no mocks): both checked-in
+   scenario files — the real files, not translations — execute through
+   `ScenarioRunner` and pass every `expect` step, including
+   `worker_attempts: 3` (vertical-slice) and `worker_attempts: 100` /
+   `job_runs: 7` (virtual-week), well inside their 1.0s/500ms budgets
+   (≈3ms and ≈19ms); a replay artifact is recorded, then replayed with
+   both a compatibility check and a full transcript comparison against
+   the fresh run, both passing; a deliberately corrupted `plan_hash` is
+   refused. Re-ran M5-M8's own proofs afterward to confirm no
+   regression from `deliver_counting_attempts`/`pending_count`.
 10. **M10 — CLI/JSON/MCP (Python):** `ciac sim`, `verify --sim`,
     `verify_sim` (with the inline claim-boundary description), bounded
     child protocol and generated guidance.

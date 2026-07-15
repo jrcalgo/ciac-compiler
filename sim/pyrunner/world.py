@@ -389,6 +389,13 @@ class FakeBroker:
             out.append(msg)
         return out
 
+    def pending_count(self, subject: str, group: str) -> int:
+        """How many messages `group` hasn't yet been handed for
+        `subject`, without advancing its cursor -- for quiescence
+        checks, which must observe state, not consume it."""
+        idx = self._cursors.get((subject, group), 0)
+        return max(0, len(self._messages.get(subject, [])) - idx)
+
 
 class VirtualClock:
     """A narrow Python restatement of `ciac_sim::clock::VirtualClock`
@@ -658,6 +665,44 @@ class SimWorld:
                 await handle_message(msg.payload)
                 invocations += 1
         return invocations
+
+    async def deliver_counting_attempts(
+        self, subject: str, group: str, handle_once, max_retries: int
+    ) -> int:
+        """Like `deliver`, but drives `handle_once` (the generated
+        `handle_message_once`, M1's confirmed real per-attempt entry
+        point) through its own retry loop here instead of delegating
+        to the generated `handle_message`'s internal one -- exactly
+        what M4's `retry_eligible` was built for ("used by a future
+        scheduler that drives `handle_message_once` directly... to
+        match the real generated `handle_message` loop's exact bound").
+        Returns the total number of `handle_once` attempts across every
+        drained message, including retries and lost-ack redeliveries --
+        the count a scenario's `worker_attempts` expectation checks,
+        which `deliver`'s own `invocations` (top-level calls only) can't
+        report since a retrying `handle_message` hides its internal
+        attempt count from the caller."""
+        total_attempts = 0
+        for msg in self.broker.drain(subject, group):
+            total_attempts += await self._attempt_until_done(handle_once, msg.payload, max_retries)
+            self.transcript.append({"effect": "broker.ack", "subject": subject})
+            while self.failures.should_fail("broker.ack", subject):
+                self.transcript.append({"effect": "broker.redeliver", "subject": subject})
+                total_attempts += await self._attempt_until_done(handle_once, msg.payload, max_retries)
+        return total_attempts
+
+    @staticmethod
+    async def _attempt_until_done(handle_once, payload: dict[str, Any], max_retries: int) -> int:
+        attempts = 0
+        for attempt in range(max_retries + 1):  # matches retry_eligible(attempt, max_retries)
+            attempts += 1
+            try:
+                await handle_once(payload)
+                return attempts
+            except Exception:
+                if attempt >= max_retries:
+                    return attempts
+        return attempts
 
 
 class _FakeSession:

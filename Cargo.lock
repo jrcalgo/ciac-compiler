@@ -286,6 +286,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciac-sim"
+version = "0.18.0"
+dependencies = [
+ "ciac-diagnostics",
+ "ciac-ir",
+ "ciac-sema",
+ "ciac-syntax",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "ciac-syntax"
 version = "0.18.0"
 dependencies = [

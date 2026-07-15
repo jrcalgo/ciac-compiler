@@ -69,3 +69,13 @@ Both bundled backends hold the line the next target should match:
 - a `docker-compose.yml` provisions exactly the declared capabilities;
 - structure mirrors the other targets (routers / services / workers/jobs
   / channels / config), because backends share the same model.
+
+## Simulation (v0.17)
+
+`ciac sim`/`verify --sim` drive a generated project's real code through
+in-memory fakes instead of real provider containers — see
+[simulation.md](simulation.md) for the claim boundary and status. It is
+Python-only in v0.17: a new backend does not get simulation support for
+free, and `ciac sim --target <other>` refuses cleanly rather than
+silently no-op'ing until that target's port/adapter seam and fakes are
+built.

@@ -18,6 +18,17 @@
 //! [`commands::diff_semantic_envelope`] verbatim) and `rename` (reusing
 //! [`crate::rename::rename_tool`]) — the same envelope-sharing
 //! discipline extended to the two new features.
+//!
+//! v0.17 M10 adds `verify_sim`: `verify`'s static truth followed by
+//! bounded, in-process simulation (Python-only) — reusing
+//! [`commands::verify_sim_envelope`]. Its own claim boundary is stated
+//! inline in the tool's `description` (17UpdatePlan.md's MCP
+//! disclosure requirement), not deferred to `docs/simulation.md`
+//! alone. Bounded for unattended callers: a fixed scenario-count cap
+//! and wall-clock timeout ([`commands::MCP_SIM_MAX_SCENARIOS`],
+//! [`commands::MCP_SIM_WALL_TIMEOUT`]) neither the CLI's `ciac sim` nor
+//! `verify --sim` enforce, since a human at a terminal can already
+//! interrupt a stuck run.
 
 use crate::commands;
 use anyhow::{Context, Result};
@@ -160,6 +171,22 @@ fn tools_list_result() -> Value {
             }),
         ),
         tool(
+            "verify_sim",
+            "Bounded, in-process behavioral verification (v0.17, Python-only): after the same static check `verify` performs, runs each given scenario's scripted requests/publishes/time-advances against the generated project's real code with in-memory fakes standing in for the database, broker, cache, object store, email, search, and external HTTP -- no Docker, no network, no wall-clock sleep. Claim boundary: this proves the exercised generated logic and topology behave as scripted against these fakes; it does NOT prove SQL dialect fidelity, broker delivery durability, cryptography, or real network behavior -- `verify --system` against real provider containers remains the outer truth for those. User-authored target code (handlers, extern logic) executes for real during this call. Bounded for unattended use: at most 5 scenarios per call, and the whole call is killed if it exceeds a fixed wall-clock limit. Cannot boot Docker, cannot run --live/--system, and cannot write an arbitrary --record/--replay path.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop, "target": target_prop, "out": out_prop, "name": name_prop,
+                    "scenario": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One or more portable scenario JSON file paths (ciac_sim::Scenario), at most 5.",
+                    },
+                },
+                "required": ["file", "target", "out", "scenario"],
+            }),
+        ),
+        tool(
             "graph",
             "Dump the validated system graph.",
             json!({
@@ -279,6 +306,23 @@ fn tools_call(params: &Value) -> Result<Value> {
             let (envelope, _code) = commands::verify_envelope(&file, &target, &out, name)?;
             serde_json::to_string_pretty(&envelope)?
         }
+        "verify_sim" => {
+            let file = arg_path(&args, "file")?;
+            let target = arg_str(&args, "target")?;
+            let out = arg_path(&args, "out")?;
+            let name = arg_opt_str(&args, "name");
+            let scenario = arg_path_list(&args, "scenario")?;
+            let (envelope, _code) = commands::verify_sim_envelope(
+                &file,
+                &target,
+                &out,
+                &scenario,
+                name,
+                Some(commands::MCP_SIM_WALL_TIMEOUT),
+                Some(commands::MCP_SIM_MAX_SCENARIOS),
+            )?;
+            serde_json::to_string_pretty(&envelope)?
+        }
         "graph" => {
             let file = arg_path(&args, "file")?;
             let format = args.get("format").and_then(Value::as_str).unwrap_or("json");
@@ -387,4 +431,19 @@ fn arg_opt_str(args: &Value, key: &str) -> Option<String> {
 
 fn arg_path(args: &Value, key: &str) -> Result<PathBuf> {
     arg_str(args, key).map(PathBuf::from)
+}
+
+fn arg_path_list(args: &Value, key: &str) -> Result<Vec<PathBuf>> {
+    let items = args
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("missing required argument `{key}`"))?;
+    items
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("`{key}` must be an array of strings"))
+        })
+        .collect()
 }

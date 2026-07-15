@@ -1767,6 +1767,103 @@ version out.
 10. **M10 — CLI/JSON/MCP (Python):** `ciac sim`, `verify --sim`,
     `verify_sim` (with the inline claim-boundary description), bounded
     child protocol and generated guidance.
+
+    **Shipped — the bounded child protocol that turns M6-M9's interpreter
+    into an actual CLI command:** `ciac sim <source.ciac> -t python -o
+    <out> --scenario <file>...` embeds `sim/pyrunner`'s five runner
+    modules into the `ciac` binary itself via `include_str!` (so it works
+    regardless of the user's cwd or how `ciac` was installed), writes
+    them to a scratch directory, builds a `SimPlan` from the same
+    `NormalizedIr` `generate()` already produced, and invokes
+    `auto_driver.py` once per scenario — a bounded child in the sense the
+    plan names: one process, one scenario, one JSON reply on stdout, then
+    exit, not a persistent/streaming session. `auto_driver.py` (new,
+    ~230 lines) is the piece M9 explicitly deferred: it resolves the
+    scenario's own named workers/jobs/APIs against the real generated
+    project by introspection alone — `app.workers.<snake_name>` modules'
+    own `SUBJECT`/`QUEUE_GROUP`/`MAX_RETRIES`/`SCHEDULE`/`CATCH_UP`
+    constants, and `app.api.<snake_name>` routes whose only extra
+    parameter (besides `payload`) is `session` — with no per-fixture
+    registration code to hand-write, and a clear, named `RegistryError`
+    (not a crash or silent skip) for anything it can't auto-wire.
+
+    **A real gap this auto-discovery immediately exposed, fixed, not
+    special-cased:** the checked-in `sim/vertical-slice.ciac-sim.json`'s
+    own `worker_attempts: 3` expectation depended entirely on failure
+    rules that existed only as hardcoded Python in M5-M9's hand-written
+    proof scripts — the scenario document itself was not actually
+    self-describing. Fixed by adding `Given.failures:
+    Vec<crate::failure::FailureRule>` to `ciac_sim::scenario` (reusing
+    M4's `FailureRule` type verbatim, two new unit tests, 47 passing in
+    `ciac-sim`) and declaring the vertical-slice scenario's two failure
+    rules in its own `given` block. `SimPlan` was also confirmed to have
+    no API/route registry at all (M2's own disclosed scope); rather than
+    retrofitting one, `auto_driver.py` resolves APIs from the scenario's
+    own declared `request.api` names instead — a deliberate, disclosed
+    scoping choice, not a workaround hidden in code.
+
+    **`verify --sim` and MCP `verify_sim`:** `verify --sim` runs the same
+    static check plain `verify` does, then — only if that passed — every
+    `--scenario` through the same bounded child protocol; requires at
+    least one `--scenario` or refuses cleanly. `verify_sim` (MCP) calls
+    the same internal function, not a CLI shell-out, and carries real,
+    not cosmetic, server-side bounds a terminal invocation doesn't need:
+    at most 5 scenarios per call and a fixed wall-clock timeout, enforced
+    by a small poll-and-kill child-process runner (`run_captured`) since
+    an MCP client that hangs mid-call has no operator present to
+    interrupt it. It never accepts `--live`/`--system`/`--keep`, and
+    never accepts a `--record`/`--replay` path — disclosed limits, not
+    silent omissions. The claim boundary ("simulation proves generated
+    logic and topology under the CIaC contract; it does not prove SQL
+    dialect, broker durability, cryptography, or network correctness") is
+    stated inline in the tool's own `description` field returned by
+    `tools/list`, per the plan's own MCP disclosure requirement, not only
+    in `docs/simulation.md`.
+
+    **A real packaging bug found and fixed, not worked around:** writing
+    the embedded runner into `project_dir/.ciac-sim` (the first design
+    tried) polluted `validate_generated`'s `ruff check .` — the generated
+    project's own static verification started linting the runner's own
+    source as if it were user code, surfacing two genuine unused-import
+    bugs in `sim/pyrunner/auto_driver.py`/`replay.py` in the process
+    (fixed at the source, `ruff check --select F401,F821,E9` clean
+    afterward). The scratch directory now lives entirely outside the
+    generated project tree, keyed by a hash of the project directory's
+    own canonical path so repeat runs against the same `--out` reuse
+    (and overwrite) one scratch directory rather than accumulating a new
+    temp directory per invocation.
+
+    **Generated guidance, Python only:** the generated `AGENTS.md` (v0.13
+    M5) gains a "fast inner loop vs. outer truth" section on the python
+    target only — blunt wording that `sim` is the loop to run constantly
+    and `verify --system` remains the merge bar — and `docs/backends.md`
+    now cross-references `docs/simulation.md`, a new page carrying the
+    claim boundary, the bounded-child-protocol description, and the
+    Python-only status table. **Deliberately not attempted this
+    milestone, disclosed:** the generated `--deploy ci` workflow does not
+    yet place a `sim` job ahead of `compose-smoke` — doing so needs a
+    convention for which scenario file(s) a generated project's own CI
+    should run, which no generated project currently ships (scenarios
+    have so far been compiler-repo-local, not generated artifacts); M12
+    ("all-example sim jobs" in the compiler's own CI) covers running sim
+    across every checked-in example, which is a different problem from
+    wiring a *generated* project's own CI to run its own scenarios, and
+    the latter remains open rather than shipped half-built.
+
+    Live proof (real `ciac` binary, no mocks, no direct Python
+    invocation): `ciac sim`/`verify --sim` against both checked-in
+    scenario files reproduce M9's own `worker_attempts`/`job_runs`
+    results exactly (`{"ProcessOrder": 3}`/`{"Reconcile": 1}` and
+    `{"ProcessOrder": 100}`/`{"Reconcile": 7}`), in both human and
+    `--json` modes; `--target rust` is refused with a clear message, not
+    a silent no-op; `--record` then `--replay` round-trips a transcript
+    end to end; the MCP `verify_sim` tool, driven over real stdio
+    JSON-RPC against the compiled binary, returns the same result shape
+    and correctly refuses a 6-scenario call against its 5-scenario cap.
+    Full workspace verification (`cargo fmt --check`, `cargo clippy
+    --workspace --all-targets --all-features -D warnings`, `cargo test
+    --workspace`) stayed green throughout, with no golden-snapshot churn
+    from the `AGENTS.md` addition.
 11. **M11 — Rust ports/adapters and runner parity (second gated bet):**
     Rust ports/adapters, lazy broker/JWKS, current-thread Tokio runner,
     fake-backed tests, normalized transcript equivalence with Python.

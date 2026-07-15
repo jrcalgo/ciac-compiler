@@ -183,6 +183,7 @@ dependencies = [
  "ciac-diagnostics",
  "ciac-ir",
  "ciac-sema",
+ "ciac-sim",
  "ciac-syntax",
  "clap",
  "ctrlc",
@@ -191,6 +192,7 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "sha2",
  "similar",
 ]
 

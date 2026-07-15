@@ -24,6 +24,33 @@ pub struct Envelope {
     /// is regeneration-diff or semantic-diff, never both.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic: Option<SemanticDiffResult>,
+    /// `sim --json` only (v0.17 M10): the per-scenario outcomes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sim: Option<SimResult>,
+}
+
+/// `ciac sim`'s result payload: the plan the scenarios ran against, and
+/// one outcome per `--scenario`.
+#[derive(Debug, Serialize)]
+pub struct SimResult {
+    pub plan_hash: String,
+    pub source_hash: String,
+    pub scenarios: Vec<SimScenarioOutcome>,
+}
+
+/// One scenario's outcome, parsed directly from `auto_driver.py`'s own
+/// one-line JSON reply (v0.17 M10's bounded child protocol) — field
+/// names match its output verbatim, so nothing is relabeled crossing
+/// from the Python side to the Rust side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimScenarioOutcome {
+    pub scenario: String,
+    pub passed: bool,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub worker_attempts: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    pub job_runs: std::collections::BTreeMap<String, u32>,
 }
 
 /// `ciac diff --semantic`'s result payload (v0.18 M3).
@@ -187,6 +214,7 @@ pub fn envelope(
         diagnostics,
         entries: None,
         semantic: None,
+        sim: None,
     }
 }
 

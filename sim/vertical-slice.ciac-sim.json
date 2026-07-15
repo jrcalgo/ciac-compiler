@@ -5,6 +5,16 @@
   "given": {
     "db": [
       { "service": "SimVerticalSlice", "table": "orders", "rows": [] }
+    ],
+    "failures": [
+      {
+        "at": {"effect": "db.commit", "subject": "processed_orders", "occurrence": 1, "phase": "after"},
+        "action": {"kind": "error"}
+      },
+      {
+        "at": {"effect": "db.commit", "subject": "processed_orders", "occurrence": 2, "phase": "after"},
+        "action": {"kind": "error"}
+      }
     ]
   },
   "steps": [

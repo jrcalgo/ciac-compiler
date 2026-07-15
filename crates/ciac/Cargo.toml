@@ -19,6 +19,7 @@ ciac-codegen.workspace = true
 ciac-diagnostics.workspace = true
 ciac-ir.workspace = true
 ciac-sema.workspace = true
+ciac-sim.workspace = true
 ciac-syntax.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
@@ -27,6 +28,7 @@ lsp-types.workspace = true
 notify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 similar.workspace = true
 
 [lints]

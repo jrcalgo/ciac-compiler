@@ -839,17 +839,49 @@ pub fn verify(
     live: bool,
     system: bool,
     keep: bool,
+    sim: bool,
+    scenario: &[PathBuf],
     name: Option<String>,
     json: bool,
 ) -> Result<ExitCode> {
+    if sim && scenario.is_empty() {
+        bail!("--sim requires at least one --scenario");
+    }
     if json {
-        let (envelope, code) = with_json_envelope("verify", file, || {
-            verify_inner(file, target, out, live, system, keep, name)
-        })?;
+        let (envelope, code) = if sim {
+            verify_sim_envelope(file, target, out, scenario, name, None, None)?
+        } else {
+            with_json_envelope("verify", file, || {
+                verify_inner(file, target, out, live, system, keep, name.clone())
+            })?
+        };
         crate::json_out::emit(&envelope);
         return Ok(code);
     }
-    verify_inner(file, target, out, live, system, keep, name)
+
+    let static_code = verify_inner(file, target, out, live, system, keep, name.clone())?;
+    if static_code != ExitCode::SUCCESS || !sim {
+        return Ok(static_code);
+    }
+    let result = sim_inner(file, target, out, scenario, None, None, name, None)?;
+    let mut all_passed = true;
+    for outcome in &result.scenarios {
+        if outcome.passed {
+            println!("[PASS] {}", outcome.scenario);
+        } else {
+            all_passed = false;
+            println!(
+                "[FAIL] {}: {}",
+                outcome.scenario,
+                outcome.error.as_deref().unwrap_or("unknown error")
+            );
+        }
+    }
+    Ok(if all_passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }
 
 /// [`verify`]'s JSON path as a value — `ciac mcp`'s `verify` tool
@@ -899,12 +931,59 @@ fn verify_inner(
         None,
     )?;
 
+    let materialize_result = materialize_generated(
+        out,
+        backend.as_ref(),
+        &project,
+        &source_hash,
+        tables,
+        next_migration_seq,
+        records,
+        semantic_snapshot,
+    )?;
+    if materialize_result != ExitCode::SUCCESS {
+        return Ok(materialize_result);
+    }
+
+    let static_result = validate_generated(out, backend.id())?;
+    if static_result != ExitCode::SUCCESS {
+        return Ok(static_result);
+    }
+    if system {
+        let system_result = verify_system(out, keep)?;
+        if system_result != ExitCode::SUCCESS {
+            return Ok(system_result);
+        }
+    }
+    if live {
+        return verify_live(file, out, keep);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Writes a freshly generated project into `out`, or -- when `out`
+/// already holds one -- checks it for drift against its manifest and
+/// refuses on anything beyond `Unchanged`/`OrphanLeft`. Shared by
+/// [`verify_inner`] and [`sim`]: both need "reuse `out` if it already
+/// matches, write fresh if it doesn't exist yet," neither wants its own
+/// copy of the manifest bookkeeping.
+#[allow(clippy::too_many_arguments)]
+fn materialize_generated(
+    out: &Path,
+    backend: &dyn Backend,
+    project: &GeneratedProject,
+    source_hash: &str,
+    tables: BTreeMap<String, TableSchema>,
+    next_migration_seq: u32,
+    records: BTreeMap<String, RecordSchema>,
+    semantic_snapshot: ciac_codegen::semantic_model::SemanticModel,
+) -> Result<ExitCode> {
     if !output_dir_nonempty(out)? {
         project
             .write_to(out)
             .with_context(|| format!("cannot write initial project to {}", out.display()))?;
         let mut manifest = build_manifest(
-            &project,
+            project,
             env!("CARGO_PKG_VERSION"),
             source_hash,
             backend.id(),
@@ -931,7 +1010,7 @@ fn verify_inner(
                 manifest_file.display()
             )
         })?;
-        let plan = plan_regeneration(&project, out, Some(&manifest), RegenMode::Normal)
+        let plan = plan_regeneration(project, out, Some(&manifest), RegenMode::Normal)
             .with_context(|| format!("cannot compare generated files with {}", out.display()))?;
         report_regen_plan(&plan, false, false);
         let drift: Vec<_> = plan
@@ -948,21 +1027,426 @@ fn verify_inner(
             return Ok(ExitCode::FAILURE);
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
 
-    let static_result = validate_generated(out, backend.id())?;
-    if static_result != ExitCode::SUCCESS {
-        return Ok(static_result);
+/// The embedded bounded-child-protocol runner (v0.17 M10): `include_str!`
+/// bakes `sim/pyrunner/*.py`'s source into the `ciac` binary at compile
+/// time, so `ciac sim` can write it out next to whatever generated
+/// project it's driving regardless of the user's cwd or how `ciac` was
+/// installed. Kept as five separate files (not one concatenated blob)
+/// because `auto_driver.py` imports its siblings as ordinary top-level
+/// modules (`from cron import CronSchedule`, ...) -- writing them out
+/// under those same names is what makes that resolve unchanged.
+const PYRUNNER_WORLD: &str = include_str!("../../../sim/pyrunner/world.py");
+const PYRUNNER_CRON: &str = include_str!("../../../sim/pyrunner/cron.py");
+const PYRUNNER_SCENARIO_RUNNER: &str = include_str!("../../../sim/pyrunner/scenario_runner.py");
+const PYRUNNER_REPLAY: &str = include_str!("../../../sim/pyrunner/replay.py");
+const PYRUNNER_AUTO_DRIVER: &str = include_str!("../../../sim/pyrunner/auto_driver.py");
+
+fn write_pyrunner(sim_dir: &Path) -> Result<()> {
+    for (name, content) in [
+        ("world.py", PYRUNNER_WORLD),
+        ("cron.py", PYRUNNER_CRON),
+        ("scenario_runner.py", PYRUNNER_SCENARIO_RUNNER),
+        ("replay.py", PYRUNNER_REPLAY),
+        ("auto_driver.py", PYRUNNER_AUTO_DRIVER),
+    ] {
+        let path = sim_dir.join(name);
+        std::fs::write(&path, content)
+            .with_context(|| format!("cannot write {}", path.display()))?;
     }
-    if system {
-        let system_result = verify_system(out, keep)?;
-        if system_result != ExitCode::SUCCESS {
-            return Ok(system_result);
+    Ok(())
+}
+
+/// Lexically absolutizes `path` against the current process's cwd,
+/// without requiring it to exist yet -- unlike [`Path::canonicalize`],
+/// which a not-yet-written `--record` target would fail. A child
+/// process (`auto_driver.py`) runs with its cwd set to the generated
+/// project, so paths the user gave relative to *their own* shell need
+/// resolving before crossing that boundary.
+fn resolve_path(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path).with_context(|| format!("cannot resolve path {}", path.display()))
+}
+
+/// Runs a child to completion and captures its output. With `timeout`,
+/// polls (rather than blocking on [`Command::output`]) and kills the
+/// child once the wall-clock limit is exceeded — `ciac mcp`'s
+/// `verify_sim` tool needs this (17UpdatePlan.md: "fixed server-side
+/// step/wall limits"), since an MCP client that hangs mid-run has no
+/// operator present to interrupt it the way a terminal user does.
+/// `ciac sim`/`verify --sim` at a terminal pass `None`: a human is
+/// already free to Ctrl+C.
+fn run_captured(
+    cmd: &mut Command,
+    timeout: Option<std::time::Duration>,
+) -> Result<std::process::Output> {
+    let Some(limit) = timeout else {
+        return cmd.output().context("failed to run child process");
+    };
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn child process")?;
+    let start = std::time::Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .context("polling child process status")?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .context("collecting child process output");
+        }
+        if start.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("child process exceeded the {limit:?} wall-clock limit and was killed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// [`sim`]'s working parts, shared by the human-readable and `--json`
+/// paths: materializes the generated project, builds its `SimPlan`,
+/// writes the embedded runner next to it, and runs `auto_driver.py`
+/// once per `--scenario`, parsing its one-line JSON reply. Errors here
+/// are setup failures (bad target, drifted project, a scenario the
+/// driver's auto-discovery can't wire) — never a scenario's own
+/// pass/fail, which is reported as data in the returned outcomes, not
+/// as an `Err`.
+#[allow(clippy::too_many_arguments)]
+fn sim_inner(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    scenarios: &[PathBuf],
+    record: Option<&Path>,
+    replay: Option<&Path>,
+    name: Option<String>,
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<crate::json_out::SimResult> {
+    if target != "python" {
+        bail!(
+            "`ciac sim` only drives the Python target in v0.17 (got `{target}`); \
+             see docs/simulation.md for the disclosed scope"
+        );
+    }
+    if record.is_some() && replay.is_some() {
+        bail!("--record and --replay are mutually exclusive");
+    }
+    if (record.is_some() || replay.is_some()) && scenarios.len() != 1 {
+        bail!("--record/--replay require exactly one --scenario");
+    }
+
+    let Generated {
+        backend,
+        project,
+        source_hash,
+        tables,
+        next_migration_seq,
+        records,
+        semantic_snapshot,
+    } = generate(
+        file,
+        target,
+        out,
+        name,
+        None,
+        None,
+        ciac_codegen::Profile::Dev,
+        false,
+        false,
+        false,
+        None,
+        None,
+    )?;
+
+    let materialize_result = materialize_generated(
+        out,
+        backend.as_ref(),
+        &project,
+        &source_hash,
+        tables,
+        next_migration_seq,
+        records,
+        semantic_snapshot,
+    )?;
+    if materialize_result != ExitCode::SUCCESS {
+        bail!(
+            "generated project at {} has drifted from the current program; run `ciac build` or \
+             `ciac diff` first",
+            out.display()
+        );
+    }
+
+    // Re-derives `NormalizedIr` (the program compiled moments ago in
+    // `generate`, so this cannot newly fail) to build the `SimPlan` a
+    // scenario's own preflight and the driver's worker/job discovery
+    // both need — `verify_live` does the same re-derivation for the
+    // same reason.
+    let (ir, has_errors, _sources) = front_end(file)?;
+    let Some(ir) = ir.filter(|_| !has_errors) else {
+        bail!("program stopped compiling between generate and sim");
+    };
+    let plan = ciac_sim::SimPlan::from_ir(&ir, source_hash.clone());
+    let plan_hash = plan.plan_hash();
+
+    let projects = find_project_dirs(out, "pyproject.toml")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!("no generated python project found under {}", out.display()),
+        [one] => one.clone(),
+        // Multi-service simulation (one driver process per service,
+        // coordinated through one shared virtual clock) is real, but
+        // disclosed future work — see docs/simulation.md.
+        many => bail!(
+            "`ciac sim` only supports a single-service Python project in v0.17 (found {} \
+             under {}); see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+
+    // Deliberately *outside* `project_dir`: this is `ciac sim`'s own
+    // scratch state (the embedded runner, the plan JSON), not part of
+    // the generated project. Writing it inside `project_dir` was tried
+    // first and found to be a real bug -- `validate_generated`'s
+    // `ruff check .` (run by plain `verify` and by `verify --sim`'s own
+    // static pass before it) would then lint the runner's own source
+    // as if it were the user's generated code. Keyed by a hash of the
+    // project directory's canonical path so repeat runs against the
+    // same `--out` reuse (and overwrite) one scratch directory instead
+    // of accumulating a fresh one per invocation.
+    let project_dir_abs = resolve_path(&project_dir)?;
+    let sim_dir = std::env::temp_dir().join(format!(
+        "ciac-sim-{}",
+        hash_bytes(project_dir_abs.as_os_str().as_encoded_bytes())
+    ));
+    std::fs::create_dir_all(&sim_dir)
+        .with_context(|| format!("cannot create {}", sim_dir.display()))?;
+    write_pyrunner(&sim_dir)?;
+    let plan_path = sim_dir.join("plan.json");
+    std::fs::write(
+        &plan_path,
+        serde_json::to_vec_pretty(&plan).context("SimPlan serializes")?,
+    )
+    .with_context(|| format!("cannot write {}", plan_path.display()))?;
+
+    run_in(&project_dir, "uv", &["sync", "-q"])?;
+
+    let pythonpath = std::env::join_paths([sim_dir.clone(), project_dir.clone()])
+        .context("cannot build PYTHONPATH for the sim runner")?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("uv");
+        cmd.arg("run")
+            .arg("python")
+            .arg(sim_dir.join("auto_driver.py"))
+            .arg(&plan_path)
+            .arg(&scenario_abs)
+            .arg("--source-hash")
+            .arg(&source_hash)
+            .arg("--plan-hash")
+            .arg(&plan_hash)
+            .current_dir(&project_dir)
+            .env("PYTHONPATH", &pythonpath);
+        if let Some(record_path) = record {
+            cmd.arg("--record").arg(resolve_path(record_path)?);
+        }
+        if let Some(replay_path) = replay {
+            cmd.arg("--replay").arg(resolve_path(replay_path)?);
+        }
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run auto_driver.py for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "auto_driver.py for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse auto_driver.py's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+
+    Ok(crate::json_out::SimResult {
+        plan_hash,
+        source_hash,
+        scenarios: scenario_outcomes,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn sim(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    scenarios: &[PathBuf],
+    record: Option<&Path>,
+    replay: Option<&Path>,
+    name: Option<String>,
+    json: bool,
+) -> Result<ExitCode> {
+    if json {
+        let (envelope, code) = sim_envelope(file, target, out, scenarios, record, replay, name)?;
+        crate::json_out::emit(&envelope);
+        return Ok(code);
+    }
+
+    let result = sim_inner(file, target, out, scenarios, record, replay, name, None)?;
+    let mut all_passed = true;
+    for outcome in &result.scenarios {
+        if outcome.passed {
+            println!("[PASS] {}", outcome.scenario);
+        } else {
+            all_passed = false;
+            println!(
+                "[FAIL] {}: {}",
+                outcome.scenario,
+                outcome.error.as_deref().unwrap_or("unknown error")
+            );
         }
     }
-    if live {
-        return verify_live(file, out, keep);
+    Ok(if all_passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+/// [`sim`]'s JSON path as a value.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sim_envelope(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    scenarios: &[PathBuf],
+    record: Option<&Path>,
+    replay: Option<&Path>,
+    name: Option<String>,
+) -> Result<(crate::json_out::Envelope, ExitCode)> {
+    JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
+    if has_errors || ir.is_none() {
+        let envelope = crate::json_out::envelope("sim", false, &diags, &sources);
+        return Ok((envelope, ExitCode::FAILURE));
     }
-    Ok(ExitCode::SUCCESS)
+    let (sim_result, success) =
+        match sim_inner(file, target, out, scenarios, record, replay, name, None) {
+            Ok(result) => {
+                let success = result.scenarios.iter().all(|outcome| outcome.passed);
+                (Some(result), success)
+            }
+            Err(err) => {
+                eprintln!("error: {err:#}");
+                (None, false)
+            }
+        };
+    let mut envelope = crate::json_out::envelope("sim", success, &diags, &sources);
+    envelope.sim = sim_result;
+    let code = if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    Ok((envelope, code))
+}
+
+/// `verify --sim`'s wall-clock cap for a human at a terminal is
+/// unbounded (`None`, same as plain `ciac sim`); `ciac mcp`'s
+/// `verify_sim` tool passes [`MCP_SIM_WALL_TIMEOUT`] and caps scenario
+/// count at [`MCP_SIM_MAX_SCENARIOS`] instead — see
+/// [`verify_sim_envelope`].
+pub(crate) const MCP_SIM_MAX_SCENARIOS: usize = 5;
+pub(crate) const MCP_SIM_WALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// `verify --sim` / `ciac mcp`'s `verify_sim` tool: static verification
+/// (the same truth plain `verify --json` reports) followed by, only if
+/// that passed, every listed scenario run through [`sim_inner`] against
+/// the same generated project — 17UpdatePlan.md's
+/// `verify = generated-project static truth` /
+/// `verify_sim = bounded in-process behavioral truth` split. Never
+/// requests Docker/live/keep, and never accepts a `--record`/`--replay`
+/// path (`verify_sim`'s own disclosed limits: it cannot write arbitrary
+/// replay artifacts). `wall_timeout`/`max_scenarios` are `None`/
+/// unbounded for `verify --sim` at a terminal; the MCP tool passes the
+/// fixed caps above, since an agent that hangs mid-call has no operator
+/// present to interrupt it.
+pub(crate) fn verify_sim_envelope(
+    file: &Path,
+    target: &str,
+    out: &Path,
+    scenarios: &[PathBuf],
+    name: Option<String>,
+    wall_timeout: Option<std::time::Duration>,
+    max_scenarios: Option<usize>,
+) -> Result<(crate::json_out::Envelope, ExitCode)> {
+    JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (ir, has_errors, sources, diags) = front_end_quiet(file)?;
+    if has_errors || ir.is_none() {
+        let envelope = crate::json_out::envelope("verify_sim", false, &diags, &sources);
+        return Ok((envelope, ExitCode::FAILURE));
+    }
+    if let Some(max) = max_scenarios {
+        if scenarios.len() > max {
+            eprintln!(
+                "error: verify_sim accepts at most {max} scenarios per call, got {}",
+                scenarios.len()
+            );
+            let envelope = crate::json_out::envelope("verify_sim", false, &diags, &sources);
+            return Ok((envelope, ExitCode::FAILURE));
+        }
+    }
+
+    let (sim_result, success) =
+        match verify_inner(file, target, out, false, false, false, name.clone()) {
+            Ok(code) if code == ExitCode::SUCCESS => {
+                match sim_inner(file, target, out, scenarios, None, None, name, wall_timeout) {
+                    Ok(result) => {
+                        let success = result.scenarios.iter().all(|outcome| outcome.passed);
+                        (Some(result), success)
+                    }
+                    Err(err) => {
+                        eprintln!("error: {err:#}");
+                        (None, false)
+                    }
+                }
+            }
+            Ok(_) => (None, false),
+            Err(err) => {
+                eprintln!("error: {err:#}");
+                (None, false)
+            }
+        };
+    let mut envelope = crate::json_out::envelope("verify_sim", success, &diags, &sources);
+    envelope.sim = sim_result;
+    let code = if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    Ok((envelope, code))
 }
 
 /// Boots the generated compose stack (`up -d --wait`), erroring out on
@@ -1633,6 +2117,24 @@ fn generate(
 /// alongside every other compiler-owned file, so it can never drift
 /// out of date the way a hand-written note would.
 fn agents_md(target: &str) -> String {
+    let sim_section = if target == "python" {
+        "\n\
+## Fast inner loop vs. outer truth (v0.17)\n\
+\n\
+`ciac sim <source.ciac> --target python --out . --scenario <file>` runs\n\
+a portable scenario (`ciac_sim::Scenario` JSON) against this project's\n\
+real code with in-memory fakes standing in for the database, broker,\n\
+cache, object store, email, search, and external HTTP — no Docker, no\n\
+network, no wall-clock sleep. `verify --sim` layers the same run on top\n\
+of static verification. Blunt version: `sim` is the fast logic/topology\n\
+loop you run constantly; `verify --system` (real provider containers)\n\
+is the merge bar. A green `sim` run does not prove SQL dialect fidelity,\n\
+broker durability, cryptography, or real network behavior — see\n\
+docs/simulation.md's claim boundary before treating one as a substitute\n\
+for the other.\n"
+    } else {
+        ""
+    };
     format!(
         "\
 # Agents working in this generated project\n\
@@ -1665,14 +2167,15 @@ project's own test suite. A green exit code means the source and this\n\
 tree agree *and* the generated code actually works. Add `--system`\n\
 (requires Docker) to also prove cross-service edges and capability\n\
 round-trips against a booted stack.\n\
-\n\
+{sim_section}\n\
 ## Machine-readable output\n\
 \n\
 `ciac check|build|diff|verify --json` (run from beside the `.ciac`\n\
 source) each print one JSON envelope on stdout — human narration\n\
 stays on stderr. `ciac describe` prints the language's full\n\
 vocabulary as one versioned JSON document. `ciac mcp` exposes the\n\
-same commands as a Model Context Protocol server over stdio.\n\
+same commands as a Model Context Protocol server over stdio (including\n\
+`verify_sim` on the python target).\n\
 "
     )
 }

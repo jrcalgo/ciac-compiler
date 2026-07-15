@@ -294,6 +294,16 @@ enum Command {
         /// A failing run always tears down.
         #[arg(long)]
         keep: bool,
+        /// After static verification passes, run every `--scenario`
+        /// through the same bounded, in-process simulation `ciac sim`
+        /// uses (Python-only, see `docs/simulation.md`) — no Docker, no
+        /// wall-clock sleep. Requires at least one `--scenario`.
+        #[arg(long)]
+        sim: bool,
+        /// One or more scenario JSON files for `--sim`. Ignored without
+        /// `--sim`.
+        #[arg(long)]
+        scenario: Vec<PathBuf>,
         /// Override the generated project's name.
         #[arg(long)]
         name: Option<String>,
@@ -301,6 +311,49 @@ enum Command {
         /// (diagnostics with resolved file/line/column, plus success)
         /// instead of only human-readable text; human narration stays
         /// on stderr.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Runs one or more portable scenarios (`ciac_sim::Scenario` JSON,
+    /// see `docs/simulation.md`) against a generated project's real
+    /// code, with in-memory fakes standing in for the database,
+    /// broker, cache, object store, email, search, and external HTTP
+    /// -- no Docker, no wall-clock sleep. Python-only in this version;
+    /// `--target rust` is refused, not silently no-op'd (see
+    /// `docs/simulation.md`'s status table). The claim boundary
+    /// matters: a green `ciac sim` run proves the exercised generated
+    /// code and its declared effects behave as scripted against these
+    /// fakes -- it is not a substitute for `ciac verify --system`
+    /// against real provider containers.
+    Sim {
+        /// Path to the `.ciac` source file.
+        file: PathBuf,
+        /// Code-generation target. Only `python` runs today.
+        #[arg(short, long)]
+        target: String,
+        /// Output directory for the generated project (reused if it
+        /// already exists and matches, same as `verify`).
+        #[arg(short, long)]
+        out: PathBuf,
+        /// One or more scenario JSON files to run, in order. Each is
+        /// reported independently; any failure fails the whole command.
+        #[arg(long, required = true)]
+        scenario: Vec<PathBuf>,
+        /// After a scenario passes, write a `ciac_sim::Replay`-shaped
+        /// artifact here (only meaningful with exactly one `--scenario`).
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// Check an existing replay artifact's `source_hash`/
+        /// `plan_hash` against this run before replaying (refuses a
+        /// mismatch rather than guessing compatibility), then compares
+        /// the new transcript to the recorded one.
+        #[arg(long)]
+        replay: Option<PathBuf>,
+        /// Override the generated project's name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Emit one machine-readable JSON document on stdout instead
+        /// of only human-readable text.
         #[arg(long)]
         json: bool,
     },
@@ -360,8 +413,10 @@ enum Command {
     Describe,
     /// Run a Model Context Protocol server over stdio (newline-
     /// delimited JSON-RPC): exposes `check`, `build`, `diff`,
-    /// `verify` (no `--system`/`--live`), `graph`, `explain`, and
-    /// `describe` as MCP tools for an agent client to call.
+    /// `verify` (no `--system`/`--live`), `verify_sim` (bounded
+    /// in-process simulation, Python-only, no `--record`/`--replay`),
+    /// `graph`, `explain`, and `describe` as MCP tools for an agent
+    /// client to call.
     Mcp,
     /// The expand/backfill/contract ladder for a change the semantic
     /// differ recognizes but can't compute (v0.18 M6). See
@@ -534,9 +589,32 @@ fn run(cli: Cli) -> Result<ExitCode> {
             live,
             system,
             keep,
+            sim,
+            scenario,
             name,
             json,
-        } => commands::verify(&file, &target, &out, live, system, keep, name, json),
+        } => commands::verify(
+            &file, &target, &out, live, system, keep, sim, &scenario, name, json,
+        ),
+        Command::Sim {
+            file,
+            target,
+            out,
+            scenario,
+            record,
+            replay,
+            name,
+            json,
+        } => commands::sim(
+            &file,
+            &target,
+            &out,
+            &scenario,
+            record.as_deref(),
+            replay.as_deref(),
+            name,
+            json,
+        ),
         Command::Lsp => lsp::run(),
         Command::Graph { file, format } => commands::graph(&file, &format),
         Command::CodegenSchema => commands::codegen_schema(),

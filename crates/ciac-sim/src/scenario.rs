@@ -30,6 +30,14 @@ pub struct Given {
     pub db: Vec<GivenTableRows>,
     #[serde(default)]
     pub external_http: Vec<GivenHttpFixture>,
+    /// v0.17 M10: failure rules a scenario declares up front (Pillar
+    /// 7's own `{"at": {..}, "action": {..}}` shape, reused verbatim
+    /// via `crate::failure::FailureRule`) so a checked-in scenario is
+    /// fully self-describing -- a runner reads its failure injection
+    /// from the scenario document itself, not from out-of-band
+    /// per-fixture configuration a hand-written script used to supply.
+    #[serde(default)]
+    pub failures: Vec<crate::failure::FailureRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,6 +321,44 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{name}.ciac-sim.json failed to validate: {e}"));
             assert!(!scenario.steps.is_empty());
         }
+    }
+
+    #[test]
+    fn given_failures_parses_the_pillar_7_worked_example_verbatim() {
+        let json = r#"
+        {
+          "simulation_version": 1,
+          "name": "with-failures",
+          "start_at": "2030-01-01T00:00:00Z",
+          "given": {
+            "failures": [
+              {
+                "at": {
+                  "effect": "broker.ack",
+                  "subject": "orders.created",
+                  "occurrence": 1,
+                  "phase": "after"
+                },
+                "action": {"kind": "lose"}
+              }
+            ]
+          },
+          "steps": [{"drain": {}}]
+        }
+        "#;
+        let scenario = Scenario::parse(json).expect("parses");
+        assert_eq!(scenario.given.failures.len(), 1);
+        assert_eq!(scenario.given.failures[0].at.effect, "broker.ack");
+        assert_eq!(
+            scenario.given.failures[0].action,
+            crate::failure::FailureAction::Lose
+        );
+    }
+
+    #[test]
+    fn given_failures_defaults_to_empty() {
+        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
+        assert!(scenario.given.failures.is_empty());
     }
 
     #[test]

@@ -217,7 +217,8 @@ If Rust parity is deferred past this version, that is a disclosed, not
 silent, gap — the same discipline this compiler already applies to every
 other target-parity gap (see docs/backends.md's status table).
 
-**Two decisions frozen at M1, not left implicit:**
+**Two decisions frozen at M1, not left implicit** (recorded, with the
+reasoning behind each, in "M1 findings" below):
 
 1. *Anti-drift port design.* `production()` and `simulation()` must not
    be two adapters that can silently diverge. In Rust, the port is a
@@ -236,6 +237,91 @@ other target-parity gap (see docs/backends.md's status table).
    detail; M1 records the decision and the reasoning, rather than
    defaulting into the larger hand-rolled build without having weighed
    the cheaper option.
+
+## M1 findings: reconciling the plan against actual v0.16 IR and generated code
+
+M1's job is to freeze semantics against reality, not against this
+document's own assumptions. These findings come from reading
+`ciac-ir`/`ciac-sema`'s actual types and empirically confirmed by
+building a real program and inspecting its generated output — not
+inferred from this plan's prose.
+
+**Confirmed alignments (zero-cost seams).** The single-effect entry
+points Pillar 2 calls for already exist verbatim in generated code:
+`handle_message_once(payload)` in `worker.py.j2` and
+`handle_tick_once()` in `job.py.j2`. The simulator registers these as
+actors directly; no new function needs inventing for this seam.
+
+**Real retry semantics differ from a naive reading of Pillar 6.**
+Generated `handle_message` does not model broker redelivery at all today
+— it is a synchronous `for attempt in range(MAX_RETRIES + 1)` loop
+inside one message-handling call, with no acknowledgement or scheduling
+gap between attempts (confirmed by inspecting a generated worker
+directly). Pillar 6's "retries are later events at the same virtual
+instant unless a scenario injects delay" already happens to describe
+this correctly; this finding makes it a **frozen, empirically-grounded
+fact** rather than an assumption: the simulator must reproduce
+zero-elapsed-time synchronous retry, not invent a broker-redelivery
+model the real generated code doesn't have.
+
+**`catch_up` is confirmed dead code today, not merely under-tested.**
+Building a job with `catch_up: true` and inspecting the output shows
+`CATCH_UP = True` defined and never referenced again anywhere in the
+generated tree — `_sleep_until_next` always computes only the single
+next fire time via `croniter(...).get_next()`. Pillar 6's catch_up
+semantics (oldest-first vs. coalesce-latest) is therefore **new behavior
+CIaC is defining for the first time**, not behavior the simulator merely
+has to preserve — the real scheduler and the simulator must be built
+together against one frozen rule, exactly as this document's Pillar 6
+already says, now confirmed as a real (not hypothetical) gap.
+
+**`index: true` is parsed and validated but produces zero DDL.** A field
+declared `name: String { index: true; }` compiles clean and generates a
+plain `TEXT` column with no `CREATE INDEX` anywhere in the output — the
+attribute exists today purely as forward-compatible surface (see
+`build.rs`'s own comment: "recognized here so a... field carrying it
+doesn't spuriously fail... before that milestone lands"). **Frozen
+scope:** Pillar 4's "a declared field index covers the leading equality/
+range field" is narrowed to what v0.16 actually has today — primary-key
+lookup and a to-one reference's unique-FK index only. A general scalar
+secondary index does not exist in the language yet, so the fake cannot
+claim to model one.
+
+**No generic field-level validation attribute exists.** Only
+`Reference<T>`'s own cardinality/action/uniqueness rules and record-
+construction type/completeness checking are real today; a
+`non_empty`/`min_length`/`email`-style validation profile was never
+built (confirmed against v0.16 M7's own retrospective). **Frozen
+scope:** Pillar 4's fake enforces required-field completeness, type
+correctness, and the relation/cascade/uniqueness model — not business-
+rule validation, because the language doesn't have it.
+
+**`transaction { .. }` body shape is confirmed narrow.** Sema already
+rejects `return`, nested `transaction`, `publish`, and every
+non-database capability verb inside a transaction block — a
+transaction's body HIR contains only `Let`/`Expr`/`Fail` and, inside
+`if`/`match`, more of the same. There is no `publish`-inside-transaction
+until v0.19; v0.17's transaction crash matrix (Pillar 1's "Atomic
+meaning" table, adapted for v0.16 rather than v0.19's outbox) is
+correctly scoped to write-effect-only transactions.
+
+**The two frozen decisions from Rollout strategy, now recorded as
+final:**
+
+1. *Anti-drift port design* — adopted as written in Rollout strategy: a
+   Rust trait both `production()`/`simulation()` satisfy; a Python
+   shared interface stub with a golden parity test.
+2. *Relational-fake backing store* — **decided: the hand-rolled minimal
+   reference engine**, not SQLite `:memory:`. The findings above show
+   v0.16's actual relational surface is smaller than the "can become a
+   database project" risk feared: no generic secondary indexes, no
+   generic field validation, a transaction body limited to database
+   writes only. The engine only has to model primary keys, one to-one/
+   to-many reference shape with restrict/cascade, and serial transaction
+   commit/rollback — a tractable, closed surface that also preserves the
+   provider-neutral fidelity property (no real dialect behavior leaking
+   into a fake meant to test the CIaC contract, not Postgres/SQLite
+   specifically).
 
 ## Pillar 1 — A generated runtime seam for real and fake providers
 

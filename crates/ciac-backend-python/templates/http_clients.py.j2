@@ -8,18 +8,17 @@ managed client per upstream.
 import httpx
 
 from app.config import get_settings
-
-
-_clients: dict[str, httpx.AsyncClient] = {}
+from app.state import current
 
 
 def get_http_client(instance: str) -> httpx.AsyncClient:
-    if instance not in _clients:
+    clients = current().http_clients
+    if instance not in clients:
         settings = get_settings()
         base_urls = {
 {%- for inst in c.external_http_instances %}
             "{{ inst.snake }}": settings.{{ inst.cfg[0].field }},
 {%- endfor %}
         }
-        _clients[instance] = httpx.AsyncClient(base_url=base_urls[instance])
-    return _clients[instance]
+        clients[instance] = httpx.AsyncClient(base_url=base_urls[instance])
+    return clients[instance]

@@ -1361,8 +1361,29 @@ version out.
 2. **M2 — `ciac-sim` contracts:** plan/scenario/replay/transcript schemas,
    hashes, validation, codes, deterministic tests.
 3. **M3 — Python production dependency seams:** Python app/state
-   factories and Python package isolation; production generation remains
-   green. (Rust ports/adapters move to M11.)
+   factories; production generation remains green. (Rust ports/adapters
+   move to M11.) **Shipped, disclosed scope:** a new `app/state.py`
+   (`AppState.production(settings)`/`AppState.simulation(world)`, the
+   latter `NotImplementedError` until M4 has a fake to construct) is the
+   seam every provider module (`db`/`cache`/`queue`/`auth`/
+   `object_store`/`email`/`search`/`http_clients`) now reads through via
+   a `contextvars`-backed `current()`, installed once by a new
+   `create_app(state)` factory (`app/main.py`) and by `app/workers.py`'s
+   entrypoint — module-global provider caches are gone, replaced by
+   `AppState`'s own fields, achieving "cease to be the primary
+   behavioral seam" without threading an explicit `state` parameter
+   through every route/worker/job signature (those still call the same
+   `get_engine()`/`get_cache()`/... accessors as before; only the
+   accessors' own storage moved). Verified against every checked-in
+   example (single- and multi-service): generated Python still parses,
+   `ruff check` is clean, and `order-system`'s full pytest suite (17
+   tests spanning db/cache/auth/CRUD) passes unchanged; the worker
+   entrypoint installs state correctly and proceeds to a real connection
+   attempt (confirmed live). **Deferred to M9** (disclosed, not silent):
+   Python multi-service package isolation (relative imports, stable
+   per-service module identity) — not needed until a runner actually
+   loads more than one service's package in one process, which is M9's
+   job, not M3's.
 4. **M4 — Scheduler and virtual time:** stable actors, quiescence,
    retries, operational `catch_up`, deterministic IDs, failure engine.
 5. **M5 — Checkpoint: minimal Python vertical slice, go/no-go.** The

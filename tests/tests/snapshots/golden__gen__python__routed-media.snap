@@ -273,6 +273,7 @@ instance gets its own client.
 import redis.asyncio as redis
 
 from app.config import get_settings
+from app.state import current
 
 
 def _urls() -> dict[str, str]:
@@ -282,15 +283,13 @@ def _urls() -> dict[str, str]:
     }
 
 
-_clients: dict[str, redis.Redis] = {}
-
-
 def get_cache(instance: str = "default") -> redis.Redis:
-    if instance not in _clients:
-        _clients[instance] = redis.Redis.from_url(
+    caches = current().caches
+    if instance not in caches:
+        caches[instance] = redis.Redis.from_url(
             _urls()[instance], decode_responses=True
         )
-    return _clients[instance]
+    return caches[instance]
 ============================================================
 app/config.py
 ============================================================
@@ -343,6 +342,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
+from app.state import current
 
 
 class Base(DeclarativeBase):
@@ -356,24 +356,22 @@ def _urls() -> dict[str, str]:
     }
 
 
-_engines: dict[str, AsyncEngine] = {}
-_sessionmakers: dict[str, async_sessionmaker[AsyncSession]] = {}
-
-
 def get_engine(instance: str = "default") -> AsyncEngine:
-    if instance not in _engines:
+    engines = current().engines
+    if instance not in engines:
         url = _urls()[instance]
         engine = create_async_engine(url)
-        _engines[instance] = engine
-    return _engines[instance]
+        engines[instance] = engine
+    return engines[instance]
 
 
 def get_sessionmaker(instance: str = "default") -> async_sessionmaker[AsyncSession]:
-    if instance not in _sessionmakers:
-        _sessionmakers[instance] = async_sessionmaker(
+    sessionmakers = current().sessionmakers
+    if instance not in sessionmakers:
+        sessionmakers[instance] = async_sessionmaker(
             get_engine(instance), expire_on_commit=False
         )
-    return _sessionmakers[instance]
+    return sessionmakers[instance]
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -413,40 +411,55 @@ from fastapi import FastAPI
 
 from app.api.upload import router as upload_router
 from app.api.clip import router as clip_router
+from app.config import get_settings
+from app.state import AppState, set_current
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    from app.db import create_schema
-    await create_schema()
-    yield
+
+def create_app(state: AppState) -> FastAPI:
+    """Assembles this service's FastAPI app against an explicit
+    `AppState` (v0.17 M3) -- `AppState.production(...)` for the real
+    server (this file's bottom line), `AppState.simulation(...)` for a
+    future in-process simulation run (v0.17 M4 onward). Installed
+    before any route or lifespan code can run, so every generated
+    dependency (`app/db.py`, `app/cache.py`, ...) resolves through this
+    one state, never a module-global cache of its own.
+    """
+    set_current(state)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        from app.db import create_schema
+        await create_schema()
+        yield
+
+    app = FastAPI(title="RoutedMedia", lifespan=lifespan)
+
+    # The document `ciac build` emitted alongside this app (openapi.json,
+    # derived straight from the IR) is the single source of truth for the
+    # API spec; FastAPI's own auto-generated one would be a second,
+    # slightly-different opinion on the same routes.
+    openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+
+    def _openapi() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            app.openapi_schema = json.loads(openapi_path.read_text())
+        return app.openapi_schema
+
+    app.openapi = _openapi
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
 
 
-app = FastAPI(title="RoutedMedia", lifespan=lifespan)
+    app.include_router(upload_router)
+    app.include_router(clip_router)
 
-# The document `ciac build` emitted alongside this app (openapi.json,
-# derived straight from the IR) is the single source of truth for the
-# API spec; FastAPI's own auto-generated one would be a second,
-# slightly-different opinion on the same routes.
-_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+    return app
 
 
-def _openapi() -> dict[str, Any]:
-    if app.openapi_schema is None:
-        app.openapi_schema = json.loads(_openapi_path.read_text())
-    return app.openapi_schema
-
-
-app.openapi = _openapi
-
-
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-app.include_router(upload_router)
-app.include_router(clip_router)
+app = create_app(AppState.production(get_settings()))
 ============================================================
 app/models.py
 ============================================================
@@ -509,15 +522,14 @@ import nats
 from nats.aio.client import Client
 
 from app.config import get_settings
-
-_client: Client | None = None
+from app.state import current
 
 
 async def get_client() -> Client:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = await nats.connect(get_settings().nats_url)
-    return _client
+    state = current()
+    if state.queue_client is None or state.queue_client.is_closed:
+        state.queue_client = await nats.connect(get_settings().nats_url)
+    return state.queue_client
 
 
 async def publish(subject: str, payload: dict[str, Any]) -> None:
@@ -795,6 +807,97 @@ class Transcode:
         # TODO: implement the Transcode step.
         return payload
 ============================================================
+app/state.py
+============================================================
+"""The explicit production/simulation dependency-injection boundary
+(v0.17 M3). Generated by CIaC.
+
+Every provider module's `get_*` accessor (`app/db.py`, `app/cache.py`,
+`app/queue.py`, ...) reads and lazily populates its client(s) here
+instead of keeping a private module-global cache -- `AppState` is the
+one seam both a real server process and a future simulation run install
+themselves through, never a second copy of provider state that could
+drift from it.
+
+Two constructors, always explicit -- simulation is never selected by an
+environment variable in the normal server binary, and a failed
+production connection never falls back to fake state:
+
+    state = AppState.production(settings)   # real provider adapters
+    state = AppState.simulation(world)       # in-process fakes (v0.17 M4+)
+
+`AppState.production` builds nothing eagerly; provider clients stay as
+lazy as they are today (see `app/db.py`'s own docstring) -- constructing
+an `AppState` never requires a running database, cache, or broker.
+"""
+
+from __future__ import annotations
+
+import contextvars
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.config import Settings
+
+
+@dataclass
+class AppState:
+    """Every provider client this service's generated code can access,
+    keyed by capability instance name where a capability supports more
+    than one named instance. Fields are typed `Any` deliberately: the
+    concrete client type (an `AsyncEngine`, a `redis.Redis`, ...) is
+    each provider module's own concern, not this file's -- `AppState`
+    is a storage seam, not a second place those types get declared.
+    """
+
+    settings: Settings
+    engines: dict[str, Any] = field(default_factory=dict)
+    sessionmakers: dict[str, Any] = field(default_factory=dict)
+    caches: dict[str, Any] = field(default_factory=dict)
+    queue_client: Any | None = None
+    jwks_client: Any | None = None
+    object_stores: dict[str, Any] = field(default_factory=dict)
+    emails: dict[str, Any] = field(default_factory=dict)
+    searches: dict[str, Any] = field(default_factory=dict)
+    http_clients: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def production(cls, settings: Settings) -> "AppState":
+        """Real provider adapters, built lazily on first access by each
+        provider module -- this constructor itself never opens a
+        connection."""
+        return cls(settings=settings)
+
+    @classmethod
+    def simulation(cls, world: Any) -> "AppState":
+        """In-process fakes, installed by the `ciac-sim` runner. Not yet
+        implemented -- no fake has been built (that starts v0.17 M4) --
+        but the signature exists now so the explicit production()/
+        simulation() boundary never needs to change shape once fakes
+        land; calling this today is itself the honest failure."""
+        raise NotImplementedError(
+            "AppState.simulation() has no fakes to construct yet -- "
+            "the deterministic simulator lands starting v0.17 M4"
+        )
+
+
+_current: contextvars.ContextVar[AppState] = contextvars.ContextVar("ciac_app_state")
+
+
+def set_current(state: AppState) -> None:
+    """Installs `state` as the active state for this process (or, once
+    a multi-service simulation runner exists, this async context --
+    `contextvars` propagate per-task, which is what lets a future
+    single-process multi-service runner give each service's tasks their
+    own `AppState` without a global mutable singleton)."""
+    _current.set(state)
+
+
+def current() -> AppState:
+    """The active `AppState` -- set once by `create_app` before any
+    request or generated task runs."""
+    return _current.get()
+============================================================
 app/workers/__init__.py
 ============================================================
 """Queue-driven workers and scheduled jobs. Run them all with `python -m app.workers`."""
@@ -805,6 +908,8 @@ app/workers/__main__.py
 
 import asyncio
 
+from app.config import get_settings
+from app.state import AppState, set_current
 from app.workers import (
     transcoder,
     notifier,
@@ -813,6 +918,7 @@ from app.workers import (
 
 
 async def main() -> None:
+    set_current(AppState.production(get_settings()))
     await asyncio.gather(
         transcoder.run(),
         notifier.run(),

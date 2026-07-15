@@ -10,6 +10,7 @@ from typing import Any
 import aioboto3
 
 from app.config import get_settings
+from app.state import current
 
 
 class ObjectStore:
@@ -71,13 +72,11 @@ class ObjectStore:
             )
 
 
-_stores: dict[str, ObjectStore] = {}
-
-
 def get_object_store(instance: str = "default") -> ObjectStore:
-    if instance not in _stores:
+    stores = current().object_stores
+    if instance not in stores:
         settings = get_settings()
-        _stores[instance] = {
+        stores[instance] = {
 {%- for inst in c.object_store_instances %}
             "{{ inst.snake }}": lambda s=settings: ObjectStore(
                 endpoint=s.{{ inst.cfg[0].field }},
@@ -88,4 +87,4 @@ def get_object_store(instance: str = "default") -> ObjectStore:
             ),
 {%- endfor %}
         }[instance]()
-    return _stores[instance]
+    return stores[instance]

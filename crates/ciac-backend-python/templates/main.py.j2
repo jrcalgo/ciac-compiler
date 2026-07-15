@@ -28,73 +28,88 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from app.observability import configure_tracing
 {%- endif %}
+from app.config import get_settings
+from app.state import AppState, set_current
+
 {% if c.has_logging %}
 configure_logging()
 {% endif %}
 {%- if c.has_tracing %}
 configure_tracing("{{ c.service_name }}")
 {% endif %}
+
+def create_app(state: AppState) -> FastAPI:
+    """Assembles this service's FastAPI app against an explicit
+    `AppState` (v0.17 M3) -- `AppState.production(...)` for the real
+    server (this file's bottom line), `AppState.simulation(...)` for a
+    future in-process simulation run (v0.17 M4 onward). Installed
+    before any route or lifespan code can run, so every generated
+    dependency (`app/db.py`, `app/cache.py`, ...) resolves through this
+    one state, never a module-global cache of its own.
+    """
+    set_current(state)
 {%- if c.has_db %}
 
-@asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 {%- if c.tables %}
-    from app.db import create_schema, run_migrations
+        from app.db import create_schema, run_migrations
 {%- else %}
-    from app.db import create_schema
+        from app.db import create_schema
 {%- endif %}
 
 {%- if c.schema_key_args %}
 {%- for key in c.schema_key_args %}
-    await create_schema({{ key }})
+        await create_schema({{ key }})
 {%- endfor %}
 {%- else %}
-    await create_schema()
+        await create_schema()
 {%- endif %}
 {%- if c.tables %}
-    await run_migrations()
+        await run_migrations()
 {%- endif %}
-    yield
+        yield
 
-
-app = FastAPI(title="{{ c.service_name }}", lifespan=lifespan)
+    app = FastAPI(title="{{ c.service_name }}", lifespan=lifespan)
 {%- else %}
 
-app = FastAPI(title="{{ c.service_name }}")
+    app = FastAPI(title="{{ c.service_name }}")
 {%- endif %}
 {%- if c.has_tracing %}
-FastAPIInstrumentor.instrument_app(app)
+    FastAPIInstrumentor.instrument_app(app)
 {%- endif %}
 
-# The document `ciac build` emitted alongside this app (openapi.json,
-# derived straight from the IR) is the single source of truth for the
-# API spec; FastAPI's own auto-generated one would be a second,
-# slightly-different opinion on the same routes.
-_openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
+    # The document `ciac build` emitted alongside this app (openapi.json,
+    # derived straight from the IR) is the single source of truth for the
+    # API spec; FastAPI's own auto-generated one would be a second,
+    # slightly-different opinion on the same routes.
+    openapi_path = Path(__file__).resolve().parent.parent / "openapi.json"
 
+    def _openapi() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            app.openapi_schema = json.loads(openapi_path.read_text())
+        return app.openapi_schema
 
-def _openapi() -> dict[str, Any]:
-    if app.openapi_schema is None:
-        app.openapi_schema = json.loads(_openapi_path.read_text())
-    return app.openapi_schema
+    app.openapi = _openapi
 
-
-app.openapi = _openapi
-
-
-@app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
 
 {% for api in c.apis %}
-app.include_router({{ api.snake }}_router)
+    app.include_router({{ api.snake }}_router)
 {%- endfor %}
 {%- for channel in c.channels %}
-app.include_router(channel_{{ channel.snake }}_router)
+    app.include_router(channel_{{ channel.snake }}_router)
 {%- endfor %}
 {%- for resource in c.resources %}
-app.include_router({{ resource.snake }}_router)
+    app.include_router({{ resource.snake }}_router)
 {%- endfor %}
 {%- if c.has_metrics %}
-app.mount("/metrics", metrics_app)
+    app.mount("/metrics", metrics_app)
 {%- endif %}
+
+    return app
+
+
+app = create_app(AppState.production(get_settings()))

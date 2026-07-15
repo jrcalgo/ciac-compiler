@@ -197,6 +197,7 @@ fn emit_service(
             .map_err(|e| BackendError::Other(e.to_string()))?,
     );
     project.add_file(at("app/config.py"), render("config.py.j2", empty())?);
+    project.add_file(at("app/state.py"), render("state.py.j2", empty())?);
     if ctx.has_auth {
         project.add_file(at("app/auth.py"), render("auth.py.j2", empty())?);
     }

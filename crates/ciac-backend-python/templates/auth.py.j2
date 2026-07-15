@@ -11,21 +11,21 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
+{%- if c.auth_scheme == "oauth2" %}
+from app.state import current
+{%- endif %}
 
 _bearer = HTTPBearer()
 
 
 {% if c.auth_scheme == "oauth2" -%}
-_jwks_client: jwt.PyJWKClient | None = None
-
-
 def _jwks() -> jwt.PyJWKClient:
     """Lazily built, cached JWKS client for the configured issuer."""
-    global _jwks_client
-    if _jwks_client is None:
+    state = current()
+    if state.jwks_client is None:
         issuer = get_settings().oauth_issuer.rstrip("/")
-        _jwks_client = jwt.PyJWKClient(f"{issuer}/.well-known/jwks.json")
-    return _jwks_client
+        state.jwks_client = jwt.PyJWKClient(f"{issuer}/.well-known/jwks.json")
+    return state.jwks_client
 
 
 async def require_auth(

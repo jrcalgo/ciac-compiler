@@ -15,16 +15,15 @@ from opentelemetry.propagate import inject
 {%- endif %}
 
 from app.config import get_settings
-
-_producer: AIOKafkaProducer | None = None
+from app.state import current
 
 
 async def get_producer() -> AIOKafkaProducer:
-    global _producer
-    if _producer is None:
-        _producer = AIOKafkaProducer(bootstrap_servers=get_settings().kafka_url)
-        await _producer.start()
-    return _producer
+    state = current()
+    if state.queue_client is None:
+        state.queue_client = AIOKafkaProducer(bootstrap_servers=get_settings().kafka_url)
+        await state.queue_client.start()
+    return state.queue_client
 
 
 async def publish(subject: str, payload: dict[str, Any]) -> None:
@@ -55,15 +54,14 @@ from opentelemetry.propagate import inject
 {%- endif %}
 
 from app.config import get_settings
-
-_client: Client | None = None
+from app.state import current
 
 
 async def get_client() -> Client:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = await nats.connect(get_settings().nats_url)
-    return _client
+    state = current()
+    if state.queue_client is None or state.queue_client.is_closed:
+        state.queue_client = await nats.connect(get_settings().nats_url)
+    return state.queue_client
 
 
 async def publish(subject: str, payload: dict[str, Any]) -> None:

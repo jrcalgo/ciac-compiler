@@ -1,0 +1,30 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph SimVerticalSlice {
+    rankdir=LR;
+    n0 [label="scheduler jobs Cron", shape=oval];
+    n1 [label="database default Postgres", shape=cylinder];
+    n2 [label="queue default Nats", shape=cds];
+    n3 [label="stream OrderCreated", shape=parallelogram];
+    n4 [label="api PlaceOrderApi", shape=rarrow];
+    n5 [label="worker ProcessOrder", shape=component];
+    n6 [label="job Reconcile", shape=egg];
+    n7 [label="service PlaceOrder", shape=box];
+    n8 [label="service RecordAudit", shape=box];
+    n9 [label="service HandleOrderCreated", shape=box];
+    n10 [label="service RunReconcile", shape=box];
+    n3 -> n2 [label="DependsOn", style=dotted];
+    n3 -> n5 [label="AsyncMessage", style=dashed];
+    n6 -> n0 [label="DependsOn", style=dotted];
+    n7 -> n1 [label="DataFlow", style=bold];
+    n8 -> n1 [label="DataFlow", style=bold];
+    n4 -> n7 [label="RequestFlow", style=solid];
+    n7 -> n8 [label="RequestFlow", style=solid];
+    n8 -> n3 [label="AsyncMessage", style=dashed];
+    n9 -> n1 [label="DataFlow", style=bold];
+    n5 -> n9 [label="RequestFlow", style=solid];
+    n10 -> n1 [label="DataFlow", style=bold];
+    n6 -> n10 [label="RequestFlow", style=solid];
+}

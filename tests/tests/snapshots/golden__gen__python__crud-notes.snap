@@ -321,7 +321,15 @@ def get_engine(instance: str = "default") -> AsyncEngine:
 
 
 def get_sessionmaker(instance: str = "default") -> async_sessionmaker[AsyncSession]:
-    sessionmakers = current().sessionmakers
+    state = current()
+    if state.world is not None:
+        # v0.17 M5: the checkpoint's database port. `state.world` supplies
+        # a fake session factory instead of a real engine-backed one; every
+        # call site below (`session_dep`, worker/job `session_with`) is
+        # unaware of the difference, since both shapes are used the same
+        # way: `async with sessionmaker() as session:`.
+        return state.world.fake_sessionmaker(instance)
+    sessionmakers = state.sessionmakers
     if instance not in sessionmakers:
         sessionmakers[instance] = async_sessionmaker(
             get_engine(instance), expire_on_commit=False
@@ -586,6 +594,15 @@ class AppState:
     emails: dict[str, Any] = field(default_factory=dict)
     searches: dict[str, Any] = field(default_factory=dict)
     http_clients: dict[str, Any] = field(default_factory=dict)
+    world: Any | None = None
+    """The M5 checkpoint's simulation seam: `None` in production, a
+    caller-supplied "world" object in simulation. `world` is duck-typed
+    on purpose -- `app/db.py`'s `get_sessionmaker` needs only
+    `world.fake_sessionmaker(instance)`, `app/queue.py`'s `publish`
+    needs only `world.publish(subject, payload)`. This checkpoint's own
+    driver (`sim/pyrunner/world.py`, not generated) is the concrete
+    implementation that proves the shape; it is not the only one a
+    future runner could supply."""
 
     @classmethod
     def production(cls, settings: Settings) -> "AppState":
@@ -596,15 +613,14 @@ class AppState:
 
     @classmethod
     def simulation(cls, world: Any) -> "AppState":
-        """In-process fakes, installed by the `ciac-sim` runner. Not yet
-        implemented -- no fake has been built (that starts v0.17 M4) --
-        but the signature exists now so the explicit production()/
-        simulation() boundary never needs to change shape once fakes
-        land; calling this today is itself the honest failure."""
-        raise NotImplementedError(
-            "AppState.simulation() has no fakes to construct yet -- "
-            "the deterministic simulator lands starting v0.17 M4"
-        )
+        """In-process fakes. `world` provides the database/broker seams
+        `get_sessionmaker`/`publish` read (see the `world` field above)
+        -- everything else on `AppState` (cache, auth, object store,
+        email, search, http clients) still raises through the real
+        provider modules if exercised, since the M5 checkpoint's
+        disclosed scope is database + a minimal broker slice only; the
+        remaining capability fakes are M6-M8's job."""
+        return cls(settings=Settings(), world=world)
 
 
 _current: contextvars.ContextVar[AppState] = contextvars.ContextVar("ciac_app_state")

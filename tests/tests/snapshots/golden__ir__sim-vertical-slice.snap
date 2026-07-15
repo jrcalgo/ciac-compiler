@@ -1,0 +1,509 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "SimVerticalSlice",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "SimVerticalSlice"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Scheduler",
+      "name": "jobs",
+      "provider": "Cron"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 3,
+      "service": null,
+      "kind": "Stream",
+      "name": "OrderCreated",
+      "subject": "sim_vertical_slice.order_created",
+      "record": 0
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Api",
+      "name": "PlaceOrderApi",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/orders",
+        "scope": null
+      }
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Worker",
+      "name": "ProcessOrder",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 2
+      }
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Job",
+      "name": "Reconcile",
+      "config": {
+        "schedule": "0 3 * * *",
+        "catch_up": false
+      }
+    },
+    {
+      "id": 7,
+      "service": 0,
+      "kind": "Service",
+      "name": "PlaceOrder",
+      "signature": {
+        "params": [
+          [
+            "order",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Transaction": {
+              "body": [
+                {
+                  "Expr": {
+                    "VerbCall": {
+                      "capability": 1,
+                      "verb": {
+                        "DbInsert": 0
+                      },
+                      "args": [
+                        {
+                          "Local": {
+                            "slot": 0,
+                            "ty": {
+                              "Record": 0
+                            }
+                          }
+                        }
+                      ],
+                      "ty": {
+                        "Record": 0
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "service": 0,
+      "kind": "Service",
+      "name": "RecordAudit",
+      "signature": {
+        "params": [
+          [
+            "order",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 1,
+                "verb": {
+                  "DbInsert": 1
+                },
+                "args": [
+                  {
+                    "RecordCons": {
+                      "record": 1,
+                      "base_value": null,
+                      "fields": [
+                        [
+                          "id",
+                          {
+                            "BuiltinCall": "UuidNew"
+                          }
+                        ],
+                        [
+                          "note",
+                          {
+                            "StrLit": "order placed"
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "service": 0,
+      "kind": "Service",
+      "name": "HandleOrderCreated",
+      "signature": {
+        "params": [
+          [
+            "order",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Transaction": {
+              "body": [
+                {
+                  "Expr": {
+                    "VerbCall": {
+                      "capability": 1,
+                      "verb": {
+                        "DbInsert": 2
+                      },
+                      "args": [
+                        {
+                          "RecordCons": {
+                            "record": 2,
+                            "base_value": null,
+                            "fields": [
+                              [
+                                "id",
+                                {
+                                  "BuiltinCall": "UuidNew"
+                                }
+                              ],
+                              [
+                                "order_id",
+                                {
+                                  "FieldAccess": {
+                                    "base": {
+                                      "Local": {
+                                        "slot": 0,
+                                        "ty": {
+                                          "Record": 0
+                                        }
+                                      }
+                                    },
+                                    "field": "id",
+                                    "ty": "Uuid"
+                                  }
+                                }
+                              ]
+                            ]
+                          }
+                        }
+                      ],
+                      "ty": {
+                        "Record": 2
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "service": 0,
+      "kind": "Service",
+      "name": "RunReconcile",
+      "signature": null
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 3,
+      "to": 2,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 3,
+      "to": 5,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 2,
+      "from": 6,
+      "to": 0,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 3,
+      "from": 7,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 4,
+      "from": 8,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 5,
+      "from": 4,
+      "to": 7,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 6,
+      "from": 7,
+      "to": 8,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 7,
+      "from": 8,
+      "to": 3,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 8,
+      "from": 9,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 5,
+      "to": 9,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 10,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 6,
+      "to": 10,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "AuditEntry",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "note",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "ProcessedOrder",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "order_id",
+          "ty": {
+            "type": "Uuid"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [
+    {
+      "name": "Orders",
+      "record": 0,
+      "service": 0,
+      "db_instance": 1
+    },
+    {
+      "name": "AuditEntries",
+      "record": 1,
+      "service": 0,
+      "db_instance": 1
+    },
+    {
+      "name": "ProcessedOrders",
+      "record": 2,
+      "service": 0,
+      "db_instance": 1
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "PlaceOrderApi",
+      "service": 0,
+      "owner": 4,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 7
+        },
+        {
+          "step": "Handler",
+          "node": 8
+        },
+        {
+          "step": "Publish",
+          "stream": 3
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "ProcessOrder",
+      "service": 0,
+      "owner": 5,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 9
+        }
+      ]
+    },
+    {
+      "name": "Reconcile",
+      "service": 0,
+      "owner": 6,
+      "payload": null,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 10
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

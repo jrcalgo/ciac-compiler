@@ -55,7 +55,15 @@ def get_engine(instance: str = "default") -> AsyncEngine:
 
 
 def get_sessionmaker(instance: str = "default") -> async_sessionmaker[AsyncSession]:
-    sessionmakers = current().sessionmakers
+    state = current()
+    if state.world is not None:
+        # v0.17 M5: the checkpoint's database port. `state.world` supplies
+        # a fake session factory instead of a real engine-backed one; every
+        # call site below (`session_dep`, worker/job `session_with`) is
+        # unaware of the difference, since both shapes are used the same
+        # way: `async with sessionmaker() as session:`.
+        return state.world.fake_sessionmaker(instance)
+    sessionmakers = state.sessionmakers
     if instance not in sessionmakers:
         sessionmakers[instance] = async_sessionmaker(
             get_engine(instance), expire_on_commit=False

@@ -1874,6 +1874,117 @@ version out.
     jobs, no-Docker guard, outer-truth reconciliation, whole-version
     analysis covering whichever of M1–M11 actually shipped.
 
+    **M11 decision: deferred, not attempted.** This milestone is framed
+    above as its own separately gated bet, and the gate was exercised
+    rather than rubber-stamped: M11's scope (splitting Rust's concrete
+    clients from capability ports across every generated route/worker/
+    job/client/store, making JWKS/queue initialization lazy, a new
+    current-thread Tokio simulation runner, fake adapters, and fake-
+    backed generated tests, plus a normalized transcript-equivalence
+    harness against Python) is comparable in size to the whole M6–M10
+    Python build this version just shipped — a second full pass over the
+    Rust backend, not an incremental add. Per this document's own
+    instruction ("if Rust parity is deferred past this version, that is
+    a disclosed, not silent, gap"), the decision is: defer. `ciac sim`/
+    `verify --sim`/`verify_sim` refuse `--target rust` cleanly today
+    (a clear error naming the gap, never a silent no-op or a partial,
+    unverified simulation), and this status is recorded in both
+    docs/backends.md and docs/simulation.md, not only here.
+
+    **M12, shipped:** a `generated-sim` CI job (`.github/workflows/
+    ci.yml`) runs `ciac verify --sim` against the one example with
+    checked-in scenario coverage today (`examples/sim-vertical-slice
+    .ciac`, both `sim/vertical-slice.ciac-sim.json` and `sim/virtual-
+    week.ciac-sim.json`), followed by a real no-Docker guard — `docker
+    ps -aq` must report empty afterward, so a future regression that
+    accidentally makes simulation depend on a container fails CI
+    immediately rather than the claim boundary quietly eroding.
+    Authoring scenario coverage for every other checked-in example is
+    real, disclosed future work: this milestone's job was wiring what
+    M5–M10 already built into CI, not retroactively writing new
+    scenarios for the ~20 other examples, none of which this arc ever
+    claimed to cover (every proof from M5 onward was explicitly
+    single-service and vertical-slice-scoped).
+
+    **Outer-truth reconciliation:** unchanged and worth restating
+    plainly now that the Python-only tool surface is live —
+    `verify --system` against real provider containers remains the only
+    thing that proves SQL dialect fidelity, broker delivery durability,
+    cryptography, and real network behavior; nothing simulation does
+    substitutes for it, and `docs/simulation.md`'s claim boundary and
+    the MCP `verify_sim` tool's own inline description both say so
+    explicitly. The permanent fidelity-ratchet (the same assertion
+    vector run once against fakes and once against real compose-backed
+    infrastructure, a disagreement blocking merge) described earlier in
+    this document is Rust-parity-adjacent cross-target harness work that
+    depends on M11's ports/adapters split existing on the Rust side
+    first — deferred alongside M11, not separately.
+
+    **Version:** 0.19.0 across the workspace (`Cargo.toml` — package
+    version plus every internal path-dependency pin — and
+    `editors/vscode/package.json`), and `docs/language.md`'s title.
+    Not 0.17.0: this plan's own name is historical (drafted while
+    v0.18 was still the released version; v0.18 M1–M8 shipped, in full,
+    before this v0.17 simulation arc's M1 began — see the git history
+    interleaving "v0.18 M8" immediately before "v0.17 plan: restructure
+    into a checkpoint-gated rollout"). Bumping to 0.17.0 would be a
+    downgrade from the already-released 0.18.0; 0.19.0 is the actual
+    next version this arc ships as, and this paragraph is the disclosure
+    of that naming quirk rather than a silent mismatch between the plan
+    document's title and the shipped version number.
+
+    Full workspace verification after the version bump: `cargo fmt
+    --all --check` clean, `cargo clippy --workspace --all-targets
+    --all-features -- -D warnings` zero warnings, `cargo test
+    --workspace` green (every suite, including `ciac-sim`'s 47 and the
+    two M10 `scenario.rs` additions), a full `cargo build --workspace`
+    confirming every crate picks up the new internal version pins
+    without drift.
+
+    **Whole-version retrospective (v0.17, this document's own arc,
+    landing as compiler version 0.19.0):** M1 froze simulation semantics
+    against real v0.16 IR/generated code rather than this plan's own
+    prose, catching that generated retry is a synchronous in-call loop
+    (not later scheduled events) before any scheduler code existed. M2
+    shipped the portable plan/scenario/replay contracts and canonical
+    hashing `ciac-sim` and every later milestone built on. M3 threaded
+    an `AppState`-backed seam through Python's provider modules without
+    touching route/worker/job call sites. M4 built the deterministic
+    clock/entropy/cron/scheduler/failure primitives as pure, independently
+    tested logic, wired to nothing yet. M5's checkpoint proved the whole
+    architecture end-to-end on a minimal vertical slice before committing
+    to the rest — the explicit go/no-go this plan was restructured around.
+    M6–M8 built out the full relational, broker/temporal, and remaining
+    capability fakes against real generated code, each disclosing its own
+    fidelity gaps (constraint/cascade semantics, ack/redelivery/TTL
+    modeling, the narrower auth mechanism) rather than overclaiming
+    coverage. M9 replaced every milestone's hand-written per-fixture proof
+    script with one generic `ScenarioRunner`, fixed a real undercounting
+    bug in retry-attempt tracking that fixing the interpreter exposed, and
+    shipped real (not simulated) replay artifacts — while disclosing that
+    generated IDs are not seeded, so replay equivalence holds over the
+    effect transcript, not row-level data. M10 turned that interpreter
+    into `ciac sim`/`verify --sim`/MCP `verify_sim`, embedding the runner
+    into the compiler binary itself, auto-discovering workers/jobs/APIs
+    from the generated project's own conventions with zero per-fixture
+    glue, and fixing a real packaging bug (the runner polluting the
+    generated project's own lint surface) it found along the way. M11 was
+    gated and, on inspection, deliberately deferred rather than
+    undertaken partially. M12 wires what shipped into CI, reconciles the
+    version number honestly, and closes the arc.
+
+    The throughline worth naming: at every milestone, real gaps
+    surfaced by building the thing (not hypothesized in advance) were
+    fixed at the root — the retry-counting bug, the missing
+    `Given.failures` schema, the AGENTS.md/ruff packaging bug — rather
+    than worked around or left for a future session, and every fidelity
+    limit this arc could not close (SQL dialect behavior, broker
+    durability, real cryptography, seeded generated IDs, Rust parity
+    itself) is written down in the artifact an agent or a human would
+    actually consult (docs/simulation.md, the MCP tool's own
+    description, this document), not left to be rediscovered the hard
+    way.
+
 ## Explicit cuts
 
 - No deployment target or maturity work.

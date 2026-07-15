@@ -99,6 +99,44 @@ jobs:
             echo "::endgroup::"
           done
 
+  # v0.17 M12: `ciac verify --sim` runs the checked-in scenarios against
+  # real generated code through in-memory fakes — no Docker, no
+  # network. Scoped to the one example with checked-in scenario
+  # coverage today (see docs/simulation.md); writing scenarios for
+  # every other example is real, disclosed future work, not attempted
+  # here. The trailing `docker ps -aq` check is a real regression
+  # guard, not decoration: if simulation ever starts a container, this
+  # job fails immediately instead of the claim boundary silently
+  # eroding.
+  generated-sim:
+    name: Simulate checked-in scenarios (no Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Build the compiler
+        run: cargo build -p ciac
+      - name: verify --sim against the checked-in scenarios
+        run: |
+          set -euo pipefail
+          cargo run -q -p ciac -- verify examples/sim-vertical-slice.ciac \
+            --target python --out /tmp/gen-sim-vertical-slice --sim \
+            --scenario sim/vertical-slice.ciac-sim.json \
+            --scenario sim/virtual-week.ciac-sim.json
+      - name: assert no Docker container was started
+        run: |
+          set -euo pipefail
+          if [ -n "$(docker ps -aq)" ]; then
+            echo "simulation started a container -- this breaks the no-Docker claim boundary"
+            docker ps -a
+            exit 1
+          fi
+
   # v0.9 M5: `ciac verify --system` actually runs, automatically — a
   # real `docker compose up`, the generated tests/system/ suite (call
   # reachability, broker delivery, channels, capability round-trips)

@@ -1488,6 +1488,66 @@ version out.
 6. **M6 — Full relational fake:** complete v0.16 schema, constraints,
    indexes, transactions, validation, fake-versus-real probes; the v0.16
    domain-orders suite passes infrastructure-free.
+
+   **Shipped:** `sim/pyrunner/world.py`'s `FakeDatabase` is now schema-
+   aware — reference existence, `Reference<T>`'s own `unique`/
+   `on_delete` (restrict/cascade, applied recursively), and a genuinely
+   atomic `commit_batch` (validates every insert/delete in a
+   transaction against a scratch overlay before applying any of it, so
+   a violation on the second row of a multi-row transaction leaves the
+   first row unapplied too — not just cleared from a pending list).
+   Schema comes from `ciac_sim::SimPlan` itself, not a second hand-
+   rolled description: a new dev-only `cargo run --example dump_plan -p
+   ciac-sim` prints a `.ciac` file's `SimPlan` as JSON (not part of
+   `ciac`'s public CLI — that's `ciac sim`, M10's job), which
+   `Schema.from_plan_json` parses. Traced empirically why this is
+   necessary rather than reflecting constraints out of the generated
+   project's own SQLAlchemy models: `app/models.py` columns are plain,
+   constraint-free `Mapped[str]` declarations with no `ForeignKey`/
+   `UniqueConstraint` at all — real enforcement lives only in migration
+   SQL text and, canonically, in `SimPlan`.
+
+   **Deliberately out of scope, disclosed:** indexes (`index: true` on
+   a plain scalar field is silently discarded by the compiler itself,
+   per M1's finding — there is nothing for a fake to enforce that
+   production doesn't already no-op, so `SimPlan` carries no index
+   metadata to begin with); constraint-violation-to-409/422 HTTP
+   mapping (domain-orders.ciac's own header comment discloses this
+   doesn't exist on the real Postgres path either — inventing it only
+   in the fake would make the fake strictly more capable than
+   production, exactly the "mock rot" risk this document's Risks
+   section names, so `ReferenceViolation`/`UniqueViolation` are
+   unmapped plain exceptions, matching today's real behavior); `on_update`
+   cascade/restrict (no generated code path ever updates a primary key,
+   per M1's finding, so `Schema` records the action but nothing
+   triggers it); the CI-regenerated fidelity-ratchet parity report
+   comparing this fake against a live Postgres compose run (still
+   Docker-delegated, same disclosed gap as v0.11 M3's kafka broker-
+   delivery proof — this milestone's own proof is infrastructure-free
+   by construction, not fake-versus-real).
+
+   Live proof, real generated `domain-orders` project (`sim/pyrunner/
+   run_domain_orders.py`: real `ciac build`, real `dump_plan`, real `uv
+   sync`, no mocks), all passing: `CreateCustomerRoute` → `Checkout`
+   (`PlaceOrder`'s `transaction` block committing `Orders`+`OrderAudits`
+   together); a negative-total order's `fail InvalidOrder` rolls back
+   *both* writes (the `Orders` insert that ran before the `fail`, not
+   just the `OrderAudits` one after it — real atomicity, not assumed);
+   an order referencing a nonexistent customer is rejected
+   (`ReferenceViolation`) with the `orders` table left unchanged; `Items`
+   → `AddLineItem` for a first line item on an order succeeds, a second
+   line item on the *same* order is rejected (`UniqueViolation`,
+   `LineItem.order`'s `unique: true` 1:1 shape) with `line_items`
+   unchanged; a line item referencing a nonexistent order is rejected.
+   Cascade/restrict-on-delete has no generated handler to exercise it
+   through — domain-orders.ciac never calls a delete verb — so it is
+   proven directly against `FakeDatabase` instead
+   (`sim/pyrunner/test_fake_database.py`, 6 tests, including the
+   Customer(restrict)←Order(cascade)←LineItem(unique) chain and the
+   commit_batch atomicity guarantee), a disclosed substitution, not a
+   silently skipped gap. Re-ran M5's own vertical-slice proof
+   unchanged afterward to confirm the `FakeDatabase`/`_FakeSession`
+   refactor didn't regress the checkpoint.
 7. **M7 — Full broker and temporal fakes:** ordering, groups, logical
    lanes, duplicate/lost-ack delivery, cache TTL, channels.
 8. **M8 — Remaining fakes:** external HTTP, auth/users, object, email,

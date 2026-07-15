@@ -275,23 +275,32 @@ has to preserve — the real scheduler and the simulator must be built
 together against one frozen rule, exactly as this document's Pillar 6
 already says, now confirmed as a real (not hypothetical) gap.
 
-**`index: true` is parsed and validated but produces zero DDL.** A field
-declared `name: String { index: true; }` compiles clean and generates a
-plain `TEXT` column with no `CREATE INDEX` anywhere in the output — the
-attribute exists today purely as forward-compatible surface (see
-`build.rs`'s own comment: "recognized here so a... field carrying it
-doesn't spuriously fail... before that milestone lands"). **Frozen
-scope:** Pillar 4's "a declared field index covers the leading equality/
-range field" is narrowed to what v0.16 actually has today — primary-key
-lookup and a to-one reference's unique-FK index only. A general scalar
-secondary index does not exist in the language yet, so the fake cannot
-claim to model one.
+**`index: true` on a scalar field is silently discarded, not merely
+inert.** Correction to an earlier pass over this finding: `build.rs`'s
+`record()` function never reads a plain (non-`Reference<T>`) field's
+`attrs` at all — not even to reject an unknown one — so
+`name: String { index: true; }` compiles clean with a plain `TEXT`
+column, and so would any other garbage attribute name on a scalar
+field. Only a `Reference<T>` field's `index` attribute gets the
+forward-compatible recognize-but-no-op treatment `build.rs` comments
+about. `CIAC0059`/`CIAC0060` (`InvalidStorageConstraint`/
+`InvalidFieldValidation`) are allocated error codes for a
+`unique`/`index`/`non_empty`/`min`/`max`/`format` scalar-attribute
+profile the AST's own doc comment describes as sharing the field-attr
+grammar slot — but neither code is ever raised anywhere in `ciac-sema`
+today; they are reserved, not wired up. **Frozen scope:** Pillar 4's "a
+declared field index covers the leading equality/range field" is
+narrowed to what v0.16 actually has today — primary-key lookup and a
+to-one reference's unique-FK index only. A general scalar secondary
+index does not exist in the language yet, so the fake cannot claim to
+model one.
 
 **No generic field-level validation attribute exists.** Only
 `Reference<T>`'s own cardinality/action/uniqueness rules and record-
 construction type/completeness checking are real today; a
-`non_empty`/`min_length`/`email`-style validation profile was never
-built (confirmed against v0.16 M7's own retrospective). **Frozen
+`non_empty`/`min_length`/`email`-style validation profile was reserved
+(`CIAC0059`/`CIAC0060`, see above) but never built (confirmed against
+v0.16 M7's own retrospective and against `ciac-sema` directly). **Frozen
 scope:** Pillar 4's fake enforces required-field completeness, type
 correctness, and the relation/cascade/uniqueness model — not business-
 rule validation, because the language doesn't have it.

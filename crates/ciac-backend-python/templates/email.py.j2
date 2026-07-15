@@ -50,7 +50,11 @@ class Email:
 
 
 def get_email(instance: str = "default") -> Email:
-    senders = current().emails
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's email port.
+        return state.world.fake_email(instance)
+    senders = state.emails
     if instance not in senders:
         settings = get_settings()
         senders[instance] = {

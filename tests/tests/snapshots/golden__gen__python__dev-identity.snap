@@ -196,6 +196,18 @@ async def require_auth(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict[str, Any]:
     """Verifies the bearer token against the issuer's JWKS (RS256)."""
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's auth port -- bypasses real JWT/
+        # JWKS verification entirely rather than faking the JWKS HTTP
+        # round-trip; see `sim/pyrunner/world.py`'s `FakeAuth` docstring.
+        try:
+            return state.world.auth.verify(credentials.credentials)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid or expired token",
+            ) from exc
     settings = get_settings()
     try:
         key = _jwks().get_signing_key_from_jwt(credentials.credentials)

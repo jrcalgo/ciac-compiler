@@ -12,7 +12,11 @@ from app.state import current
 
 
 def get_http_client(instance: str) -> httpx.AsyncClient:
-    clients = current().http_clients
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's external HTTP port.
+        return state.world.fake_http_client(instance)
+    clients = state.http_clients
     if instance not in clients:
         settings = get_settings()
         base_urls = {

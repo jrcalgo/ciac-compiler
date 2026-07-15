@@ -449,7 +449,11 @@ class ObjectStore:
 
 
 def get_object_store(instance: str = "default") -> ObjectStore:
-    stores = current().object_stores
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's object-store port.
+        return state.world.fake_object_store(instance)
+    stores = state.object_stores
     if instance not in stores:
         settings = get_settings()
         stores[instance] = {

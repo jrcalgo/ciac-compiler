@@ -390,7 +390,11 @@ class Email:
 
 
 def get_email(instance: str = "default") -> Email:
-    senders = current().emails
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's email port.
+        return state.world.fake_email(instance)
+    senders = state.emails
     if instance not in senders:
         settings = get_settings()
         senders[instance] = {
@@ -421,7 +425,11 @@ from app.state import current
 
 
 def get_http_client(instance: str) -> httpx.AsyncClient:
-    clients = current().http_clients
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's external HTTP port.
+        return state.world.fake_http_client(instance)
+    clients = state.http_clients
     if instance not in clients:
         settings = get_settings()
         base_urls = {
@@ -744,7 +752,11 @@ class ObjectStore:
 
 
 def get_object_store(instance: str = "default") -> ObjectStore:
-    stores = current().object_stores
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's object-store port.
+        return state.world.fake_object_store(instance)
+    stores = state.object_stores
     if instance not in stores:
         settings = get_settings()
         stores[instance] = {
@@ -829,7 +841,11 @@ class Search:
 
 
 def get_search(instance: str = "default") -> Search:
-    clients = current().searches
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's search port.
+        return state.world.fake_search(instance)
+    clients = state.searches
     if instance not in clients:
         settings = get_settings()
         clients[instance] = {

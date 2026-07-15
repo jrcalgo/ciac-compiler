@@ -67,6 +67,7 @@ Also still out of scope, unchanged from M5:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -442,6 +443,136 @@ class FakeCache:
         self._expire_at_ms.pop(key, None)
 
 
+class FakeObjectStore:
+    """Enough of the generated `ObjectStore` wrapper's interface
+    (`.put`/`.get`/`.delete`/`.list`) for v0.17 M8 -- an in-memory
+    key/bytes map, no real S3/MinIO."""
+
+    def __init__(self) -> None:
+        self._objects: dict[str, bytes] = {}
+
+    async def put(self, key: str, body: bytes, content_type: str = "application/octet-stream") -> None:
+        self._objects[key] = bytes(body)
+
+    async def get(self, key: str) -> bytes:
+        return self._objects[key]
+
+    async def delete(self, key: str) -> None:
+        self._objects.pop(key, None)
+
+    async def list(self, prefix: str) -> list[str]:
+        return sorted(k for k in self._objects if k.startswith(prefix))
+
+
+class FakeEmail:
+    """Enough of the generated `Email` wrapper's interface (`.send`)
+    for v0.17 M8 -- records sent messages instead of talking SMTP."""
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, str]] = []
+
+    async def send(self, to: str, subject: str, body: str) -> None:
+        self.sent.append({"to": to, "subject": subject, "body": body})
+
+
+class FakeSearch:
+    """Enough of the generated `Search` wrapper's interface
+    (`.index`/`.search`/`.delete`) for v0.17 M8 -- an in-memory
+    index/doc_id/document map with a narrow, disclosed query
+    evaluator: it matches the *shape* `search.query` actually lowers to
+    (`{"query": {"query_string": {"query": <text>}}}`, see
+    `docs/expressions.md`) with a case-insensitive substring match over
+    each document's JSON, not a real OpenSearch query language."""
+
+    def __init__(self) -> None:
+        self._docs: dict[str, dict[str, dict[str, Any]]] = {}
+
+    async def index(self, index: str, doc_id: str, document: dict[str, Any]) -> None:
+        self._docs.setdefault(index, {})[doc_id] = dict(document)
+
+    async def search(self, index: str, query: dict[str, Any]) -> list[dict[str, Any]]:
+        text = query.get("query", {}).get("query_string", {}).get("query", "")
+        docs = list(self._docs.get(index, {}).values())
+        if not text:
+            return docs
+        return [doc for doc in docs if text.lower() in json.dumps(doc).lower()]
+
+    async def delete(self, index: str, doc_id: str) -> None:
+        self._docs.get(index, {}).pop(doc_id, None)
+
+
+class FakeHttpResponse:
+    """Enough of `httpx.Response`'s interface (`.json()`) for a
+    `external_http.request` call site (`(await self.http.post(..)).json()`,
+    see `docs/expressions.md`)."""
+
+    def __init__(self, json_body: Any) -> None:
+        self._json = json_body
+
+    def json(self) -> Any:
+        return self._json
+
+
+class FakeHttpClient:
+    """A fixture-driven stand-in for `httpx.AsyncClient`, consuming the
+    exact `GivenHttpResponse` shape `ciac_sim::scenario` already owns
+    (`{"error": ..}` or `{"status": .., "json": ..}`) -- the same
+    fixtures a portable scenario would declare for this instance drive
+    this fake directly, not a second ad hoc format."""
+
+    def __init__(self, responses: list[dict[str, Any]] | None = None) -> None:
+        self._responses = list(responses or [])
+        self._next = 0
+        self.requests: list[tuple[str, Any]] = []
+
+    async def post(self, url: str, json: Any = None, **_kwargs: Any) -> FakeHttpResponse:
+        self.requests.append((url, json))
+        if self._next >= len(self._responses):
+            raise RuntimeError(
+                f"no fixture response configured for external_http call #{self._next + 1} to {url}"
+            )
+        response = self._responses[self._next]
+        self._next += 1
+        if "error" in response:
+            raise RuntimeError(f"simulated external_http failure: {response['error']}")
+        return FakeHttpResponse(response["json"])
+
+
+class AuthError(Exception):
+    """A bearer token had no configured claims, or its configured
+    expiry (against `VirtualClock`, not wall time) has passed. Mapped
+    to a 401 by `auth.py.j2`'s `world`-guard, matching what real JWT/
+    JWKS verification failure already does today."""
+
+
+class FakeAuth:
+    """Verifies a bearer token by direct lookup against claims the
+    runner configured ahead of time, instead of real JWT/JWKS crypto --
+    the disclosed simplification behind "dev-identity scope behavior
+    passes with fake JWKS and no Keycloak process": rather than faking
+    the JWKS HTTP round-trip `PyJWKClient` would make, this bypasses
+    JWT/JWKS verification entirely. The observable outcome is the same
+    (no Keycloak process, no real crypto, scope enforcement still
+    real) by a more direct mechanism, not a literal JWKS fake -- see
+    17UpdatePlan.md's M8 milestone entry."""
+
+    def __init__(self, clock: VirtualClock) -> None:
+        self._clock = clock
+        self._tokens: dict[str, tuple[dict[str, Any], int | None]] = {}
+
+    def issue(self, token: str, claims: dict[str, Any], expires_in_ms: int | None = None) -> None:
+        expire_at = self._clock.now_ms() + expires_in_ms if expires_in_ms is not None else None
+        self._tokens[token] = (claims, expire_at)
+
+    def verify(self, token: str) -> dict[str, Any]:
+        if token not in self._tokens:
+            raise AuthError(f"no configured claims for bearer token {token!r}")
+        claims, expire_at = self._tokens[token]
+        if expire_at is not None and self._clock.now_ms() >= expire_at:
+            raise AuthError(f"bearer token {token!r} has expired")
+        return dict(claims)
+
+
 @dataclass
 class SimWorld:
     """The object `AppState.simulation(world)` stores. Duck-typed on
@@ -455,13 +586,20 @@ class SimWorld:
     db: FakeDatabase = field(init=False)
     broker: FakeBroker = field(default_factory=FakeBroker)
     clock: VirtualClock = field(default_factory=VirtualClock)
+    http_fixtures: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     transcript: list[dict[str, Any]] = field(default_factory=list)
     failures: FailureEngine = field(init=False)
+    auth: FakeAuth = field(init=False)
     _caches: dict[str, FakeCache] = field(default_factory=dict, init=False)
+    _object_stores: dict[str, FakeObjectStore] = field(default_factory=dict, init=False)
+    _emails: dict[str, FakeEmail] = field(default_factory=dict, init=False)
+    _searches: dict[str, FakeSearch] = field(default_factory=dict, init=False)
+    _http_clients: dict[str, FakeHttpClient] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.failures = FailureEngine(self.failure_rules)
         self.db = FakeDatabase(self.schema)
+        self.auth = FakeAuth(self.clock)
 
     def fake_sessionmaker(self, instance: str) -> Callable[[], "_FakeSession"]:
         def factory() -> "_FakeSession":
@@ -473,6 +611,26 @@ class SimWorld:
         if instance not in self._caches:
             self._caches[instance] = FakeCache(self.clock)
         return self._caches[instance]
+
+    def fake_object_store(self, instance: str) -> FakeObjectStore:
+        if instance not in self._object_stores:
+            self._object_stores[instance] = FakeObjectStore()
+        return self._object_stores[instance]
+
+    def fake_email(self, instance: str) -> FakeEmail:
+        if instance not in self._emails:
+            self._emails[instance] = FakeEmail()
+        return self._emails[instance]
+
+    def fake_search(self, instance: str) -> FakeSearch:
+        if instance not in self._searches:
+            self._searches[instance] = FakeSearch()
+        return self._searches[instance]
+
+    def fake_http_client(self, instance: str) -> FakeHttpClient:
+        if instance not in self._http_clients:
+            self._http_clients[instance] = FakeHttpClient(self.http_fixtures.get(instance))
+        return self._http_clients[instance]
 
     async def publish(self, subject: str, payload: dict[str, Any]) -> None:
         self.transcript.append({"effect": "broker.publish", "subject": subject})

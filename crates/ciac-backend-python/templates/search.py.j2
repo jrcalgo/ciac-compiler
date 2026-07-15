@@ -30,7 +30,11 @@ class Search:
 
 
 def get_search(instance: str = "default") -> Search:
-    clients = current().searches
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's search port.
+        return state.world.fake_search(instance)
+    clients = state.searches
     if instance not in clients:
         settings = get_settings()
         clients[instance] = {

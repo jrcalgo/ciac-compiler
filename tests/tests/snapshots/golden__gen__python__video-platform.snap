@@ -129,6 +129,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
+from app.state import current
 
 _bearer = HTTPBearer()
 
@@ -137,6 +138,16 @@ async def require_auth(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict[str, Any]:
     """Verifies the request's bearer token and returns its claims."""
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's auth port.
+        try:
+            return state.world.auth.verify(credentials.credentials)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid or expired token",
+            ) from exc
     settings = get_settings()
     try:
         return jwt.decode(

@@ -1612,6 +1612,78 @@ version out.
 8. **M8 — Remaining fakes:** external HTTP, auth/users, object, email,
    search, log/metrics/tracing observations; `dev-identity` scope
    behavior passes with fake JWKS and no Keycloak process.
+
+   **Shipped:** `FakeObjectStore` (in-memory key/bytes map),
+   `FakeEmail` (records sent messages), `FakeSearch` (in-memory index,
+   a narrow case-insensitive substring evaluator matching the exact
+   query shape `search.query` lowers to, not a real query language),
+   and a fixture-driven `FakeHttpClient` consuming `ciac_sim::
+   scenario`'s own `GivenHttpResponse` shape (`{"error": ..}` /
+   `{"status": .., "json": ..}`) directly — the same fixture format a
+   portable scenario would declare, not a second ad hoc one. All four
+   wired through the identical one-line `world`-guard pattern
+   `db.py.j2`/`queue.py.j2`/`cache.py.j2` already established
+   (`object_store.py.j2`, `email.py.j2`, `search.py.j2`,
+   `http_clients.py.j2`).
+
+   `FakeAuth` verifies a bearer token by direct lookup against claims
+   the runner configures ahead of time (`world.auth.issue(token,
+   claims, expires_in_ms=..)`), instead of real JWT/JWKS crypto. This
+   is the disclosed simplification behind "dev-identity scope behavior
+   passes with fake JWKS and no Keycloak process": rather than faking
+   the JWKS HTTP round-trip `PyJWKClient` would make, `require_auth`
+   (`auth.py.j2`, both the plain-JWT and OAuth2 branches) bypasses JWT/
+   JWKS verification entirely under the same `world`-guard. The
+   observable outcome is identical — no Keycloak process, no real
+   crypto, scope enforcement (`require_scope`) still real and
+   unmodified — by a more direct mechanism, not a literal JWKS fake.
+   Token expiry is checked against `VirtualClock`, so it is provable
+   with no real sleep, closing the "auth scope/expiry" line in
+   Verification strategy.
+
+   **A significant, previously-invisible bug this proof surfaced (not
+   fixed, out of this milestone's charter):** every generated API route
+   whose pipeline terminates in a typed handler returning a non-record
+   type (`Bool`, `[String]`, `Json`, …) unconditionally does
+   `result.model_dump(mode="json")` on that return value — which such
+   values have no method for. Concretely, this means every route in
+   `examples/extras-verbs.ciac` (the v0.14 M3/M4 flagship for exactly
+   this verb set) raises `AttributeError` if actually invoked, and has
+   done so undetected since v0.14: the only generated coverage is a
+   unit test that calls the `Logic` class directly (never through the
+   route) and a smoke test that checks the path is *listed* in the
+   OpenAPI spec, never invokes it. This is precisely the blind spot
+   this whole document's gap analysis opens with ("Python mocks calls,
+   not a system") — a real end-to-end call is what found it, not a
+   fake pretending to be more capable. This milestone's own proof
+   (`sim/pyrunner/run_extras_verbs.py`) calls every handler's `Logic`
+   class directly, bypassing the broken route wrapper, and discloses
+   the finding rather than fixing pipeline codegen inside a
+   capability-fakes milestone; it is flagged here for a dedicated fix.
+
+   Live proof, two real generated projects, no mocks, no Docker
+   (`sim/pyrunner/run_extras_verbs.py` and `run_dev_identity.py`): the
+   object store round-trips a value and correctly scopes `list` to a
+   prefix; the cache (M7) and email/search fakes behave as their real
+   handlers expect; a fixture-driven external HTTP call succeeds once
+   and then raises cleanly once its one configured response is
+   consumed; a write-scoped dev-identity token can create an account
+   and a read-only token cannot, an unknown token is rejected, and a
+   token configured to expire in 5 virtual seconds is accepted before
+   and rejected after `clock.advance_by(6_000)` — no Keycloak, no real
+   JWT, no real sleep.
+
+   **Deliberately out of scope, disclosed:** log/metrics/tracing
+   observations. Nothing in the existing golden/system test suite
+   asserts on tracing *content* today (only that OpenTelemetry
+   instrumentation compiles and a span is created); faking an OTel
+   exporter to capture spans for scenario assertions has no consumer
+   yet to prove itself against, unlike every other fake in M5-M8, each
+   of which was built against a real, already-failing-without-it proof
+   point. Building it speculatively would be exactly the "fake without
+   a corresponding parity vector" the fidelity ratchet says isn't
+   considered complete — deferred until a concrete assertion need
+   exists (likely alongside M9's full parity report).
 9. **M9 — Python runner and handler scaffolds, complete:** all services
    in one asyncio process, actual seeded code, generated cases, replay,
    full fidelity-ratchet parity report.

@@ -1,0 +1,77 @@
+// v0.17 M7 checkpoint fixture: exercises Pillar 5's remaining
+// disclosed gaps from M5 -- ordering, independent queue groups
+// (fan-out), duplicate delivery via a lost ack after effects
+// committed -- plus Pillar 6's cache TTL, driven by virtual time
+// rather than a real sleep. `ConsumerA`/`ConsumerB` both consume
+// `Pings` independently (two queue groups on one stream); each writes
+// to its own table so the runner can tell the two groups' delivery
+// counts apart. `Widget` is a minimal cache-aside `crud` resource
+// (no scopes -- auth fakes are M8's job, not this milestone's) whose
+// read path exercises `cache.get`/`cache.set(ex=..)`/`cache.delete`.
+// See 17UpdatePlan.md's M7 milestone entry for what this narrow slice
+// does and does not cover (no realtime `channel` fan-out -- disclosed
+// there as an architectural mismatch with this runner's pull-based
+// delivery model, not an oversight).
+service SimBrokerSlice;
+
+use {
+    db Postgres;
+    queue NATS;
+    cache Redis;
+}
+
+record Widget {
+    id: Uuid;
+    name: String;
+}
+crud Widget: Widget {
+    cache_ttl: 30;
+}
+
+record Ping {
+    id: Uuid;
+    seq: Int;
+}
+stream Pings: Ping;
+
+handler Emit(p: Ping) -> Ping {
+    return p;
+}
+api EmitApi: Ping {
+    method: POST;
+    path: "/pings";
+}
+pipeline EmitApi:
+    Emit
+    -> publish Pings
+    -> Return;
+
+record ProcessedByA {
+    id: Uuid;
+    ping_id: Uuid;
+    seq: Int;
+}
+table ProcessedByATable: ProcessedByA;
+
+record ProcessedByB {
+    id: Uuid;
+    ping_id: Uuid;
+    seq: Int;
+}
+table ProcessedByBTable: ProcessedByB;
+
+worker ConsumerA on Pings;
+handler HandleA(p: Ping) -> Ping {
+    db.insert(ProcessedByATable, ProcessedByA { id: Uuid.new(), ping_id: p.id, seq: p.seq });
+    return p;
+}
+pipeline ConsumerA:
+    HandleA;
+
+worker ConsumerB on Pings;
+handler HandleB(p: Ping) -> Ping {
+    db.insert(ProcessedByBTable, ProcessedByB { id: Uuid.new(), ping_id: p.id, seq: p.seq });
+    return p;
+}
+pipeline ConsumerB:
+    HandleB;

@@ -1550,6 +1550,65 @@ version out.
    refactor didn't regress the checkpoint.
 7. **M7 — Full broker and temporal fakes:** ordering, groups, logical
    lanes, duplicate/lost-ack delivery, cache TTL, channels.
+
+   **Shipped:** `sim/pyrunner/world.py`'s `FakeBroker` now keeps one
+   ordered per-subject message log with an independent delivery cursor
+   per `(subject, queue group)` — two workers on the same stream each
+   see every message, in publish order, without consuming each other's
+   copy (Pillar 5's "independent groups each receive a copy"). A new
+   `SimWorld.deliver(subject, group, handle_message)` drains a group's
+   undelivered messages and, after each successful handling, checks a
+   `broker.ack` failure rule: a match means the ack was lost, so the
+   *same* message is redelivered even though its real effects already
+   committed — Pillar 5's "acknowledgement lost after effects
+   committed," and the exact "duplicate-after-commit" hazard the
+   document says a lost-ack test exists to surface, not paper over.
+   `VirtualClock` (a narrow Python restatement, same disclosed status
+   as `FailureEngine`) and `FakeCache` land together: cache TTL is
+   computed against this clock, not wall time, so advancing it
+   expires a key with no real sleep — closing the exact gap Pillar 6
+   names. `cache.py.j2` gets the same one-line `world`-guard pattern
+   `db.py.j2`/`queue.py.j2` already established. `_FakeSession` gained
+   `.get(Model, pk)` (a cache-aside CRUD store's read-miss path needs
+   it) — still no `.scalars`/attribute-mutation-based updates.
+
+   **A real M6 gap fixed in passing:** `FakeDatabase.insert` never
+   checked for a primary-key collision — a second insert with a reused
+   PK silently overwrote the first row instead of raising, missing
+   Pillar 4's own "primary/unique conflicts" promise. Fixed as part of
+   this milestone's `commit_batch` work and covered by a new unit test;
+   re-ran M5/M6's own proofs afterward to confirm no regression.
+
+   **Deliberately out of scope, disclosed:** realtime `channel` fan-out
+   (SSE/WebSocket). Traced why: a channel's generated handler
+   (`channel.py.j2`) is a long-lived streaming subscription —
+   `async for message in subscription.messages:` — a *push* model a
+   live client drives, architecturally mismatched with this runner's
+   *pull* model (M5–M7's own scripts explicitly drain messages after
+   the fact). Faking it needs a `FakeNatsClient`/`FakeSubscription`
+   whose `.messages` pushes as `publish()` happens, which is a
+   different shape of fake than `FakeBroker`'s cursor-based delivery.
+   Reconciling push-vs-pull is squarely M9's job ("Python runner...
+   complete," where the runner architecture itself gets finalized),
+   not this milestone's. "Logical worker lanes" beyond one lane per
+   queue group (i.e., partitioning a single group's own delivery across
+   `concurrency > 1` co-equal lanes) is likewise undone: nothing in
+   this milestone's fixture needed more than `concurrency: 1` per
+   worker to prove fan-out, so no lane-partitioning algorithm was
+   invented to cover a case nothing exercises yet.
+
+   Live proof, real generated `sim-broker-slice` project (new fixture;
+   `sim/pyrunner/run_broker_slice.py`: real `ciac build`, real `uv
+   sync`, no mocks), all passing: three published pings are each
+   handled by *both* `ConsumerA` and `ConsumerB` (independent queue
+   groups) in publish order; a lost ack on one delivery causes a
+   second, real invocation of the same handler, producing a genuine
+   duplicate row (no idempotency key in the handler — the fake
+   surfacing exactly the bug class Pillar 5 says this is for); a
+   cache-aside `crud` resource's second read hits the cache, a third
+   read 35 virtual seconds later (10s + 25s, `clock.advance_by`, zero
+   real sleep) misses because the 30s TTL expired, and still returns
+   the correct row by falling back to the database.
 8. **M8 — Remaining fakes:** external HTTP, auth/users, object, email,
    search, log/metrics/tracing observations; `dev-identity` scope
    behavior passes with fake JWKS and no Keycloak process.

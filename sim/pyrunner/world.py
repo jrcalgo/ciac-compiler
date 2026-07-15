@@ -237,6 +237,8 @@ class FakeDatabase:
         pk: str,
         row: dict[str, Any],
     ) -> None:
+        if pk in tables.get(table, {}):
+            raise UniqueViolation(f"{table}/{pk} already exists (primary key conflict)")
         table_schema = self.schema.tables.get(table)
         if table_schema is None:
             return
@@ -327,16 +329,117 @@ class FailureEngine:
         return sorted(self._rules - self._matched)
 
 
+@dataclass
+class _Message:
+    message_id: str
+    seq: int
+    payload: dict[str, Any]
+
+
 class FakeBroker:
     """Records publishes for the runner to hand to a worker's own
     generated `handle_message` explicitly -- there is no running
-    subscription loop in this checkpoint (see module docstring)."""
+    subscription loop in this or any prior milestone (see module
+    docstring); the runner remains the one that pumps delivery.
+
+    v0.17 M7 adds ordering and independent queue groups: each publish
+    to a subject gets the next sequence number in that subject's own
+    ordered log; each `(subject, group)` keeps its own delivery cursor
+    into that *same* log, so two workers on one stream each see every
+    message, in publish order, without consuming each other's copy --
+    Pillar 5's "independent groups each receive a copy."
+    """
 
     def __init__(self) -> None:
         self.published: list[tuple[str, dict[str, Any]]] = []
+        self._messages: dict[str, list[_Message]] = {}
+        self._cursors: dict[tuple[str, str], int] = {}
+        self._next_message_id = 1
 
-    def record(self, subject: str, payload: dict[str, Any]) -> None:
+    def record(self, subject: str, payload: dict[str, Any]) -> str:
+        """Publishes `payload` to `subject`, returning a deterministic
+        message ID (monotonically increasing per broker instance, not
+        per subject -- distinguishing messages is this ID's only job;
+        per-subject ordering is `seq`, tracked separately)."""
         self.published.append((subject, dict(payload)))
+        seq = len(self._messages.get(subject, []))
+        message_id = f"msg-{self._next_message_id}"
+        self._next_message_id += 1
+        self._messages.setdefault(subject, []).append(_Message(message_id, seq, dict(payload)))
+        return message_id
+
+    def take_next(self, subject: str, group: str) -> _Message | None:
+        """The next message `group` hasn't yet been handed for
+        `subject`, advancing that group's own cursor -- or `None` if
+        the group is caught up. Independent of every other group's
+        cursor on the same subject."""
+        idx = self._cursors.get((subject, group), 0)
+        messages = self._messages.get(subject, [])
+        if idx >= len(messages):
+            return None
+        self._cursors[(subject, group)] = idx + 1
+        return messages[idx]
+
+    def drain(self, subject: str, group: str) -> list[_Message]:
+        """Every message `group` hasn't yet been handed for `subject`,
+        oldest first, advancing the cursor past all of them."""
+        out: list[_Message] = []
+        while (msg := self.take_next(subject, group)) is not None:
+            out.append(msg)
+        return out
+
+
+class VirtualClock:
+    """A narrow Python restatement of `ciac_sim::clock::VirtualClock`
+    (Rust, v0.17 M4) -- monotonic epoch-ms, advanced only by explicit
+    runner calls, never wall time. Reconciling this with the canonical
+    Rust clock (so this restatement stops existing) is the bounded
+    child protocol M10 is scoped to build, same as `FailureEngine`."""
+
+    def __init__(self, start_at_ms: int = 0) -> None:
+        self._now_ms = start_at_ms
+
+    def now_ms(self) -> int:
+        return self._now_ms
+
+    def advance_by(self, ms: int) -> None:
+        assert ms >= 0, "virtual clock cannot move backward"
+        self._now_ms += ms
+
+
+class FakeCache:
+    """Enough of `redis.asyncio.Redis`'s interface (with
+    `decode_responses=True`) for generated cache-aside CRUD stores:
+    `.get(key) -> str | None`, `.set(key, value, ex=seconds)`,
+    `.delete(key)`. TTL is measured against the `VirtualClock` the
+    world shares, not wall time -- the exact gap Pillar 6 names
+    ("cache/token expiry uses wall time... requires a real week of
+    sleeping" today); advancing virtual time here expires a key
+    without a real sleep."""
+
+    def __init__(self, clock: VirtualClock) -> None:
+        self._clock = clock
+        self._values: dict[str, str] = {}
+        self._expire_at_ms: dict[str, int] = {}
+
+    async def get(self, key: str) -> str | None:
+        expire_at = self._expire_at_ms.get(key)
+        if expire_at is not None and self._clock.now_ms() >= expire_at:
+            self._values.pop(key, None)
+            self._expire_at_ms.pop(key, None)
+            return None
+        return self._values.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self._values[key] = value
+        if ex is not None:
+            self._expire_at_ms[key] = self._clock.now_ms() + ex * 1000
+        else:
+            self._expire_at_ms.pop(key, None)
+
+    async def delete(self, key: str) -> None:
+        self._values.pop(key, None)
+        self._expire_at_ms.pop(key, None)
 
 
 @dataclass
@@ -351,8 +454,10 @@ class SimWorld:
     schema: Schema = field(default_factory=Schema.empty)
     db: FakeDatabase = field(init=False)
     broker: FakeBroker = field(default_factory=FakeBroker)
+    clock: VirtualClock = field(default_factory=VirtualClock)
     transcript: list[dict[str, Any]] = field(default_factory=list)
     failures: FailureEngine = field(init=False)
+    _caches: dict[str, FakeCache] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.failures = FailureEngine(self.failure_rules)
@@ -364,20 +469,49 @@ class SimWorld:
 
         return factory
 
+    def fake_cache(self, instance: str) -> FakeCache:
+        if instance not in self._caches:
+            self._caches[instance] = FakeCache(self.clock)
+        return self._caches[instance]
+
     async def publish(self, subject: str, payload: dict[str, Any]) -> None:
         self.transcript.append({"effect": "broker.publish", "subject": subject})
         self.broker.record(subject, payload)
 
+    async def deliver(self, subject: str, group: str, handle_message) -> int:
+        """Drains every undelivered message for `(subject, group)` and
+        calls `handle_message(payload_dict)` on each, oldest first,
+        applying `broker.ack` failure rules after each successful
+        handling: a matched rule means the ack for that occurrence was
+        lost, so the broker (having never seen it acknowledged)
+        redelivers the *same* message again -- the real effects it
+        already committed stay committed, per Pillar 5's "acknowledgement
+        lost after effects committed." Returns the number of
+        `handle_message` invocations, including redeliveries, so a
+        caller can distinguish "delivered once" from "delivered twice."
+        """
+        invocations = 0
+        for msg in self.broker.drain(subject, group):
+            await handle_message(msg.payload)
+            invocations += 1
+            self.transcript.append({"effect": "broker.ack", "subject": subject})
+            while self.failures.should_fail("broker.ack", subject):
+                self.transcript.append({"effect": "broker.redeliver", "subject": subject})
+                await handle_message(msg.payload)
+                invocations += 1
+        return invocations
+
 
 class _FakeSession:
     """Enough of `sqlalchemy.ext.asyncio.AsyncSession`'s interface for
-    generated code that calls `.add(obj)`/`await .delete(obj)` then
-    `await .commit()`/`await .rollback()` inside `async with
-    sessionmaker() as session:` -- exactly what the `transaction {
-    db.insert(..); }` lowering emits (see `docs/expressions.md`).
-    `.get`/`.scalars`/attribute-mutation-based updates remain
+    generated code that calls `.add(obj)`/`await .delete(obj)`/
+    `await .get(Model, pk)` then `await .commit()`/`await .rollback()`
+    inside `async with sessionmaker() as session:` -- exactly what the
+    `transaction { db.insert(..); }` lowering and a cache-aside CRUD
+    store's read path (see `customer_store.py`-shaped generated code)
+    emit. `.scalars`/attribute-mutation-based updates remain
     unsupported; a fixture that needed them would be out of the
-    M5/M6-disclosed scope, not a bug in this class.
+    M5/M6/M7-disclosed scope, not a bug in this class.
     """
 
     def __init__(self, world: SimWorld, instance: str) -> None:
@@ -388,6 +522,11 @@ class _FakeSession:
 
     def add(self, obj: Any) -> None:
         self._pending_adds.append(obj)
+
+    async def get(self, model: type, pk: Any) -> Any | None:
+        table = model.__tablename__
+        row = self._world.db.get(table, str(pk))
+        return model(**row) if row is not None else None
 
     async def delete(self, obj: Any) -> None:
         self._pending_deletes.append(obj)

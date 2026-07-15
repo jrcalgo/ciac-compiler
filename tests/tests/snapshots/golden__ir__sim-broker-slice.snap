@@ -1,0 +1,568 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "SimBrokerSlice",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "SimBrokerSlice"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Cache",
+      "name": "default",
+      "engine": "Redis"
+    },
+    {
+      "id": 3,
+      "service": null,
+      "kind": "Stream",
+      "name": "Pings",
+      "subject": "sim_broker_slice.pings",
+      "record": 1
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Api",
+      "name": "Widget",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Service",
+      "name": "WidgetStore",
+      "signature": null
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Api",
+      "name": "EmitApi",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": "/pings",
+        "scope": null
+      }
+    },
+    {
+      "id": 7,
+      "service": 0,
+      "kind": "Worker",
+      "name": "ConsumerA",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 8,
+      "service": 0,
+      "kind": "Worker",
+      "name": "ConsumerB",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 9,
+      "service": 0,
+      "kind": "Service",
+      "name": "Emit",
+      "signature": {
+        "params": [
+          [
+            "p",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 1
+        },
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "service": 0,
+      "kind": "Service",
+      "name": "HandleA",
+      "signature": {
+        "params": [
+          [
+            "p",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 1
+        },
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbInsert": 0
+                },
+                "args": [
+                  {
+                    "RecordCons": {
+                      "record": 2,
+                      "base_value": null,
+                      "fields": [
+                        [
+                          "id",
+                          {
+                            "BuiltinCall": "UuidNew"
+                          }
+                        ],
+                        [
+                          "ping_id",
+                          {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 1
+                                  }
+                                }
+                              },
+                              "field": "id",
+                              "ty": "Uuid"
+                            }
+                          }
+                        ],
+                        [
+                          "seq",
+                          {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 1
+                                  }
+                                }
+                              },
+                              "field": "seq",
+                              "ty": "Int"
+                            }
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 2
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "service": 0,
+      "kind": "Service",
+      "name": "HandleB",
+      "signature": {
+        "params": [
+          [
+            "p",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 1
+        },
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbInsert": 1
+                },
+                "args": [
+                  {
+                    "RecordCons": {
+                      "record": 3,
+                      "base_value": null,
+                      "fields": [
+                        [
+                          "id",
+                          {
+                            "BuiltinCall": "UuidNew"
+                          }
+                        ],
+                        [
+                          "ping_id",
+                          {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 1
+                                  }
+                                }
+                              },
+                              "field": "id",
+                              "ty": "Uuid"
+                            }
+                          }
+                        ],
+                        [
+                          "seq",
+                          {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 1
+                                  }
+                                }
+                              },
+                              "field": "seq",
+                              "ty": "Int"
+                            }
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 3
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 3,
+      "to": 1,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 4,
+      "to": 5,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 2,
+      "from": 5,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 5,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 4,
+      "from": 3,
+      "to": 7,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 5,
+      "from": 3,
+      "to": 8,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 6,
+      "from": 6,
+      "to": 9,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 7,
+      "from": 9,
+      "to": 3,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 8,
+      "from": 10,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 7,
+      "to": 10,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 11,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 8,
+      "to": 11,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Widget",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "name",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "Ping",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "seq",
+          "ty": {
+            "type": "Int"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "ProcessedByA",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "ping_id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "seq",
+          "ty": {
+            "type": "Int"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "ProcessedByB",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "ping_id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "seq",
+          "ty": {
+            "type": "Int"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [
+    {
+      "name": "ProcessedByATable",
+      "record": 2,
+      "service": 0,
+      "db_instance": 0
+    },
+    {
+      "name": "ProcessedByBTable",
+      "record": 3,
+      "service": 0,
+      "db_instance": 0
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "EmitApi",
+      "service": 0,
+      "owner": 6,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 9
+        },
+        {
+          "step": "Publish",
+          "stream": 3
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "ConsumerA",
+      "service": 0,
+      "owner": 7,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 10
+        }
+      ]
+    },
+    {
+      "name": "ConsumerB",
+      "service": 0,
+      "owner": 8,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 11
+        }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "name": "Widget",
+      "service_owner": 0,
+      "api": 4,
+      "service": 5,
+      "database": 0,
+      "cache": 2,
+      "auth": null,
+      "record": 0,
+      "config": {
+        "cache_ttl": 30,
+        "page_size": 100,
+        "read_scope": null,
+        "write_scope": null
+      }
+    }
+  ],
+  "event_streams": []
+}

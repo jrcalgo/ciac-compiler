@@ -136,7 +136,11 @@ def _urls() -> dict[str, str]:
 
 
 def get_cache(instance: str = "default") -> redis.Redis:
-    caches = current().caches
+    state = current()
+    if state.world is not None:
+        # v0.17 M7: the checkpoint's cache port.
+        return state.world.fake_cache(instance)
+    caches = state.caches
     if instance not in caches:
         caches[instance] = redis.Redis.from_url(
             _urls()[instance], decode_responses=True

@@ -54,6 +54,18 @@ def domain_orders_schema() -> Schema:
     )
 
 
+def test_primary_key_conflict_is_rejected() -> None:
+    db = FakeDatabase(domain_orders_schema())
+    db.insert("customers", "cust-1", {"id": "cust-1", "name": "Ada"})
+    try:
+        db.insert("customers", "cust-1", {"id": "cust-1", "name": "Grace"})
+    except UniqueViolation:
+        pass
+    else:
+        raise AssertionError("expected UniqueViolation (primary key conflict)")
+    assert db.get("customers", "cust-1")["name"] == "Ada", "the first row must survive unchanged"
+
+
 def test_reference_violation_on_insert_with_missing_target() -> None:
     db = FakeDatabase(domain_orders_schema())
     try:

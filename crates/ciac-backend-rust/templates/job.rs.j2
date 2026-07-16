@@ -71,7 +71,10 @@ async fn sleep_until_next(schedule: &Schedule) -> anyhow::Result<()> {
 {%- endfor %}
 {%- endmacro %}
 
-async fn handle_tick_once(state: &AppState) -> anyhow::Result<()> {
+/// `pub` (v0.17 M11): `src/bin/sim_runner.rs` calls this directly on
+/// each cron-schedule due-instant an `advance` step's virtual-time
+/// window covers, instead of the real `sleep_until_next`/`run` loop.
+pub async fn handle_tick_once(state: &AppState) -> anyhow::Result<()> {
 {%- if job.steps %}
     let result = serde_json::json!({});
 {{ emit_steps(job.steps, "    ") }}

@@ -108,6 +108,16 @@ impl FakeQueue {
     pub fn take_all(&self) -> Vec<(String, Vec<u8>)> {
         std::mem::take(&mut self.published.lock().expect("FakeQueue mutex poisoned"))
     }
+
+    /// Non-destructive peek -- `expect.quiescence` needs to observe
+    /// whether anything is still undelivered without consuming it,
+    /// unlike `take_all`.
+    pub fn is_empty(&self) -> bool {
+        self.published
+            .lock()
+            .expect("FakeQueue mutex poisoned")
+            .is_empty()
+    }
 }
 
 /// The simulation adapter `AppState::simulation(world)` constructs
@@ -224,6 +234,17 @@ mod tests {
             queue.take_all().is_empty(),
             "a second drain sees nothing new"
         );
+    }
+
+    #[test]
+    fn queue_is_empty_peeks_without_consuming() {
+        let queue = FakeQueue::new();
+        assert!(queue.is_empty());
+        queue.publish("a", b"1".to_vec());
+        assert!(!queue.is_empty());
+        assert!(!queue.is_empty(), "peeking twice does not drain");
+        assert_eq!(queue.take_all().len(), 1);
+        assert!(queue.is_empty());
     }
 
     #[test]

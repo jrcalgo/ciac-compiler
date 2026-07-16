@@ -270,6 +270,17 @@ fn emit_service(
         if !ctx.jobs.is_empty() {
             project.add_file(at("src/cron.rs"), VENDORED_SIM_CRON);
         }
+        // v0.17 M11: `cargo run --bin sim_runner -- <scenario.json>` --
+        // see the template's own doc comment for exactly what this does
+        // and does not cover. `has_drain_workers` tells the template
+        // whether any worker match arm exists at all, so it can name the
+        // drained-payload binding `_raw` instead of `raw` when none do
+        // (an empty match has nothing to deserialize `raw` into).
+        let has_drain_workers = ctx.workers.iter().any(|w| !w.steps.is_empty());
+        project.add_file(
+            at("src/bin/sim_runner.rs"),
+            render("sim_runner.rs.j2", context! { has_drain_workers })?,
+        );
     }
     project.add_file(
         at("src/observability.rs"),

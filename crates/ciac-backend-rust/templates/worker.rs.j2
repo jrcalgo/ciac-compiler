@@ -170,7 +170,13 @@ async fn handle_message(state: &AppState, payload: {{ payload_type }}) -> anyhow
     Ok(())
 }
 
-async fn handle_message_once(state: &AppState, payload: {{ payload_type }}) -> anyhow::Result<()> {
+/// `pub` (v0.17 M11): `src/bin/sim_runner.rs` calls this directly to
+/// drive its own retry loop with real attempt counting, the same
+/// "the runner pumps delivery, there is no running subscription loop"
+/// architecture `sim/pyrunner/world.py`'s `deliver_counting_attempts`
+/// uses -- see that module's docstring for why `handle_message_once`,
+/// not `handle_message`, is the entry point a runner needs.
+pub async fn handle_message_once(state: &AppState, payload: {{ payload_type }}) -> anyhow::Result<()> {
     let result = payload;
 {{ emit_steps(worker.steps, "    ") }}
     let _ = result;

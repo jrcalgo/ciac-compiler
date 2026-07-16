@@ -23,7 +23,7 @@ mod lower;
 
 use ciac_codegen::model as context;
 use ciac_codegen::{Backend, BackendError, GenOptions, GeneratedProject};
-use ciac_ir::{Component, NormalizedIr};
+use ciac_ir::{Component, NodeKind, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 
@@ -151,6 +151,51 @@ impl Backend for RustBackend {
         }
         Ok(project)
     }
+}
+
+/// Human-readable, closed list of reasons `ciac sim --target rust`
+/// (v0.17 M11) cannot yet simulate `ir`, empty when it can. `SimWorld`
+/// (`ciac-sim/src/world.rs`) only fakes `db.insert` and broker
+/// publish/consume; every other verb a typed handler calls falls
+/// straight through the world-guard to real infrastructure, either
+/// panicking against an unreachable service or (for verbs with no
+/// guard at all, like `db.get`) reading the real, empty pool instead of
+/// the seeded/inserted simulation state. Declared-but-unused capability
+/// instances are not flagged here -- only verbs a handler body actually
+/// calls, since an unused `cache Redis` instance never touches
+/// anything and lazy construction (v0.17 M11) means it's harmless.
+pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
+        reasons.push(
+            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
+             cryptography against a real issuer, which this milestone's simulation world does \
+             not fake"
+                .to_owned(),
+        );
+    }
+    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
+    for node in ir.nodes() {
+        if let Component::Service {
+            signature: Some(hir),
+            ..
+        } = &node.component
+        {
+            for verb in lower::scan(ir, hir).unguarded_verbs {
+                if !unguarded_verbs.contains(&verb) {
+                    unguarded_verbs.push(verb);
+                }
+            }
+        }
+    }
+    if !unguarded_verbs.is_empty() {
+        unguarded_verbs.sort_unstable();
+        reasons.push(format!(
+            "calls verb(s) the simulation world does not fake: {}",
+            unguarded_verbs.join(", ")
+        ));
+    }
+    reasons
 }
 
 /// Emits one deployable crate (today's single-service layout) under

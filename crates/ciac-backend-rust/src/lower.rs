@@ -54,6 +54,13 @@ pub struct Needs {
     /// `models.rs`'s `TryFrom` impl), and importing an unused one is an
     /// `unused_imports` error under `-D warnings`.
     pub enums: Vec<String>,
+    /// Every verb this body calls that v0.17 M11's `SimWorld` does not
+    /// fake (anything besides `db.insert`/broker `publish`) -- `ciac
+    /// sim --target rust`'s own capability-coverage refusal reads this
+    /// list rather than re-deriving it, so the one place that knows
+    /// every verb this backend lowers is also the one place that knows
+    /// which of them the simulation world can honor.
+    pub unguarded_verbs: Vec<&'static str>,
 }
 
 impl Needs {
@@ -201,16 +208,38 @@ fn scan_expr(ir: &NormalizedIr, expr: &HirExpr, needs: &mut Needs) {
                     if !needs.db_get_tables.contains(table) {
                         needs.db_get_tables.push(*table);
                     }
+                    needs.unguarded_verbs.push("db.get");
                 }
-                Verb::CacheGet | Verb::CacheSet => needs.cache = true,
-                Verb::ObjectStorePut | Verb::ObjectStoreGet => {}
-                Verb::DbUpdate(table) | Verb::DbDelete(table) => {
+                Verb::CacheGet => {
+                    needs.cache = true;
+                    needs.unguarded_verbs.push("cache.get");
+                }
+                Verb::CacheSet => {
+                    needs.cache = true;
+                    needs.unguarded_verbs.push("cache.set");
+                }
+                Verb::ObjectStorePut => needs.unguarded_verbs.push("object_store.put"),
+                Verb::ObjectStoreGet => needs.unguarded_verbs.push("object_store.get"),
+                Verb::DbUpdate(table) => {
                     needs.db = true;
                     needs.table(*table);
+                    needs.unguarded_verbs.push("db.update");
                 }
-                Verb::CacheDelete => needs.cache = true,
-                Verb::ObjectStoreDelete | Verb::ObjectStoreList => {}
-                Verb::EmailSend | Verb::SearchIndex | Verb::SearchQuery | Verb::HttpCall => {}
+                Verb::DbDelete(table) => {
+                    needs.db = true;
+                    needs.table(*table);
+                    needs.unguarded_verbs.push("db.delete");
+                }
+                Verb::CacheDelete => {
+                    needs.cache = true;
+                    needs.unguarded_verbs.push("cache.delete");
+                }
+                Verb::ObjectStoreDelete => needs.unguarded_verbs.push("object_store.delete"),
+                Verb::ObjectStoreList => needs.unguarded_verbs.push("object_store.list"),
+                Verb::EmailSend => needs.unguarded_verbs.push("email.send"),
+                Verb::SearchIndex => needs.unguarded_verbs.push("search.index"),
+                Verb::SearchQuery => needs.unguarded_verbs.push("search.query"),
+                Verb::HttpCall => needs.unguarded_verbs.push("http.call"),
                 Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
                     unreachable!("typeck only ever constructs these via HirExpr::Query")
                 }
@@ -233,8 +262,16 @@ fn scan_expr(ir: &NormalizedIr, expr: &HirExpr, needs: &mut Needs) {
                     if !needs.db_get_tables.contains(table) {
                         needs.db_get_tables.push(*table);
                     }
+                    needs.unguarded_verbs.push("db.query");
                 }
-                Verb::DbCount(table) | Verb::DbDeleteWhere(table) => needs.table(*table),
+                Verb::DbCount(table) => {
+                    needs.table(*table);
+                    needs.unguarded_verbs.push("db.count");
+                }
+                Verb::DbDeleteWhere(table) => {
+                    needs.table(*table);
+                    needs.unguarded_verbs.push("db.delete_where");
+                }
                 _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
             }
             if let Some(predicate) = predicate {

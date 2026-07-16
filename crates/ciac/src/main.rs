@@ -296,8 +296,9 @@ enum Command {
         keep: bool,
         /// After static verification passes, run every `--scenario`
         /// through the same bounded, in-process simulation `ciac sim`
-        /// uses (Python-only, see `docs/simulation.md`) — no Docker, no
-        /// wall-clock sleep. Requires at least one `--scenario`.
+        /// uses against this `--target` (see `docs/simulation.md` for
+        /// the per-target coverage) — no Docker, no wall-clock sleep.
+        /// Requires at least one `--scenario`.
         #[arg(long)]
         sim: bool,
         /// One or more scenario JSON files for `--sim`. Ignored without
@@ -318,8 +319,11 @@ enum Command {
     /// see `docs/simulation.md`) against a generated project's real
     /// code, with in-memory fakes standing in for the database,
     /// broker, cache, object store, email, search, and external HTTP
-    /// -- no Docker, no wall-clock sleep. Python-only in this version;
-    /// `--target rust` is refused, not silently no-op'd (see
+    /// -- no Docker, no wall-clock sleep. `--target python` fakes every
+    /// capability (v0.17 M6-M9); `--target rust` fakes only
+    /// `db.insert`/broker publish-consume/cron jobs (v0.17 M11) and is
+    /// refused with the specific reason for any program that calls a
+    /// verb or capability it doesn't cover, not silently no-op'd (see
     /// `docs/simulation.md`'s status table). The claim boundary
     /// matters: a green `ciac sim` run proves the exercised generated
     /// code and its declared effects behave as scripted against these
@@ -328,7 +332,8 @@ enum Command {
     Sim {
         /// Path to the `.ciac` source file.
         file: PathBuf,
-        /// Code-generation target. Only `python` runs today.
+        /// Code-generation target: `python` (full fakes) or `rust`
+        /// (narrower fakes; refused per-program when unsupported).
         #[arg(short, long)]
         target: String,
         /// Output directory for the generated project (reused if it
@@ -414,9 +419,9 @@ enum Command {
     /// Run a Model Context Protocol server over stdio (newline-
     /// delimited JSON-RPC): exposes `check`, `build`, `diff`,
     /// `verify` (no `--system`/`--live`), `verify_sim` (bounded
-    /// in-process simulation, Python-only, no `--record`/`--replay`),
-    /// `graph`, `explain`, and `describe` as MCP tools for an agent
-    /// client to call.
+    /// in-process simulation, per-target coverage, no
+    /// `--record`/`--replay`), `graph`, `explain`, and `describe` as
+    /// MCP tools for an agent client to call.
     Mcp,
     /// The expand/backfill/contract ladder for a change the semantic
     /// differ recognizes but can't compute (v0.18 M6). See

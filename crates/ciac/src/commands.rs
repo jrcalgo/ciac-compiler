@@ -1128,9 +1128,9 @@ fn sim_inner(
     name: Option<String>,
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<crate::json_out::SimResult> {
-    if target != "python" {
+    if target != "python" && target != "rust" {
         bail!(
-            "`ciac sim` only drives the Python target in v0.17 (got `{target}`); \
+            "`ciac sim` only drives the python/rust targets in v0.17 (got `{target}`); \
              see docs/simulation.md for the disclosed scope"
         );
     }
@@ -1139,6 +1139,15 @@ fn sim_inner(
     }
     if (record.is_some() || replay.is_some()) && scenarios.len() != 1 {
         bail!("--record/--replay require exactly one --scenario");
+    }
+    if target == "rust" && (record.is_some() || replay.is_some()) {
+        // v0.17 M11's runner is a plain scenario interpreter (no plan/
+        // source-hash arguments, no replay tape) -- disclosed, not
+        // silently ignored.
+        bail!(
+            "`ciac sim --target rust` does not yet support --record/--replay (v0.17 M11 \
+             disclosed scope); see docs/simulation.md"
+        );
     }
 
     let Generated {
@@ -1191,9 +1200,60 @@ fn sim_inner(
     let Some(ir) = ir.filter(|_| !has_errors) else {
         bail!("program stopped compiling between generate and sim");
     };
+    if target == "rust" {
+        let unsupported = ciac_backend_rust::unsupported_sim_capabilities(&ir);
+        if !unsupported.is_empty() {
+            bail!(
+                "`ciac sim --target rust` cannot simulate this program (v0.17 M11 disclosed \
+                 scope):\n{}",
+                unsupported
+                    .iter()
+                    .map(|reason| format!("  - {reason}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+    }
     let plan = ciac_sim::SimPlan::from_ir(&ir, source_hash.clone());
     let plan_hash = plan.plan_hash();
 
+    let scenario_outcomes = if target == "rust" {
+        sim_drive_rust(out, scenarios, wall_timeout)?
+    } else {
+        sim_drive_python(
+            out,
+            scenarios,
+            record,
+            replay,
+            &source_hash,
+            &plan,
+            &plan_hash,
+            wall_timeout,
+        )?
+    };
+
+    Ok(crate::json_out::SimResult {
+        plan_hash,
+        source_hash,
+        scenarios: scenario_outcomes,
+    })
+}
+
+/// Drives every `--scenario` against a generated Python project via the
+/// embedded `auto_driver.py` (v0.17 M9/M10) — unchanged behavior,
+/// factored out of `sim_inner` so it sits next to [`sim_drive_rust`]
+/// instead of inside one large target `if`.
+#[allow(clippy::too_many_arguments)]
+fn sim_drive_python(
+    out: &Path,
+    scenarios: &[PathBuf],
+    record: Option<&Path>,
+    replay: Option<&Path>,
+    source_hash: &str,
+    plan: &ciac_sim::SimPlan,
+    plan_hash: &str,
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let projects = find_project_dirs(out, "pyproject.toml")?;
     let project_dir = match projects.as_slice() {
         [] => bail!("no generated python project found under {}", out.display()),
@@ -1230,7 +1290,7 @@ fn sim_inner(
     let plan_path = sim_dir.join("plan.json");
     std::fs::write(
         &plan_path,
-        serde_json::to_vec_pretty(&plan).context("SimPlan serializes")?,
+        serde_json::to_vec_pretty(plan).context("SimPlan serializes")?,
     )
     .with_context(|| format!("cannot write {}", plan_path.display()))?;
 
@@ -1249,9 +1309,9 @@ fn sim_inner(
             .arg(&plan_path)
             .arg(&scenario_abs)
             .arg("--source-hash")
-            .arg(&source_hash)
+            .arg(source_hash)
             .arg("--plan-hash")
-            .arg(&plan_hash)
+            .arg(plan_hash)
             .current_dir(&project_dir)
             .env("PYTHONPATH", &pythonpath);
         if let Some(record_path) = record {
@@ -1289,12 +1349,86 @@ fn sim_inner(
             })?;
         scenario_outcomes.push(outcome);
     }
+    Ok(scenario_outcomes)
+}
 
-    Ok(crate::json_out::SimResult {
-        plan_hash,
-        source_hash,
-        scenarios: scenario_outcomes,
-    })
+/// Drives every `--scenario` against a generated Rust project's own
+/// `src/bin/sim_runner.rs` (v0.17 M11) — unlike the Python side, the
+/// runner is generated code baked into the project itself, not a
+/// scratch directory `ciac sim` writes out, since Rust needs the
+/// runner compiled against this program's own concrete types. No
+/// plan/source-hash arguments (the runner doesn't take any — see its
+/// own doc comment for the narrower, disclosed CLI contract).
+fn sim_drive_rust(
+    out: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let projects = find_project_dirs(out, "Cargo.toml")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!("no generated rust project found under {}", out.display()),
+        [one] => one.clone(),
+        many => bail!(
+            "`ciac sim` only supports a single-service Rust project in v0.17 (found {} under \
+             {}); see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+    if !project_dir.join("src/bin/sim_runner.rs").exists() {
+        bail!(
+            "no `src/bin/sim_runner.rs` in {} -- this program declares nothing v0.17 M11's \
+             simulation world can fake (no `db`/`queue` use); see docs/simulation.md",
+            project_dir.display()
+        );
+    }
+    run_in(
+        &project_dir,
+        "cargo",
+        &["build", "-q", "--bin", "sim_runner"],
+    )?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("cargo");
+        cmd.arg("run")
+            .arg("-q")
+            .arg("--bin")
+            .arg("sim_runner")
+            .arg("--")
+            .arg(&scenario_abs)
+            .current_dir(&project_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run sim_runner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "sim_runner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -438,7 +438,7 @@ fn rust_record_cons(
                 let enum_name = format!("{record_name}{}", name.to_pascal_case());
                 format!("{name}: {enum_name}::{variant}")
             } else {
-                format!("{name}: {}", rust_expr(ir, body, value))
+                format!("{name}: {}", rust_field_value_expr(ir, body, value))
             }
         })
         .collect();
@@ -447,8 +447,32 @@ fn rust_record_cons(
         Some(base) => format!(
             "{record_name} {{ {}, ..{} }}",
             field_strs.join(", "),
-            rust_expr(ir, body, base)
+            rust_field_value_expr(ir, body, base)
         ),
+    }
+}
+
+/// Renders an expression used as a record-construction field value (or
+/// `..base`) — the one place, across every verb, that a still-live
+/// handler-input value's *field* can end up borrowed into a brand-new
+/// owned record. `x.field` used this way must be cloned, not moved:
+/// unlike Python, Rust rejects a later whole-value use of `x` (e.g.
+/// returning the handler's input parameter itself after only one of
+/// its fields was pulled into an inserted/updated row) as a use of a
+/// partially moved value — found live via `ciac verify -t rust` on
+/// `sim-vertical-slice.ciac`/`sim-broker-slice.ciac` (v0.17 M11),
+/// whose handlers do exactly that. Always cloning here (rather than
+/// tracking whether the source is actually reused later) is the
+/// simplest correct rule: cloning a `Copy` field is a harmless no-op,
+/// and every non-`Copy` field this compiler generates (`String`,
+/// `serde_json::Value`, ..) is cheap enough that this is not a
+/// meaningful cost next to the query it feeds.
+fn rust_field_value_expr(ir: &NormalizedIr, body: &HandlerBody, value: &HirExpr) -> String {
+    let rendered = rust_expr(ir, body, value);
+    if matches!(value, HirExpr::FieldAccess { .. }) {
+        format!("{rendered}.clone()")
+    } else {
+        rendered
     }
 }
 

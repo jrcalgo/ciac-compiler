@@ -684,7 +684,7 @@ impl<'a> Replace<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, payload: NoteUpdate) -> anyhow::Result<Note> {
-let v1 = Note { id: payload.id, title: payload.title, active: payload.active };
+let v1 = Note { id: payload.id.clone(), title: payload.title.clone(), active: payload.active.clone() };
 {
     let __row = v1.clone();
     let __updated = sqlx::query("UPDATE notes SET title = ?, active = ? WHERE id = ?")

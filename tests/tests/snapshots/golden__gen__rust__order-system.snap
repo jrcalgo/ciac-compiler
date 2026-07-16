@@ -1025,7 +1025,7 @@ impl<'a> MarkShipped<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, payload: OrderUpdate) -> anyhow::Result<Order> {
-let v1 = Order { id: payload.id, customer_id: payload.customer_id, status: OrderStatus::Shipped, total: payload.total };
+let v1 = Order { id: payload.id.clone(), customer_id: payload.customer_id.clone(), status: OrderStatus::Shipped, total: payload.total.clone() };
 {
     let __row = v1.clone();
     let __updated = sqlx::query("UPDATE orders SET customer_id = $1, status = $2, total = $3 WHERE id = $4")

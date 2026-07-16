@@ -614,7 +614,7 @@ if order.total < 0.0 {
     ()
 };
 {
-    let __row = OrderAudit { id: uuid::Uuid::new_v4().to_string(), note: "order placed".to_owned(), total: order.total }.clone();
+    let __row = OrderAudit { id: uuid::Uuid::new_v4().to_string(), note: "order placed".to_owned(), total: order.total.clone() }.clone();
     sqlx::query("INSERT INTO order_audits (id, note, total) VALUES ($1, $2, $3)")
         .bind(&__row.id)
         .bind(&__row.note)

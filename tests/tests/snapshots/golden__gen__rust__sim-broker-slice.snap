@@ -696,7 +696,7 @@ impl<'a> HandleA<'a> {
     #[allow(unused_variables)]
     pub async fn handle(&self, p: Ping) -> anyhow::Result<Ping> {
 {
-    let __row = ProcessedByA { id: uuid::Uuid::new_v4().to_string(), ping_id: p.id, seq: p.seq }.clone();
+    let __row = ProcessedByA { id: uuid::Uuid::new_v4().to_string(), ping_id: p.id.clone(), seq: p.seq.clone() }.clone();
     sqlx::query("INSERT INTO processed_by_a_table (id, ping_id, seq) VALUES ($1, $2, $3)")
         .bind(&__row.id)
         .bind(&__row.ping_id)
@@ -736,7 +736,7 @@ impl<'a> HandleB<'a> {
     #[allow(unused_variables)]
     pub async fn handle(&self, p: Ping) -> anyhow::Result<Ping> {
 {
-    let __row = ProcessedByB { id: uuid::Uuid::new_v4().to_string(), ping_id: p.id, seq: p.seq }.clone();
+    let __row = ProcessedByB { id: uuid::Uuid::new_v4().to_string(), ping_id: p.id.clone(), seq: p.seq.clone() }.clone();
     sqlx::query("INSERT INTO processed_by_b_table (id, ping_id, seq) VALUES ($1, $2, $3)")
         .bind(&__row.id)
         .bind(&__row.ping_id)

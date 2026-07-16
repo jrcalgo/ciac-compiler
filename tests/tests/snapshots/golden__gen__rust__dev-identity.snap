@@ -742,6 +742,268 @@ where
     }
 }
 ============================================================
+src/failure.rs
+============================================================
+//! Deterministic failure injection (17UpdatePlan.md Pillar 7). Failures
+//! select semantic effects, not threads, line numbers, or target stack
+//! frames -- `{"at": {"effect": "broker.ack", "subject":
+//! "orders.created", "occurrence": 1, "phase": "after"}, "action":
+//! {"kind": "lose"}}` is the plan's own worked example, matched
+//! verbatim by this module's (de)serialization.
+//!
+//! `before` means the effect was not applied; `after` means it was
+//! applied but the caller observed failure or ambiguity -- the
+//! distinction the plan calls "essential for commit-then-error and
+//! lost-ack tests." A required rule that never matches is a scenario
+//! error (`SIM0007`), never a silently-skipped no-op.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailurePhase {
+    Before,
+    After,
+}
+
+/// Which real effect occurrence a rule targets. `occurrence` is
+/// 1-based and counts matches of `(effect, subject)` -- `None` matches
+/// every occurrence of that effect/subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureSelector {
+    pub effect: String,
+    #[serde(default)]
+    pub subject: Option<String>,
+    #[serde(default)]
+    pub occurrence: Option<u64>,
+    pub phase: FailurePhase,
+}
+
+/// The closed action vocabulary. `Delay` alone carries a parameter
+/// (`by_ms`) -- the plan does not invent a default backoff duration, so
+/// a rule that delays must say how long.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FailureAction {
+    Error,
+    Delay { by_ms: i64 },
+    Timeout,
+    Lose,
+    Duplicate,
+    Disconnect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureRule {
+    pub at: FailureSelector,
+    pub action: FailureAction,
+}
+
+/// Tracks a set of failure rules against a live run's real effect
+/// occurrences, deciding which action (if any) applies to each one and
+/// which required rules never fired.
+#[derive(Debug)]
+pub struct FailureEngine {
+    rules: Vec<FailureRule>,
+    matched: Vec<bool>,
+    /// Running count of `(effect, subject)` occurrences seen so far,
+    /// independent of which (if any) rule matches them -- an
+    /// occurrence-1 rule and an occurrence-2 rule on the same
+    /// `(effect, subject)` both need this shared counter to agree on
+    /// which real occurrence is "first" versus "second."
+    occurrence_counts: HashMap<(String, Option<String>), u64>,
+}
+
+impl FailureEngine {
+    pub fn new(rules: Vec<FailureRule>) -> FailureEngine {
+        let matched = vec![false; rules.len()];
+        FailureEngine {
+            rules,
+            matched,
+            occurrence_counts: HashMap::new(),
+        }
+    }
+
+    /// Records one real occurrence of `effect`/`subject` at `phase`,
+    /// returning the action of the first still-applicable rule that
+    /// matches it (rules are checked in declaration order; the first
+    /// match wins, deterministically).
+    pub fn record_occurrence(
+        &mut self,
+        effect: &str,
+        subject: Option<&str>,
+        phase: FailurePhase,
+    ) -> Option<FailureAction> {
+        let key = (effect.to_owned(), subject.map(str::to_owned));
+        let count = self.occurrence_counts.entry(key).or_insert(0);
+        *count += 1;
+        let this_occurrence = *count;
+
+        for (idx, rule) in self.rules.iter().enumerate() {
+            if self.matched[idx] {
+                continue;
+            }
+            let selector = &rule.at;
+            if selector.effect != effect {
+                continue;
+            }
+            if let Some(want_subject) = &selector.subject {
+                if subject != Some(want_subject.as_str()) {
+                    continue;
+                }
+            }
+            if selector.phase != phase {
+                continue;
+            }
+            if let Some(want_occurrence) = selector.occurrence {
+                if want_occurrence != this_occurrence {
+                    continue;
+                }
+            }
+            self.matched[idx] = true;
+            return Some(rule.action.clone());
+        }
+        None
+    }
+
+    /// Rules that never matched any real occurrence -- `SIM0007`
+    /// territory. Every rule is "required" in this engine: there is no
+    /// separate optional-rule concept in 17UpdatePlan.md's Pillar 7.
+    pub fn unmatched_rules(&self) -> Vec<&FailureRule> {
+        self.rules
+            .iter()
+            .zip(&self.matched)
+            .filter(|(_, matched)| !**matched)
+            .map(|(rule, _)| rule)
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_plan_s_own_worked_example_verbatim() {
+        let json = r#"{
+            "at": {
+                "effect": "broker.ack",
+                "subject": "orders.created",
+                "occurrence": 1,
+                "phase": "after"
+            },
+            "action": {"kind": "lose"}
+        }"#;
+        let rule: FailureRule = serde_json::from_str(json).expect("parses");
+        assert_eq!(rule.at.effect, "broker.ack");
+        assert_eq!(rule.at.subject.as_deref(), Some("orders.created"));
+        assert_eq!(rule.at.occurrence, Some(1));
+        assert_eq!(rule.at.phase, FailurePhase::After);
+        assert_eq!(rule.action, FailureAction::Lose);
+    }
+
+    #[test]
+    fn matches_the_exact_occurrence_and_ignores_others() {
+        let rule = FailureRule {
+            at: FailureSelector {
+                effect: "broker.ack".into(),
+                subject: Some("orders.created".into()),
+                occurrence: Some(2),
+                phase: FailurePhase::After,
+            },
+            action: FailureAction::Lose,
+        };
+        let mut engine = FailureEngine::new(vec![rule]);
+        assert_eq!(
+            engine.record_occurrence("broker.ack", Some("orders.created"), FailurePhase::After),
+            None,
+            "first occurrence doesn't match an occurrence:2 rule"
+        );
+        assert_eq!(
+            engine.record_occurrence("broker.ack", Some("orders.created"), FailurePhase::After),
+            Some(FailureAction::Lose),
+            "second occurrence matches"
+        );
+        assert_eq!(
+            engine.record_occurrence("broker.ack", Some("orders.created"), FailurePhase::After),
+            None,
+            "already matched -- does not fire again"
+        );
+        assert!(engine.unmatched_rules().is_empty());
+    }
+
+    #[test]
+    fn before_and_after_phases_are_distinct_selectors() {
+        let rule = FailureRule {
+            at: FailureSelector {
+                effect: "db.commit".into(),
+                subject: None,
+                occurrence: None,
+                phase: FailurePhase::Before,
+            },
+            action: FailureAction::Error,
+        };
+        let mut engine = FailureEngine::new(vec![rule]);
+        assert_eq!(
+            engine.record_occurrence("db.commit", None, FailurePhase::After),
+            None,
+            "wrong phase never matches"
+        );
+        assert_eq!(
+            engine.record_occurrence("db.commit", None, FailurePhase::Before),
+            Some(FailureAction::Error)
+        );
+    }
+
+    #[test]
+    fn a_required_rule_that_never_matches_is_reported() {
+        let rule = FailureRule {
+            at: FailureSelector {
+                effect: "broker.ack".into(),
+                subject: Some("typo-subject".into()),
+                occurrence: Some(1),
+                phase: FailurePhase::After,
+            },
+            action: FailureAction::Lose,
+        };
+        let mut engine = FailureEngine::new(vec![rule]);
+        engine.record_occurrence("broker.ack", Some("orders.created"), FailurePhase::After);
+        let unmatched = engine.unmatched_rules();
+        assert_eq!(unmatched.len(), 1);
+        assert_eq!(unmatched[0].at.subject.as_deref(), Some("typo-subject"));
+    }
+
+    #[test]
+    fn subject_none_selector_matches_any_subject() {
+        let rule = FailureRule {
+            at: FailureSelector {
+                effect: "external_http.request".into(),
+                subject: None,
+                occurrence: None,
+                phase: FailurePhase::After,
+            },
+            action: FailureAction::Timeout,
+        };
+        let mut engine = FailureEngine::new(vec![rule]);
+        assert_eq!(
+            engine.record_occurrence(
+                "external_http.request",
+                Some("payments"),
+                FailurePhase::After
+            ),
+            Some(FailureAction::Timeout)
+        );
+    }
+
+    #[test]
+    fn delay_action_carries_its_duration() {
+        let json = r#"{"at": {"effect": "worker.retry", "phase": "before"}, "action": {"kind": "delay", "by_ms": 5000}}"#;
+        let rule: FailureRule = serde_json::from_str(json).unwrap();
+        assert_eq!(rule.action, FailureAction::Delay { by_ms: 5000 });
+    }
+}
+============================================================
 src/lib.rs
 ============================================================
 //! Accounts — generated by CIaC.
@@ -752,6 +1014,9 @@ src/lib.rs
 pub mod config;
 pub mod error;
 pub mod observability;
+pub mod failure;
+pub mod scenario;
+pub mod world;
 pub mod routes;
 pub mod state;
 pub mod auth;
@@ -939,6 +1204,370 @@ async fn openapi_json() -> impl IntoResponse {
 }
 
 ============================================================
+src/scenario.rs
+============================================================
+//! Portable scenarios (17UpdatePlan.md Pillar 3): versioned JSON, not
+//! target code and not a general-purpose scenario language. The closed
+//! action set is `request`/`publish`/`advance`/`drain`/`expect`.
+//!
+//! M2 ships the schema, parsing, and structural (not yet preflight-
+//! against-a-plan) validation. Resolving a scenario's names against a
+//! real `SimPlan` -- the "every named service/API/table/stream/
+//! capability resolves" preflight -- is M5's job, once a runner exists
+//! to actually need it.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+pub const SCENARIO_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Scenario {
+    pub simulation_version: u32,
+    pub name: String,
+    /// RFC 3339 virtual start time.
+    pub start_at: String,
+    #[serde(default)]
+    pub given: Given,
+    pub steps: Vec<ScenarioStep>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Given {
+    #[serde(default)]
+    pub db: Vec<GivenTableRows>,
+    #[serde(default)]
+    pub external_http: Vec<GivenHttpFixture>,
+    /// v0.17 M10: failure rules a scenario declares up front (Pillar
+    /// 7's own `{"at": {..}, "action": {..}}` shape, reused verbatim
+    /// via `crate::failure::FailureRule`) so a checked-in scenario is
+    /// fully self-describing -- a runner reads its failure injection
+    /// from the scenario document itself, not from out-of-band
+    /// per-fixture configuration a hand-written script used to supply.
+    #[serde(default)]
+    pub failures: Vec<crate::failure::FailureRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GivenTableRows {
+    pub service: String,
+    pub table: String,
+    pub rows: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GivenHttpFixture {
+    pub instance: String,
+    pub responses: Vec<GivenHttpResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GivenHttpResponse {
+    Error {
+        error: String,
+    },
+    Ok {
+        status: u16,
+        json: serde_json::Value,
+    },
+}
+
+/// One scenario step: exactly one of the closed action set. `serde`'s
+/// externally-tagged enum-of-structs matches the plan's own worked
+/// example (`{"request": {...}}`, `{"drain": {}}`, ...) directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ScenarioStep {
+    #[serde(rename = "request")]
+    Request(RequestStep),
+    #[serde(rename = "publish")]
+    Publish(PublishStep),
+    #[serde(rename = "advance")]
+    Advance(AdvanceStep),
+    #[serde(rename = "drain")]
+    Drain(DrainStep),
+    #[serde(rename = "expect")]
+    Expect(ExpectStep),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestStep {
+    pub service: String,
+    pub api: String,
+    #[serde(default)]
+    pub json: serde_json::Value,
+    /// Verified principal: `sub` and `scopes`. Absent means an
+    /// unauthenticated request.
+    #[serde(rename = "as", default)]
+    pub principal: Option<Principal>,
+    /// Names this step's response for later `expect` steps to
+    /// reference.
+    #[serde(default)]
+    pub save_as: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Principal {
+    pub sub: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishStep {
+    pub stream: String,
+    #[serde(default)]
+    pub json: serde_json::Value,
+}
+
+/// A virtual-time advance, e.g. `{"by": "7d"}`. Parsed leniently here
+/// (a duration string); resolving it to a concrete tick count is the
+/// scheduler's job (M4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvanceStep {
+    pub by: String,
+}
+
+/// Drains every eligible scheduled/pending effect at the current
+/// virtual instant before the next step runs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DrainStep {}
+
+/// One assertion. Deliberately a flat, closed set of named checks
+/// rather than a boolean expression language -- see Pillar 3's own
+/// "no arbitrary scripts, loops, conditional scenario language."
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectStep {
+    Response {
+        #[serde(rename = "of")]
+        of: Option<String>,
+        status: Option<u16>,
+        json: Option<serde_json::Value>,
+    },
+    Row {
+        service: String,
+        table: String,
+        #[serde(rename = "where")]
+        matches: BTreeMap<String, serde_json::Value>,
+        present: bool,
+    },
+    WorkerAttempts {
+        worker: String,
+        count: u32,
+    },
+    JobRuns {
+        job: String,
+        count: u32,
+    },
+    Quiescence {},
+}
+
+/// Errors a scenario document can fail with before any simulated
+/// effect runs -- structural/parse-level only for M2; plan-aware
+/// preflight ("every named service/API/table/stream resolves") lands
+/// with the M5 runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScenarioError {
+    UnsupportedVersion { found: u32, expected: u32 },
+    EmptySteps,
+}
+
+impl std::fmt::Display for ScenarioError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScenarioError::UnsupportedVersion { found, expected } => write!(
+                f,
+                "scenario simulation_version {found} is not supported (expected {expected})"
+            ),
+            ScenarioError::EmptySteps => write!(f, "scenario has no steps"),
+        }
+    }
+}
+
+impl std::error::Error for ScenarioError {}
+
+impl Scenario {
+    pub fn parse(json: &str) -> Result<Scenario, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    /// Structural validation only (see module docs): version and
+    /// non-emptiness. Name/reference resolution against a `SimPlan` is
+    /// M5's preflight, not this.
+    pub fn validate(&self) -> Result<(), ScenarioError> {
+        if self.simulation_version != SCENARIO_VERSION {
+            return Err(ScenarioError::UnsupportedVersion {
+                found: self.simulation_version,
+                expected: SCENARIO_VERSION,
+            });
+        }
+        if self.steps.is_empty() {
+            return Err(ScenarioError::EmptySteps);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RETRY_AND_CLEANUP: &str = r#"
+    {
+      "simulation_version": 1,
+      "name": "third-retry-and-nightly-cleanup",
+      "start_at": "2030-01-01T00:00:00Z",
+      "given": {
+        "db": [
+          { "service": "Orders", "table": "Orders", "rows": [] }
+        ],
+        "external_http": [
+          {
+            "instance": "payments",
+            "responses": [
+              {"error": "timeout"},
+              {"error": "timeout"},
+              {"status": 200, "json": {"accepted": true}}
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "request": {
+            "service": "Gateway",
+            "api": "CreateOrder",
+            "json": {"total": 10},
+            "as": {"sub": "user-1", "scopes": ["orders:write"]},
+            "save_as": "create"
+          }
+        },
+        {"drain": {}},
+        {"advance": {"by": "7d"}},
+        {"drain": {}},
+        {"expect": {"worker_attempts": {"worker": "Charge", "count": 3}}},
+        {"expect": {"job_runs": {"job": "Cleanup", "count": 7}}}
+      ]
+    }
+    "#;
+
+    #[test]
+    fn parses_the_plan_s_own_worked_example_verbatim() {
+        let scenario = Scenario::parse(RETRY_AND_CLEANUP).expect("parses");
+        assert_eq!(scenario.name, "third-retry-and-nightly-cleanup");
+        assert_eq!(scenario.steps.len(), 6);
+        assert_eq!(scenario.given.db.len(), 1);
+        assert_eq!(scenario.given.external_http[0].responses.len(), 3);
+        scenario.validate().expect("structurally valid");
+
+        match &scenario.steps[0] {
+            ScenarioStep::Request(r) => {
+                assert_eq!(r.service, "Gateway");
+                assert_eq!(r.api, "CreateOrder");
+                assert_eq!(r.principal.as_ref().unwrap().sub, "user-1");
+                assert_eq!(r.save_as.as_deref(), Some("create"));
+            }
+            other => panic!("expected a request step, got {other:?}"),
+        }
+        match &scenario.steps[4] {
+            ScenarioStep::Expect(ExpectStep::WorkerAttempts { worker, count }) => {
+                assert_eq!(worker, "Charge");
+                assert_eq!(*count, 3);
+            }
+            other => panic!("expected a worker_attempts expectation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
+        let rendered = serde_json::to_string(&scenario).unwrap();
+        let reparsed = Scenario::parse(&rendered).unwrap();
+        assert_eq!(scenario.steps.len(), reparsed.steps.len());
+    }
+
+    #[test]
+    fn rejects_unsupported_version() {
+        let scenario = Scenario {
+            simulation_version: 99,
+            name: "x".into(),
+            start_at: "2030-01-01T00:00:00Z".into(),
+            given: Given::default(),
+            steps: vec![ScenarioStep::Drain(DrainStep {})],
+        };
+        assert_eq!(
+            scenario.validate(),
+            Err(ScenarioError::UnsupportedVersion {
+                found: 99,
+                expected: SCENARIO_VERSION
+            })
+        );
+    }
+
+    // The M5-checkpoint fixture-file test moved to
+    // `tests/scenario_fixtures.rs` (v0.17 M11): it reads
+    // `sim/*.ciac-sim.json` via `CARGO_MANIFEST_DIR`, a path that only
+    // resolves inside this crate's own checkout. `scenario.rs` itself is
+    // vendored verbatim (`include_str!`) into every generated Rust
+    // project that needs `SimWorld` (see `ciac-backend-rust/src/lib.rs`'s
+    // `VENDORED_SIM_*` constants), and a generated project has no
+    // `sim/` directory at that relative path — keeping the test here
+    // would fail in every vendored copy. An integration test isn't
+    // `include_str!`-ed, only `src/scenario.rs` is, so this is the one
+    // reliable way to keep the fixture check without breaking vendoring.
+
+    #[test]
+    fn given_failures_parses_the_pillar_7_worked_example_verbatim() {
+        let json = r#"
+        {
+          "simulation_version": 1,
+          "name": "with-failures",
+          "start_at": "2030-01-01T00:00:00Z",
+          "given": {
+            "failures": [
+              {
+                "at": {
+                  "effect": "broker.ack",
+                  "subject": "orders.created",
+                  "occurrence": 1,
+                  "phase": "after"
+                },
+                "action": {"kind": "lose"}
+              }
+            ]
+          },
+          "steps": [{"drain": {}}]
+        }
+        "#;
+        let scenario = Scenario::parse(json).expect("parses");
+        assert_eq!(scenario.given.failures.len(), 1);
+        assert_eq!(scenario.given.failures[0].at.effect, "broker.ack");
+        assert_eq!(
+            scenario.given.failures[0].action,
+            crate::failure::FailureAction::Lose
+        );
+    }
+
+    #[test]
+    fn given_failures_defaults_to_empty() {
+        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
+        assert!(scenario.given.failures.is_empty());
+    }
+
+    #[test]
+    fn rejects_empty_steps() {
+        let scenario = Scenario {
+            simulation_version: SCENARIO_VERSION,
+            name: "x".into(),
+            start_at: "2030-01-01T00:00:00Z".into(),
+            given: Given::default(),
+            steps: vec![],
+        };
+        assert_eq!(scenario.validate(), Err(ScenarioError::EmptySteps));
+    }
+}
+============================================================
 src/schemas.rs
 ============================================================
 //! Data schemas from the program's `record` declarations. Generated by CIaC.
@@ -1061,6 +1690,14 @@ pub struct AppState {
     /// Lazy, cached JWKS lookup; `Claims` selects the key matching
     /// each token's `kid`.
     pub jwks: crate::auth::Jwks,
+    /// `None` in production; `Some` only when constructed via
+    /// [`AppState::simulation`] (v0.17 M11) -- every world-guarded
+    /// call site (`db.insert`, broker `publish`) checks this first,
+    /// reading/writing the in-memory `SimWorld` instead of the real
+    /// pool/broker client fields above, which still exist (so this
+    /// struct's shape doesn't fork between production and simulation
+    /// builds) but are never touched while `world` is `Some`.
+    pub world: Option<std::sync::Arc<crate::world::SimWorld>>,
 }
 
 impl AppState {
@@ -1074,6 +1711,307 @@ impl AppState {
             config,
             db,
             jwks,
+            world: None,
         })
+    }
+
+    /// Constructs `AppState` against an in-memory [`crate::world::
+    /// SimWorld`] instead of real infrastructure (v0.17 M11). Delegates
+    /// to [`AppState::new`] for every other field -- safe because every
+    /// one of them is already lazy (`connect_lazy` pools, the lazy
+    /// broker client, the lazy JWKS lookup all added earlier this same
+    /// milestone specifically so this could be true): constructing them
+    /// never touches the network, and the world-guarded call sites
+    /// never fall through to them once `world` is `Some`. `config` is
+    /// still required, not defaulted: a still-unguarded field (e.g. an
+    /// OAuth2 issuer) may be read even under simulation, a gap this
+    /// constructor discloses by requiring real config rather than
+    /// inventing placeholder values.
+    pub async fn simulation(
+        config: Config,
+        world: std::sync::Arc<crate::world::SimWorld>,
+    ) -> anyhow::Result<Self> {
+        let mut state = Self::new(config).await?;
+        state.world = Some(world);
+        Ok(state)
+    }
+}
+============================================================
+src/world.rs
+============================================================
+//! v0.17 M11: a Rust-native simulation world. Unlike Python -- which
+//! must restate `ciac-sim`'s primitives narrowly, since it cannot call
+//! Rust code directly (`sim/pyrunner/world.py`'s own `FailureEngine`
+//! class says so in its docstring) -- generated Rust code depends on
+//! `ciac-sim` itself (vendored source, `ciac sim`'s own job to write
+//! out; see `crates/ciac/src/commands.rs`) and drives the real
+//! [`crate::failure::FailureEngine`] this crate already owns, not a
+//! second copy of it.
+//!
+//! Schema-agnostic like Python's `FakeDatabase`: rows are
+//! [`serde_json::Value`], not compile-time-typed structs, because this
+//! crate has no knowledge of any particular `.ciac` program's schema.
+//! The bridge from a generated project's own typed records to these
+//! JSON rows is one `serde_json::to_value`/`from_value` round-trip at
+//! each world-guarded call site in the generated code itself --
+//! mirroring exactly how Python's fakes bridge typed SQLAlchemy models
+//! to plain dicts.
+//!
+//! Deliberately narrow, matching this milestone's own disclosed scope
+//! (17UpdatePlan.md's M11 entry): only what `db.insert` and broker
+//! `publish` need to drive the checkpoint's own vertical slice. Get/
+//! update/delete/count/query verbs, cascades, constraints, and the
+//! full broker semantics (independent queue-group cursors, ordering,
+//! lost-ack) that Python's fakes already cover (Pillars 4/5, v0.17
+//! M6/M7) are real, disclosed future work for this Rust world, not
+//! silently claimed here.
+
+use crate::failure::{FailureAction, FailureEngine, FailurePhase, FailureRule};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
+/// An in-memory table store keyed by table name, rows as plain JSON
+/// values. No constraints, no cascades, no indexes -- see the module
+/// docs for what Python's fuller fake already covers that this one
+/// does not yet.
+#[derive(Debug, Default)]
+pub struct FakeDatabase {
+    tables: Mutex<BTreeMap<String, Vec<Value>>>,
+}
+
+impl FakeDatabase {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&self, table: &str, row: Value) {
+        self.tables
+            .lock()
+            .expect("FakeDatabase mutex poisoned")
+            .entry(table.to_owned())
+            .or_default()
+            .push(row);
+    }
+
+    /// Rows in `table` matching every key/value pair in `filter` (an
+    /// empty filter matches every row in the table) -- the scenario
+    /// runner's own `expect.row`/`expect.quiescence`-adjacent check,
+    /// not something generated code itself ever calls.
+    pub fn find_where(&self, table: &str, filter: &BTreeMap<String, Value>) -> Vec<Value> {
+        self.tables
+            .lock()
+            .expect("FakeDatabase mutex poisoned")
+            .get(table)
+            .into_iter()
+            .flatten()
+            .filter(|row| filter.iter().all(|(k, v)| row.get(k) == Some(v)))
+            .cloned()
+            .collect()
+    }
+
+    pub fn count(&self, table: &str) -> usize {
+        self.tables
+            .lock()
+            .expect("FakeDatabase mutex poisoned")
+            .get(table)
+            .map_or(0, Vec::len)
+    }
+}
+
+/// Every publish, in arrival order -- the runner drains these directly
+/// into a worker's own `handle_message_once`, the same "the runner
+/// pumps delivery, there is no running subscription loop" architecture
+/// Python's `FakeBroker` uses (v0.17 M7). No independent per-`(subject,
+/// group)` cursors yet (every registered worker/job in this milestone's
+/// vertical slice has exactly one consumer), so this is deliberately
+/// narrower than Python's fan-out-capable broker fake.
+#[derive(Debug, Default)]
+pub struct FakeQueue {
+    published: Mutex<Vec<(String, Vec<u8>)>>,
+}
+
+impl FakeQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn publish(&self, subject: &str, payload: Vec<u8>) {
+        self.published
+            .lock()
+            .expect("FakeQueue mutex poisoned")
+            .push((subject.to_owned(), payload));
+    }
+
+    /// Every message published since the last drain, removing them --
+    /// the runner's own `drain` step calls this once per subject it
+    /// knows how to deliver.
+    pub fn take_all(&self) -> Vec<(String, Vec<u8>)> {
+        std::mem::take(&mut self.published.lock().expect("FakeQueue mutex poisoned"))
+    }
+}
+
+/// The simulation adapter `AppState::simulation(world)` constructs
+/// from in generated Rust code -- one instance per running scenario,
+/// shared (via `Arc`) across every cloned `AppState` handle exactly
+/// like production's connection pools.
+#[derive(Debug)]
+pub struct SimWorld {
+    pub db: FakeDatabase,
+    pub queue: FakeQueue,
+    failures: Mutex<FailureEngine>,
+}
+
+impl SimWorld {
+    pub fn new(failure_rules: Vec<FailureRule>) -> Self {
+        Self {
+            db: FakeDatabase::new(),
+            queue: FakeQueue::new(),
+            failures: Mutex::new(FailureEngine::new(failure_rules)),
+        }
+    }
+
+    /// `db.commit`'s failure check plus the actual (fake) write,
+    /// mirroring Python's `_Session.commit()`: a matched rule raises
+    /// before the row is stored, same as a real transaction rolling
+    /// back. Only the `error` action is implemented -- the same
+    /// disclosed subset of the full `FailureAction` vocabulary
+    /// Python's own restatement supports, for the same reason (this is
+    /// the one action the checkpoint's own worked scenario needs).
+    pub fn db_insert_checked(&self, table: &str, row: Value) -> anyhow::Result<()> {
+        if self.should_fail("db.commit", Some(table))? {
+            anyhow::bail!("simulated db.commit failure (injected by FailureEngine)");
+        }
+        self.db.insert(table, row);
+        Ok(())
+    }
+
+    /// `broker.publish`'s failure check plus the actual (fake) publish
+    /// -- checked for the same reason `db_insert_checked` checks
+    /// `db.commit`, even though no scenario in this milestone's own
+    /// worked example targets a publish effect.
+    pub fn publish_checked(&self, subject: &str, payload: Vec<u8>) -> anyhow::Result<()> {
+        if self.should_fail("broker.publish", Some(subject))? {
+            anyhow::bail!("simulated broker.publish failure (injected by FailureEngine)");
+        }
+        self.queue.publish(subject, payload);
+        Ok(())
+    }
+
+    fn should_fail(&self, effect: &str, subject: Option<&str>) -> anyhow::Result<bool> {
+        let action = self
+            .failures
+            .lock()
+            .expect("FailureEngine mutex poisoned")
+            .record_occurrence(effect, subject, FailurePhase::After);
+        match action {
+            None => Ok(false),
+            Some(FailureAction::Error) => Ok(true),
+            Some(other) => anyhow::bail!(
+                "failure rule for effect {effect:?} uses action {other:?}, which this Rust \
+                 world's FailureEngine integration does not support yet (only `error` is \
+                 implemented)"
+            ),
+        }
+    }
+
+    /// Failure rules the scenario declared that never matched a real
+    /// occurrence -- `SIM0007` territory, surfaced to the runner rather
+    /// than silently ignored.
+    pub fn unmatched_failure_rules(&self) -> Vec<FailureRule> {
+        self.failures
+            .lock()
+            .expect("FailureEngine mutex poisoned")
+            .unmatched_rules()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::failure::FailureSelector;
+
+    #[test]
+    fn insert_then_find_where_round_trips() {
+        let db = FakeDatabase::new();
+        db.insert("orders", serde_json::json!({"id": "1", "total": 9.5}));
+        db.insert("orders", serde_json::json!({"id": "2", "total": 3.0}));
+        assert_eq!(db.count("orders"), 2);
+        let mut filter = BTreeMap::new();
+        filter.insert("id".to_owned(), serde_json::json!("2"));
+        let found = db.find_where("orders", &filter);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["total"], 3.0);
+        assert!(db.find_where("orders", &BTreeMap::new()).len() == 2);
+    }
+
+    #[test]
+    fn queue_take_all_drains_in_publish_order() {
+        let queue = FakeQueue::new();
+        queue.publish("a", b"1".to_vec());
+        queue.publish("a", b"2".to_vec());
+        let drained = queue.take_all();
+        assert_eq!(
+            drained,
+            vec![
+                ("a".to_owned(), b"1".to_vec()),
+                ("a".to_owned(), b"2".to_vec())
+            ]
+        );
+        assert!(
+            queue.take_all().is_empty(),
+            "a second drain sees nothing new"
+        );
+    }
+
+    #[test]
+    fn db_insert_checked_fails_on_the_matched_occurrence_and_does_not_store_the_row() {
+        let rule = FailureRule {
+            at: FailureSelector {
+                effect: "db.commit".into(),
+                subject: Some("processed_orders".into()),
+                occurrence: Some(1),
+                phase: FailurePhase::After,
+            },
+            action: FailureAction::Error,
+        };
+        let world = SimWorld::new(vec![rule]);
+        let row = serde_json::json!({"id": "1"});
+        assert!(world
+            .db_insert_checked("processed_orders", row.clone())
+            .is_err());
+        assert_eq!(
+            world.db.count("processed_orders"),
+            0,
+            "failed commit stores nothing"
+        );
+        assert!(world.db_insert_checked("processed_orders", row).is_ok());
+        assert_eq!(
+            world.db.count("processed_orders"),
+            1,
+            "the second (unmatched) attempt commits"
+        );
+        assert!(world.unmatched_failure_rules().is_empty());
+    }
+
+    #[test]
+    fn unsupported_failure_action_is_refused_not_silently_ignored() {
+        let rule = FailureRule {
+            at: FailureSelector {
+                effect: "db.commit".into(),
+                subject: None,
+                occurrence: None,
+                phase: FailurePhase::After,
+            },
+            action: FailureAction::Lose,
+        };
+        let world = SimWorld::new(vec![rule]);
+        let err = world
+            .db_insert_checked("orders", serde_json::json!({}))
+            .unwrap_err();
+        assert!(err.to_string().contains("does not support"));
     }
 }

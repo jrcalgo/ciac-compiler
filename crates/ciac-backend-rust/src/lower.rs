@@ -569,8 +569,13 @@ fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[Hir
             // like `v`) may still be referenced later in the handler
             // body (e.g. a `fail` after the insert), and Rust — unlike
             // Python — would reject that as a use of a moved value.
+            //
+            // The `self.world` branch is the v0.17 M11 world-guard: when
+            // `AppState::simulation` constructed this handler, `db.insert`
+            // writes to the in-memory `SimWorld` (and can be failure-
+            // injected) instead of ever touching `self.db`.
             format!(
-                "{{\n    let __row = {value}.clone();\n    sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n        .execute(self.db)\n        .await?;\n    __row\n}}",
+                "{{\n    let __row = {value}.clone();\n    if let Some(world) = self.world {{\n        world.db_insert_checked(\"{table_snake}\", serde_json::to_value(&__row)?)?;\n    }} else {{\n        sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n            .execute(self.db)\n            .await?;\n    }}\n    __row\n}}",
                 cols = record_ctx.select_cols,
                 phs = ciac_codegen::template::sqlph(&record_ctx.insert_placeholders, engine),
             )

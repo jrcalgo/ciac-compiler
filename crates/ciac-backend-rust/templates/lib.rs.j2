@@ -9,6 +9,14 @@ pub mod observability;
 {%- if c.has_queue %}
 pub mod queue;
 {%- endif %}
+{%- if c.has_db or c.has_queue %}
+pub mod failure;
+pub mod scenario;
+pub mod world;
+{%- if c.jobs %}
+pub mod cron;
+{%- endif %}
+{%- endif %}
 pub mod routes;
 pub mod state;
 {%- if c.has_auth %}

@@ -29,6 +29,24 @@ use minijinja::context;
 
 static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
+// v0.17 M11: unlike Python (which cannot depend on `ciac-sim` directly
+// and must restate its primitives narrowly, see `sim/pyrunner/world.py`),
+// generated Rust code is Rust -- so it vendors `ciac-sim`'s own source
+// for the target-neutral pieces that have no dependency on `ciac-ir`
+// (confirmed: `cron.rs`/`failure.rs`/`scenario.rs` import only `serde`/
+// `chrono`/std; `world.rs`, new this milestone, only adds `anyhow`),
+// byte-for-byte, as ordinary sibling modules in the generated crate
+// (`crate::failure`, `crate::cron`, ...) rather than as a separate path
+// dependency -- no extra Cargo.toml, no dependency-resolution story for
+// a crate that isn't published. `plan.rs`/`replay.rs` (the two modules
+// that do need `ciac-ir`) are deliberately not vendored: a generated
+// project builds its `SimWorld` directly (no `SimPlan` JSON to load),
+// and Rust replay support is real, disclosed future work.
+const VENDORED_SIM_CRON: &str = include_str!("../../ciac-sim/src/cron.rs");
+const VENDORED_SIM_FAILURE: &str = include_str!("../../ciac-sim/src/failure.rs");
+const VENDORED_SIM_SCENARIO: &str = include_str!("../../ciac-sim/src/scenario.rs");
+const VENDORED_SIM_WORLD: &str = include_str!("../../ciac-sim/src/world.rs");
+
 /// This backend's two compose-file divergences (v0.9 M1): SQLx wants
 /// the plain `postgres` URL scheme, and workers start as the binary's
 /// `workers` subcommand. Everything else in the compose files is
@@ -240,6 +258,18 @@ fn emit_service(
     project.add_file(at("src/error.rs"), render("error.rs.j2", empty())?);
     if ctx.has_queue {
         project.add_file(at("src/queue.rs"), render("queue.rs.j2", empty())?);
+    }
+    // v0.17 M11: the vendored simulation world -- only for programs with
+    // something it can actually fake (`db.insert`, broker `publish`);
+    // see the `VENDORED_SIM_*` doc comment above for why this is a
+    // verbatim copy of `ciac-sim`'s own source, not a restatement.
+    if ctx.has_db || ctx.has_queue {
+        project.add_file(at("src/failure.rs"), VENDORED_SIM_FAILURE);
+        project.add_file(at("src/scenario.rs"), VENDORED_SIM_SCENARIO);
+        project.add_file(at("src/world.rs"), VENDORED_SIM_WORLD);
+        if !ctx.jobs.is_empty() {
+            project.add_file(at("src/cron.rs"), VENDORED_SIM_CRON);
+        }
     }
     project.add_file(
         at("src/observability.rs"),

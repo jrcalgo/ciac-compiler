@@ -7,7 +7,6 @@
 {{ indent }}let result = {{ step.handler.class_name }}::new(&state).handle(result).await?;
 {%- elif step.kind == "publish" %}
 {{ indent }}state
-{{ indent }}    .queue
 {{ indent }}    .publish("{{ step.subject }}", serde_json::to_vec(&result)?)
 {{ indent }}    .await?;
 {%- elif step.kind == "call" %}

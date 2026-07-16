@@ -297,31 +297,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn m5_checkpoint_scenarios_are_valid_instances_of_this_schema() {
-        // The two scenario files 17UpdatePlan.md's M5 milestone checks
-        // in (`sim/vertical-slice.ciac-sim.json`,
-        // `sim/virtual-week.ciac-sim.json`) are real JSON documents, not
-        // just prose examples -- this test is the schema-side half of
-        // the M5 checkpoint's proof: they parse and structurally
-        // validate against the schema this module owns. The Python-side
-        // half (a real generated project executing the equivalent
-        // effect sequence) lives in `sim/pyrunner/`, outside this crate.
-        for name in ["vertical-slice", "virtual-week"] {
-            let path = format!(
-                "{}/../../sim/{name}.ciac-sim.json",
-                env!("CARGO_MANIFEST_DIR")
-            );
-            let json =
-                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
-            let scenario = Scenario::parse(&json)
-                .unwrap_or_else(|e| panic!("{name}.ciac-sim.json failed to parse: {e}"));
-            scenario
-                .validate()
-                .unwrap_or_else(|e| panic!("{name}.ciac-sim.json failed to validate: {e}"));
-            assert!(!scenario.steps.is_empty());
-        }
-    }
+    // The M5-checkpoint fixture-file test moved to
+    // `tests/scenario_fixtures.rs` (v0.17 M11): it reads
+    // `sim/*.ciac-sim.json` via `CARGO_MANIFEST_DIR`, a path that only
+    // resolves inside this crate's own checkout. `scenario.rs` itself is
+    // vendored verbatim (`include_str!`) into every generated Rust
+    // project that needs `SimWorld` (see `ciac-backend-rust/src/lib.rs`'s
+    // `VENDORED_SIM_*` constants), and a generated project has no
+    // `sim/` directory at that relative path — keeping the test here
+    // would fail in every vendored copy. An integration test isn't
+    // `include_str!`-ed, only `src/scenario.rs` is, so this is the one
+    // reliable way to keep the fixture check without breaking vendoring.
 
     #[test]
     fn given_failures_parses_the_pillar_7_worked_example_verbatim() {

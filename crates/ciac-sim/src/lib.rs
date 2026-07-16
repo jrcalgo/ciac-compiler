@@ -24,6 +24,7 @@ mod plan;
 mod replay;
 mod scenario;
 mod schedule;
+pub mod world;
 
 pub use clock::{Entropy, VirtualClock};
 pub use codes::SimCode;
@@ -39,3 +40,4 @@ pub use scenario::{
     Principal, PublishStep, RequestStep, Scenario, ScenarioError, ScenarioStep, SCENARIO_VERSION,
 };
 pub use schedule::{retry_eligible, Phase, ScheduleRequest, Scheduler, SchedulingKey};
+pub use world::{FakeDatabase, FakeQueue, SimWorld};

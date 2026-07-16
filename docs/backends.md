@@ -74,19 +74,41 @@ Both bundled backends hold the line the next target should match:
 
 `ciac sim`/`verify --sim` drive a generated project's real code through
 in-memory fakes instead of real provider containers — see
-[simulation.md](simulation.md) for the claim boundary and status. It is
-Python-only in v0.17: a new backend does not get simulation support for
-free, and `ciac sim --target <other>` refuses cleanly rather than
-silently no-op'ing until that target's port/adapter seam and fakes are
-built.
+[simulation.md](simulation.md) for the claim boundary and status. A new
+backend does not get simulation support for free: `ciac sim --target
+<other>` refuses cleanly rather than silently no-op'ing until that
+target's port/adapter seam and fakes are built. Python fakes every
+capability; Rust (v0.17 M11) fakes a deliberately narrow slice —
+`db.insert` and broker publish/consume/cron jobs only — and refuses,
+naming the specific gap, for any program using something wider
+(`db.get`/`update`/`delete`/`query`/`count`, cache, object store,
+email, search, external HTTP, or `auth`).
 
-v0.17 M11 closed a real, separate gap this bullet list above already
-claimed but the Rust backend didn't yet meet: the broker client and
-OAuth2 JWKS lookup were the last two eager infrastructure dependencies
-in generated Rust code (every db pool was already lazy) — both are now
-lazy and cached, matching the "no infrastructure running" quality bar
-for real. This is a production-path fix, not simulation support itself:
-`ciac sim --target rust` still refuses, since the ports/adapters split,
-fake adapters, and simulation runner it needs remain unbuilt. See
-17UpdatePlan.md's M11 entry for the full account, including a real
-pre-existing Rust codegen bug (unrelated to this fix) it surfaced.
+v0.17 M11 shipped in two passes. The first closed a real, separate gap
+this bullet list above already claimed but the Rust backend didn't yet
+meet: the broker client and OAuth2 JWKS lookup were the last two eager
+infrastructure dependencies in generated Rust code (every db pool was
+already lazy) — both are now lazy and cached, matching the "no
+infrastructure running" quality bar for real. That alone was a
+production-path fix, not simulation support itself — but it's the
+precondition `AppState::simulation` needs (constructing every field
+must already be infrastructure-free before a `world` field can safely
+override just the parts that need faking).
+
+A follow-up pass then built simulation support itself: `crates/ciac-
+sim/src/world.rs`'s `SimWorld` (a `FakeDatabase`/`FakeQueue` wired to
+`ciac-sim`'s own real `FailureEngine` — Rust can depend on `ciac-sim`
+directly, unlike Python, which must restate it narrowly), vendored via
+`include_str!` into every generated project that declares `db`/`queue`;
+an `AppState.world`/`AppState::simulation()`/`AppState::publish()`
+world-guard mirroring Python's `AppState.production()`/`.simulation()`
+split; a generated `src/bin/sim_runner.rs` scenario interpreter
+(per-program generated, not embedded at CLI-invocation time like
+Python's, since Rust needs concrete types at compile time); and `ciac
+sim --target rust` itself, gated by a capability-coverage check
+(`ciac_backend_rust::unsupported_sim_capabilities`) that refuses with
+the specific unsupported verb/capability list rather than letting an
+unguarded verb silently fall through to real, unreachable
+infrastructure. See 17UpdatePlan.md's M11 entry for the full account,
+including a real pre-existing Rust codegen bug (E0382, unrelated to
+either pass) the first pass's live sweep surfaced and fixed.

@@ -1870,6 +1870,13 @@ version out.
     Undertaken only after M10 ships; if not pursued this version, the
     gap is disclosed in docs/backends.md and docs/simulation.md, not
     silently dropped.
+
+    **Final scope note (this entry was written in two passes):** the
+    first pass shipped only the lazy queue/JWKS slice below and
+    disclosed the rest as deferred. A follow-up pass then built the
+    actual ports/adapters seam, fake adapters, and simulation runner —
+    see "M11 continuation, shipped" further down for what that pass
+    added and what it still leaves disclosed.
 12. **M12 — examples, CI, docs, performance, v0.17.0:** all-example sim
     jobs, no-Docker guard, outer-truth reconciliation, whole-version
     analysis covering whichever of M1–M11 actually shipped.
@@ -1970,18 +1977,152 @@ version out.
     input" shape, real Rust parity work still outstanding, named here
     rather than left to be rediscovered.
 
-    **Deliberately not attempted, disclosed:** the ports/adapters split
-    itself (concrete clients vs. named capability ports as a real type-
-    level seam), the current-thread Tokio simulation runner, Rust fake
-    adapters, fake-backed generated tests, and the normalized
-    transcript-equivalence harness against Python. `ciac sim`/
-    `verify --sim`/`verify_sim` still refuse `--target rust` cleanly (a
-    clear error naming the gap, never a silent no-op or a partial,
-    unverified simulation) — none of what shipped here changes that,
-    since none of it touches the actual simulation seam, only the
-    production-path eagerness that would have blocked *any* future Rust
-    simulation work from starting. This status is recorded in both
-    docs/backends.md and docs/simulation.md, not only here.
+    **Deliberately not attempted in this first pass, disclosed then and
+    closed in the continuation below:** the ports/adapters split
+    itself, a simulation runner, Rust fake adapters, and `ciac sim
+    --target rust` all shipped in a follow-up pass — see "M11
+    continuation, shipped."
+
+    ---
+
+    **M11 continuation, shipped: the ports/adapters seam, fake
+    adapters, simulation runner, and `ciac sim --target rust`.**
+    Unlike Python — which must restate `ciac-sim`'s primitives narrowly
+    because it cannot call Rust code directly (`sim/pyrunner/world.py`'s
+    own `FailureEngine` class says so in its docstring) — generated
+    Rust code can depend on `ciac-sim` itself. `crates/ciac-backend-
+    rust/src/lib.rs` vendors a hand-picked, `ciac-ir`-free subset of
+    `ciac-sim`'s own source (`cron.rs`, `failure.rs`, `scenario.rs`, and
+    a new `world.rs`) verbatim via `include_str!`, written into every
+    generated project that needs it as plain top-level sibling modules
+    — not a path-dependency crate, avoiding Cargo dependency-resolution
+    problems for a crate that isn't published and lives outside the
+    workspace.
+
+    `ciac-sim/src/world.rs` is new: `FakeDatabase` (rows as
+    `serde_json::Value`, schema-agnostic since this crate knows nothing
+    of any particular `.ciac` program's schema), `FakeQueue`, and
+    `SimWorld`, which wires both to the real
+    `ciac_sim::failure::FailureEngine` this crate already owns — not a
+    second copy of it. Deliberately narrow, matching exactly what
+    `sim-vertical-slice.ciac` needs: only `db.insert` and broker
+    `publish` are guarded, and only the `error` `FailureAction` is
+    implemented (the same disclosed subset Python's own restatement
+    supports, for the same reason). The one `scenario.rs` test that read
+    `sim/*.ciac-sim.json` via `CARGO_MANIFEST_DIR` had to move to a new
+    `ciac-sim/tests/scenario_fixtures.rs` integration test — that path
+    only resolves inside this crate's own checkout, and `scenario.rs`
+    itself is now vendored verbatim into every generated project, where
+    the same test would fail.
+
+    The world-guard mirrors Python's `AppState.production()`/
+    `AppState.simulation()` split: generated `AppState` gains a
+    `world: Option<Arc<SimWorld>>` field (`None` in production) and an
+    `AppState::simulation(config, world)` constructor that delegates to
+    `AppState::new` and overrides `world` afterward — safe only because
+    the *first* M11 pass already made every field construction lazy
+    (db pools, the broker client, the JWKS lookup), so constructing them
+    never touches the network. A new `AppState::publish()` method
+    centralizes the broker world-guard (`if let Some(world) = &self.world
+    { world.publish_checked(..) } else { self.queue.publish(..) }`),
+    and every generated publish call site (`route_api.rs.j2`,
+    `worker.rs.j2`, `job.rs.j2`) now calls it instead of
+    `state.queue.publish` directly. Typed-handler structs
+    (`logic.rs.j2`) gain a matching `world` field wherever
+    `handler.needs_db`, and `db.insert`'s own generated body
+    (`lower.rs`'s `rust_verb_expr`) branches on `self.world` before ever
+    reaching `sqlx::query(..)`.
+
+    A new template, `sim_runner.rs.j2`, generates `src/bin/sim_runner.rs`
+    whenever a program has anything `world.rs` can fake: a scenario
+    interpreter mirroring `sim/pyrunner/scenario_runner.py`'s
+    architecture exactly, but per-program generated (not embedded at
+    runtime like Python's) since Rust needs concrete types at compile
+    time. It drives `request` steps through `routes::router()` via
+    `tower::ServiceExt::oneshot` (no live listener — and, unlike
+    Python's own documented gap, this really does exercise real HTTP-
+    level status codes, not just "did the call raise"); `drain` steps
+    call each worker's `handle_message_once` directly with its own
+    retry budget (both now `pub`, for exactly this reason); `advance`
+    steps fire job `handle_tick_once` on every cron due-instant in the
+    window via the vendored `CronSchedule::due_instants`; `expect` steps
+    check `SimWorld`'s state directly. Two workers sharing one subject
+    (as in `sim-broker-slice.ciac`) dispatch via an `if`/`else if` chain
+    on the subject string rather than a `match` on each worker's
+    `SUBJECT` constant — a real `match` there is a compile-time
+    "unreachable pattern" error whenever two workers share a subject,
+    which also exposes the actual disclosed gap: this runner has no
+    independent per-`(subject, group)` cursors, so only the first
+    worker registered for a shared subject ever receives drained
+    messages.
+
+    `crates/ciac-backend-rust/src/lib.rs` also exposes
+    `unsupported_sim_capabilities(ir) -> Vec<String>`: a capability-
+    coverage check, backed by a new `Needs::unguarded_verbs` field the
+    existing per-handler verb scan now populates (every verb besides
+    `db.insert`), plus a check for a declared `auth` provider (real
+    signed-token validation needs a real issuer). `ciac sim --target
+    rust` (`crates/ciac/src/commands.rs`'s `sim_inner`, refactored into
+    `sim_drive_python`/`sim_drive_rust`) calls this before driving
+    anything and refuses — naming the *specific* unsupported verb(s) or
+    capability, not a generic "unsupported" — any program that would
+    otherwise silently fall through to real, unreachable infrastructure
+    or read empty state. `--record`/`--replay` are refused for the rust
+    target (the runner has no plan/replay-tape support). `verify --sim`
+    and the MCP `verify_sim` tool inherit Rust support for free, since
+    both already call `sim_inner` with whatever target they're running
+    against — their descriptions no longer claim "Python-only."
+
+    Live-verified, no Docker, no mocks: `cargo run --bin sim_runner --
+    <scenario>` against a fresh `ciac build --target rust` of
+    `sim-vertical-slice.ciac` passes both checked-in scenario files with
+    the *same* `worker_attempts`/`job_runs` Python already proved
+    (`{"ProcessOrder": 3}`/`{"Reconcile": 1}` and `{"ProcessOrder":
+    100}`/`{"Reconcile": 7}`); the real `ciac sim --target rust` CLI
+    path reproduces the same result end to end, in both text and
+    `--json` mode; `ciac sim --target rust` against `examples/order-
+    system.ciac` (auth + several unguarded db/cache verbs) refuses
+    cleanly with the exact reasons instead of crashing or silently
+    no-opping; a full sweep regenerating all 26 rust-target-supporting
+    examples and running `RUSTFLAGS="-D warnings" cargo check`/
+    `cargo test --tests` against each passes clean (the empty-`apis`,
+    empty-`workers`/`jobs`, and shared-subject shapes each needed a real
+    template fix — an unconditional `use tower::ServiceExt` or an
+    unconditional `match` on worker subjects doesn't compile for every
+    program shape, not just the vertical slice).
+
+    **Fidelity-ratchet CI wiring, disclosed as unexecuted here:**
+    `examples/sim-vertical-slice.ciac` (both targets) was added to the
+    `generated-system` CI job — neither target had ever been system-
+    verified for this example before. Its generated `tests/system/
+    test_delivery.py` (v0.9 M2's capability round-trip) subscribes to a
+    real NATS broker and asserts `PlaceOrderApi`'s publish actually
+    crosses it: the same broker-publish effect `sim_runner`'s fake
+    queue already exercises with `expect.row`/`worker_attempts`
+    assertions, no Docker. A disagreement between the two is exactly
+    the fake/adapter bug the plan's permanent fidelity-ratchet rule
+    exists to catch. This sandbox has no reachable Docker daemon
+    (`docker info` reports no `/var/run/docker.sock`), so this job is
+    wired but has not executed here — the same Docker-delegation this
+    whole arc has accepted for every other compose-backed proof. A
+    dedicated `db.insert`-specific round-trip system test does not exist
+    for either target yet (only cross-service/broker/channel edges get
+    one from v0.9 M2's generator) — a real, pre-existing gap, not
+    something this pass introduced or hid.
+
+    **Still deliberately not attempted, disclosed:** `Get`/`Update`/
+    `Delete`/`Query`/`Count`/`DeleteWhere` db verbs, cache, object
+    store, email, search, and external HTTP have no Rust fake — a
+    program using any of them is refused, not silently mis-simulated.
+    No fake auth adapter (Python's Pillar 8 `world`-guarded auth bypass
+    has no Rust analog yet). No independent per-`(subject, group)`
+    broker cursors (documented above). No multi-service support (same
+    single-service restriction Python already has). No `--record`/
+    `--replay` for Rust. No normalized transcript-equivalence harness
+    comparing Python's and Rust's own transcripts to each other
+    (`SimScenarioOutcome`'s `worker_attempts`/`job_runs` matching across
+    both targets, as verified above, is real but narrower evidence than
+    a full transcript diff).
 
     **M12, shipped:** a `generated-sim` CI job (`.github/workflows/
     ci.yml`) runs `ciac verify --sim` against the one example with
@@ -1999,7 +2140,7 @@ version out.
     single-service and vertical-slice-scoped).
 
     **Outer-truth reconciliation:** unchanged and worth restating
-    plainly now that the Python-only tool surface is live —
+    plainly now that both targets' tool surfaces are live —
     `verify --system` against real provider containers remains the only
     thing that proves SQL dialect fidelity, broker delivery durability,
     cryptography, and real network behavior; nothing simulation does
@@ -2007,11 +2148,11 @@ version out.
     the MCP `verify_sim` tool's own inline description both say so
     explicitly. The permanent fidelity-ratchet (the same assertion
     vector run once against fakes and once against real compose-backed
-    infrastructure, a disagreement blocking merge) described earlier in
-    this document is Rust-parity-adjacent cross-target harness work that
-    depends on the Rust ports/adapters split existing first — M11
-    closed Rust's eager-infrastructure gap (queue/JWKS), not that split,
-    so the fidelity-ratchet itself remains deferred, disclosed above.
+    infrastructure, a disagreement blocking merge) is now wired for
+    `sim-vertical-slice.ciac` on both targets in the `generated-system`
+    CI job (M11 continuation, above) — CI-delegated, since this sandbox
+    has no Docker daemon to execute it locally, the same delegation
+    already accepted for every other compose-backed proof in this arc.
 
     **Version:** 0.19.0 across the workspace (`Cargo.toml` — package
     version plus every internal path-dependency pin — and
@@ -2062,15 +2203,19 @@ version out.
     from the generated project's own conventions with zero per-fixture
     glue, and fixing a real packaging bug (the runner polluting the
     generated project's own lint surface) it found along the way. M11
-    was gated and, on inspection, split rather than all-or-nothing: it
-    shipped the one independently real, tractable slice (Rust's lazy
-    queue/JWKS, un-gating and fixing the scope-test suite that
-    depended on it) and disclosed the rest — the ports/adapters split,
-    the simulation runner, fake adapters, fake-backed tests, the
-    fidelity-ratchet harness — as real, unbuilt future work, alongside
-    a third, unrelated pre-existing lowering bug the same live sweep
-    happened to surface. M12 wires what shipped into CI, reconciles the
-    version number honestly, and closes the arc.
+    was gated and shipped in two passes: the first closed Rust's eager-
+    infrastructure gap (lazy queue/JWKS) and disclosed the rest as
+    deferred, alongside a third, unrelated pre-existing lowering bug
+    (`E0382`) the same live sweep happened to surface and fix. A
+    follow-up pass then built the actual bet — the ports/adapters seam
+    (a vendored, Rust-native `SimWorld`), fake adapters, a generated
+    per-program simulation runner, the capability-coverage check, and
+    `ciac sim --target rust` itself, live-verified against both
+    checked-in scenarios with the same outcomes Python already proved —
+    and wired (but, absent a local Docker daemon, could not execute)
+    the fidelity-ratchet CI job the plan calls a permanent requirement.
+    M12 wires what shipped into CI, reconciles the version number
+    honestly, and closes the arc.
 
     The throughline worth naming: at every milestone, real gaps
     surfaced by building the thing (not hypothesized in advance) were

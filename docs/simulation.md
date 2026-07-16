@@ -24,32 +24,39 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python only (v0.17)
+## Status: Python (full) and Rust (narrow) (v0.17 M11)
 
 | Surface | Python | Rust |
 | --- | --- | --- |
-| `ciac sim` | done | not yet — `--target rust` is refused, not silently a no-op |
+| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else |
 | `verify --sim` | done | same |
 | MCP `verify_sim` | done | same |
 
-Rust ports/adapters, fake adapters, and a current-thread runner for the
-simulated side were a second, separately gated bet (v0.17 M11). That
-bet shipped one real slice of it — production-path lazy init, not
-simulation itself — and disclosed the rest: generated Rust code's
-broker client and OAuth2 JWKS lookup are now lazy and cached, matching
-every db pool's `connect_lazy` (previously the last two eager
-infrastructure dependencies left; see [backends.md](backends.md) for
-the full account). `ciac sim --target rust` still refuses cleanly, not
-a silent no-op: the ports/adapters split, Rust fake adapters, and the
-simulation runner itself remain unbuilt, and that gap stays disclosed
-here rather than silently dropped — the same discipline this compiler
-already applies to every other target-parity gap.
+Rust's ports/adapters seam, fake adapters, and a generated per-program
+simulation runner (v0.17 M11) exist now, but they cover a deliberately
+narrow slice: `crates/ciac-sim/src/world.rs`'s `SimWorld`
+(`FakeDatabase`/`FakeQueue`, wired to `ciac-sim`'s own real
+`FailureEngine`) fakes exactly what `sim-vertical-slice.ciac` needs —
+`db.insert` and broker publish/consume, `error` failure actions only,
+no independent per-`(subject, group)` broker cursors. `ciac sim
+--target rust` runs a scenario against `src/bin/sim_runner.rs` (present
+in the generated project whenever `db`/`queue` is declared) and refuses
+cleanly — naming the specific unsupported verb(s) or capability, not a
+generic "unsupported" — for any program using `db.get`/`update`/
+`delete`/`query`/`count`/`delete_where`, cache, object store, email,
+search, external HTTP, or `auth`. See [backends.md](backends.md) for
+the lazy-init work (broker client, OAuth2 JWKS) that made constructing
+`AppState` infrastructure-free in the first place, a precondition for
+`AppState::simulation` existing at all.
 
-Single-service Python projects only: `ciac sim` refuses cleanly (not a
-crash, not a silent partial run) when it finds more than one
-`pyproject.toml` under `--out`. Multi-service simulation — one driver
-process per service, coordinated through one shared virtual clock — is
-real future work, not attempted here.
+Single-service projects only, both targets: `ciac sim` refuses cleanly
+(not a crash, not a silent partial run) when it finds more than one
+project descriptor (`pyproject.toml`/`Cargo.toml`) under `--out`.
+Multi-service simulation — one driver process per service, coordinated
+through one shared virtual clock — is real future work, not attempted
+here for either target. `--record`/`--replay` remain Python-only: the
+Rust runner has no plan/replay-tape support (a plain scenario
+interpreter, not the bounded child protocol below).
 
 ## The bounded child protocol
 
@@ -74,6 +81,28 @@ the common case (no extra parameters, or a single `session`
 parameter); anything else is refused with a clear error naming the
 route and its extra parameters, not skipped or guessed.
 
+### Rust's protocol is different, not the same runner ported
+
+Rust can't embed a scratch-directory runner the way Python does — the
+simulation needs concrete types from the program being simulated, so
+the runner is *generated code*, not something written out at CLI-
+invocation time. `ciac build`/`verify --target rust` emits
+`src/bin/sim_runner.rs` directly into the generated project whenever it
+declares `db` or `queue` (i.e., whenever `SimWorld` has anything to
+fake). `ciac sim --target rust` builds it once (`cargo build --bin
+sim_runner`) and then runs it once per `--scenario`:
+
+```text
+cargo run --bin sim_runner -- scenario.json
+```
+
+Narrower than Python's protocol in two ways worth naming: no
+`plan.json`/`--source-hash`/`--plan-hash` arguments (the runner doesn't
+resolve names against a `SimPlan` the way Python's auto-discovery
+does — it's generated with the program's own api/worker/job names
+already baked into `match`/`if` arms), and no `--record`/`--replay`.
+Both are real, disclosed gaps, not silently narrower behavior.
+
 ## CLI
 
 ```sh
@@ -85,6 +114,10 @@ ciac verify service.ciac -t python -o build/ --sim --scenario sim/checkout.ciac-
 # Record a transcript, then check a later run reproduces it:
 ciac sim service.ciac -t python -o build/ --scenario sim/checkout.ciac-sim.json --record build/replay.json
 ciac sim service.ciac -t python -o build/ --scenario sim/checkout.ciac-sim.json --replay build/replay.json
+
+# Rust: same shape, no --record/--replay; refused per-program if the
+# capability-coverage check finds something SimWorld doesn't fake.
+ciac sim service.ciac -t rust -o build/ --scenario sim/checkout.ciac-sim.json
 ```
 
 `--record`/`--replay` accept exactly one `--scenario` at a time.

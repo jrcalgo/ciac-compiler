@@ -181,3 +181,13 @@ jobs:
           run_system examples/mysql-notes.ciac python
           run_system examples/mysql-notes.ciac rust
           run_system examples/kafka-pipeline.ciac python
+          # v0.17 M11's fidelity ratchet: the same broker-publish effect
+          # sim_runner (no Docker) exercises against SimWorld's fake
+          # queue is exercised here against a real NATS broker + real
+          # Postgres, via the generated tests/system/test_delivery.py
+          # capability round-trip (v0.9 M2) -- both targets, since
+          # neither had ever been system-verified before. A disagreement
+          # between this and `ciac sim --target rust`'s own green run is
+          # exactly the fake/adapter bug this ratchet exists to catch.
+          run_system examples/sim-vertical-slice.ciac python
+          run_system examples/sim-vertical-slice.ciac rust

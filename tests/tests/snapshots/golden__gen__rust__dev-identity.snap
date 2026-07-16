@@ -526,6 +526,41 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 
 use crate::error::AppError;
 use crate::state::AppState;
+/// The issuer's JWKS, fetched lazily on first use and cached --
+/// mirroring the lazy db pools and broker client (v0.17 M11):
+/// constructing `AppState` never makes a network call, so a route
+/// that never checks a token never needs the issuer reachable.
+#[derive(Clone)]
+pub struct Jwks {
+    issuer: String,
+    set: std::sync::Arc<tokio::sync::OnceCell<jsonwebtoken::jwk::JwkSet>>,
+}
+
+impl std::fmt::Debug for Jwks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Jwks")
+            .field("issuer", &self.issuer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Jwks {
+    pub fn new(issuer: impl Into<String>) -> Self {
+        Self {
+            issuer: issuer.into(),
+            set: Default::default(),
+        }
+    }
+
+    async fn fetch(&self) -> anyhow::Result<jsonwebtoken::jwk::JwkSet> {
+        let url = format!("{}/.well-known/jwks.json", self.issuer.trim_end_matches('/'));
+        Ok(reqwest::get(url).await?.json().await?)
+    }
+
+    async fn get(&self) -> anyhow::Result<&jsonwebtoken::jwk::JwkSet> {
+        self.set.get_or_try_init(|| self.fetch()).await
+    }
+}
 
 /// Verified JWT claims of the current request.
 #[derive(Debug, Clone)]
@@ -571,11 +606,16 @@ impl FromRequestParts<AppState> for Claims {
             .ok_or((StatusCode::UNAUTHORIZED, "missing bearer token"))?;
         let header = jsonwebtoken::decode_header(token)
             .map_err(|_| (StatusCode::UNAUTHORIZED, "malformed token"))?;
+        let jwks = state
+            .jwks
+            .get()
+            .await
+            .map_err(|_| (StatusCode::UNAUTHORIZED, "jwks unavailable"))?;
         let jwk = header
             .kid
             .as_deref()
-            .and_then(|kid| state.jwks.find(kid))
-            .or_else(|| state.jwks.keys.first())
+            .and_then(|kid| jwks.find(kid))
+            .or_else(|| jwks.keys.first())
             .ok_or((StatusCode::UNAUTHORIZED, "no signing key for this token"))?;
         let key = DecodingKey::from_jwk(jwk)
             .map_err(|_| (StatusCode::UNAUTHORIZED, "unusable signing key"))?;
@@ -1018,22 +1058,18 @@ pub struct AppState {
     /// Lazy pool: connections are established on first use, so the server
     /// starts (and compiles) without a running database.
     pub db: sqlx::PgPool,
-    /// JWKS fetched from the issuer at startup; `Claims` selects the
-    /// key matching each token's `kid`.
-    pub jwks: jsonwebtoken::jwk::JwkSet,
+    /// Lazy, cached JWKS lookup; `Claims` selects the key matching
+    /// each token's `kid`.
+    pub jwks: crate::auth::Jwks,
 }
 
 impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
         let db =
             sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url)?;
-        let jwks: jsonwebtoken::jwk::JwkSet = reqwest::get(format!(
-            "{}/.well-known/jwks.json",
-            config.oauth_issuer.trim_end_matches('/')
-        ))
-        .await?
-        .json()
-        .await?;
+        // Lazy: no network call happens here (v0.17 M11) -- the first
+        // request bearing a token triggers the fetch, cached after.
+        let jwks = crate::auth::Jwks::new(config.oauth_issuer.clone());
         Ok(Self {
             config,
             db,

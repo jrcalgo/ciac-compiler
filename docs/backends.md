@@ -79,3 +79,14 @@ Python-only in v0.17: a new backend does not get simulation support for
 free, and `ciac sim --target <other>` refuses cleanly rather than
 silently no-op'ing until that target's port/adapter seam and fakes are
 built.
+
+v0.17 M11 closed a real, separate gap this bullet list above already
+claimed but the Rust backend didn't yet meet: the broker client and
+OAuth2 JWKS lookup were the last two eager infrastructure dependencies
+in generated Rust code (every db pool was already lazy) — both are now
+lazy and cached, matching the "no infrastructure running" quality bar
+for real. This is a production-path fix, not simulation support itself:
+`ciac sim --target rust` still refuses, since the ports/adapters split,
+fake adapters, and simulation runner it needs remain unbuilt. See
+17UpdatePlan.md's M11 entry for the full account, including a real
+pre-existing Rust codegen bug (unrelated to this fix) it surfaced.

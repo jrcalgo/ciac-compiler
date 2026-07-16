@@ -248,12 +248,20 @@ fn emit_service(
     if ctx.has_auth {
         project.add_file(at("src/auth.rs"), render("auth.rs.j2", empty())?);
     }
-    // v0.14 M6: scope-enforcement behavioral test. Needs the JWT scheme
-    // specifically (OAuth2 constructs `AppState` by fetching a live
-    // JWKS) and no queue (its `connect()` isn't lazy like the db
-    // pools) — both would turn `AppState::new` into a live-infra
-    // dependency this no-infra suite can't have.
-    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() && !ctx.has_queue {
+    // v0.14 M6: scope-enforcement behavioral test. v0.17 M11 made the
+    // broker client lazy (matching the db pools' `connect_lazy`), so
+    // the `!has_queue` half of this gate is gone -- a queue-bearing JWT
+    // service's `AppState::new` no longer touches the network either.
+    // OAuth2 remains excluded for a different, still-live reason (not
+    // mere constructor eagerness): validating a real signed token needs
+    // real RS256 crypto against the real issuer's JWKS, which this
+    // no-infra suite can't have -- also-lazy JWKS just moves *when* that
+    // network call happens, from construction to first request, it
+    // doesn't remove the need for it. A no-infrastructure scope proof
+    // for OAuth2 needs an actual fake auth adapter (the Rust analog of
+    // Pillar 8's Python `world`-guarded auth bypass), which is real,
+    // disclosed future work this milestone didn't build.
+    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
         project.add_file(
             at("tests/scope_tests.rs"),
             render("scope_tests.rs.j2", empty())?,

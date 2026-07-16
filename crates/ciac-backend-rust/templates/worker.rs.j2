@@ -91,11 +91,7 @@ async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
 }
 {%- else -%}
 async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
-    let mut subscription = state
-        .queue
-        .client()
-        .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
-        .await?;
+    let mut subscription = state.queue.queue_subscribe(SUBJECT, QUEUE_GROUP).await?;
     tracing::info!(subject = SUBJECT, worker_index, "worker {{ worker.name }} consuming");
     while let Some(message) = subscription.next().await {
         let payload: {{ payload_type }} = match serde_json::from_slice(&message.payload) {

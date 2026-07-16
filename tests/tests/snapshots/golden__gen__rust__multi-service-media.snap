@@ -988,27 +988,67 @@ notifier/src/queue.rs
 //! channels) branch per engine.
 
 /// NATS client wrapper: uniform publish surface shared with the
-/// Kafka variant of this module.
-#[derive(Debug, Clone)]
+/// Kafka variant of this module. The client itself is established
+/// lazily, on first use, cached behind a `OnceCell` -- mirroring the
+/// `connect_lazy` pools every db instance already uses, so
+/// constructing `AppState` never requires a reachable broker (v0.17
+/// M11: this was the one genuinely eager infrastructure dependency
+/// left in generated Rust code; every db pool was already lazy).
+#[derive(Clone)]
 pub struct Queue {
-    client: async_nats::Client,
+    url: String,
+    client: std::sync::Arc<tokio::sync::OnceCell<async_nats::Client>>,
+}
+
+impl std::fmt::Debug for Queue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Queue").field("url", &self.url).finish_non_exhaustive()
+    }
 }
 
 impl Queue {
-    pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            client: async_nats::connect(url).await?,
-        })
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    async fn client(&self) -> anyhow::Result<&async_nats::Client> {
+        self.client
+            .get_or_try_init(|| async_nats::connect(&self.url))
+            .await
+            .map_err(|err| anyhow::anyhow!("connecting to NATS at {}: {err}", self.url))
     }
 
     pub async fn publish(&self, subject: &str, payload: Vec<u8>) -> anyhow::Result<()> {
-        self.client.publish(subject.to_owned(), payload.into()).await?;
+        let client = self.client().await?;
+        client.publish(subject.to_owned(), payload.into()).await?;
         Ok(())
     }
 
-    /// The underlying client, for subscription paths.
-    pub fn client(&self) -> &async_nats::Client {
-        &self.client
+    /// Subscribes to `subject`, connecting first if this is the first
+    /// use of this `Queue`.
+    pub async fn subscribe(&self, subject: &str) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .subscribe(subject.to_owned())
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Queue-group subscribe (workers/consumers): connecting first if
+    /// this is the first use of this `Queue`.
+    pub async fn queue_subscribe(
+        &self,
+        subject: &str,
+        group: &str,
+    ) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .queue_subscribe(subject.to_owned(), group.to_owned())
+            .await
+            .map_err(Into::into)
     }
 }
 ============================================================
@@ -1176,7 +1216,9 @@ impl AppState {
             sender: config.smtp_from_transactional.clone(),
             use_tls: config.smtp_use_tls_transactional.clone(),
         };
-        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+        // Lazy: no broker connection happens here (v0.17 M11) -- the
+        // first publish/subscribe call connects and caches the client.
+        let queue = crate::queue::Queue::new(&config.nats_url);
         Ok(Self {
             config,
             email_transactional,
@@ -1216,11 +1258,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
-    let mut subscription = state
-        .queue
-        .client()
-        .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
-        .await?;
+    let mut subscription = state.queue.queue_subscribe(SUBJECT, QUEUE_GROUP).await?;
     tracing::info!(subject = SUBJECT, worker_index, "worker DeadLetterSink consuming");
     while let Some(message) = subscription.next().await {
         let payload: Video = match serde_json::from_slice(&message.payload) {
@@ -1300,11 +1338,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
-    let mut subscription = state
-        .queue
-        .client()
-        .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
-        .await?;
+    let mut subscription = state.queue.queue_subscribe(SUBJECT, QUEUE_GROUP).await?;
     tracing::info!(subject = SUBJECT, worker_index, "worker Notify consuming");
     while let Some(message) = subscription.next().await {
         let payload: Video = match serde_json::from_slice(&message.payload) {
@@ -1646,27 +1680,67 @@ progress-feed/src/queue.rs
 //! channels) branch per engine.
 
 /// NATS client wrapper: uniform publish surface shared with the
-/// Kafka variant of this module.
-#[derive(Debug, Clone)]
+/// Kafka variant of this module. The client itself is established
+/// lazily, on first use, cached behind a `OnceCell` -- mirroring the
+/// `connect_lazy` pools every db instance already uses, so
+/// constructing `AppState` never requires a reachable broker (v0.17
+/// M11: this was the one genuinely eager infrastructure dependency
+/// left in generated Rust code; every db pool was already lazy).
+#[derive(Clone)]
 pub struct Queue {
-    client: async_nats::Client,
+    url: String,
+    client: std::sync::Arc<tokio::sync::OnceCell<async_nats::Client>>,
+}
+
+impl std::fmt::Debug for Queue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Queue").field("url", &self.url).finish_non_exhaustive()
+    }
 }
 
 impl Queue {
-    pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            client: async_nats::connect(url).await?,
-        })
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    async fn client(&self) -> anyhow::Result<&async_nats::Client> {
+        self.client
+            .get_or_try_init(|| async_nats::connect(&self.url))
+            .await
+            .map_err(|err| anyhow::anyhow!("connecting to NATS at {}: {err}", self.url))
     }
 
     pub async fn publish(&self, subject: &str, payload: Vec<u8>) -> anyhow::Result<()> {
-        self.client.publish(subject.to_owned(), payload.into()).await?;
+        let client = self.client().await?;
+        client.publish(subject.to_owned(), payload.into()).await?;
         Ok(())
     }
 
-    /// The underlying client, for subscription paths.
-    pub fn client(&self) -> &async_nats::Client {
-        &self.client
+    /// Subscribes to `subject`, connecting first if this is the first
+    /// use of this `Queue`.
+    pub async fn subscribe(&self, subject: &str) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .subscribe(subject.to_owned())
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Queue-group subscribe (workers/consumers): connecting first if
+    /// this is the first use of this `Queue`.
+    pub async fn queue_subscribe(
+        &self,
+        subject: &str,
+        group: &str,
+    ) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .queue_subscribe(subject.to_owned(), group.to_owned())
+            .await
+            .map_err(Into::into)
     }
 }
 ============================================================
@@ -1703,7 +1777,7 @@ async fn progress(
 }
 
 async fn stream(mut socket: WebSocket, state: AppState) {
-    let Ok(mut subscription) = state.queue.client().subscribe(SUBJECT.to_owned()).await else {
+    let Ok(mut subscription) = state.queue.subscribe(SUBJECT).await else {
         return;
     };
     while let Some(message) = subscription.next().await {
@@ -1807,7 +1881,9 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
-        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+        // Lazy: no broker connection happens here (v0.17 M11) -- the
+        // first publish/subscribe call connects and caches the client.
+        let queue = crate::queue::Queue::new(&config.nats_url);
         Ok(Self {
             config,
             queue,
@@ -2193,27 +2269,67 @@ transcoder/src/queue.rs
 //! channels) branch per engine.
 
 /// NATS client wrapper: uniform publish surface shared with the
-/// Kafka variant of this module.
-#[derive(Debug, Clone)]
+/// Kafka variant of this module. The client itself is established
+/// lazily, on first use, cached behind a `OnceCell` -- mirroring the
+/// `connect_lazy` pools every db instance already uses, so
+/// constructing `AppState` never requires a reachable broker (v0.17
+/// M11: this was the one genuinely eager infrastructure dependency
+/// left in generated Rust code; every db pool was already lazy).
+#[derive(Clone)]
 pub struct Queue {
-    client: async_nats::Client,
+    url: String,
+    client: std::sync::Arc<tokio::sync::OnceCell<async_nats::Client>>,
+}
+
+impl std::fmt::Debug for Queue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Queue").field("url", &self.url).finish_non_exhaustive()
+    }
 }
 
 impl Queue {
-    pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            client: async_nats::connect(url).await?,
-        })
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    async fn client(&self) -> anyhow::Result<&async_nats::Client> {
+        self.client
+            .get_or_try_init(|| async_nats::connect(&self.url))
+            .await
+            .map_err(|err| anyhow::anyhow!("connecting to NATS at {}: {err}", self.url))
     }
 
     pub async fn publish(&self, subject: &str, payload: Vec<u8>) -> anyhow::Result<()> {
-        self.client.publish(subject.to_owned(), payload.into()).await?;
+        let client = self.client().await?;
+        client.publish(subject.to_owned(), payload.into()).await?;
         Ok(())
     }
 
-    /// The underlying client, for subscription paths.
-    pub fn client(&self) -> &async_nats::Client {
-        &self.client
+    /// Subscribes to `subject`, connecting first if this is the first
+    /// use of this `Queue`.
+    pub async fn subscribe(&self, subject: &str) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .subscribe(subject.to_owned())
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Queue-group subscribe (workers/consumers): connecting first if
+    /// this is the first use of this `Queue`.
+    pub async fn queue_subscribe(
+        &self,
+        subject: &str,
+        group: &str,
+    ) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .queue_subscribe(subject.to_owned(), group.to_owned())
+            .await
+            .map_err(Into::into)
     }
 }
 ============================================================
@@ -2353,7 +2469,9 @@ impl AppState {
             bucket: config.s3_bucket_media.clone(),
             region: config.s3_region_media.clone(),
         };
-        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+        // Lazy: no broker connection happens here (v0.17 M11) -- the
+        // first publish/subscribe call connects and caches the client.
+        let queue = crate::queue::Queue::new(&config.nats_url);
         Ok(Self {
             config,
             object_store_media,
@@ -2401,11 +2519,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
-    let mut subscription = state
-        .queue
-        .client()
-        .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
-        .await?;
+    let mut subscription = state.queue.queue_subscribe(SUBJECT, QUEUE_GROUP).await?;
     tracing::info!(subject = SUBJECT, worker_index, "worker Transcode consuming");
     while let Some(message) = subscription.next().await {
         let payload: Video = match serde_json::from_slice(&message.payload) {
@@ -2820,27 +2934,67 @@ upload-api/src/queue.rs
 //! channels) branch per engine.
 
 /// NATS client wrapper: uniform publish surface shared with the
-/// Kafka variant of this module.
-#[derive(Debug, Clone)]
+/// Kafka variant of this module. The client itself is established
+/// lazily, on first use, cached behind a `OnceCell` -- mirroring the
+/// `connect_lazy` pools every db instance already uses, so
+/// constructing `AppState` never requires a reachable broker (v0.17
+/// M11: this was the one genuinely eager infrastructure dependency
+/// left in generated Rust code; every db pool was already lazy).
+#[derive(Clone)]
 pub struct Queue {
-    client: async_nats::Client,
+    url: String,
+    client: std::sync::Arc<tokio::sync::OnceCell<async_nats::Client>>,
+}
+
+impl std::fmt::Debug for Queue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Queue").field("url", &self.url).finish_non_exhaustive()
+    }
 }
 
 impl Queue {
-    pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            client: async_nats::connect(url).await?,
-        })
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    async fn client(&self) -> anyhow::Result<&async_nats::Client> {
+        self.client
+            .get_or_try_init(|| async_nats::connect(&self.url))
+            .await
+            .map_err(|err| anyhow::anyhow!("connecting to NATS at {}: {err}", self.url))
     }
 
     pub async fn publish(&self, subject: &str, payload: Vec<u8>) -> anyhow::Result<()> {
-        self.client.publish(subject.to_owned(), payload.into()).await?;
+        let client = self.client().await?;
+        client.publish(subject.to_owned(), payload.into()).await?;
         Ok(())
     }
 
-    /// The underlying client, for subscription paths.
-    pub fn client(&self) -> &async_nats::Client {
-        &self.client
+    /// Subscribes to `subject`, connecting first if this is the first
+    /// use of this `Queue`.
+    pub async fn subscribe(&self, subject: &str) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .subscribe(subject.to_owned())
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Queue-group subscribe (workers/consumers): connecting first if
+    /// this is the first use of this `Queue`.
+    pub async fn queue_subscribe(
+        &self,
+        subject: &str,
+        group: &str,
+    ) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .queue_subscribe(subject.to_owned(), group.to_owned())
+            .await
+            .map_err(Into::into)
     }
 }
 ============================================================
@@ -3005,7 +3159,9 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
-        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+        // Lazy: no broker connection happens here (v0.17 M11) -- the
+        // first publish/subscribe call connects and caches the client.
+        let queue = crate::queue::Queue::new(&config.nats_url);
         Ok(Self {
             config,
             queue,

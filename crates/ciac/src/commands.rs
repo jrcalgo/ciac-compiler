@@ -2363,7 +2363,18 @@ fn validate_rust_project(project: &Path) -> Result<()> {
     if !status.success() {
         bail!("cargo check failed in {}", project.display());
     }
-    run_in(project, "cargo", &["test", "-q", "--lib"])
+    // v0.17 M11: `--tests` (not just `--lib`) so the generated
+    // no-live-infra scope-enforcement suite (`tests/scope_tests.rs`,
+    // present whenever `auth JWT` is paired with a scoped resource/api)
+    // actually runs as part of `ciac verify`/`ciac build`'s own static
+    // check, not only when a human happens to invoke `cargo test
+    // --test scope_tests` by hand. Safe to broaden: the only other
+    // thing ever generated under `tests/` is `tests/system/` (v0.8
+    // M4), which is a `pyproject.toml`-based pytest suite, not `.rs`
+    // files -- cargo's integration-test discovery only picks up
+    // `tests/*.rs` directly, so it was never at risk of being pulled
+    // into a `cargo test` invocation regardless of this flag.
+    run_in(project, "cargo", &["test", "-q", "--lib", "--tests"])
 }
 
 fn run_in(project: &Path, program: &str, args: &[&str]) -> Result<()> {

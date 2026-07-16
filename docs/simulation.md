@@ -32,12 +32,18 @@ inner loop that runs before it, not a replacement for it.
 | `verify --sim` | done | same |
 | MCP `verify_sim` | done | same |
 
-Rust ports/adapters, a lazy broker/JWKS client, and a current-thread
-runner for the simulated side are a second, separately gated bet
-(planned as v0.17 M11). If that milestone is not undertaken this
-version, the gap stays disclosed here and in
-[backends.md](backends.md), not silently dropped — the same discipline
-this compiler already applies to every other target-parity gap.
+Rust ports/adapters, fake adapters, and a current-thread runner for the
+simulated side were a second, separately gated bet (v0.17 M11). That
+bet shipped one real slice of it — production-path lazy init, not
+simulation itself — and disclosed the rest: generated Rust code's
+broker client and OAuth2 JWKS lookup are now lazy and cached, matching
+every db pool's `connect_lazy` (previously the last two eager
+infrastructure dependencies left; see [backends.md](backends.md) for
+the full account). `ciac sim --target rust` still refuses cleanly, not
+a silent no-op: the ports/adapters split, Rust fake adapters, and the
+simulation runner itself remain unbuilt, and that gap stays disclosed
+here rather than silently dropped — the same discipline this compiler
+already applies to every other target-parity gap.
 
 Single-service Python projects only: `ciac sim` refuses cleanly (not a
 crash, not a silent partial run) when it finds more than one

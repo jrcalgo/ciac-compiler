@@ -29,9 +29,9 @@ pub struct AppState {
     pub queue: crate::queue::Queue,
 {%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
-    /// JWKS fetched from the issuer at startup; `Claims` selects the
-    /// key matching each token's `kid`.
-    pub jwks: jsonwebtoken::jwk::JwkSet,
+    /// Lazy, cached JWKS lookup; `Claims` selects the key matching
+    /// each token's `kid`.
+    pub jwks: crate::auth::Jwks,
 {%- endif %}
 }
 
@@ -86,19 +86,17 @@ impl AppState {
 {%- endfor %}
 {%- if c.has_queue %}
 {%- if c.queue_engine == "kafka" %}
-        let queue = crate::queue::Queue::connect(&config.kafka_url).await?;
+        let queue = crate::queue::Queue::new(&config.kafka_url)?;
 {%- else %}
-        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+        // Lazy: no broker connection happens here (v0.17 M11) -- the
+        // first publish/subscribe call connects and caches the client.
+        let queue = crate::queue::Queue::new(&config.nats_url);
 {%- endif %}
 {%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
-        let jwks: jsonwebtoken::jwk::JwkSet = reqwest::get(format!(
-            "{}/.well-known/jwks.json",
-            config.oauth_issuer.trim_end_matches('/')
-        ))
-        .await?
-        .json()
-        .await?;
+        // Lazy: no network call happens here (v0.17 M11) -- the first
+        // request bearing a token triggers the fetch, cached after.
+        let jwks = crate::auth::Jwks::new(config.oauth_issuer.clone());
 {%- endif %}
         Ok(Self {
             config,

@@ -34,6 +34,9 @@ futures = "0.3"
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 ============================================================
 Dockerfile
 ============================================================
@@ -1238,27 +1241,67 @@ src/queue.rs
 //! channels) branch per engine.
 
 /// NATS client wrapper: uniform publish surface shared with the
-/// Kafka variant of this module.
-#[derive(Debug, Clone)]
+/// Kafka variant of this module. The client itself is established
+/// lazily, on first use, cached behind a `OnceCell` -- mirroring the
+/// `connect_lazy` pools every db instance already uses, so
+/// constructing `AppState` never requires a reachable broker (v0.17
+/// M11: this was the one genuinely eager infrastructure dependency
+/// left in generated Rust code; every db pool was already lazy).
+#[derive(Clone)]
 pub struct Queue {
-    client: async_nats::Client,
+    url: String,
+    client: std::sync::Arc<tokio::sync::OnceCell<async_nats::Client>>,
+}
+
+impl std::fmt::Debug for Queue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Queue").field("url", &self.url).finish_non_exhaustive()
+    }
 }
 
 impl Queue {
-    pub async fn connect(url: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            client: async_nats::connect(url).await?,
-        })
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            client: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    async fn client(&self) -> anyhow::Result<&async_nats::Client> {
+        self.client
+            .get_or_try_init(|| async_nats::connect(&self.url))
+            .await
+            .map_err(|err| anyhow::anyhow!("connecting to NATS at {}: {err}", self.url))
     }
 
     pub async fn publish(&self, subject: &str, payload: Vec<u8>) -> anyhow::Result<()> {
-        self.client.publish(subject.to_owned(), payload.into()).await?;
+        let client = self.client().await?;
+        client.publish(subject.to_owned(), payload.into()).await?;
         Ok(())
     }
 
-    /// The underlying client, for subscription paths.
-    pub fn client(&self) -> &async_nats::Client {
-        &self.client
+    /// Subscribes to `subject`, connecting first if this is the first
+    /// use of this `Queue`.
+    pub async fn subscribe(&self, subject: &str) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .subscribe(subject.to_owned())
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Queue-group subscribe (workers/consumers): connecting first if
+    /// this is the first use of this `Queue`.
+    pub async fn queue_subscribe(
+        &self,
+        subject: &str,
+        group: &str,
+    ) -> anyhow::Result<async_nats::Subscriber> {
+        self.client()
+            .await?
+            .queue_subscribe(subject.to_owned(), group.to_owned())
+            .await
+            .map_err(Into::into)
     }
 }
 ============================================================
@@ -1786,7 +1829,9 @@ impl AppState {
         let db =
             sqlx::postgres::PgPoolOptions::new().connect_lazy(&config.database_url)?;
         let cache = redis::Client::open(config.redis_url.as_str())?;
-        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+        // Lazy: no broker connection happens here (v0.17 M11) -- the
+        // first publish/subscribe call connects and caches the client.
+        let queue = crate::queue::Queue::new(&config.nats_url);
         Ok(Self {
             config,
             db,
@@ -1835,11 +1880,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn consume(state: AppState, worker_index: usize) -> anyhow::Result<()> {
-    let mut subscription = state
-        .queue
-        .client()
-        .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
-        .await?;
+    let mut subscription = state.queue.queue_subscribe(SUBJECT, QUEUE_GROUP).await?;
     tracing::info!(subject = SUBJECT, worker_index, "worker OrderEventSink consuming");
     while let Some(message) = subscription.next().await {
         let payload: OrderEvent = match serde_json::from_slice(&message.payload) {
@@ -1877,4 +1918,220 @@ async fn handle_message_once(state: &AppState, payload: OrderEvent) -> anyhow::R
     let result = RecordEvent::new(state).handle(result).await?;
     let _ = result;
     Ok(())
+}
+============================================================
+tests/scope_tests.rs
+============================================================
+//! Generated behavioral test for scope enforcement. Regenerated on
+//! every build. Drives the real router directly via
+//! `tower::ServiceExt::oneshot` — no live server needed. Db pools are
+//! lazy (`connect_lazy`), so a request that clears the auth layer but
+//! then touches one may still come back as a 5xx; that's still proof
+//! the auth layer itself let it through, which is all these assert.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
+
+use order_system::{config::Config, routes, state::AppState};
+
+async fn app() -> axum::Router {
+    let state = AppState::new(Config::from_env())
+        .await
+        .expect("lazy state construction needs no live infra");
+    routes::router().with_state(state)
+}
+
+fn bearer(scope: &str) -> String {
+    let claims = serde_json::json!({"sub": "test", "scope": scope});
+    let secret = Config::from_env().jwt_secret;
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .expect("token encodes");
+    format!("Bearer {token}")
+}
+
+#[tokio::test]
+async fn shipped_summary_api_rejects_missing_scope() {
+    // A well-formed body: axum extracts parameters in declaration
+    // order, so `Json<..>` extraction (and its own validation) still
+    // runs before the handler body's `require_scope` check — an
+    // ill-formed body would 422 there first, masking the 403 this
+    // test means to prove.
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/summary/shipped")
+                .header("Authorization", bearer("not:orders:read"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"min_total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn shipped_summary_api_accepts_granted_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/summary/shipped")
+                .header("Authorization", bearer("orders:read"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"min_total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn mark_shipped_api_rejects_missing_scope() {
+    // A well-formed body: axum extracts parameters in declaration
+    // order, so `Json<..>` extraction (and its own validation) still
+    // runs before the handler body's `require_scope` check — an
+    // ill-formed body would 422 there first, masking the 403 this
+    // test means to prove.
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/mark-shipped")
+                .header("Authorization", bearer("not:orders:write"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"id":"00000000-0000-0000-0000-000000000000",
+"customer_id":"00000000-0000-0000-0000-000000000000",
+"total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn mark_shipped_api_accepts_granted_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/mark-shipped")
+                .header("Authorization", bearer("orders:write"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"id":"00000000-0000-0000-0000-000000000000",
+"customer_id":"00000000-0000-0000-0000-000000000000",
+"total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+
+
+#[tokio::test]
+async fn customer_read_rejects_missing_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/customers")
+                .header("Authorization", bearer("not:customers:read"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn customer_read_accepts_granted_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/customers")
+                .header("Authorization", bearer("customers:read"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn customer_write_rejects_missing_scope() {
+    // A well-formed body: axum extracts parameters in declaration
+    // order, so `Json<..>` extraction (and its own validation) still
+    // runs before the handler body's `require_scope` check — an
+    // ill-formed body would 422 there first, masking the 403 this
+    // test means to prove.
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/customers")
+                .header("Content-Type", "application/json")
+                .header("Authorization", bearer("not:customers:write"))
+                .body(Body::from(r#"
+{
+"name":"x",
+"email":"x"
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn customer_write_accepts_granted_scope() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/customers")
+                .header("Content-Type", "application/json")
+                .header("Authorization", bearer("customers:write"))
+                .body(Body::from(r#"
+{
+"name":"x",
+"email":"x"
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(response.status(), StatusCode::FORBIDDEN);
 }

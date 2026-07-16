@@ -49,7 +49,7 @@ async fn {{ channel.snake }}(
             }
         }
 {%- else %}
-        if let Ok(mut subscription) = state.queue.client().subscribe(SUBJECT.to_owned()).await {
+        if let Ok(mut subscription) = state.queue.subscribe(SUBJECT).await {
             while let Some(message) = subscription.next().await {
                 if let Some(data) = payload_text(&message.payload) {
                     yield Ok(Event::default().data(data));
@@ -98,7 +98,7 @@ async fn stream(mut socket: WebSocket, state: AppState) {
 }
 {%- else -%}
 async fn stream(mut socket: WebSocket, state: AppState) {
-    let Ok(mut subscription) = state.queue.client().subscribe(SUBJECT.to_owned()).await else {
+    let Ok(mut subscription) = state.queue.subscribe(SUBJECT).await else {
         return;
     };
     while let Some(message) = subscription.next().await {

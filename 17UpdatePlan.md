@@ -1874,21 +1874,113 @@ version out.
     jobs, no-Docker guard, outer-truth reconciliation, whole-version
     analysis covering whichever of M1–M11 actually shipped.
 
-    **M11 decision: deferred, not attempted.** This milestone is framed
-    above as its own separately gated bet, and the gate was exercised
-    rather than rubber-stamped: M11's scope (splitting Rust's concrete
-    clients from capability ports across every generated route/worker/
-    job/client/store, making JWKS/queue initialization lazy, a new
-    current-thread Tokio simulation runner, fake adapters, and fake-
-    backed generated tests, plus a normalized transcript-equivalence
+    **M11 decision: a narrowed slice attempted, the rest disclosed as
+    deferred.** This milestone is framed above as its own separately
+    gated bet — its full scope (splitting Rust's concrete clients from
+    capability ports across every generated route/worker/job/client/
+    store, a new current-thread Tokio simulation runner, fake adapters,
+    fake-backed generated tests, and a normalized transcript-equivalence
     harness against Python) is comparable in size to the whole M6–M10
-    Python build this version just shipped — a second full pass over the
-    Rust backend, not an incremental add. Per this document's own
-    instruction ("if Rust parity is deferred past this version, that is
-    a disclosed, not silent, gap"), the decision is: defer. `ciac sim`/
-    `verify --sim`/`verify_sim` refuse `--target rust` cleanly today
-    (a clear error naming the gap, never a silent no-op or a partial,
-    unverified simulation), and this status is recorded in both
+    Python build this version just shipped. Rather than either
+    attempting all of it or deferring all of it, this session shipped
+    the one piece of it that was independently real, tractable, and
+    load-bearing on its own: **closing the two genuinely eager
+    infrastructure dependencies Rust's generated code had, which the
+    plan names explicitly** ("Rust broker connection becomes lazy";
+    "Rust OAuth2 JWKS loading becomes lazy and cached").
+
+    **Shipped:** `crates/ciac-backend-rust/templates/queue.rs.j2`'s
+    NATS `Queue` no longer connects at construction — the client is
+    established on first `publish`/`subscribe`/`queue_subscribe`,
+    cached behind a `tokio::sync::OnceCell`, mirroring the `connect_lazy`
+    pattern every db pool already used (Kafka's producer construction
+    was confirmed, empirically, to already be non-blocking without a
+    reachable broker, so it only needed a signature change, not new
+    laziness). `templates/auth.rs.j2` gains a `Jwks` type with the same
+    lazy-and-cached shape for the OAuth2 JWKS lookup, replacing the
+    eager `reqwest::get(...)` that used to run inside `AppState::new`.
+    Constructing `AppState` for *any* generated Rust service — JWT or
+    OAuth2, queue-bearing or not — now requires zero live infrastructure,
+    closing the last gap of the "every db pool is lazy, but the broker
+    and JWKS are not" asymmetry.
+
+    This directly retired half of `v0.14 M6`'s own scope-test
+    restriction: `crates/ciac-backend-rust/src/lib.rs` previously only
+    generated the no-live-infra scope-enforcement suite
+    (`tests/scope_tests.rs`) for `auth_scheme == "jwt" && !has_queue`
+    services, with the comment "OAuth2 constructs `AppState` by
+    fetching a live JWKS... both would turn `AppState::new` into a
+    live-infra dependency." With the queue now lazy, the `!has_queue`
+    half of that gate is gone — `examples/order-system.ciac` (JWT +
+    NATS + scopes), never before scope-tested on the Rust target, now
+    generates `tests/scope_tests.rs` and passes it, live-proved by
+    running `cargo test --test scope_tests` against the real generated
+    project with **no NATS, no Postgres, no Docker running** (8/8
+    passed). OAuth2 stays excluded, but for a different, still-live
+    reason stated plainly where the gate lives: real RS256 signature
+    verification needs a real reachable issuer's JWKS regardless of
+    when the fetch happens — laziness moves *when* that network call
+    occurs, not whether it's needed, so a genuine no-infra OAuth2 scope
+    proof needs an actual fake auth adapter (the Rust analog of Pillar
+    8's Python `world`-guarded auth bypass), which is real, disclosed,
+    unbuilt future work, not silently claimed here.
+
+    **Two real, previously-undiscovered bugs found and fixed while
+    proving this live, not worked around:** (1) `scope_tests.rs.j2`'s
+    dummy-request-body generator compared `field.type_kind` directly
+    against bare strings like `"Int"`/`"Float"`, but `FieldTypeKind` is
+    `#[serde(tag = "kind", rename_all = "snake_case")]` — every scalar
+    comparison silently never matched, and every Int/Float/Bool/Uuid/
+    Timestamp field fell through to a quoted `"x"` fallback, which
+    fails to deserialize into its real type. This was already true for
+    every previously-existing scope-tested example; it was invisible
+    only because none of them had ever needed the two-scenario
+    (JWT-with-queue, OAuth2-with-scopes) intersection this session's
+    change exposed as its very first live test — `order-system.ciac`'s
+    two scoped APIs (`Float` fields) were the first real exercise of
+    this path. Fixed at the source (`field.type_kind.kind == "int"`
+    etc., matching the actual tag), not papered over with a different
+    dummy value. (2) Extending `ciac build`/`verify`'s own Rust
+    validation from `cargo test --lib` to `--lib --tests`
+    (`crates/ciac/src/commands.rs::validate_rust_project`) — so
+    `scope_tests.rs` is actually exercised by `ciac verify -t rust`
+    itself, not only by a human who happens to know to run
+    `cargo test --test scope_tests` by hand — confirmed safe by
+    checking that the only other thing ever generated under `tests/`
+    (`tests/system/`, v0.8 M4) is a `pyproject.toml`-based pytest
+    suite, not `.rs` files, so cargo's integration-test discovery
+    (which only picks up `tests/*.rs` directly, not subdirectories)
+    was never at risk of pulling it in.
+
+    **A third, unrelated, pre-existing bug found and disclosed, not
+    fixed:** running a full Rust-target sweep across every checked-in
+    example (something nobody had done since `sim-vertical-slice.ciac`/
+    `sim-broker-slice.ciac` were added in this arc's own M5/M7 — the
+    whole simulation arc has been Python-only until this milestone)
+    surfaced that both fail `cargo check` on the Rust target with
+    `E0382: use of partially moved value`: a typed handler whose body
+    inserts one field of its input into a new row and then returns the
+    whole input (`return Ok(order)` after `order.id` was moved into
+    `ProcessedOrder { order_id: order.id, .. }`) doesn't compile,
+    because `logic.rs.j2`/`lower.rs` never clones the moved field.
+    Confirmed byte-for-byte that neither file was touched this session
+    (`diff <(git show <pre-M11-commit>:...) <working tree>` on both),
+    so this is unrelated to the queue/JWKS work above — a distinct,
+    real gap in typed-handler lowering for the "mutate-then-return-
+    input" shape, real Rust parity work still outstanding, named here
+    rather than left to be rediscovered.
+
+    **Deliberately not attempted, disclosed:** the ports/adapters split
+    itself (concrete clients vs. named capability ports as a real type-
+    level seam), the current-thread Tokio simulation runner, Rust fake
+    adapters, fake-backed generated tests, and the normalized
+    transcript-equivalence harness against Python. `ciac sim`/
+    `verify --sim`/`verify_sim` still refuse `--target rust` cleanly (a
+    clear error naming the gap, never a silent no-op or a partial,
+    unverified simulation) — none of what shipped here changes that,
+    since none of it touches the actual simulation seam, only the
+    production-path eagerness that would have blocked *any* future Rust
+    simulation work from starting. This status is recorded in both
     docs/backends.md and docs/simulation.md, not only here.
 
     **M12, shipped:** a `generated-sim` CI job (`.github/workflows/
@@ -1917,8 +2009,9 @@ version out.
     vector run once against fakes and once against real compose-backed
     infrastructure, a disagreement blocking merge) described earlier in
     this document is Rust-parity-adjacent cross-target harness work that
-    depends on M11's ports/adapters split existing on the Rust side
-    first — deferred alongside M11, not separately.
+    depends on the Rust ports/adapters split existing first — M11
+    closed Rust's eager-infrastructure gap (queue/JWKS), not that split,
+    so the fidelity-ratchet itself remains deferred, disclosed above.
 
     **Version:** 0.19.0 across the workspace (`Cargo.toml` — package
     version plus every internal path-dependency pin — and
@@ -1968,9 +2061,15 @@ version out.
     into the compiler binary itself, auto-discovering workers/jobs/APIs
     from the generated project's own conventions with zero per-fixture
     glue, and fixing a real packaging bug (the runner polluting the
-    generated project's own lint surface) it found along the way. M11 was
-    gated and, on inspection, deliberately deferred rather than
-    undertaken partially. M12 wires what shipped into CI, reconciles the
+    generated project's own lint surface) it found along the way. M11
+    was gated and, on inspection, split rather than all-or-nothing: it
+    shipped the one independently real, tractable slice (Rust's lazy
+    queue/JWKS, un-gating and fixing the scope-test suite that
+    depended on it) and disclosed the rest — the ports/adapters split,
+    the simulation runner, fake adapters, fake-backed tests, the
+    fidelity-ratchet harness — as real, unbuilt future work, alongside
+    a third, unrelated pre-existing lowering bug the same live sweep
+    happened to surface. M12 wires what shipped into CI, reconciles the
     version number honestly, and closes the arc.
 
     The throughline worth naming: at every milestone, real gaps

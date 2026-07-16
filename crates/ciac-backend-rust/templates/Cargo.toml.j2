@@ -81,7 +81,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 {%- if needs_thiserror %}
 thiserror = "2"
 {%- endif %}
-{%- if c.auth_scheme == "jwt" and c.scopes and not c.has_queue %}
+{%- if c.auth_scheme == "jwt" and c.scopes %}
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

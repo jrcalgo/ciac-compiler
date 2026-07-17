@@ -10,6 +10,7 @@ members = [
     "crates/ciac-backend-python",
     "crates/ciac-backend-rust",
     "crates/ciac-sim",
+    "backends/skeleton-internal",
     "tests",
 ]
 

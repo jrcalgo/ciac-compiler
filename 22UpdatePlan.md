@@ -969,6 +969,35 @@ rather than a search (line counts are the audit's, for scale):
    exercised; `docs/backend-authoring.md` rewritten with the measured
    what-you-must-write inventory (the cost-model table, updated with
    M1–M5 actuals).
+
+   **Shipped (v0.22 M5), with a disclosed scope boundary:**
+   `ciac_codegen::emit::{Emit, run}` — the declarative table + shared
+   executor — is real and covers the always/conditional-single-file
+   tier completely. `backends/skeleton-internal/` is a new workspace
+   member: a compiling, gated (`supports()` always `false`) crate
+   demonstrating `Backend`/`TargetInfo`/`Emit` end to end, with three
+   passing tests (`emits_its_declared_file_set`,
+   `supports_nothing_yet`, `target_info_is_populated_and_gated`) —
+   the plan's own "one registry test." The doc that already served
+   this page's purpose in-repo is `docs/backends.md` (not a new
+   `backend-authoring.md` file); it's rewritten with the M1-M5
+   walkthrough and a real, measured cost-model table.
+
+   **Not shipped, recorded as follow-up:** porting the two *real*
+   backends' emission sequences onto `Emit`. Each real backend's
+   `emit_service` is roughly half always/conditional-single-file
+   entries (what `Emit` covers today) and half per-item loops — one
+   file per declared api/worker/job/consumer/channel/resource/call-
+   target — which need per-item context threading `Emit`'s current
+   shape doesn't express. Building that generically (an `Emit::per_x`
+   variant taking an item-iterator + context-builder closure) is real,
+   scoped, bounded work; attempting it as a rushed addition to this
+   milestone risked a half-abstracted result touching both production
+   backends' entire file lists under time pressure. `lib.rs` emission-
+   wiring LOC is therefore unchanged from the pre-factory baseline —
+   see the cost-model table in `docs/backends.md`, which reports this
+   honestly rather than the plan's original aspirational ~350-line
+   figure.
 6. **M6 — Version, docs reconciliation, retrospective.** Workspace
    version bump (number assigned at execution); README/docs support
    tables switched to the generated source of truth; whole-version

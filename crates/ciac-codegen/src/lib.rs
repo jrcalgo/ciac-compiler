@@ -16,6 +16,7 @@
 pub mod backfill;
 pub mod ci;
 pub mod compose;
+pub mod emit;
 pub mod evolution;
 pub mod external;
 pub mod k8s;

@@ -21,7 +21,10 @@
 mod lower;
 
 use ciac_codegen::model as context;
-use ciac_codegen::{Backend, BackendError, GenOptions, GeneratedProject};
+use ciac_codegen::{
+    Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
+    TargetInfo, ValidateStep,
+};
 use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
@@ -42,6 +45,51 @@ const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
         data_mount: "/app/data",
     };
 
+/// The literal CI test-step YAML for this target (v0.22 M1, formerly
+/// `ciac-codegen::ci::PYTHON_TEST_STEPS`). Not `"\` + indented
+/// continuation lines: a backslash-newline in a Rust string literal
+/// strips *all* leading whitespace on the next line, not just the
+/// newline, which silently de-indents the first YAML step.
+const CI_TEST_STEPS: &str = "      - uses: astral-sh/setup-uv@v3\n      - run: uv sync\n      - run: uv run ruff check .\n      - run: uv run pytest -q\n";
+
+/// This target's whole CLI/CI/compose/dev-loop/sim integration surface
+/// (v0.22 M1 — `22UpdatePlan.md` Pillar 1), consumed by `commands.rs`/
+/// `dev.rs`/`vocab.rs` through the `Backend` trait instead of a
+/// per-call-site `match target { "python" => .., .. }`.
+static TARGET_INFO: TargetInfo = TargetInfo {
+    project_marker: "pyproject.toml",
+    migrations_dir: "app/migrations",
+    migration_filename: |seq, _slug| format!("{seq:04}_migration.sql"),
+    validate: &[
+        ValidateStep {
+            program: "uv",
+            args: &["sync", "-q"],
+            env: &[],
+            purpose: "dependencies installed",
+        },
+        ValidateStep {
+            program: "uv",
+            args: &["run", "ruff", "check", "."],
+            env: &[],
+            purpose: "lints",
+        },
+        ValidateStep {
+            program: "uv",
+            args: &["run", "pytest", "-q"],
+            env: &[],
+            purpose: "unit tests pass",
+        },
+    ],
+    ci_test_steps: CI_TEST_STEPS,
+    compose: COMPOSE_OPTS,
+    dev: DevCommands {
+        rebuild: &[],
+        restart: RestartStyle::Restart,
+    },
+    source_extension: "py",
+    sim: SimSupport::Full,
+};
+
 #[derive(Debug, Default)]
 pub struct PythonBackend;
 
@@ -58,6 +106,10 @@ impl Backend for PythonBackend {
         // Everything, including Kafka since v0.11 M3 (aiokafka). The
         // Rust backend still gates Kafka and MySQL.
         true
+    }
+
+    fn target_info(&self) -> &'static TargetInfo {
+        &TARGET_INFO
     }
 
     fn generate(

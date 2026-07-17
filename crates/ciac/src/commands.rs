@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ciac_codegen::evolution::{diff_records, snapshot_boundary_records, RecordSchema};
 use ciac_codegen::manifest::{
     build_manifest, hash_bytes, load_manifest, manifest_path, write_manifest,
@@ -7,7 +7,7 @@ use ciac_codegen::migrations::{diff_schema, snapshot_schema, TableSchema};
 use ciac_codegen::regen::{
     apply_regeneration, plan_regeneration, ApplyMode, RegenMode, RegenPlan, RegenStatus,
 };
-use ciac_codegen::{Backend, GenOptions, GeneratedProject};
+use ciac_codegen::{Backend, GenOptions, GeneratedProject, SimSupport, ValidateStep};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
 use ciac_ir::{FieldType, NormalizedIr};
@@ -18,7 +18,7 @@ use std::process::{Command, ExitCode};
 
 /// All registered code-generation backends, in stable order.
 /// Adding a target is one line here plus the backend crate itself.
-fn backends() -> Vec<Box<dyn Backend>> {
+pub(crate) fn backends() -> Vec<Box<dyn Backend>> {
     vec![
         Box::new(ciac_backend_python::PythonBackend),
         Box::new(ciac_backend_rust::RustBackend),
@@ -1128,11 +1128,22 @@ fn sim_inner(
     name: Option<String>,
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<crate::json_out::SimResult> {
-    if target != "python" && target != "rust" {
-        bail!(
-            "`ciac sim` only drives the python/rust targets in v0.17 (got `{target}`); \
+    // v0.22 M1: resolved through the *built-in* registry only (not the
+    // external-protocol fallback `generate()` uses) — the refusal below
+    // is unchanged from pre-registry `target != "python" && target !=
+    // "rust"`, since only `python`/`rust` are registered today.
+    let sim_backend = backends()
+        .into_iter()
+        .find(|b| b.id() == target)
+        .ok_or_else(|| {
+            anyhow!(
+                "`ciac sim` only drives the python/rust targets in v0.17 (got `{target}`); \
              see docs/simulation.md for the disclosed scope"
-        );
+            )
+        })?;
+    let sim_support = sim_backend.target_info().sim;
+    if let SimSupport::None { reason } = sim_support {
+        bail!("`ciac sim --target {target}` cannot simulate this target: {reason}");
     }
     if record.is_some() && replay.is_some() {
         bail!("--record and --replay are mutually exclusive");
@@ -1140,7 +1151,7 @@ fn sim_inner(
     if (record.is_some() || replay.is_some()) && scenarios.len() != 1 {
         bail!("--record/--replay require exactly one --scenario");
     }
-    if target == "rust" && (record.is_some() || replay.is_some()) {
+    if matches!(sim_support, SimSupport::Narrow { .. }) && (record.is_some() || replay.is_some()) {
         // v0.17 M11's runner is a plain scenario interpreter (no plan/
         // source-hash arguments, no replay tape) -- disclosed, not
         // silently ignored.
@@ -1200,8 +1211,8 @@ fn sim_inner(
     let Some(ir) = ir.filter(|_| !has_errors) else {
         bail!("program stopped compiling between generate and sim");
     };
-    if target == "rust" {
-        let unsupported = ciac_backend_rust::unsupported_sim_capabilities(&ir);
+    if let SimSupport::Narrow { unsupported } = sim_support {
+        let unsupported = unsupported(&ir);
         if !unsupported.is_empty() {
             bail!(
                 "`ciac sim --target rust` cannot simulate this program (v0.17 M11 disclosed \
@@ -1217,7 +1228,12 @@ fn sim_inner(
     let plan = ciac_sim::SimPlan::from_ir(&ir, source_hash.clone());
     let plan_hash = plan.plan_hash();
 
-    let scenario_outcomes = if target == "rust" {
+    // v0.22 M1: `Narrow` runs the generated-runner drive v0.17 M11
+    // built (today: Rust's); `Full` keeps the bounded-child-protocol
+    // drive (today: Python's). Behavior identical to the pre-registry
+    // `target == "rust"` dispatch since Rust is still the only `Narrow`
+    // target.
+    let scenario_outcomes = if matches!(sim_support, SimSupport::Narrow { .. }) {
         sim_drive_rust(out, scenarios, wall_timeout)?
     } else {
         sim_drive_python(
@@ -1304,7 +1320,7 @@ fn sim_drive_python(
         let scenario_abs = resolve_path(scenario_path)?;
         let mut cmd = Command::new("uv");
         cmd.arg("run")
-            .arg("python")
+            .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
             .arg(sim_dir.join("auto_driver.py"))
             .arg(&plan_path)
             .arg(&scenario_abs)
@@ -2177,9 +2193,12 @@ fn generate(
                     source_file,
                     baseline,
                 });
-        for (path, content) in
-            ciac_codegen::ci::build(&ir, backend.id(), image_prefix.as_deref(), gate)
-        {
+        for (path, content) in ciac_codegen::ci::build(
+            &ir,
+            backend.target_info().ci_test_steps,
+            image_prefix.as_deref(),
+            gate,
+        ) {
             project.add_file(path, content);
         }
     }
@@ -2212,7 +2231,7 @@ fn generate(
     let next_migration_seq = match diff_schema(&old_tables, &new_tables) {
         Ok(None) => next_migration_seq,
         Ok(Some(sql)) => {
-            add_migration_files(&mut project, backend.id(), next_migration_seq, &sql);
+            add_migration_files(&mut project, backend.as_ref(), next_migration_seq, &sql);
             next_migration_seq + 1
         }
         Err(change) => {
@@ -2251,7 +2270,15 @@ fn generate(
 /// alongside every other compiler-owned file, so it can never drift
 /// out of date the way a hand-written note would.
 fn agents_md(target: &str) -> String {
-    let sim_section = if target == "python" {
+    // v0.22 M1: was `target == "python"` — `Full` sim support matches
+    // exactly python today (rust is `Narrow`, so it still falls to the
+    // `else` branch below, unchanged), and an unregistered/external
+    // target falls to `else` too, same as before.
+    let full_sim = backends()
+        .into_iter()
+        .find(|b| b.id() == target)
+        .is_some_and(|b| matches!(b.target_info().sim, SimSupport::Full));
+    let sim_section = if full_sim {
         "\n\
 ## Fast inner loop vs. outer truth (v0.17)\n\
 \n\
@@ -2321,13 +2348,11 @@ same commands as a Model Context Protocol server over stdio (including\n\
 /// Migration files are seeded: once written, later builds that stop
 /// re-emitting a given sequence number leave the on-disk file alone
 /// (`RegenStatus::OrphanLeft`) rather than deleting it.
-fn add_migration_files(project: &mut GeneratedProject, target: &str, seq: u32, sql: &str) {
-    let filename = format!("{seq:04}_migration.sql");
-    let rel = match target {
-        "python" => format!("app/migrations/{filename}"),
-        _ => format!("migrations/{filename}"),
-    };
-    for prefix in service_roots(project, target) {
+fn add_migration_files(project: &mut GeneratedProject, backend: &dyn Backend, seq: u32, sql: &str) {
+    let target_info = backend.target_info();
+    let filename = (target_info.migration_filename)(seq, "migration");
+    let rel = format!("{}/{filename}", target_info.migrations_dir);
+    for prefix in service_roots(project, target_info) {
         project.add_seeded_file(format!("{prefix}{rel}"), sql.to_owned());
     }
 }
@@ -2336,11 +2361,11 @@ fn add_migration_files(project: &mut GeneratedProject, target: &str, seq: u32, s
 /// generated tree, identified by its marker file (`pyproject.toml` /
 /// `Cargo.toml`) — one root for a single-service build, several for a
 /// multi-service system.
-fn service_roots(project: &GeneratedProject, target: &str) -> Vec<String> {
-    let marker = match target {
-        "python" => "pyproject.toml",
-        _ => "Cargo.toml",
-    };
+fn service_roots(
+    project: &GeneratedProject,
+    target_info: &ciac_codegen::TargetInfo,
+) -> Vec<String> {
+    let marker = target_info.project_marker;
     let mut roots: Vec<String> = project
         .files_with_roles()
         .filter_map(|(path, _, _)| path.strip_suffix(marker).map(str::to_owned))
@@ -2458,13 +2483,22 @@ fn list_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(files)
 }
 
+/// Runs each generated project's own `TargetInfo::validate` steps in
+/// order (v0.22 M1 — replaces the `validate_python_project`/
+/// `validate_rust_project` pair with one registry-driven loop; the
+/// per-target step lists themselves are unchanged, see
+/// `ciac-backend-python`/`ciac-backend-rust`'s `TARGET_INFO`).
+/// `target` is resolved through the *built-in* registry only, exactly
+/// as before this milestone — an external target still refuses here
+/// with the same message, since `ExternalBackend` was never a member
+/// of `backends()`.
 fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
-    let marker = match target {
-        "python" => "pyproject.toml",
-        "rust" => "Cargo.toml",
-        other => bail!("cannot verify unknown generated target `{other}`"),
-    };
-    let projects = find_project_dirs(root, marker)?;
+    let target_info = backends()
+        .into_iter()
+        .find(|b| b.id() == target)
+        .map(|b| b.target_info())
+        .ok_or_else(|| anyhow!("cannot verify unknown generated target `{target}`"))?;
+    let projects = find_project_dirs(root, target_info.project_marker)?;
     if projects.is_empty() {
         bail!(
             "no generated {target} project found under {}",
@@ -2472,43 +2506,44 @@ fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
         );
     }
     for project in projects {
-        match target {
-            "python" => validate_python_project(&project)?,
-            "rust" => validate_rust_project(&project)?,
-            _ => unreachable!("matched above"),
+        for step in target_info.validate {
+            run_validate_step(&project, step)?;
         }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn validate_python_project(project: &Path) -> Result<()> {
-    run_in(project, "uv", &["sync", "-q"])?;
-    run_in(project, "uv", &["run", "ruff", "check", "."])?;
-    run_in(project, "uv", &["run", "pytest", "-q"])
-}
-
-fn validate_rust_project(project: &Path) -> Result<()> {
-    let status = Command::new("cargo")
-        .arg("check")
-        .env("RUSTFLAGS", "-D warnings")
-        .current_dir(project)
-        .status()
-        .with_context(|| format!("failed to run cargo check in {}", project.display()))?;
-    if !status.success() {
-        bail!("cargo check failed in {}", project.display());
+/// Runs one `TargetInfo::validate` step, streaming through the same
+/// `--json`-aware plumbing every other subprocess in this module uses
+/// (v0.22 M1 — previously the Rust backend's `cargo check` step used a
+/// raw, non-`--json`-aware `Command::status()` call; unifying it here
+/// is intentional, not a behavior regression: it now matches how every
+/// other validate step, including Rust's own `cargo test`, already
+/// behaved).
+fn run_validate_step(project: &Path, step: &ValidateStep) -> Result<()> {
+    let mut cmd = Command::new(step.program);
+    cmd.args(step.args).current_dir(project);
+    for (key, value) in step.env {
+        cmd.env(key, value);
     }
-    // v0.17 M11: `--tests` (not just `--lib`) so the generated
-    // no-live-infra scope-enforcement suite (`tests/scope_tests.rs`,
-    // present whenever `auth JWT` is paired with a scoped resource/api)
-    // actually runs as part of `ciac verify`/`ciac build`'s own static
-    // check, not only when a human happens to invoke `cargo test
-    // --test scope_tests` by hand. Safe to broaden: the only other
-    // thing ever generated under `tests/` is `tests/system/` (v0.8
-    // M4), which is a `pyproject.toml`-based pytest suite, not `.rs`
-    // files -- cargo's integration-test discovery only picks up
-    // `tests/*.rs` directly, so it was never at risk of being pulled
-    // into a `cargo test` invocation regardless of this flag.
-    run_in(project, "cargo", &["test", "-q", "--lib", "--tests"])
+    let status = run_streamed(&mut cmd).with_context(|| {
+        format!(
+            "failed to run `{} {}` in {}",
+            step.program,
+            step.args.join(" "),
+            project.display()
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "`{} {}` failed in {} ({})",
+            step.program,
+            step.args.join(" "),
+            project.display(),
+            step.purpose
+        );
+    }
+    Ok(())
 }
 
 fn run_in(project: &Path, program: &str, args: &[&str]) -> Result<()> {

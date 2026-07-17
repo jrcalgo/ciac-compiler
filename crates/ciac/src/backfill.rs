@@ -146,12 +146,16 @@ pub fn plan(
 /// The relative migrations directory this target's project actually
 /// uses — mirrors `commands::add_migration_files`'s own convention so a
 /// backfill script or contract migration lands next to the expand
-/// migration `ciac build` already wrote.
+/// migration `ciac build` already wrote. Resolved through the registry
+/// (v0.22 M1 — `TargetInfo::migrations_dir`); an unregistered/external
+/// target still falls back to `"migrations"`, same as the old `_ =>`
+/// arm.
 fn migrations_dir(target: &str) -> &'static str {
-    match target {
-        "python" => "app/migrations",
-        _ => "migrations",
-    }
+    crate::commands::backends()
+        .into_iter()
+        .find(|b| b.id() == target)
+        .map(|b| b.target_info().migrations_dir)
+        .unwrap_or("migrations")
 }
 
 fn write_contract_migration(

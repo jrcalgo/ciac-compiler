@@ -255,17 +255,32 @@ fn is_relevant(event: &notify::Event, watch_set: &BTreeSet<PathBuf>, out: &Path)
         return false;
     }
     let seeded = [out.join("app/services"), out.join("src/services")];
+    let extensions = seeded_source_extensions();
     event.paths.iter().any(|p| {
         let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
         watch_set.contains(&canonical)
             || seeded.iter().any(|dir| {
                 canonical.starts_with(dir)
-                    && matches!(
-                        canonical.extension().and_then(|e| e.to_str()),
-                        Some("py" | "rs")
-                    )
+                    && canonical
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|ext| extensions.contains(&ext))
             })
     })
+}
+
+/// The set of seeded-handler source extensions across every registered
+/// backend (v0.22 M1 — `TargetInfo::source_extension`), e.g. `["py",
+/// "rs"]` today. `is_relevant` already watched both targets' seeded
+/// directories unconditionally regardless of which one this session is
+/// building, so unioning across the registry instead of hardcoding two
+/// literals is behavior-preserving today and automatic for the next
+/// target.
+fn seeded_source_extensions() -> Vec<&'static str> {
+    commands::backends()
+        .iter()
+        .map(|b| b.target_info().source_extension)
+        .collect()
 }
 
 #[cfg(test)]

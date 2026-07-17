@@ -22,7 +22,10 @@
 mod lower;
 
 use ciac_codegen::model as context;
-use ciac_codegen::{Backend, BackendError, GenOptions, GeneratedProject};
+use ciac_codegen::{
+    Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
+    TargetInfo, ValidateStep,
+};
 use ciac_ir::{Component, NodeKind, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
@@ -61,6 +64,46 @@ const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
         data_mount: "/data",
     };
 
+/// The literal CI test-step YAML for this target (v0.22 M1, formerly
+/// `ciac-codegen::ci::RUST_TEST_STEPS`).
+const CI_TEST_STEPS: &str = "      - uses: dtolnay/rust-toolchain@stable\n      - run: cargo check\n        env:\n          RUSTFLAGS: \"-D warnings\"\n      - run: cargo test -q --lib\n";
+
+/// This target's whole CLI/CI/compose/dev-loop/sim integration surface
+/// (v0.22 M1 — `22UpdatePlan.md` Pillar 1). `validate` mirrors
+/// `validate_rust_project`'s two steps exactly (`cargo check -D
+/// warnings`, then `cargo test --lib --tests` so the generated
+/// no-live-infra scope-enforcement suite runs as part of `ciac
+/// verify`/`build`, v0.17 M11).
+static TARGET_INFO: TargetInfo = TargetInfo {
+    project_marker: "Cargo.toml",
+    migrations_dir: "migrations",
+    migration_filename: |seq, _slug| format!("{seq:04}_migration.sql"),
+    validate: &[
+        ValidateStep {
+            program: "cargo",
+            args: &["check"],
+            env: &[("RUSTFLAGS", "-D warnings")],
+            purpose: "type-checks (deny warnings)",
+        },
+        ValidateStep {
+            program: "cargo",
+            args: &["test", "-q", "--lib", "--tests"],
+            env: &[],
+            purpose: "unit and generated tests pass",
+        },
+    ],
+    ci_test_steps: CI_TEST_STEPS,
+    compose: COMPOSE_OPTS,
+    dev: DevCommands {
+        rebuild: &[],
+        restart: RestartStyle::Restart,
+    },
+    source_extension: "rs",
+    sim: SimSupport::Narrow {
+        unsupported: unsupported_sim_capabilities,
+    },
+};
+
 #[derive(Debug, Default)]
 pub struct RustBackend;
 
@@ -80,6 +123,10 @@ impl Backend for RustBackend {
         // backend). Typed handler signatures graduated in v0.7 M4.
         let _ = component;
         true
+    }
+
+    fn target_info(&self) -> &'static TargetInfo {
+        &TARGET_INFO
     }
 
     fn generate(

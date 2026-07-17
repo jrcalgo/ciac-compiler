@@ -21,6 +21,14 @@ pub struct Capability {
     pub doc: &'static str,
 }
 
+// target-literal-ok: v0.22 M1 deliberately deferred deriving `targets`
+// from `Backend::supports()` to M4 (`22UpdatePlan.md` Pillar 1/4) —
+// `supports()` is unconditionally `true` on both bundled backends
+// today (no per-component discrimination to derive from yet), so a
+// derivation now would carry zero information over this literal and
+// would force `PROVIDERS` off `const` (every consumer touches it as
+// compile-time data). M4's `ciac targets --json` + docs-drift-test
+// milestone is where this becomes real, registry-derived data.
 const BOTH: &[&str] = &["python", "rust"];
 
 /// Language keywords, in docs/language.md's vocabulary.

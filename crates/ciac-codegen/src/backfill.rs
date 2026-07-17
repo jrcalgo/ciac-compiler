@@ -235,6 +235,16 @@ pub fn contract_sql(plan: &BackfillPlan) -> String {
 /// it in whichever `migrations/` directory this target's project
 /// actually uses, the same convention `ciac build`'s own migration
 /// files follow) and its content.
+// target-literal-ok: discovered during the v0.22 M1 grep-fence audit,
+// outside the six sites the plan's own pre-audit enumerated —
+// `python_backfill_script`/`rust_backfill_script` below are genuinely
+// per-language template text living in the *shared* crate, the same
+// seam-3 pattern `TargetInfo` closes elsewhere. Left as a disclosed,
+// deferred finding rather than folded into this milestone
+// (22UpdatePlan.md's Risks section: "hidden coupling surfaces late" —
+// this is exactly that, and it's annotated rather than silently
+// worked around): moving these into per-backend trait methods is
+// real, contained follow-up work, tracked but not done here.
 pub fn seeded_script(plan: &BackfillPlan, target: &str) -> (String, String) {
     match target {
         "python" => (

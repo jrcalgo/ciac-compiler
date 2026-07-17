@@ -11,12 +11,53 @@
 
 use crate::model::build_system;
 use crate::protocol::{CodegenRequest, CodegenResponse, PROTOCOL_VERSION};
-use crate::{Backend, BackendError, FileRole, GenOptions, GeneratedProject};
+use crate::{
+    Backend, BackendError, DevCommands, FileRole, GenOptions, GeneratedProject, RestartStyle,
+    SimSupport, TargetInfo,
+};
 use ciac_ir::{Component, NormalizedIr};
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+
+/// A generic, permissive `TargetInfo` for external-protocol backends
+/// (v0.22 M1): they have no compile-time-known `TargetInfo` of their
+/// own, and `ciac verify`'s static validation loop
+/// (`commands.rs::validate_generated`) never reaches this value — it
+/// resolves targets through the *built-in* registry only (`python`/
+/// `rust`), so an external target is refused there exactly as before
+/// this milestone (`ExternalBackend` is never a member of that
+/// registry). This value exists only to satisfy the `Backend` trait
+/// and to give the CI/compose/migrations plumbing something harmless
+/// to read if it's ever handed an external target directly. The
+/// `project_marker`/`migrations_dir` values match this crate's
+/// pre-v0.22 non-Python fallback (`_ => "Cargo.toml"` /
+/// `_ => "migrations"`) so any codepath that *does* consult them sees
+/// the same behavior as before.
+static EXTERNAL_TARGET_INFO: TargetInfo = TargetInfo {
+    project_marker: "Cargo.toml",
+    migrations_dir: "migrations",
+    migration_filename: |seq, _slug| format!("{seq:04}_migration.sql"),
+    validate: &[],
+    ci_test_steps: crate::ci::GENERIC_TEST_STEPS,
+    compose: crate::compose::BackendComposeOpts {
+        db_url_scheme: "",
+        workers_command: "[]",
+        mysql_url_scheme: "",
+        sqlite_url_prefix: "",
+        sqlite_url_suffix: "",
+        data_mount: "",
+    },
+    dev: DevCommands {
+        rebuild: &[],
+        restart: RestartStyle::Restart,
+    },
+    source_extension: "",
+    sim: SimSupport::None {
+        reason: "external-protocol backends have no simulation wire surface (v0.8 M2 non-goal)",
+    },
+};
 
 /// A backend resolved by name at the moment it's used, not registered
 /// up front — `--target <name>` falls back to this when `name` isn't
@@ -83,6 +124,10 @@ impl Backend for ExternalBackend {
         // via a second request/response round trip it has no way to
         // interpret generically across arbitrary external targets.
         true
+    }
+
+    fn target_info(&self) -> &'static TargetInfo {
+        &EXTERNAL_TARGET_INFO
     }
 
     fn generate(

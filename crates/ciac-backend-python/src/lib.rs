@@ -18,6 +18,7 @@
 //! running: database, cache, and queue clients are created lazily, so the
 //! generated smoke tests pass on a bare checkout.
 
+mod filters;
 mod lower;
 
 use ciac_codegen::model as context;
@@ -118,12 +119,14 @@ impl Backend for PythonBackend {
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
+        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
             (
                 f.path().to_str().expect("template names are utf-8"),
                 f.contents_utf8().expect("templates are utf-8"),
             )
         }))?;
+        env.add_filter("py_type", filters::py_type);
+        env.add_filter("py_out_type", filters::py_out_type);
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {

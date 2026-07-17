@@ -11,7 +11,7 @@ use ciac_ir::{
     Component, EdgeKind, FieldType, HttpMethod, NodeId, NodeKind, NormalizedIr, QueueEngine,
     RealtimeProvider, RecordId, ServiceId, Step, StepKind,
 };
-use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
+use heck::{ToKebabCase, ToLowerCamelCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +20,35 @@ use std::collections::{BTreeMap, BTreeSet};
 /// realm `dev` in the shared `keycloak` compose service, port 8080 --
 /// `ciac-codegen::users` seeds a realm import matching this exactly.
 pub const KEYCLOAK_DEV_ISSUER: &str = "http://keycloak:8080/realms/dev";
+
+/// Every casing variant of a declared name, computed once here instead
+/// of precomputed per-language in the shared model (v0.22 M2 —
+/// `22UpdatePlan.md` Pillar 2 Move 1). Templates and backends pick the
+/// form their language wants (`{{ api.name.camel }}`); nothing
+/// per-language is precomputed in this crate.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NameForms {
+    /// As declared, e.g. `PlaceOrderApi`.
+    pub original: String,
+    pub snake: String,
+    pub pascal: String,
+    pub camel: String,
+    pub kebab: String,
+    pub screaming: String,
+}
+
+impl NameForms {
+    pub fn new(original: &str) -> Self {
+        NameForms {
+            original: original.to_owned(),
+            snake: original.to_snake_case(),
+            pascal: original.to_pascal_case(),
+            camel: original.to_lower_camel_case(),
+            kebab: original.to_kebab_case(),
+            screaming: original.to_shouty_snake_case(),
+        }
+    }
+}
 
 /// The generated system: one deployable project per declared service, or
 /// a single unprefixed project for single-service programs.
@@ -250,18 +279,12 @@ pub enum FieldTypeKind {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FieldCtx {
     pub name: String,
-    /// Language-neutral type, for backends with no dedicated
-    /// `<host>_type` field below (v0.10 M1).
+    /// Language-neutral type (v0.10 M1). Per-language spellings
+    /// (`py_type`/`py_out_type`/`rust_type`/`db_rust_type`, deleted
+    /// v0.22 M2) are backend-owned minijinja filters over this now —
+    /// `{{ field | py_type }}` / `{{ field | rust_type }}`, see
+    /// `ciac-backend-python`/`ciac-backend-rust`'s `filters.rs`.
     pub type_kind: FieldTypeKind,
-    /// Python annotation, e.g. `str`, `datetime`, `Literal["A", "B"]`.
-    pub py_type: String,
-    /// Python annotation on the read path; enums come back from storage
-    /// as their text form, so `Literal[..]` widens to `str`.
-    pub py_out_type: String,
-    /// Rust type, e.g. `String`, `chrono::DateTime<chrono::Utc>`, `VideoStatus`.
-    pub rust_type: String,
-    /// Rust type as stored in the database (enums are TEXT → `String`).
-    pub db_rust_type: String,
     /// Postgres column type, e.g. `TEXT`, `BIGINT`, `JSONB`.
     pub sql_type: String,
     pub is_json: bool,
@@ -1224,13 +1247,18 @@ fn build_scoped(
             service.db_engine = engine_of(field);
         }
     }
-    let all_fields = |records: &[RecordCtx]| -> Vec<String> {
+    // v0.22 M2: was `f.py_type` string-sniffing ("datetime" / contains
+    // "Any" / starts_with "Literal") — both backends need these flags
+    // (Rust's Cargo.toml.j2 gates the chrono dependency on the same
+    // `records_use_datetime`), so they belong on neutral `type_kind`,
+    // not a Python-rendered string that happened to be lying around.
+    let all_field_kinds = |records: &[RecordCtx]| -> Vec<FieldTypeKind> {
         records
             .iter()
-            .flat_map(|r| r.fields.iter().map(|f| f.py_type.clone()))
+            .flat_map(|r| r.fields.iter().map(|f| f.type_kind.clone()))
             .collect()
     };
-    let field_types = all_fields(&records);
+    let field_kinds = all_field_kinds(&records);
 
     let scopes: Vec<String> = {
         let mut scopes: Vec<String> = Vec::new();
@@ -1346,9 +1374,13 @@ fn build_scoped(
             _ => unreachable!("queue singleton is a queue"),
         }),
         events_subject: default_subject,
-        records_use_datetime: field_types.iter().any(|t| t == "datetime"),
-        records_use_json: field_types.iter().any(|t| t.contains("Any")),
-        records_use_enum: field_types.iter().any(|t| t.starts_with("Literal")),
+        records_use_datetime: field_kinds
+            .iter()
+            .any(|k| matches!(k, FieldTypeKind::Timestamp)),
+        records_use_json: field_kinds.iter().any(|k| matches!(k, FieldTypeKind::Json)),
+        records_use_enum: field_kinds
+            .iter()
+            .any(|k| matches!(k, FieldTypeKind::Enum { .. })),
         records,
         tables,
         table_db_field,
@@ -2131,46 +2163,6 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
     let mut enums = Vec::new();
     for field in &record.fields {
         let sql_type = field_sql_type(&field.ty);
-        let (py_type, rust_type) = match &field.ty {
-            FieldType::Str => ("str".to_owned(), "String".to_owned()),
-            FieldType::Int => ("int".to_owned(), "i64".to_owned()),
-            FieldType::Float => ("float".to_owned(), "f64".to_owned()),
-            FieldType::Bool => ("bool".to_owned(), "bool".to_owned()),
-            FieldType::Uuid => ("str".to_owned(), "String".to_owned()),
-            FieldType::Timestamp => (
-                "datetime".to_owned(),
-                "chrono::DateTime<chrono::Utc>".to_owned(),
-            ),
-            FieldType::Json => ("dict[str, Any]".to_owned(), "serde_json::Value".to_owned()),
-            FieldType::Enum { variants } => {
-                let enum_name = format!("{}{}", record.name, field.name.to_pascal_case());
-                let literal = variants
-                    .iter()
-                    .map(|v| format!("\"{v}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                enums.push(EnumCtx {
-                    name: enum_name.clone(),
-                    variants: variants.clone(),
-                });
-                (format!("Literal[{literal}]"), enum_name)
-            }
-            // v0.16 M4: a `cardinality: one` reference is, at the wire
-            // and row level, a plain Uuid-shaped id — the disclosed
-            // contract is `customer: Reference<Customer>` maps to a
-            // `customer_id` property/column, not a nested object; the
-            // target's own fields are reached with a second request/
-            // query, never embedded. `cardinality: many` has no wire
-            // exposure yet (gated below, same as `field_sql_type`).
-            FieldType::Reference {
-                cardinality: ciac_ir::Cardinality::One,
-                ..
-            } => ("str".to_owned(), "String".to_owned()),
-            FieldType::Reference {
-                cardinality: ciac_ir::Cardinality::Many,
-                ..
-            } => unreachable!("many-relation codegen is gated until v0.16 M5/M6 land"),
-        };
         let is_enum = matches!(field.ty, FieldType::Enum { .. });
         let type_kind = match &field.ty {
             FieldType::Str => FieldTypeKind::Str,
@@ -2180,12 +2172,24 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
             FieldType::Uuid => FieldTypeKind::Uuid,
             FieldType::Timestamp => FieldTypeKind::Timestamp,
             FieldType::Json => FieldTypeKind::Json,
-            FieldType::Enum { variants } => FieldTypeKind::Enum {
-                // Same generated type name the `rust_type` arm above
-                // computed, e.g. `VideoStatus`.
-                name: rust_type.clone(),
-                variants: variants.clone(),
-            },
+            FieldType::Enum { variants } => {
+                let enum_name = format!("{}{}", record.name, field.name.to_pascal_case());
+                enums.push(EnumCtx {
+                    name: enum_name.clone(),
+                    variants: variants.clone(),
+                });
+                FieldTypeKind::Enum {
+                    name: enum_name,
+                    variants: variants.clone(),
+                }
+            }
+            // v0.16 M4: a `cardinality: one` reference is, at the wire
+            // and row level, a plain Uuid-shaped id — the disclosed
+            // contract is `customer: Reference<Customer>` maps to a
+            // `customer_id` property/column, not a nested object; the
+            // target's own fields are reached with a second request/
+            // query, never embedded. `cardinality: many` has no wire
+            // exposure yet (gated below, same as `field_sql_type`).
             FieldType::Reference {
                 cardinality: ciac_ir::Cardinality::One,
                 target,
@@ -2217,19 +2221,7 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
             name: field_name,
             type_kind,
             is_json: matches!(field.ty, FieldType::Json),
-            py_out_type: if is_enum {
-                "str".to_owned()
-            } else {
-                py_type.clone()
-            },
-            db_rust_type: if is_enum {
-                "String".to_owned()
-            } else {
-                rust_type.clone()
-            },
             is_enum,
-            py_type,
-            rust_type,
             sql_type: sql_type.to_owned(),
         });
     }

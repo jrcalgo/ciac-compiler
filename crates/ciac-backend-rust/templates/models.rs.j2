@@ -27,7 +27,7 @@ pub struct {{ resource.name }} {
     pub id: String,
 {%- for field in resource.record.fields %}
 {%- if field.name != "id" %}
-    pub {{ field.name }}: {{ field.db_rust_type }},
+    pub {{ field.name }}: {{ (field | db_rust_type) }},
 {%- endif %}
 {%- endfor %}
 }
@@ -38,7 +38,7 @@ pub struct {{ resource.name }} {
 pub struct {{ resource.name }}In {
 {%- for field in resource.record.fields %}
 {%- if field.name != "id" %}
-    pub {{ field.name }}: {{ field.rust_type }},
+    pub {{ field.name }}: {{ (field | rust_type) }},
 {%- endif %}
 {%- endfor %}
 }
@@ -62,7 +62,7 @@ pub struct {{ resource.name }}In {
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct {{ table.class_name }} {
 {%- for field in table.record.fields %}
-    pub {{ field.name }}: {{ field.db_rust_type }},
+    pub {{ field.name }}: {{ (field | db_rust_type) }},
 {%- endfor %}
 {%- if not table.record.has_id %}
     pub id: String,
@@ -76,7 +76,7 @@ impl TryFrom<{{ table.class_name }}> for {{ table.record.name }} {
         Ok({{ table.record.name }} {
 {%- for field in table.record.fields %}
 {%- if field.is_enum %}
-            {{ field.name }}: crate::schemas::{{ field.rust_type }}::from_str(&row.{{ field.name }})?,
+            {{ field.name }}: crate::schemas::{{ (field | rust_type) }}::from_str(&row.{{ field.name }})?,
 {%- else %}
             {{ field.name }}: row.{{ field.name }},
 {%- endif %}

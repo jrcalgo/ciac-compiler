@@ -18,14 +18,14 @@ class {{ record.name }}({% if record.is_error %}Exception{% else %}BaseModel{% e
 {%- if record.is_error %}
     """Raised by `fail {{ record.name }}(..)` in a handler body."""
 
-    def __init__(self, {% for field in record.fields %}{{ field.name }}: {{ field.py_type }}{% if not loop.last %}, {% endif %}{% endfor %}) -> None:
+    def __init__(self, {% for field in record.fields %}{{ field.name }}: {{ (field | py_type) }}{% if not loop.last %}, {% endif %}{% endfor %}) -> None:
 {%- for field in record.fields %}
         self.{{ field.name }} = {{ field.name }}
 {%- endfor %}
         super().__init__("{{ record.name }}(" + ", ".join(f"{k}={v!r}" for k, v in self.__dict__.items()) + ")")
 {%- else %}
 {%- for field in record.fields %}
-    {{ field.name }}: {{ field.py_type }}
+    {{ field.name }}: {{ (field | py_type) }}
 {%- endfor %}
 {%- endif %}
 {% endfor %}

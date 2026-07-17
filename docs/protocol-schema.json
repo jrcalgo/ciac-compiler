@@ -1,5 +1,5 @@
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "request": {
     "$defs": {
       "ApiCtx": {
@@ -802,10 +802,6 @@
       },
       "FieldCtx": {
         "properties": {
-          "db_rust_type": {
-            "description": "Rust type as stored in the database (enums are TEXT → `String`).",
-            "type": "string"
-          },
           "is_enum": {
             "type": "boolean"
           },
@@ -815,34 +811,18 @@
           "name": {
             "type": "string"
           },
-          "py_out_type": {
-            "description": "Python annotation on the read path; enums come back from storage\nas their text form, so `Literal[..]` widens to `str`.",
-            "type": "string"
-          },
-          "py_type": {
-            "description": "Python annotation, e.g. `str`, `datetime`, `Literal[\"A\", \"B\"]`.",
-            "type": "string"
-          },
-          "rust_type": {
-            "description": "Rust type, e.g. `String`, `chrono::DateTime<chrono::Utc>`, `VideoStatus`.",
-            "type": "string"
-          },
           "sql_type": {
             "description": "Postgres column type, e.g. `TEXT`, `BIGINT`, `JSONB`.",
             "type": "string"
           },
           "type_kind": {
             "$ref": "#/$defs/FieldTypeKind",
-            "description": "Language-neutral type, for backends with no dedicated\n`<host>_type` field below (v0.10 M1)."
+            "description": "Language-neutral type (v0.10 M1). Per-language spellings\n(`py_type`/`py_out_type`/`rust_type`/`db_rust_type`, deleted\nv0.22 M2) are backend-owned minijinja filters over this now —\n`{{ field | py_type }}` / `{{ field | rust_type }}`, see\n`ciac-backend-python`/`ciac-backend-rust`'s `filters.rs`."
           }
         },
         "required": [
           "name",
           "type_kind",
-          "py_type",
-          "py_out_type",
-          "rust_type",
-          "db_rust_type",
           "sql_type",
           "is_json",
           "is_enum"

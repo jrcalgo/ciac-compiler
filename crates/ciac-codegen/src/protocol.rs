@@ -22,7 +22,14 @@ use serde::{Deserialize, Serialize};
 /// and is populated so "versioned contract" is a real property from
 /// the start, not an afterthought bolted on once something external
 /// actually depends on it.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// v0.22 M2: bumped to 2 — `FieldCtx` dropped its `py_type`/
+/// `py_out_type`/`rust_type`/`db_rust_type` fields (per-language
+/// spellings now live as backend-owned minijinja filters over
+/// `type_kind`, which was already on the wire since v0.10 M1).
+/// External backends render types from `type_kind` the same way the
+/// bundled backends' filters do — see `docs/external-backends.md`.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The full wire contract as one JSON Schema document (v0.10 M2):
 /// `protocol_version` plus schemas for both halves, derived from the

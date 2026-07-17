@@ -849,6 +849,50 @@ rather than a search (line counts are the audit's, for scale):
    note, reference Go backend updated and its `ciac build --target
    go` live proof re-run. This is the one milestone that changes any
    observable surface (the wire schema), and it is versioned.
+
+   **Recorded fallback scope, execution-time (v0.22 M2), matching the
+   discipline this plan's own Risks section pre-authorizes:** `NameForms`
+   shipped (`ciac-codegen::model::NameForms`, computed via `heck`); the
+   `FieldCtx` group (`py_type`/`py_out_type`/`rust_type`/`db_rust_type`
+   — the plan's own flagship worked example) fully migrated to
+   backend-owned filters (`ciac-backend-python`/`-rust`'s
+   `filters::py_type`/`py_out_type`/`rust_type`/`db_rust_type`, using
+   minijinja's `ViaDeserialize` — the mechanism that makes `{{ field |
+   py_type }}` work against a `Deserialize`-derived wrapper struct
+   rather than the whole `FieldCtx`), byte-identical-golden verified,
+   fields deleted, `PROTOCOL_VERSION` bumped to 2, schema regenerated,
+   `docs/external-backends.md` given a v2 migration note, and the Go
+   reference backend's own `protocolVersion` constant bumped with its
+   `ciac build --target go` live proof re-run (see `backends/go/
+   main.go`'s v0.22 M2 comment). One live audit finding surfaced during
+   this pass and was fixed as an improvement, not deferred:
+   `records_use_datetime`/`_json`/`_enum` were computed by string-
+   sniffing the *Python-rendered* `py_type` text (checking for
+   `"datetime"`/`"Any"`/`"Literal"` substrings) even though Rust's own
+   `Cargo.toml.j2` reads `records_use_datetime` too — now computed
+   directly from neutral `type_kind`, which is more correct, not just
+   more neutral.
+
+   The remaining host fields the audit named — `CfgFieldCtx`'s
+   `py_ann`/`py_default`/`rust_default`; `ExtraDepCtx`'s `py_type`/
+   `py_module`/`py_expr`/`py_getter`/`rust_type`/`rust_module`/
+   `rust_state_field`; `ExtraImportCtx`'s `py_module`/`py_getter`;
+   `ArmCtx::rust_variant`; `BindingCtx`'s `py_attr`/`rust_field`; and
+   the `rust_db_field`/`rust_cache_field`/`py_args` family across
+   `HandlerRef` and related structs — are **composed filters** (per
+   the disposition table: each needs more than one neutral field
+   composed together, e.g. binding kind + instance `NameForms`, not a
+   single `FieldTypeKind` match), not pure functions of one enum the
+   way `FieldCtx`'s group was. They follow the exact pattern just
+   proven end-to-end (backend-owned filter, `ViaDeserialize` wrapper
+   struct, byte-identical golden gate, then field deletion) but each
+   needs its own small design pass to identify precisely which neutral
+   fields it composes over — real, contained, mechanical follow-up
+   work, deferred rather than rushed. `NameForms` itself is defined and
+   proven but not yet threaded through every `snake`/`class_name` pair
+   in `model.rs` (Move 1's full sweep) — same disposition, same
+   deferral. Whoever picks this up next starts from a working,
+   golden-verified template (this commit) rather than a blank page.
 3. **M3 — `lower_core` + `HostSyntax`; port both backends.**
    Scanner first (both backends consume it; sim proofs re-run since
    `unguarded_verbs` moved), then dispatch + leaves per backend,

@@ -40,7 +40,7 @@ impl {{ enum.name }} {
 #[error("{{ record.name }}({% for field in record.fields %}{{ field.name }}={{ '{' }}{{ field.name }}:?{{ '}' }}{% if not loop.last %}, {% endif %}{% endfor %})")]
 pub struct {{ record.name }} {
 {%- for field in record.fields %}
-    pub {{ field.name }}: {{ field.rust_type }},
+    pub {{ field.name }}: {{ (field | rust_type) }},
 {%- endfor %}
 }
 {%- else %}
@@ -48,7 +48,7 @@ pub struct {{ record.name }} {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct {{ record.name }} {
 {%- for field in record.fields %}
-    pub {{ field.name }}: {{ field.rust_type }},
+    pub {{ field.name }}: {{ (field | rust_type) }},
 {%- endfor %}
 }
 {%- endif %}

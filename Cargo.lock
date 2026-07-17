@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "ciac"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "ciac-backend-python",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-backend-python"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-codegen",
  "ciac-diagnostics",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-backend-rust"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-codegen",
  "ciac-diagnostics",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-backend-skeleton-internal"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-codegen",
  "ciac-diagnostics",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-codegen"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "ciac-ir",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-diagnostics"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ariadne",
  "serde",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-integration-tests"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-backend-python",
  "ciac-backend-rust",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-ir"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "schemars",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-sema"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "ciac-ir",
@@ -304,7 +304,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-sim"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-syntax"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "logos",

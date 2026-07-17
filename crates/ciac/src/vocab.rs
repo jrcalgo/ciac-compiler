@@ -230,3 +230,29 @@ pub fn doc_for(word: &str) -> Option<String> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v0.22 M6: `docs/language.md`'s hand-written provider table is
+    /// the "README/docs support table" the plan means to protect from
+    /// silent drift. `PROVIDERS` lives in a lib-less binary crate (the
+    /// `tests` crate can't import it — see `targets_cli.rs`'s own
+    /// subprocess workaround for the same constraint), so the check
+    /// lives here instead, mirroring `tests/tests/docs.rs`'s
+    /// `error_docs_cover_every_code` pattern.
+    #[test]
+    fn language_md_mentions_every_provider() {
+        let doc = include_str!("../../../docs/language.md");
+        for provider in PROVIDERS {
+            assert!(
+                doc.contains(provider.name),
+                "docs/language.md's provider table is missing `{}` (capability `{}`) — \
+                 update the table when PROVIDERS changes",
+                provider.name,
+                provider.capability,
+            );
+        }
+    }
+}

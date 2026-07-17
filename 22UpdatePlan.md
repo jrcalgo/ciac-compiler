@@ -1006,6 +1006,34 @@ rather than a search (line counts are the audit's, for scale):
    handoff sentence to 23UpdatePlan.md — whose M5 checkpoint grades
    these numbers against a real third backend.
 
+   **Shipped (v0.22 M6):** workspace version bumped `0.19.0` →
+   `0.20.0` (root `Cargo.toml`'s `[workspace.package]` version plus
+   its eight internal path-dependency version pins, all driven from
+   one source; `docs/language.md`'s title; `editors/vscode/
+   package.json`'s extension version, matching the pattern every
+   prior version's M-final milestone followed). `docs/targets.json`
+   (`targets_version: 1`) and `docs/protocol-schema.json`
+   (`protocol_version: 2`) are independently-versioned artifacts, not
+   tied to the workspace version, and needed no change — verified by
+   grep rather than assumed. The one hand-written "support table"
+   actually at drift risk — `docs/language.md`'s provider table
+   (`vocab::PROVIDERS` rendered as prose, since `PROVIDERS` lives in
+   the `ciac` binary crate, which has no `lib` target the `tests`
+   crate could import — the same structural constraint
+   `targets_cli.rs` already worked around at M4) — got a drift test:
+   `crates/ciac/src/vocab.rs::tests::language_md_mentions_every_provider`,
+   `include_str!`-checking every `PROVIDERS` entry's name appears in
+   the doc, mirroring `tests/tests/docs.rs`'s existing
+   `error_docs_cover_every_code` pattern but relocated into the
+   binary crate's own unit tests for the same reason. README.md
+   carries no hardcoded version/support strings at risk (checked,
+   not assumed — only illustrative `--target python|rust` CLI
+   examples). Full verification green: `cargo fmt --all --check`,
+   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo
+   test --workspace` (58 suites, 0 failures, including the
+   conformance harness, the grep fence, the `targets.json` drift
+   test, and the new provider-doc drift test).
+
 ### Per-milestone exit checklists
 
 Because this plan is a refactor whose only observable deliverable is
@@ -1197,3 +1225,117 @@ doubles as this plan's live acceptance test: if the TS backend's
 non-template cost lands materially above the M6 numbers, that is a
 defect in this plan's deliverables, tracked and fixed as such before
 Go and Java consume the same factory.
+
+## Whole-arc retrospective (v0.22, M1–M6 complete)
+
+**What shipped, in one pass, plain terms:** `TargetInfo` on the
+`Backend` trait closed seam 3 (scattered per-target `match` sites) —
+~25 sites across 6 non-backend files collapsed to registry lookups,
+held shut by a new repo test (`target_literal_fence.rs`) rather than
+by discipline. The `FieldCtx` flagship group of the neutral-typing
+seam (seam 2) moved to backend-owned minijinja filters via
+`ViaDeserialize`, with a real correctness fix (`records_use_datetime`
+etc. no longer string-sniff Python's rendered type text) falling out
+of the migration rather than being hunted for separately. The HIR
+scanner (the correctness-bearing half of seam 2's `lower.rs`
+duplication) unified into one `ciac_codegen::lower::scan` both
+backends call, at a measured net −174 LOC across the three files it
+touches. A conformance harness (`tests/tests/conformance.rs`) now
+runs C3/C4 on every one of the 26 examples on every `cargo test
+--workspace` — it found zero divergence between python and rust,
+which is itself a real result (the two hand-maintained backends had,
+in fact, stayed in lockstep without the harness; the harness's value
+is that this is no longer an assumption). `ciac targets --json` gives
+agents and CI a machine-readable capability registry backed by a
+checked-in, drift-tested snapshot. A declarative `Emit` table plus a
+compiling reference skeleton (`backends/skeleton-internal/`) give a
+new backend author a working template to copy instead of a blank
+page, and `docs/backends.md` states honestly, with measured numbers,
+what a sixth backend would still cost today.
+
+**What was deliberately not shipped, and why that was the right
+call:** three items, each named in this plan's own Risks section in
+advance as a legitimate fallback rather than discovered as a
+surprise mid-execution. (1) `HostSyntax` — the trait that would
+unify Python's statement-oriented `Sink` lowering with Rust's
+expression-oriented `rust_expr`/`rust_stmt` behind one leaf
+interface — was the plan's own flagged "hardest unification risk";
+attempting it inside M3's time box would have put the highest-risk,
+least-reversible rewrite in the whole four-plan arc through without
+a dedicated review pass. (2) Porting the two real backends' per-item
+emission loops (one file per declared api/worker/job/consumer/
+channel/resource/call-target) onto `Emit` — `Emit` today only covers
+the always/conditional-single-file tier; per-item emission needs an
+`Emit::per_x` shape with item-iterator + context-builder threading
+that doesn't exist yet, and bolting it on under M5's pressure risked
+a half-abstracted result touching every file both production
+backends emit. (3) The remaining ~20 composed-filter host fields
+(`ExtraDepCtx`, `CfgFieldCtx`, `ArmCtx`, `BindingCtx`, the
+`rust_db_field`/`rust_cache_field`/`py_args` family) — each needs its
+own small design pass to identify which neutral fields it composes
+over, unlike `FieldCtx`'s group, which was a pure function of one
+enum. All three are recorded as follow-up in their milestone's own
+notes above, not silently dropped.
+
+**The cost model, measured (see `docs/backends.md` for the full
+table and honest summary):** the factory closed the seam that was
+cheapest to fix and most dangerous to leave — seam 3 entirely (25
+sites → 1 registry line, held by a test) and seam 2's
+correctness-bearing scanner half (−174 net LOC, with the *shape* of
+`unguarded_verbs` coverage now provably identical between backends
+because there is only one scanner to drift). The largest remaining
+line-count opportunity — `HostSyntax` leaf unification and per-item
+`Emit` — is real, was scoped rather than guessed at, and is now
+23–25UpdatePlan.md's to either consume as-is or extend. A new backend
+today is still primarily template-writing plus hand-written leaf
+lowering, not primarily archaeology across shared crates — which was
+this plan's actual goal, and the honest cost table in
+`docs/backends.md` is the evidence for that claim rather than an
+assertion of it.
+
+**Deviations from this plan's original text, all disclosed in
+place** (no silent scope changes): M2 shipped only the `FieldCtx`
+group of the neutral-field migration, not the full ~27-field sweep
+the plan's flagship example implied — recorded in M2's own notes
+above and in `docs/backends.md`'s cost table. M3 shipped Part 1
+(scanner) of Pillar 3 only, not Parts 2/3 (dispatch skeleton +
+`HostSyntax`) — recorded in M3's own notes and in the Risks-section
+fallback this plan pre-authorized. M4 found zero cross-target
+divergence, so had nothing to fix-or-disclose beyond that finding
+itself; `capabilities` in `ciac targets --json` is sourced from
+`vocab::PROVIDERS` rather than `Backend::supports()`, since
+`supports()` carries no per-component discrimination on either
+bundled backend yet to derive from — same disposition as `vocab::
+BOTH`, recorded at both M2 and M4. M5 shipped `Emit` and the
+skeleton but not porting the two real backends onto it — recorded in
+M5's own notes. Every one of these was named as a possible fallback
+by this plan's own Risks section before execution began; none is a
+surprise discovered after the fact.
+
+**Handoff to 23UpdatePlan.md (TypeScript):** this plan's M6 cost
+model is now the acceptance test 23UpdatePlan.md's own M5 checkpoint
+grades against. The concrete surface a TypeScript backend consumes
+unchanged from this arc: `TargetInfo` (M1, zero seam-3 sites to add),
+the backend-owned-filter pattern for its own neutral-to-TS type
+mapping (M2's `ViaDeserialize` recipe, not yet its specific filters —
+TS needs its own `ts_type`/etc.), the shared HIR scanner (M3,
+`ciac_codegen::lower::scan` — no need to write a fourth copy of
+`Needs`), the conformance harness (M4, C3/C4 run automatically the
+moment a TS-target example is registered — this is where a first
+real cross-target OpenAPI/topology proof, not just python×rust,
+happens), `ciac targets --json` (M4, TS's entry appears the moment
+its `Backend` is registered), and the `Emit`/skeleton walkthrough
+(M5, `docs/backends.md`'s 9-step recipe and cost table as the
+literal starting point — copy `backends/skeleton-internal/`, not a
+blank file). What 23UpdatePlan.md's own scope must still design from
+scratch: TS-specific leaf lowering (no `HostSyntax` to lean on — the
+same hand-written-per-backend discipline this plan's own backends
+still use), and TS's own per-item emission (no `Emit::per_x` to lean
+on either). If TypeScript's non-template, non-lowering integration
+cost — the seam-3-equivalent glue — lands materially above what
+`docs/backends.md`'s table now predicts (roughly: near-zero seam-3
+cost, a scanner reuse instead of a fourth `Needs` copy, and template-
+writing plus hand-written leaves as the dominant remaining cost),
+that gap is this plan's defect to fix before Go and Java (24 and 25)
+consume the same factory — per this section's own opening claim, not
+a new claim invented at TypeScript's completion.

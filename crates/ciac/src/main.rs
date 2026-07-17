@@ -407,8 +407,14 @@ enum Command {
         /// The error code to explain.
         code: String,
     },
-    /// List available code-generation targets.
-    Targets,
+    /// List available code-generation targets. `--json` renders the
+    /// registry as one machine-readable document (v0.22 M4): id,
+    /// description, kind, project marker, validate steps, sim level,
+    /// and declared capabilities per target.
+    Targets {
+        #[arg(long)]
+        json: bool,
+    },
     /// Print one versioned JSON document naming everything the
     /// language and CLI expose: capabilities, providers (with
     /// per-target support), field types, builtin pipeline steps,
@@ -628,7 +634,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             commands::codegen_request(&file, &target, name)
         }
         Command::Explain { code } => commands::explain(&code),
-        Command::Targets => commands::targets(),
+        Command::Targets { json } => commands::targets(json),
         Command::Describe => describe::run(),
         Command::Mcp => mcp::run(),
         Command::Backfill(BackfillCommand::Plan {

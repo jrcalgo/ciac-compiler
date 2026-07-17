@@ -938,6 +938,31 @@ rather than a search (line counts are the audit's, for scale):
    this milestone, not a surprise in plan 23), validator hookup with
    delegation reporting, ratchet enforcement wired to the matrix
    test, CI job added.
+
+   **Shipped (v0.22 M4):** `tests/tests/conformance.rs` — C1/C2 already
+   ran in `golden.rs` (referenced, not duplicated); C3 (cross-target
+   OpenAPI byte-equality) and C4 (migration-SQL byte-equality by
+   filename, plus every subject/queue-group/cron-schedule/table-name
+   the model declares provably appearing in every supporting target's
+   output) are new and pass clean across all 26 examples — **zero
+   divergence found** between python and rust, so there was nothing to
+   fix-or-disclose this milestone. C5 stays delegated to the existing
+   `generated-python`/`generated-rust` CI jobs (real local-toolchain
+   validation already ran there since v0.9); no separate CI job was
+   needed since `cargo test --workspace` (already the `test` job)
+   picks up `tests/tests/conformance.rs` automatically. C6 (ratchet
+   proofs) and C7 (boundary decode/encode) are named but have no
+   content yet — C6 has nothing to mechanically check until a third
+   target can diverge from the first two; C7 is 24UpdatePlan.md's
+   (Go's) to introduce. `ciac targets --json` ships with the plan's
+   own fixed shape (id/description/kind/project_marker/validate/sim/
+   capabilities), checked in at `docs/targets.json` with a drift test
+   (`crates/ciac/tests/targets_cli.rs`) mirroring the
+   `protocol-schema.json` pattern. `capabilities` is sourced from
+   `vocab::PROVIDERS` today, not yet `Backend::supports()`-derived —
+   the same disposition M2 recorded for `vocab::BOTH`, for the same
+   reason (`supports()` is still an unconditional `true` on both
+   bundled backends; there is nothing yet to derive).
 5. **M5 — Emission-plan helper + skeleton backend + authoring
    guide.** Both backends ported to the declarative emission table
    (golden-identical); `backends/skeleton-internal` compiles and is

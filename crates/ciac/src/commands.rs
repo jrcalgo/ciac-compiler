@@ -2039,11 +2039,112 @@ pub(crate) fn explain_document(code: &str) -> Result<String> {
     ))
 }
 
-pub fn targets() -> Result<ExitCode> {
+pub fn targets(json: bool) -> Result<ExitCode> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&targets_doc())?);
+        return Ok(ExitCode::SUCCESS);
+    }
     for backend in backends() {
         println!("{:10} {}", backend.id(), backend.description());
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[derive(serde::Serialize)]
+struct TargetsDoc {
+    targets_version: u32,
+    targets: Vec<TargetEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct TargetEntry {
+    id: &'static str,
+    description: &'static str,
+    /// Always `"internal"` for anything `ciac targets --json` can
+    /// actually enumerate — external-protocol backends (v0.8 M2+) are
+    /// resolved dynamically from `$PATH` at generate time and have no
+    /// fixed registry entry to list here; see docs/external-backends.md.
+    kind: &'static str,
+    project_marker: &'static str,
+    validate: Vec<ValidateStepEntry>,
+    sim: SimEntry,
+    /// Provider capabilities this target fully implements, keyed by
+    /// capability name (v0.22 M4). Sourced from `vocab::PROVIDERS`
+    /// today, not yet derived from `Backend::supports()` — both
+    /// bundled backends' `supports()` is an unconditional `true` (no
+    /// per-component discrimination exists yet to derive from), the
+    /// same disposition M2 recorded for `vocab::BOTH`. `PROVIDERS` is
+    /// hand-maintained but audited truthful; upgrading this to a real
+    /// `supports()`-derived matrix is the natural continuation once a
+    /// target's `supports()` actually discriminates.
+    capabilities: BTreeMap<&'static str, Vec<&'static str>>,
+}
+
+#[derive(serde::Serialize)]
+struct ValidateStepEntry {
+    program: &'static str,
+    purpose: &'static str,
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "level")]
+enum SimEntry {
+    #[serde(rename = "full")]
+    Full,
+    #[serde(rename = "narrow")]
+    Narrow,
+    #[serde(rename = "none")]
+    None { reason: &'static str },
+}
+
+fn targets_doc() -> TargetsDoc {
+    let mut capabilities_by_target: BTreeMap<
+        &'static str,
+        BTreeMap<&'static str, Vec<&'static str>>,
+    > = BTreeMap::new();
+    for provider in crate::vocab::PROVIDERS {
+        for &target in provider.targets {
+            capabilities_by_target
+                .entry(target)
+                .or_default()
+                .entry(provider.capability)
+                .or_default()
+                .push(provider.name);
+        }
+    }
+    let targets = backends()
+        .into_iter()
+        .map(|backend| {
+            let info = backend.target_info();
+            TargetEntry {
+                id: backend.id(),
+                description: backend.description(),
+                kind: "internal",
+                project_marker: info.project_marker,
+                validate: info
+                    .validate
+                    .iter()
+                    .map(|step| ValidateStepEntry {
+                        program: step.program,
+                        purpose: step.purpose,
+                    })
+                    .collect(),
+                sim: match info.sim {
+                    SimSupport::Full => SimEntry::Full,
+                    SimSupport::Narrow { .. } => SimEntry::Narrow,
+                    SimSupport::None { reason } => SimEntry::None { reason },
+                },
+                capabilities: capabilities_by_target
+                    .get(backend.id())
+                    .cloned()
+                    .unwrap_or_default(),
+            }
+        })
+        .collect();
+    TargetsDoc {
+        targets_version: 1,
+        targets,
+    }
 }
 
 /// Result of [`generate`]: the backend used, the generated project (with
@@ -2646,5 +2747,34 @@ mod tests {
             listener.local_addr().expect("bound").port()
         };
         assert!(!health_probe(port));
+    }
+
+    /// v0.22 M4: `ciac targets --json`'s shape is a downstream contract
+    /// (docs build, plans 23-25's checklists, any agent calling MCP
+    /// `describe`) — mirrors `describe_json_is_stable_shape`'s pattern.
+    #[test]
+    fn targets_json_is_stable_shape() {
+        let json = serde_json::to_value(super::targets_doc()).unwrap();
+        assert_eq!(json["targets_version"], 1);
+        let targets = json["targets"].as_array().expect("targets array");
+        assert!(targets.iter().any(|t| t["id"] == "python"), "{targets:?}");
+        assert!(targets.iter().any(|t| t["id"] == "rust"), "{targets:?}");
+        for target in targets {
+            for key in [
+                "id",
+                "description",
+                "kind",
+                "project_marker",
+                "validate",
+                "sim",
+                "capabilities",
+            ] {
+                assert!(
+                    target.get(key).is_some(),
+                    "missing key `{key}` on {target:?}"
+                );
+            }
+            assert_eq!(target["kind"], "internal");
+        }
     }
 }

@@ -901,6 +901,37 @@ rather than a search (line counts are the audit's, for scale):
    contract's own golden. Acceptance metric recorded: leaf-only LOC
    for the identity target, and before/after LOC for both real
    backends.
+
+   **Fallback scope taken (v0.22 M3), pre-authorized by this plan's own
+   Risks section:** Part 1 (the `Needs` scanner) shipped in full —
+   `ciac-codegen::lower::{Needs, scan, field_access_enum_name}` is now
+   the one traversal both backends' `render()` call, computing the
+   union of what Python's behavioral-test mock assertions need
+   (`db_insert` count, `cache_get`/`cache_set`/`object_store_*`/
+   `sa_*` booleans) and what Rust's imports/sim-coverage need
+   (`db_get_tables`, `enums`, `unguarded_verbs`) in one pass. This is
+   the correctness-bearing half the plan itself named — `unguarded_verbs`
+   can no longer silently fall out of sync with what's actually
+   scanned, because there is only one scan. Parts 2 and 3 (the
+   dispatch skeleton and the `HostSyntax` leaf trait) are **not**
+   attempted in this pass: Python's `Sink`/statement-orientation tail
+   shaping vs. Rust's expression-orientation is exactly the "hardest
+   unification" risk this plan's own text flagged in advance, and
+   attempting it without a dedicated pass would mean the highest-risk,
+   least-reversible rewrite in the whole four-plan arc going in
+   unreviewed. Per-backend `py_expr`/`lower_tail`/`lower_block` and
+   `rust_expr`/`rust_stmt`/`rust_block` are unchanged.
+
+   Measured LOC (the milestone's own acceptance metric, for the part
+   that shipped): Python's `lower.rs` 1305 → 1058 (−247); Rust's
+   `lower.rs` 1088 → 803 (−285); new shared
+   `ciac-codegen::lower` +358. Net across all three files: 2393 → 2219
+   (−174), with the scanner-duplication risk eliminated even though
+   the leaf/dispatch unification (the larger remaining LOC opportunity
+   Parts 2/3 would close) is deferred. Byte-identical goldens hold;
+   both v0.17 M11 sim CLI proofs (pass, and the narrow-target/refusal
+   cases) reproduce unchanged, confirming the scanner move didn't
+   perturb `unguarded_verbs`' actual coverage.
 4. **M4 — Conformance harness + `ciac targets --json`.** Matrix,
    OpenAPI/topology equality (run against python×rust immediately —
    any existing divergence found becomes a fix-or-disclose item in

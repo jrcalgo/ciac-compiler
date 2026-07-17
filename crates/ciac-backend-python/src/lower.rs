@@ -16,6 +16,7 @@
 //! produces (control flow is always block-shaped, never a sub-expression
 //! of a binary operator or a call argument).
 
+use ciac_codegen::lower::scan;
 use ciac_codegen::model as context;
 use ciac_ir::{
     BinOp, Builtin, HandlerBody, HirExpr, HirStmt, HirType, NodeId, NormalizedIr, RecordId,
@@ -23,254 +24,6 @@ use ciac_ir::{
 };
 use heck::ToSnakeCase;
 use serde::Serialize;
-
-/// Everything referenced by a handler body that the emitting backend
-/// needs to know about to write imports and a constructor: which
-/// runtime pieces it touches, and which schema/model types it names.
-#[derive(Debug, Default)]
-pub struct Needs {
-    pub db: bool,
-    pub cache: bool,
-    pub json: bool,
-    pub uuid: bool,
-    pub datetime: bool,
-    pub queue: bool,
-    /// Precise verb usage, for the behavioral test's mock assertions.
-    /// `db_insert` counts occurrences (not just presence) so the
-    /// generated test can assert the exact `session.add` call count —
-    /// a handler legitimately inserting into more than one table in a
-    /// single `transaction` block is real (v0.16), not a single-call
-    /// shape.
-    pub db_insert: usize,
-    pub db_get: bool,
-    pub cache_get: bool,
-    pub cache_set: bool,
-    pub object_store_put: bool,
-    pub object_store_get: bool,
-    pub object_store_list: bool,
-    /// A `db.query`/`db.count`/`db.delete_where` appears in the body
-    /// (v0.14 M2) — the behavioral test configures `session.execute`'s
-    /// mock return shape only when this is set. `select`/`func`/`delete`
-    /// imports are tracked per-symbol below instead (only importing what
-    /// a given handler actually spells, per `ruff`'s unused-import
-    /// check).
-    pub sa_query: bool,
-    pub sa_select: bool,
-    pub sa_func: bool,
-    pub sa_delete: bool,
-    pub tables: Vec<TableId>,
-    pub records: Vec<RecordId>,
-}
-
-impl Needs {
-    fn record(&mut self, id: RecordId) {
-        if !self.records.contains(&id) {
-            self.records.push(id);
-        }
-    }
-
-    fn table(&mut self, id: TableId) {
-        if !self.tables.contains(&id) {
-            self.tables.push(id);
-        }
-    }
-
-    fn ty(&mut self, ty: &HirType) {
-        match ty {
-            HirType::Record(id) => self.record(*id),
-            HirType::Option(inner) | HirType::List(inner) => self.ty(inner),
-            _ => {}
-        }
-    }
-}
-
-/// Scans a handler's params, return type, and body for everything
-/// [`Needs`] tracks. A record import comes from a verb call's own
-/// return/argument types (`needs.ty(ty)`, called at every verb-call
-/// site below), not from merely touching a table:
-/// `db.delete`/`db.count`/`db.delete_where` touch a table but return
-/// `Bool`/`Int`, needing the table's *model* class (`model_imports`,
-/// tracked by `needs.table`) but not its record schema.
-pub fn scan(body: &HandlerBody) -> Needs {
-    let mut needs = Needs::default();
-    for (_, ty) in &body.params {
-        needs.ty(ty);
-    }
-    needs.ty(&body.return_ty);
-    if let Some(stmts) = &body.body {
-        scan_block(stmts, &mut needs);
-    }
-    needs
-}
-
-fn scan_block(stmts: &[HirStmt], needs: &mut Needs) {
-    for stmt in stmts {
-        match stmt {
-            HirStmt::Let { value, .. } | HirStmt::Expr(value) => scan_expr(value, needs),
-            HirStmt::Return(Some(value)) => scan_expr(value, needs),
-            HirStmt::Return(None) => {}
-            HirStmt::Fail { error, args } => {
-                needs.record(*error);
-                for arg in args {
-                    scan_expr(arg, needs);
-                }
-            }
-            HirStmt::Publish { value, .. } => {
-                needs.queue = true;
-                scan_expr(value, needs);
-            }
-            HirStmt::Transaction { body } => scan_block(body, needs),
-        }
-    }
-}
-
-fn scan_expr(expr: &HirExpr, needs: &mut Needs) {
-    match expr {
-        HirExpr::Local { ty, .. } => needs.ty(ty),
-        HirExpr::FieldAccess { base, ty, .. } => {
-            scan_expr(base, needs);
-            needs.ty(ty);
-        }
-        HirExpr::Index { base, index } => {
-            scan_expr(base, needs);
-            scan_expr(index, needs);
-        }
-        HirExpr::RecordCons {
-            record,
-            base_value,
-            fields,
-        } => {
-            needs.record(*record);
-            if let Some(base) = base_value {
-                scan_expr(base, needs);
-            }
-            for (_, value) in fields {
-                scan_expr(value, needs);
-            }
-        }
-        HirExpr::Binary { lhs, rhs, ty, .. } => {
-            scan_expr(lhs, needs);
-            scan_expr(rhs, needs);
-            needs.ty(ty);
-        }
-        HirExpr::Unary { expr, ty, .. } => {
-            scan_expr(expr, needs);
-            needs.ty(ty);
-        }
-        HirExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ty,
-        } => {
-            scan_expr(cond, needs);
-            scan_block(then_branch, needs);
-            scan_block(else_branch, needs);
-            needs.ty(ty);
-        }
-        HirExpr::Match {
-            scrutinee,
-            arms,
-            ty,
-        } => {
-            scan_expr(scrutinee, needs);
-            for arm in arms {
-                scan_block(&arm.body, needs);
-            }
-            needs.ty(ty);
-        }
-        HirExpr::VerbCall { verb, args, ty, .. } => {
-            match verb {
-                Verb::DbInsert(table) => {
-                    needs.db = true;
-                    needs.db_insert += 1;
-                    needs.table(*table);
-                }
-                Verb::DbGet(table) => {
-                    needs.db = true;
-                    needs.db_get = true;
-                    needs.table(*table);
-                }
-                Verb::CacheGet => {
-                    needs.cache = true;
-                    needs.cache_get = true;
-                    needs.json = true;
-                }
-                Verb::CacheSet => {
-                    needs.cache = true;
-                    needs.cache_set = true;
-                    // Mirrors `json_encode`'s own condition below: a
-                    // non-record value goes through `json.dumps`, a
-                    // record through `model_dump_json` (no `json`
-                    // import needed) — get this wrong and it's either
-                    // an unused import (record case) or a `NameError`
-                    // at runtime (scalar case).
-                    if !matches!(args[1].ty(), HirType::Record(_)) {
-                        needs.json = true;
-                    }
-                }
-                Verb::ObjectStoreGet => {
-                    needs.object_store_get = true;
-                    needs.json = true;
-                }
-                Verb::ObjectStorePut => needs.object_store_put = true,
-                Verb::DbUpdate(table) | Verb::DbDelete(table) => {
-                    needs.db = true;
-                    needs.table(*table);
-                }
-                Verb::CacheDelete => needs.cache = true,
-                Verb::ObjectStoreList => needs.object_store_list = true,
-                Verb::ObjectStoreDelete => {}
-                Verb::EmailSend | Verb::SearchIndex | Verb::SearchQuery | Verb::HttpCall => {}
-                Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
-                    unreachable!("typeck only ever constructs these via HirExpr::Query")
-                }
-            }
-            for arg in args {
-                scan_expr(arg, needs);
-            }
-            needs.ty(ty);
-        }
-        HirExpr::Query {
-            verb,
-            predicate,
-            ty,
-            ..
-        } => {
-            needs.db = true;
-            needs.sa_query = true;
-            match verb {
-                Verb::DbQuery(table) => {
-                    needs.sa_select = true;
-                    needs.table(*table);
-                }
-                Verb::DbCount(table) => {
-                    needs.sa_select = true;
-                    needs.sa_func = true;
-                    needs.table(*table);
-                }
-                Verb::DbDeleteWhere(table) => {
-                    needs.sa_delete = true;
-                    needs.table(*table);
-                }
-                _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
-            }
-            if let Some(predicate) = predicate {
-                for term in &predicate.terms {
-                    scan_expr(&term.value, needs);
-                }
-            }
-            needs.ty(ty);
-        }
-        HirExpr::BuiltinCall(Builtin::UuidNew) => needs.uuid = true,
-        HirExpr::BuiltinCall(Builtin::TimestampNow) => needs.datetime = true,
-        HirExpr::IntLit(_)
-        | HirExpr::FloatLit(_)
-        | HirExpr::StrLit(_)
-        | HirExpr::BoolLit(_)
-        | HirExpr::EnumLit { .. } => {}
-    }
-}
 
 /// Python type annotation for a HIR type. Record types need
 /// `from app.schemas import <name>` at the call site — see [`Needs`].
@@ -921,7 +674,7 @@ pub struct LogicFileCtx {
 /// Builds the render context for one typed handler node. `name` is the
 /// handler's declared name (`node.component.name()`).
 pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx {
-    let needs = scan(hir);
+    let needs = scan(ir, hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
     let extras = context::extras_of(&bindings);
@@ -1125,7 +878,7 @@ fn assert_result(ir: &NormalizedIr, ty: &HirType) -> Option<String> {
 /// right runtime APIs. `None` for `extern` handlers (no body to test).
 pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> Option<String> {
     hir.body.as_ref()?;
-    let needs = scan(hir);
+    let needs = scan(ir, hir);
     let mut lines = Vec::new();
     lines.push(format!(
         "\"\"\"Generated behavioral test for `{}`. Regenerated on every build.\n\nExercises the lowered handler body against mocked runtime dependencies;\nreal persistence round-trips are `ciac verify --live`'s job, not this test.\n\"\"\"",

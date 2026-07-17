@@ -19,6 +19,7 @@ pub mod compose;
 pub mod evolution;
 pub mod external;
 pub mod k8s;
+pub mod lower;
 pub mod manifest;
 pub mod migrations;
 pub mod model;

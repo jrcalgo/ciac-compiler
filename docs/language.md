@@ -169,40 +169,41 @@ Legacy entries lower to an implicit instance named `default`. Duplicate
 instances of the same capability kind/name are `CIAC0012`. Supported
 pairs (`CIAC0013` otherwise):
 
-| Capability | Providers | Generated as (Python / Rust) |
-|------------|-----------|------------------------------|
-| `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) |
-| `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) |
-| `cache` | `Redis` | redis-py client per instance / redis crate client per instance |
-| `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka |
-| `logging` | `Structured` | structlog / tracing |
-| `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus |
-| `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper (+ MinIO in compose) |
-| `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender (+ Mailpit in compose) |
-| `search` | `OpenSearch` | opensearch-py client / opensearch client (+ single-node container) |
-| `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance |
-| `scheduler` | `Cron` | in-process scheduled jobs |
+| Capability | Providers | Generated as (Python / Rust / TypeScript) |
+|------------|-----------|--------------------------------------------|
+| `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) / Fastify preHandler + `jose` (OAuth2: `createRemoteJWKSet`, lazy and cached) |
+| `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) / Drizzle per instance, raw SQL through its `$client` escape hatch (`pg` / `mysql2` / `better-sqlite3`) |
+| `cache` | `Redis` | redis-py client per instance / redis crate client per instance / `ioredis` client per instance |
+| `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka / `@nats-io/transport-node` or kafkajs |
+| `logging` | `Structured` | structlog / tracing / pino |
+| `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus / prom-client |
+| `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper / `@aws-sdk/client-s3` wrapper (all three: + MinIO in compose) |
+| `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender / nodemailer sender (all three: + Mailpit in compose) |
+| `search` | `OpenSearch` | opensearch-py client / opensearch client / `@opensearch-project/opensearch` client (all three: + single-node container) |
+| `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance / dependency-free `fetch` client per instance |
+| `scheduler` | `Cron` | in-process scheduled jobs (Python/Rust) / croner scheduled jobs (TypeScript) |
 | `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
-| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers (both: `traceparent` propagation across `call`/broker hops) |
+| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers / OTel Node SDK + `@fastify/otel`/http/pg/undici auto-instrumentation (all three: `traceparent` propagation across `call`/broker hops) |
 | `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6) |
 
-Every provider above generates on both bundled targets (as of v0.13 —
-`MySQL` and `Kafka` landed on Rust in v0.13 M1/M2, closing the last
-Python-only gap; `SQLite` is new in v0.13 M3 and needs no container at
-all, just a `data/` volume). `auth OAuth2` requires an `issuer`
-attribute (and optional `audience`): bearer RS256 tokens are validated
-against `{issuer}/.well-known/jwks.json` on both backends — unless
-`users Keycloak` is declared in the same `use { .. }` block, in which
-case `issuer` may be omitted and defaults to the dev Keycloak
-container's realm URL (v0.15 M6; still overridable with an explicit
-`issuer`).
+Every provider above generates on all three bundled targets (as of
+v0.23 M7 — TypeScript closed its own remaining gaps, following
+`MySQL`/`Kafka` landing on Rust in v0.13 M1/M2 and `SQLite` in v0.13
+M3, which needs no container at all, just a `data/` volume). `auth
+OAuth2` requires an `issuer` attribute (and optional `audience`):
+bearer RS256 tokens are validated against `{issuer}/.well-known/
+jwks.json` on every backend — unless `users Keycloak` is declared in
+the same `use { .. }` block, in which case `issuer` may be omitted
+and defaults to the dev Keycloak container's realm URL (v0.15 M6;
+still overridable with an explicit `issuer`).
 
-`tracing OpenTelemetry` (v0.15 M3/M4) adds an `otel-collector` +
-Jaeger to the dev compose stack; every service that declares it
-exports spans for its own HTTP server/client calls and broker
-produce/consume, so a `call`/`publish`→worker chain shows up as one
-continuous trace. `users Keycloak` (v0.15 M6) adds a `keycloak`
-container seeded with a `dev` realm — a public password-grant client,
+`tracing OpenTelemetry` (v0.15 M3/M4, TypeScript in v0.23 M7) adds an
+`otel-collector` + Jaeger to the dev compose stack; every service
+that declares it exports spans for its own HTTP server/client calls
+and broker produce/consume, so a `call`/`publish`→worker chain shows
+up as one continuous trace. `users Keycloak` (v0.15 M6) adds a
+`keycloak` container seeded with a `dev` realm — a public
+password-grant client,
 one client scope per distinct `scope`/`read_scope`/`write_scope`
 string declared anywhere in the system, and two dev users
 (`dev-admin`/`dev-user`, password `dev-password`). It's a dev/test

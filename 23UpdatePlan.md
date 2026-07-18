@@ -1726,6 +1726,84 @@ documented in the generated README's requirements line.
    against a TS tree (migrations_dir path resolution — identity
    here, but the test guards the factory's mapping for Java);
    `generated-typescript` CI job (npm-cached).
+
+   **Shipped (v0.23 M8):** `TsBackend::supports` collapsed to the same
+   unconditional `let _ = component; true` Rust's own has carried
+   since v0.13 — every one of the 20 `Component` variants reaches
+   this backend now (confirmed exhaustively, not just by the
+   milestone narrative: M7's `matches!` arm already listed all 20
+   before this milestone trimmed it down to Rust's own style), so
+   zero gated examples remain and there was nothing left to name a
+   reason for. Verified with a real, disk-budget-aware sweep — not
+   just golden generation — across all 26 examples' full project
+   trees (33 `package.json` directories once every multi-service
+   system's per-service subdirectories are counted): `ciac build`,
+   `npm ci`, `npx tsc --noEmit`, `npx eslint .`, `npx vitest run`, all
+   real, all clean, `node_modules` removed after each to stay inside
+   the session's disk allowance (a real constraint hit mid-sweep —
+   `node_modules` accumulated across all 33 directories exceeds the
+   budget if kept simultaneously). `audited-crud.ciac`'s two services
+   (`catalog`/`accounts`) were the only ones not already directly
+   proven in an earlier milestone's own example set; everything else
+   re-confirms milestones M1–M7 already established.
+
+   Golden suite: already complete as of M7 (all 26 examples have a
+   TypeScript golden; `comm -23` against the full example list came
+   back empty) — no template changes landed this milestone, so no
+   golden churn either.
+
+   Docs: `docs/language.md`'s provider table gained a TypeScript
+   column (all 14 capability rows), matching v0.11 M6's own "docs
+   multi-provider tables" precedent from when Rust closed its own
+   remaining gaps; `README.md`'s CIaC-concept table gained the same
+   column, and its four `--target python\|rust` CLI usage lines
+   became `python\|rust\|typescript`.
+
+   `ciac dev`: `dev_survives_compile_errors_and_regenerates_on_fix_typescript`
+   added to `dev_cli.rs`, the same watch/break/fix session as the
+   existing Python test, against `-t typescript`. Confirms `--no-
+   docker`'s early return never shells out to `npm` at all (the test
+   has no `node_modules` on disk and would fail loudly if it tried) —
+   the target-neutral watch/rebuild loop itself (unchanged since
+   v0.13 M4) needed zero TS-specific code, exactly the factory promise
+   this whole arc has been checking milestone by milestone.
+
+   MCP: `mcp_cli.rs`'s existing round-trip test gained real `build`
+   and `verify` `tools/call` invocations against `target: typescript`
+   (previously only checked for the tool's *presence* in `tools/
+   list`, never actually invoked with this target) — `verify` runs
+   the genuine `npm ci`/`tsc`/`eslint`/`vitest` sequence through the
+   MCP surface, not just the CLI, confirming the same envelope shape
+   `ciac verify --target typescript` prints on the command line.
+   `node_modules` removed afterward, same disk discipline as the
+   sweep above.
+
+   Evolution/rename-replay: `rename_cli.rs` gained
+   `out_replay_resolves_the_typescript_target_migrations_dir` — a
+   `table`-bearing program built with `-t typescript`, confirming
+   `backfill::migrations_dir` resolves through `TsBackend::
+   target_info().migrations_dir` to `"migrations"`, distinct from
+   Python's own `"app/migrations"` (Rust and TS happen to share the
+   same value; Python doesn't) — a real divergence in the wild, not a
+   hypothetical one invented to justify the test. Then the same
+   `--out` rename replay `out_replays_the_recorded_recipe_and_
+   regenerates` already exercises for Python confirms the migration
+   file survives at its correctly-resolved path across the replayed
+   regeneration.
+
+   `generated-typescript` CI job added to `.github/workflows/ci.yml`,
+   mirroring `generated-python`'s per-example `ciac verify --target
+   typescript` loop (no CIAC0011-skip branch needed, unlike
+   `generated-rust`'s own job, since there are no gates left to skip)
+   with `actions/setup-node`'s npm cache and a `node_modules` cleanup
+   after each example for the same disk reason `generated-rust`'s own
+   shared `CARGO_TARGET_DIR` comment already discloses for its dep
+   tree.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green (including the new
+   `dev_cli`/`mcp_cli`/`rename_cli` cases) with zero golden churn.
 9. **M9 — Simulation slice (gated bet) + version + retrospective.**
    Pillar 9's slice: world.ts, world-guards, sim_runner.ts template,
    `SimSupport::Narrow` wiring, both canonical scenario outcomes

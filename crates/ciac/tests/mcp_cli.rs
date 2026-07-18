@@ -131,6 +131,51 @@ fn mcp_round_trip_initialize_tools_list_and_tool_calls() {
     assert_eq!(envelope["command"], "check");
     assert_eq!(envelope["success"], json!(true), "{envelope}");
 
+    // v0.23 M8: `build` and `verify` against the TypeScript backend —
+    // the same envelopes `ciac build`/`ciac verify --target
+    // typescript` print, proving the MCP surface (not just the CLI)
+    // reaches this target's real npm/tsc/eslint/vitest validate
+    // sequence. `node_modules` is removed afterward to respect this
+    // session's disk allowance, same discipline the scaffold test
+    // below doesn't need (it never runs `npm ci`).
+    let ts_out = std::env::temp_dir().join(format!("ciac-mcp-ts-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&ts_out);
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 40, "method": "tools/call",
+        "params": { "name": "build", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "typescript", "out": ts_out.to_str().unwrap(),
+        } }
+    }));
+    let built = server.recv();
+    assert_eq!(built["result"]["isError"], json!(false), "{built}");
+    let text = built["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("build text is JSON");
+    assert_eq!(envelope["command"], "build");
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    assert!(ts_out.join("src/main.ts").is_file());
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+        "params": { "name": "verify", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "typescript", "out": ts_out.to_str().unwrap(),
+        } }
+    }));
+    let verified = server.recv();
+    let text = verified["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("verify text is JSON");
+    assert_eq!(envelope["command"], "verify");
+    assert_eq!(
+        verified["result"]["isError"],
+        json!(false),
+        "verify should succeed: {envelope}"
+    );
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    std::fs::remove_dir_all(ts_out.join("node_modules")).ok();
+
     // `explain`: the same text `ciac explain CIAC0006` prints.
     server.send(json!({
         "jsonrpc": "2.0", "id": 5, "method": "tools/call",

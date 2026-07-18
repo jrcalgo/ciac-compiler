@@ -213,6 +213,70 @@ fn out_replays_the_recorded_recipe_and_regenerates() {
     );
 }
 
+const TABLE_SRC: &str = r#"
+service Ping;
+record Video { id: Uuid; title: String; }
+table Videos: Video;
+"#;
+
+/// v0.23 M8: the same `--out` replay, against the TypeScript backend
+/// and a `table`-bearing program — proves `backfill::migrations_dir`
+/// resolves through `TsBackend::target_info().migrations_dir`
+/// ("migrations", matching Rust's value but *not* Python's own
+/// "app/migrations") rather than falling back to some hardcoded
+/// path, and that the replayed regeneration doesn't move or lose the
+/// migration file once a new target's directory convention is in
+/// play. Today this is an identity check (TS's value happens to
+/// equal Rust's), but it's the same seam a future Java backend's own
+/// (likely different) convention would need to pass through
+/// correctly, so it's tested now rather than assumed.
+#[test]
+fn out_replay_resolves_the_typescript_target_migrations_dir() {
+    let tmp = TempDir::new("out-replay-ts-migrations");
+    let entry = tmp.0.join("main.ciac");
+    let out = tmp.0.join("out");
+    std::fs::write(&entry, TABLE_SRC).expect("write entry");
+
+    let build = ciac()
+        .args([
+            "build",
+            entry.to_str().unwrap(),
+            "-t",
+            "typescript",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(build.status.success(), "{build:?}");
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "TS target's migrations_dir must resolve to migrations/, not app/migrations/ (Python's value)"
+    );
+
+    let result = ciac()
+        .args([
+            "rename",
+            entry.to_str().unwrap(),
+            "Video",
+            "Clip",
+            "--apply",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(result.status.success(), "{result:?}");
+
+    let schemas = std::fs::read_to_string(out.join("src/schemas.ts")).unwrap();
+    assert!(schemas.contains("Clip"));
+    assert!(!schemas.contains("Video"));
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "the replayed regeneration must not lose the migration at its resolved path"
+    );
+}
+
 #[test]
 fn out_with_a_legacy_manifest_refuses_and_leaves_source_untouched() {
     let tmp = TempDir::new("out-legacy");

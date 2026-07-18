@@ -272,20 +272,20 @@ stdin/stdout — write one in any language against the published schema
 See [docs/external-backends.md](docs/external-backends.md) and the
 worked Go example in [backends/go/](backends/go/).
 
-| CIaC concept | Python target | Rust target |
-|--------------|---------------|-------------|
-| API          | FastAPI router | Axum router |
-| Service      | async class stub (yours) | async struct stub (yours) |
-| Worker       | NATS queue-group subscriber or aiokafka consumer group | async-nats or rdkafka consumer group |
-| Job          | croniter task in workers process | cron + Tokio task |
-| Channel      | FastAPI WebSocket/SSE route | Axum WebSocket/SSE route |
-| Database     | SQLAlchemy async engine (asyncpg / aiomysql / aiosqlite) | SQLx pool (`PgPool` / `MySqlPool` / `SqlitePool`) |
-| Cache        | redis-py | redis |
-| Queue        | nats-py or aiokafka | async-nats or rdkafka |
-| Auth (JWT)   | dependency + PyJWT | extractor + jsonwebtoken |
+| CIaC concept | Python target | Rust target | TypeScript target |
+|--------------|---------------|-------------|--------------------|
+| API          | FastAPI router | Axum router | Fastify plugin |
+| Service      | async class stub (yours) | async struct stub (yours) | async class stub (yours) |
+| Worker       | NATS queue-group subscriber or aiokafka consumer group | async-nats or rdkafka consumer group | `@nats-io/transport-node` queue group or kafkajs consumer group |
+| Job          | croniter task in workers process | cron + Tokio task | croner task in workers process |
+| Channel      | FastAPI WebSocket/SSE route | Axum WebSocket/SSE route | `@fastify/websocket`/SSE route |
+| Database     | SQLAlchemy async engine (asyncpg / aiomysql / aiosqlite) | SQLx pool (`PgPool` / `MySqlPool` / `SqlitePool`) | Drizzle per instance, raw SQL via `$client` (`pg` / `mysql2` / `better-sqlite3`) |
+| Cache        | redis-py | redis | ioredis |
+| Queue        | nats-py or aiokafka | async-nats or rdkafka | `@nats-io/transport-node` or kafkajs |
+| Auth (JWT)   | dependency + PyJWT | extractor + jsonwebtoken | preHandler + `jose` |
 
 Full per-provider support lives in [docs/language.md](docs/language.md)
-— as of v0.13, every provider above generates on both targets.
+— as of v0.23, every provider above generates on all three targets.
 
 ## CLI
 
@@ -293,10 +293,10 @@ Full per-provider support lives in [docs/language.md](docs/language.md)
 |---------|---------|
 | `ciac new DIR [--template crud\|multi-service\|kafka\|minimal]` | Scaffold a new project from a proven example |
 | `ciac check file.ciac` | Parse + validate, print diagnostics |
-| `ciac build file.ciac --target python\|rust --out DIR [--deploy k8s\|terraform\|ci] [--client ts]` | Generate a project, optionally with deploy artifacts and/or a typed TypeScript client |
-| `ciac dev file.ciac --target python\|rust --out DIR` | Watch, regenerate, restart the compose stack, and re-probe health on every save |
-| `ciac diff file.ciac --target python\|rust --out DIR` | Preview regeneration drift |
-| `ciac verify file.ciac --target python\|rust --out DIR [--system]` | Check regeneration drift and generated project validity, optionally running compose-backed system tests |
+| `ciac build file.ciac --target python\|rust\|typescript --out DIR [--deploy k8s\|terraform\|ci] [--client ts]` | Generate a project, optionally with deploy artifacts and/or a typed TypeScript client |
+| `ciac dev file.ciac --target python\|rust\|typescript --out DIR` | Watch, regenerate, restart the compose stack, and re-probe health on every save |
+| `ciac diff file.ciac --target python\|rust\|typescript --out DIR` | Preview regeneration drift |
+| `ciac verify file.ciac --target python\|rust\|typescript --out DIR [--system]` | Check regeneration drift and generated project validity, optionally running compose-backed system tests |
 | `ciac graph file.ciac --format json\|dot` | Dump the system graph |
 | `ciac explain CIAC0005` | Explain an error code |
 | `ciac describe` | Print the language's full vocabulary as one versioned JSON document |

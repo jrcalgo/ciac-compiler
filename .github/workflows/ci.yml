@@ -99,6 +99,43 @@ jobs:
             echo "::endgroup::"
           done
 
+  # v0.23 M8: TypeScript reached full provider parity this arc
+  # (`TsBackend::supports` is now the same unconditional `true` Rust's
+  # own is) -- every example verifies, so this job has no CIAC0011-
+  # skip branch to carry, unlike `generated-rust` above.
+  generated-typescript:
+    name: Validate generated TypeScript projects (all examples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Build the compiler
+        run: cargo build -p ciac
+      - name: Verify every example
+        run: |
+          set -euo pipefail
+          for src in examples/*.ciac; do
+            name="$(basename "$src" .ciac)"
+            out="/tmp/gen-ts-$name"
+            echo "::group::$name"
+            cargo run -q -p ciac -- verify "$src" --target typescript --out "$out"
+            echo "::endgroup::"
+            # 26 examples x a full npm dependency tree each would
+            # exhaust the runner's disk (the same failure mode
+            # `generated-rust`'s shared CARGO_TARGET_DIR comment
+            # already discloses for its own dep tree) -- node_modules
+            # is npm-cached by actions/setup-node above, so removing
+            # the installed copy after each example still leaves
+            # subsequent installs fast.
+            rm -rf "$out/node_modules" "$out"/*/node_modules
+          done
+
   # v0.17 M12: `ciac verify --sim` runs the checked-in scenarios against
   # real generated code through in-memory fakes — no Docker, no
   # network. Scoped to the one example with checked-in scenario

@@ -117,93 +117,21 @@ impl Backend for TsBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // v0.23 M1: a plain `api` (any method/path, typed or untyped
-        // body, no pipeline steps beyond the implicit `Return`) —
-        // matches `examples/ping.ciac`. v0.23 M2 adds: `db` on any of
-        // the 3 engines (Postgres/MySQL/SQLite), `cache Redis`, and a
-        // classic binding-style `service` (`signature: None`) — CRUD
-        // resources and keyed-document stores compile to exactly this
-        // component shape (`Database`, `Api`, `Service { signature:
-        // None }`; see `23UpdatePlan.md` M2's own investigation note).
-        // v0.23 M3 adds: `queue` on either broker (NATS/Kafka), `stream`
-        // (the named subject a worker/channel relays), `worker` (both a
-        // full pipeline-bearing worker and the bare `events X;`
-        // consumer shape — both lower to `Component::Worker`, only
-        // distinguished downstream in `ciac-codegen::model`), `job`
-        // (cron) plus the `scheduler jobs Cron` capability declaration
-        // that gates it, and `channel` (WebSocket/SSE realtime relay)
-        // plus the `realtime live WebSocket`/`Sse` capability
-        // declaration that gates it. v0.23 M4 adds: a *typed* `service`
-        // (`signature: Some(..)`) — `crates/ciac-backend-ts/src/lower.rs`
-        // implements every `HostSyntax` leaf Pillar 4's verb table
-        // names, including `object_store`/`email`/`search`/
-        // `external_http` (so the trait compiles completely, no
-        // `unimplemented!()` leaves reachable), but the *component*
-        // kinds that actually request those capabilities
-        // (`Component::ObjectStore`/`Email`/`Search`/`ExternalHttp`)
-        // stay refused here: 23UpdatePlan.md's own capability-parity
-        // checklist places their wrapper clients at M7, not M4 (`db`/
-        // `cache` already un-gated since M2 are the only capabilities
-        // a typed handler can actually reach this milestone). This is
-        // a disclosed scope boundary, not an oversight: `typed-
-        // handlers.ciac` (needs `object_store`) and `extras-verbs.ciac`
-        // (needs the M7 ontology wrappers) stay `CIAC0011`-refused,
-        // matching the exact disclosed-deviation pattern M2 used for
-        // `crud-notes.ciac` and M3 used for traceparent —
-        // `domain-orders.ciac`/`query-verbs.ciac` (db-only) were M4's
-        // proving examples instead. v0.23 M6 adds: `Component::Auth`
-        // (JWT and OAuth2 — `jose` verifies both; only JWT gets the
-        // no-infrastructure `tests/scope.test.ts` suite, OAuth2
-        // excluded for the same live reason Rust's own scope-test gate
-        // discloses: real RS256 verification needs a real issuer's
-        // JWKS regardless of how lazily it's fetched). `typed-
-        // video.ciac` (needs `auth`) un-gates this milestone;
-        // `order-system.ciac` (JWT, the full scope-enforced surface)
-        // and `oauth-echo.ciac` (OAuth2, static-only per the disclosed
-        // gap above) are this milestone's proving examples.
-        // v0.23 M7 adds: `Component::ObjectStore`/`Email`/`Search`/
-        // `ExternalHttp` (S3/SMTP/OpenSearch/undici-free-`fetch`
-        // wrapper clients — `object_store.ts`/`email.ts`/`search.ts`/
-        // `http_clients.ts`, one shared module per capability *kind*,
-        // matching Rust's own one-module-per-kind shape rather than
-        // one file per named instance), closing the scope boundary M4
-        // disclosed (the `HostSyntax` leaves compiled since M4; only
-        // the component gate and the wrapper clients themselves were
-        // missing). Also adds `Component::Metrics`/`Tracing`/
-        // `Logging`/`Users`: prom-client `/metrics`, OTel NodeSDK +
-        // `@fastify/otel`/http/pg/undici auto-instrumentation with
-        // manual W3C traceparent propagation across the broker hop
-        // (byte-for-byte the same header contract v0.15 M3/M4
-        // established), and `users Keycloak`'s dev-issuer default
-        // (already computed target-neutrally in `ciac-codegen::model`,
-        // consumed unchanged — no TS-specific work needed there).
-        // `ontology-growth.ciac`, `typed-handlers.ciac`, `extras-
-        // verbs.ciac`, `multi-service-media.ciac`, `inventory-
-        // system.ciac`, `traced-checkout.ciac`, and `dev-identity.ciac`
-        // un-gate this milestone.
-        matches!(
-            component,
-            Component::Api { .. }
-                | Component::Database { .. }
-                | Component::Cache { .. }
-                | Component::Service { .. }
-                | Component::Queue { .. }
-                | Component::Stream { .. }
-                | Component::Worker { .. }
-                | Component::Job { .. }
-                | Component::Scheduler { .. }
-                | Component::Channel { .. }
-                | Component::Realtime { .. }
-                | Component::Auth { .. }
-                | Component::ObjectStore { .. }
-                | Component::Email { .. }
-                | Component::Search { .. }
-                | Component::ExternalHttp { .. }
-                | Component::Metrics { .. }
-                | Component::Tracing { .. }
-                | Component::Logging { .. }
-                | Component::Users { .. }
-        )
+        // Full provider parity as of v0.23 M8, built up milestone by
+        // milestone (M1: a plain `api`; M2: `db`/`cache`/classic
+        // `service`; M3: `queue`/`stream`/`worker`/`job`/`scheduler`/
+        // `channel`/`realtime`; M4: typed `service` bodies and every
+        // `HostSyntax` leaf Pillar 4's verb table names; M6: `auth`
+        // JWT/OAuth2; M7: `object_store`/`email`/`search`/
+        // `external_http` wrapper clients and `metrics`/`tracing`/
+        // `logging`/`users`) — every `Component` variant reaches this
+        // backend now, so, like Rust's own `supports`, there is
+        // nothing left to gate on. See `23UpdatePlan.md`'s own
+        // milestone-by-milestone shipped-notes for the disclosed scope
+        // boundaries each earlier milestone held (and closed) along
+        // the way.
+        let _ = component;
+        true
     }
 
     fn target_info(&self) -> &'static TargetInfo {
@@ -485,7 +413,7 @@ mod tests {
     const PING_SRC: &str = "service Ping;\n\nrecord Message {\n    id: Uuid;\n    text: String;\n}\n\napi Echo: Message {\n    method: POST;\n    path: \"/echo\";\n}\n\npipeline Echo: Return;\n";
 
     #[test]
-    fn supports_v0_23_m6_scope() {
+    fn supports_full_provider_parity() {
         let backend = TsBackend;
         assert!(backend.supports(&Component::Api {
             name: "X".to_owned(),

@@ -25,11 +25,12 @@
 //! like the parser does. Independent handlers/declarations are unaffected
 //! by one broken handler.
 
+use crate::build::levenshtein;
 use crate::build::Builder;
-use ciac_diagnostics::{Diagnostic, ErrorCode, Span};
+use ciac_diagnostics::{Diagnostic, Edit, ErrorCode, Fix, Span};
 use ciac_ir::{
-    Builtin, EdgeKind, FieldType, HandlerBody, HirArm, HirExpr, HirStmt, HirType, NodeKind,
-    RecordId, RecordKind, Verb,
+    Builtin, EdgeKind, FieldType, HandlerBody, HirArm, HirExpr, HirPredTerm, HirPredicate, HirStmt,
+    HirType, NodeKind, RecordField, RecordId, RecordKind, Verb,
 };
 use ciac_syntax::ast::{self, ArmLabel, Expr, FieldInit, HandlerDecl, Ident, Stmt, TypeExpr};
 use std::collections::HashMap;
@@ -95,6 +96,22 @@ impl Scope {
 
 /// A value's type, as `FieldType` (the surface/record-field type set)
 /// mapped onto the HIR's superset.
+/// The closest field name to `field` among `fields` by Levenshtein
+/// distance (v0.15 M7 "did you mean" fix) -- `None` when nothing is
+/// close enough to be a plausible typo rather than a coincidence.
+fn nearest_field<'a>(fields: &'a [RecordField], field: &str) -> Option<&'a str> {
+    fields
+        .iter()
+        .map(|f| {
+            (
+                f.name.as_str(),
+                levenshtein(&f.name.to_lowercase(), &field.to_lowercase()),
+            )
+        })
+        .min_by_key(|&(_, dist)| dist)
+        .and_then(|(name, dist)| (dist <= 3).then_some(name))
+}
+
 fn field_type_to_hir(ty: &FieldType) -> HirType {
     match ty {
         FieldType::Str => HirType::Str,
@@ -107,6 +124,13 @@ fn field_type_to_hir(ty: &FieldType) -> HirType {
         FieldType::Enum { variants } => HirType::Enum {
             variants: variants.clone(),
         },
+        // v0.16 M2: a resolved `Reference<T>` field type-checks as a
+        // plain value of the target record's type inside handler-body
+        // expressions (`RecordCons`, `FieldAccess`, ...) for now — the
+        // eventual wire contract (a field carries the target's `id`,
+        // never an embedded object) is v0.16 M5/M6 codegen, not a
+        // typeck-level distinction this milestone needs to make.
+        FieldType::Reference { target, .. } => HirType::Record(*target),
     }
 }
 
@@ -132,7 +156,186 @@ fn stmt_diverges(stmt: &HirStmt) -> bool {
     match stmt {
         HirStmt::Return(_) | HirStmt::Fail { .. } => true,
         HirStmt::Let { value, .. } | HirStmt::Expr(value) => value.ty() == HirType::Never,
-        HirStmt::Publish { .. } => false,
+        HirStmt::Publish { .. } | HirStmt::Transaction { .. } => false,
+    }
+}
+
+/// Recursively finds `return`, nested `transaction`, and `publish`
+/// statements anywhere inside a `transaction` body — including inside
+/// `if`/`match` branches — over the surface AST, before any type
+/// information exists (v0.16 M1/M2). Each would be legal syntax outside
+/// a transaction but breaks its atomicity guarantee: `return` could
+/// bypass the generated commit/rollback epilogue, a nested `transaction`
+/// has no meaning, and `publish` doesn't roll back with the database.
+fn scan_transaction_body(stmts: &[Stmt], violations: &mut Vec<(ErrorCode, String, Span)>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Return { span, .. } => violations.push((
+                ErrorCode::InvalidTransactionBlock,
+                "`return` is not allowed inside `transaction`".to_owned(),
+                *span,
+            )),
+            Stmt::Transaction { span, .. } => violations.push((
+                ErrorCode::InvalidTransactionBlock,
+                "`transaction` blocks cannot nest".to_owned(),
+                *span,
+            )),
+            Stmt::Publish { span, .. } => violations.push((
+                ErrorCode::NonTransactionalEffect,
+                "`publish` does not roll back with a database transaction".to_owned(),
+                *span,
+            )),
+            Stmt::Let { value, .. } | Stmt::Expr(value) => scan_transaction_expr(value, violations),
+            Stmt::Fail { .. } => {}
+        }
+    }
+}
+
+fn scan_transaction_expr(expr: &Expr, violations: &mut Vec<(ErrorCode, String, Span)>) {
+    match expr {
+        Expr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            scan_transaction_body(then_branch, violations);
+            if let Some(else_branch) = else_branch {
+                scan_transaction_body(else_branch, violations);
+            }
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                scan_transaction_body(&arm.body, violations);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Walks an already-lowered transaction body's HIR looking for verb
+/// calls, classifying each as the single database capability (allowed)
+/// or one of the other capabilities (rejected — see
+/// `ErrorCode::NonTransactionalEffect`). `Return`/`Publish`/`Transaction`
+/// never appear here: `scan_transaction_body` already rejected them
+/// before this body was lowered.
+fn collect_transaction_verbs(
+    stmts: &[HirStmt],
+    has_db_verb: &mut bool,
+    non_db_verb: &mut Option<&'static str>,
+) {
+    for stmt in stmts {
+        match stmt {
+            HirStmt::Let { value, .. } | HirStmt::Expr(value) => {
+                collect_transaction_verbs_expr(value, has_db_verb, non_db_verb)
+            }
+            HirStmt::Fail { args, .. } => {
+                for arg in args {
+                    collect_transaction_verbs_expr(arg, has_db_verb, non_db_verb);
+                }
+            }
+            HirStmt::Return(_) | HirStmt::Publish { .. } | HirStmt::Transaction { .. } => {}
+        }
+    }
+}
+
+fn collect_transaction_verbs_expr(
+    expr: &HirExpr,
+    has_db_verb: &mut bool,
+    non_db_verb: &mut Option<&'static str>,
+) {
+    match expr {
+        HirExpr::VerbCall { verb, args, .. } => {
+            classify_transaction_verb(*verb, has_db_verb, non_db_verb);
+            for arg in args {
+                collect_transaction_verbs_expr(arg, has_db_verb, non_db_verb);
+            }
+        }
+        HirExpr::Query { verb, .. } => {
+            classify_transaction_verb(*verb, has_db_verb, non_db_verb);
+        }
+        HirExpr::FieldAccess { base, .. } => {
+            collect_transaction_verbs_expr(base, has_db_verb, non_db_verb)
+        }
+        HirExpr::Unary { expr, .. } => {
+            collect_transaction_verbs_expr(expr, has_db_verb, non_db_verb)
+        }
+        HirExpr::Index { base, index } => {
+            collect_transaction_verbs_expr(base, has_db_verb, non_db_verb);
+            collect_transaction_verbs_expr(index, has_db_verb, non_db_verb);
+        }
+        HirExpr::RecordCons {
+            base_value, fields, ..
+        } => {
+            if let Some(base) = base_value {
+                collect_transaction_verbs_expr(base, has_db_verb, non_db_verb);
+            }
+            for (_, value) in fields {
+                collect_transaction_verbs_expr(value, has_db_verb, non_db_verb);
+            }
+        }
+        HirExpr::Binary { lhs, rhs, .. } => {
+            collect_transaction_verbs_expr(lhs, has_db_verb, non_db_verb);
+            collect_transaction_verbs_expr(rhs, has_db_verb, non_db_verb);
+        }
+        HirExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_transaction_verbs_expr(cond, has_db_verb, non_db_verb);
+            collect_transaction_verbs(then_branch, has_db_verb, non_db_verb);
+            collect_transaction_verbs(else_branch, has_db_verb, non_db_verb);
+        }
+        HirExpr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_transaction_verbs_expr(scrutinee, has_db_verb, non_db_verb);
+            for arm in arms {
+                collect_transaction_verbs(&arm.body, has_db_verb, non_db_verb);
+            }
+        }
+        HirExpr::Local { .. }
+        | HirExpr::IntLit(_)
+        | HirExpr::FloatLit(_)
+        | HirExpr::StrLit(_)
+        | HirExpr::BoolLit(_)
+        | HirExpr::BuiltinCall(_)
+        | HirExpr::EnumLit { .. } => {}
+    }
+}
+
+fn classify_transaction_verb(
+    verb: Verb,
+    has_db_verb: &mut bool,
+    non_db_verb: &mut Option<&'static str>,
+) {
+    match verb {
+        Verb::DbInsert(_)
+        | Verb::DbGet(_)
+        | Verb::DbUpdate(_)
+        | Verb::DbDelete(_)
+        | Verb::DbQuery(_)
+        | Verb::DbCount(_)
+        | Verb::DbDeleteWhere(_) => *has_db_verb = true,
+        Verb::CacheGet | Verb::CacheSet | Verb::CacheDelete => {
+            non_db_verb.get_or_insert("cache");
+        }
+        Verb::ObjectStorePut
+        | Verb::ObjectStoreGet
+        | Verb::ObjectStoreDelete
+        | Verb::ObjectStoreList => {
+            non_db_verb.get_or_insert("object_store");
+        }
+        Verb::EmailSend => {
+            non_db_verb.get_or_insert("email");
+        }
+        Verb::SearchIndex | Verb::SearchQuery => {
+            non_db_verb.get_or_insert("search");
+        }
+        Verb::HttpCall => {
+            non_db_verb.get_or_insert("external_http");
+        }
     }
 }
 
@@ -203,6 +406,22 @@ impl Builder<'_> {
             TypeExpr::Enum { variants, .. } => Some(HirType::Enum {
                 variants: variants.iter().map(|v| v.text.clone()).collect(),
             }),
+            TypeExpr::List { inner, .. } => {
+                Some(HirType::List(Box::new(self.resolve_hir_type(inner)?)))
+            }
+            TypeExpr::Reference { target, span } => {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownType,
+                        format!(
+                            "`Reference<{}>` is only valid as a `record` field type",
+                            target.text
+                        ),
+                    )
+                    .with_label(*span, "not valid as a handler parameter/return type"),
+                );
+                None
+            }
         }
     }
 
@@ -363,7 +582,73 @@ impl Builder<'_> {
                     value: hir_value,
                 })
             }
+            Stmt::Transaction { body, span } => self.check_transaction(body, *span, scope),
         }
+    }
+
+    /// Type-checks a `transaction { .. }` block (v0.16 M1/M2). Structural
+    /// rules (`return`/nested `transaction`/`publish` forbidden, empty
+    /// block forbidden) are checked over the surface AST first — they
+    /// need no type information — before the block is even lowered;
+    /// finding one aborts immediately, matching this module's "first
+    /// error aborts the handler" convention. Only after that does the
+    /// block get type-checked and its verb calls classified: at least
+    /// one `db.*` verb is required, and any `cache`/`object_store`/
+    /// `email`/`search`/`external_http` verb is rejected, since none of
+    /// those roll back with the database transaction.
+    fn check_transaction(
+        &mut self,
+        body: &[Stmt],
+        span: Span,
+        scope: &mut Scope,
+    ) -> Option<HirStmt> {
+        if body.is_empty() {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidTransactionBlock,
+                    "`transaction` block is empty",
+                )
+                .with_label(span, "add at least one `db.*` verb"),
+            );
+            return None;
+        }
+        let mut violations = Vec::new();
+        scan_transaction_body(body, &mut violations);
+        if !violations.is_empty() {
+            for (code, message, vspan) in violations {
+                self.diags
+                    .push(Diagnostic::new(code, message).with_label(vspan, "not allowed here"));
+            }
+            return None;
+        }
+        scope.push_frame();
+        let result = self.check_block(body, scope);
+        scope.pop_frame();
+        let (hir_body, _tail_ty) = result?;
+        let mut has_db_verb = false;
+        let mut non_db_verb: Option<&'static str> = None;
+        collect_transaction_verbs(&hir_body, &mut has_db_verb, &mut non_db_verb);
+        if let Some(name) = non_db_verb {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::NonTransactionalEffect,
+                    format!("`{name}` does not roll back with a database transaction"),
+                )
+                .with_label(span, "not allowed inside `transaction`"),
+            );
+            return None;
+        }
+        if !has_db_verb {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidTransactionBlock,
+                    "`transaction` block contains no database verb",
+                )
+                .with_label(span, "add at least one `db.*` verb"),
+            );
+            return None;
+        }
+        Some(HirStmt::Transaction { body: hir_body })
     }
 
     /// Checks `expr`, resolving a bare identifier as an enum-variant
@@ -452,13 +737,21 @@ impl Builder<'_> {
                 };
                 let record = self.graph.record(rid);
                 let Some(f) = record.fields.iter().find(|f| f.name == field.text) else {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::UnknownRecordField,
-                            format!("record `{}` has no field `{}`", record.name, field.text),
-                        )
-                        .with_label(field.span, "unknown field"),
-                    );
+                    let mut diag = Diagnostic::new(
+                        ErrorCode::UnknownRecordField,
+                        format!("record `{}` has no field `{}`", record.name, field.text),
+                    )
+                    .with_label(field.span, "unknown field");
+                    if let Some(nearest) = nearest_field(&record.fields, &field.text) {
+                        diag = diag.with_fix(Fix {
+                            title: format!("Rename to `{nearest}`"),
+                            edits: vec![Edit {
+                                span: field.span,
+                                replacement: nearest.to_owned(),
+                            }],
+                        });
+                    }
+                    self.diags.push(diag);
                     return None;
                 };
                 let ty = field_type_to_hir(&f.ty);
@@ -496,7 +789,7 @@ impl Builder<'_> {
                     index: Box::new(index_hir),
                 })
             }
-            Expr::Call { callee, args, span } => self.check_call(callee, args, *span, scope),
+            Expr::Call { callee, args, span } => self.check_call(callee, args, None, *span, scope),
             Expr::RecordCons { base, fields, span } => {
                 self.check_record_cons(base, fields, *span, scope)
             }
@@ -513,15 +806,35 @@ impl Builder<'_> {
                 arms,
                 span,
             } => self.check_match_expr(scrutinee, arms, *span, scope),
+            Expr::Query {
+                call,
+                predicate,
+                span,
+            } => {
+                let Expr::Call { callee, args, .. } = call.as_ref() else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidVerbCall,
+                            "a `where` clause may only follow a capability verb call",
+                        )
+                        .with_label(*span, "not a call"),
+                    );
+                    return None;
+                };
+                self.check_call(callee, args, Some(predicate), *span, scope)
+            }
         }
     }
 
     /// `<callee>(<args>)`: either a capability verb call
-    /// (`db.insert(..)`) or a niladic builtin (`Uuid.new()`).
+    /// (`db.insert(..)`) or a niladic builtin (`Uuid.new()`). `predicate`
+    /// is `Some` when the call was wrapped in a `where` clause (v0.14
+    /// M1) — only `db.query`/`db.count`/`db.delete_where` accept one.
     fn check_call(
         &mut self,
         callee: &Expr,
         args: &[Expr],
+        predicate: Option<&ast::Predicate>,
         span: Span,
         scope: &mut Scope,
     ) -> Option<HirExpr> {
@@ -546,10 +859,10 @@ impl Builder<'_> {
             return None;
         };
         match (recv.text.as_str(), field.text.as_str()) {
-            ("Uuid", "new") if args.is_empty() => {
+            ("Uuid", "new") if args.is_empty() && predicate.is_none() => {
                 return Some(HirExpr::BuiltinCall(Builtin::UuidNew))
             }
-            ("Timestamp", "now") if args.is_empty() => {
+            ("Timestamp", "now") if args.is_empty() && predicate.is_none() => {
                 return Some(HirExpr::BuiltinCall(Builtin::TimestampNow))
             }
             ("Uuid", "new") | ("Timestamp", "now") => {
@@ -574,17 +887,21 @@ impl Builder<'_> {
             );
             return None;
         };
-        self.check_verb_call(kind, recv, field, args, span, scope)
+        self.check_verb_call(kind, recv, field, args, predicate, span, scope)
     }
 
     /// Resolves and type-checks a capability verb call against this
-    /// milestone's closed verb set.
+    /// milestone's closed verb set. `predicate` is `Some` when the
+    /// source wrapped the call in a `where` clause (v0.14 M1) — only
+    /// `db.query`/`db.count`/`db.delete_where` accept one.
+    #[allow(clippy::too_many_arguments)]
     fn check_verb_call(
         &mut self,
         kind: NodeKind,
         recv: &Ident,
         verb_ident: &Ident,
         args: &[Expr],
+        predicate: Option<&ast::Predicate>,
         span: Span,
         scope: &mut Scope,
     ) -> Option<HirExpr> {
@@ -607,6 +924,23 @@ impl Builder<'_> {
             );
             return None;
         };
+        let is_query_verb = matches!(
+            (kind, verb_ident.text.as_str()),
+            (NodeKind::Database, "query" | "count" | "delete_where")
+        );
+        if predicate.is_some() && !is_query_verb {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::QueryModifierNotSupported,
+                    format!(
+                        "`{}.{}` does not accept a `where` clause",
+                        recv.text, verb_ident.text
+                    ),
+                )
+                .with_label(span, "unsupported `where` clause"),
+            );
+            return None;
+        }
         let arity_error = |this: &mut Self, expected: usize| {
             this.diags.push(
                 Diagnostic::new(
@@ -696,6 +1030,124 @@ impl Builder<'_> {
                     ty: HirType::Option(Box::new(HirType::Record(record_id))),
                 })
             }
+            (NodeKind::Database, "update") => {
+                if args.len() != 3 {
+                    arity_error(self, 3);
+                    return None;
+                }
+                let Expr::Ident(table_ident) = &args[0] else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidVerbCall,
+                            "`db.update` expects a table name",
+                        )
+                        .with_label(args[0].span(), "not a table name"),
+                    );
+                    return None;
+                };
+                let table_id = self.resolve_table(table_ident)?;
+                let record_id = self.graph.table(table_id).record;
+                let key = self.check_expr(&args[1], scope)?;
+                if key.ty() != HirType::Uuid {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!("`db.update` key must be `Uuid`, found `{:?}`", key.ty()),
+                        )
+                        .with_label(args[1].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                let value = self.check_expr(&args[2], scope)?;
+                if value.ty() != HirType::Record(record_id) {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`db.update` expects `{:?}`, found `{:?}`",
+                                HirType::Record(record_id),
+                                value.ty()
+                            ),
+                        )
+                        .with_label(args[2].span(), "mismatched value type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::DbUpdate(table_id),
+                    args: vec![key, value],
+                    ty: HirType::Option(Box::new(HirType::Record(record_id))),
+                })
+            }
+            (NodeKind::Database, "delete") => {
+                if args.len() != 2 {
+                    arity_error(self, 2);
+                    return None;
+                }
+                let Expr::Ident(table_ident) = &args[0] else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidVerbCall,
+                            "`db.delete` expects a table name",
+                        )
+                        .with_label(args[0].span(), "not a table name"),
+                    );
+                    return None;
+                };
+                let table_id = self.resolve_table(table_ident)?;
+                let key = self.check_expr(&args[1], scope)?;
+                if key.ty() != HirType::Uuid {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!("`db.delete` key must be `Uuid`, found `{:?}`", key.ty()),
+                        )
+                        .with_label(args[1].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::DbDelete(table_id),
+                    args: vec![key],
+                    ty: HirType::Bool,
+                })
+            }
+            (NodeKind::Database, verb @ ("query" | "count" | "delete_where")) => {
+                if args.len() != 1 {
+                    arity_error(self, 1);
+                    return None;
+                }
+                let Expr::Ident(table_ident) = &args[0] else {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidVerbCall,
+                            format!("`db.{verb}` expects a table name"),
+                        )
+                        .with_label(args[0].span(), "not a table name"),
+                    );
+                    return None;
+                };
+                let table_id = self.resolve_table(table_ident)?;
+                let record_id = self.graph.table(table_id).record;
+                let predicate = self.check_predicate(predicate, record_id, scope)?;
+                let (hir_verb, ty) = match verb {
+                    "query" => (
+                        Verb::DbQuery(table_id),
+                        HirType::List(Box::new(HirType::Record(record_id))),
+                    ),
+                    "count" => (Verb::DbCount(table_id), HirType::Int),
+                    "delete_where" => (Verb::DbDeleteWhere(table_id), HirType::Int),
+                    _ => unreachable!(),
+                };
+                Some(HirExpr::Query {
+                    capability,
+                    verb: hir_verb,
+                    predicate,
+                    ty,
+                })
+            }
             (NodeKind::Cache, "get") => {
                 if args.len() != 1 {
                     arity_error(self, 1);
@@ -740,6 +1192,32 @@ impl Builder<'_> {
                     capability,
                     verb: Verb::CacheSet,
                     args: vec![key, value],
+                    ty: HirType::Unit,
+                })
+            }
+            (NodeKind::Cache, "delete") => {
+                if args.len() != 1 {
+                    arity_error(self, 1);
+                    return None;
+                }
+                let key = self.check_expr(&args[0], scope)?;
+                if key.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`cache.delete` key must be a string, found `{:?}`",
+                                key.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::CacheDelete,
+                    args: vec![key],
                     ty: HirType::Unit,
                 })
             }
@@ -796,6 +1274,172 @@ impl Builder<'_> {
                     ty: HirType::Option(Box::new(HirType::Json)),
                 })
             }
+            (NodeKind::ObjectStore, "delete") => {
+                if args.len() != 1 {
+                    arity_error(self, 1);
+                    return None;
+                }
+                let key = self.check_expr(&args[0], scope)?;
+                if key.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`object_store.delete` key must be a string, found `{:?}`",
+                                key.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched key type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::ObjectStoreDelete,
+                    args: vec![key],
+                    ty: HirType::Unit,
+                })
+            }
+            (NodeKind::ObjectStore, "list") => {
+                if args.len() != 1 {
+                    arity_error(self, 1);
+                    return None;
+                }
+                let prefix = self.check_expr(&args[0], scope)?;
+                if prefix.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`object_store.list` prefix must be a string, found `{:?}`",
+                                prefix.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched prefix type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::ObjectStoreList,
+                    args: vec![prefix],
+                    ty: HirType::List(Box::new(HirType::Str)),
+                })
+            }
+            (NodeKind::Email, "send") => {
+                if args.len() != 3 {
+                    arity_error(self, 3);
+                    return None;
+                }
+                let mut hir_args = Vec::with_capacity(3);
+                for (arg, what) in args.iter().zip(["to", "subject", "body"]) {
+                    let hir = self.check_expr(arg, scope)?;
+                    if hir.ty() != HirType::Str {
+                        self.diags.push(
+                            Diagnostic::new(
+                                ErrorCode::HandlerExprTypeMismatch,
+                                format!(
+                                    "`email.send` {what} must be a string, found `{:?}`",
+                                    hir.ty()
+                                ),
+                            )
+                            .with_label(arg.span(), "mismatched argument type"),
+                        );
+                        return None;
+                    }
+                    hir_args.push(hir);
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::EmailSend,
+                    args: hir_args,
+                    ty: HirType::Unit,
+                })
+            }
+            (NodeKind::Search, "index") => {
+                if args.len() != 2 {
+                    arity_error(self, 2);
+                    return None;
+                }
+                let doc_id = self.check_expr(&args[0], scope)?;
+                if doc_id.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`search.index` doc id must be a string, found `{:?}`",
+                                doc_id.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched doc id type"),
+                    );
+                    return None;
+                }
+                // Any type is acceptable, like `cache.set`/`object_store.put`'s
+                // payload — indexing serializes whatever value is given.
+                let value = self.check_expr(&args[1], scope)?;
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::SearchIndex,
+                    args: vec![doc_id, value],
+                    ty: HirType::Unit,
+                })
+            }
+            (NodeKind::Search, "query") => {
+                if args.len() != 1 {
+                    arity_error(self, 1);
+                    return None;
+                }
+                let query = self.check_expr(&args[0], scope)?;
+                if query.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`search.query` query must be a string, found `{:?}`",
+                                query.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched query type"),
+                    );
+                    return None;
+                }
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::SearchQuery,
+                    args: vec![query],
+                    ty: HirType::List(Box::new(HirType::Json)),
+                })
+            }
+            (NodeKind::ExternalHttp, "request") => {
+                if args.len() != 2 {
+                    arity_error(self, 2);
+                    return None;
+                }
+                let url = self.check_expr(&args[0], scope)?;
+                if url.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`external_http.request` url must be a string, found `{:?}`",
+                                url.ty()
+                            ),
+                        )
+                        .with_label(args[0].span(), "mismatched url type"),
+                    );
+                    return None;
+                }
+                // Any type is acceptable, like `cache.set`/`object_store.put`'s
+                // payload — the call serializes whatever value is given.
+                let body = self.check_expr(&args[1], scope)?;
+                Some(HirExpr::VerbCall {
+                    capability,
+                    verb: Verb::HttpCall,
+                    args: vec![url, body],
+                    ty: HirType::Json,
+                })
+            }
             _ => {
                 self.diags.push(
                     Diagnostic::new(
@@ -810,6 +1454,86 @@ impl Builder<'_> {
                 None
             }
         }
+    }
+
+    /// Type-checks an optional `where` clause against `record_id`'s
+    /// fields (v0.14 M1). `None` in means `None` out (no clause was
+    /// given — the query matches every row); the outer `Option` is
+    /// `None` on error (already reported).
+    fn check_predicate(
+        &mut self,
+        predicate: Option<&ast::Predicate>,
+        record_id: RecordId,
+        scope: &mut Scope,
+    ) -> Option<Option<HirPredicate>> {
+        let Some(predicate) = predicate else {
+            return Some(None);
+        };
+        let record_fields = self.graph.record(record_id).fields.clone();
+        let record_name = self.graph.record(record_id).name.clone();
+        let mut terms = Vec::with_capacity(predicate.terms.len());
+        for term in &predicate.terms {
+            let Some(rf) = record_fields.iter().find(|f| f.name == term.field.text) else {
+                self.diags.push(
+                    Diagnostic::new(
+                        ErrorCode::UnknownRecordField,
+                        format!("record `{record_name}` has no field `{}`", term.field.text),
+                    )
+                    .with_label(term.field.span, "unknown field"),
+                );
+                return None;
+            };
+            let field_ty = field_type_to_hir(&rf.ty);
+            let value = self.check_expr_expecting(&term.value, Some(&field_ty), scope)?;
+            let op = if term.op == ast::PredOp::Contains {
+                if field_ty != HirType::Str || value.ty() != HirType::Str {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "`contains` needs a `Str` field and a `Str` value, found \
+                                 field `{field_ty:?}` and value `{:?}`",
+                                value.ty()
+                            ),
+                        )
+                        .with_label(term.span, "mismatched `contains`"),
+                    );
+                    return None;
+                }
+                ciac_ir::PredOp::Contains
+            } else {
+                if value.ty() != field_ty {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::HandlerExprTypeMismatch,
+                            format!(
+                                "field `{}` is `{field_ty:?}`, but this comparison uses `{:?}`",
+                                term.field.text,
+                                value.ty()
+                            ),
+                        )
+                        .with_label(term.span, "mismatched comparison"),
+                    );
+                    return None;
+                }
+                match term.op {
+                    ast::PredOp::Eq => ciac_ir::PredOp::Eq,
+                    ast::PredOp::NotEq => ciac_ir::PredOp::NotEq,
+                    ast::PredOp::Lt => ciac_ir::PredOp::Lt,
+                    ast::PredOp::LtEq => ciac_ir::PredOp::LtEq,
+                    ast::PredOp::Gt => ciac_ir::PredOp::Gt,
+                    ast::PredOp::GtEq => ciac_ir::PredOp::GtEq,
+                    ast::PredOp::Contains => unreachable!("handled above"),
+                }
+            };
+            terms.push(HirPredTerm {
+                field: term.field.text.clone(),
+                field_ty,
+                op,
+                value,
+            });
+        }
+        Some(Some(HirPredicate { terms }))
     }
 
     /// `<base> { field: value, .. }` — full construction if `base` names
@@ -1203,5 +1927,25 @@ impl Builder<'_> {
             arms: hir_arms,
             ty,
         })
+    }
+}
+
+#[cfg(test)]
+mod fix_tests {
+    use super::*;
+
+    fn field(name: &str) -> RecordField {
+        RecordField {
+            name: name.to_owned(),
+            ty: FieldType::Str,
+        }
+    }
+
+    #[test]
+    fn nearest_field_finds_a_close_typo_but_not_a_stranger() {
+        let fields = vec![field("id"), field("name"), field("email")];
+        assert_eq!(nearest_field(&fields, "nam"), Some("name"));
+        assert_eq!(nearest_field(&fields, "emial"), Some("email"));
+        assert_eq!(nearest_field(&fields, "totally_unrelated_xyz"), None);
     }
 }

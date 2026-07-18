@@ -1,0 +1,49 @@
+// v0.15 M3/M4 flagship: the smallest program that exercises every hop
+// distributed tracing needs to prove — api -> call -> downstream
+// handler -> publish -> worker — across two services. The system-test
+// generator's trace-continuity check (v0.15) hits `Checkout.Submit`
+// and asserts the collector saw one trace id spanning both services'
+// spans and the broker hop between them.
+project TracedCheckout;
+
+record Order {
+    id: Uuid;
+    total: Float;
+}
+
+stream Placed: Order;
+
+service Payments {
+    use {
+        tracing OpenTelemetry;
+    }
+
+    api Charge: Order {
+        method: POST;
+        path: "/charge";
+    }
+
+    pipeline Charge: Return;
+}
+
+service Checkout {
+    use {
+        queue NATS;
+        tracing OpenTelemetry;
+    }
+
+    api Submit: Order {
+        method: POST;
+        path: "/submit";
+    }
+
+    worker Ship on Placed;
+
+    pipeline Submit:
+        call Payments.Charge
+        -> publish Placed
+        -> Return;
+
+    pipeline Ship:
+        ShipOrder;
+}

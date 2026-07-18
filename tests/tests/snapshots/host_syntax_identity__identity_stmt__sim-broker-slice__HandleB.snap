@@ -1,0 +1,7 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(db-insert! ProcessedByBTable (record-cons ProcessedByB (id (uuid-new)) (ping_id (field-access p id)) (seq (field-access p seq))))
+(discard (record-cons ProcessedByB (id (uuid-new)) (ping_id (field-access p id)) (seq (field-access p seq))))
+(return p)

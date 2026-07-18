@@ -1,0 +1,26 @@
+// v0.15 M6 flagship: `users Keycloak` makes an OAuth2-shaped system
+// runnable without an external IdP. `auth OAuth2` here declares no
+// `issuer` -- that only type-checks because `users Keycloak` is
+// declared in the same `use { .. }` block, so the issuer defaults to
+// the dev Keycloak container's URL (`ciac-codegen::model`'s
+// `KEYCLOAK_DEV_ISSUER`). Compose seeds a `dev` realm with one client
+// scope per scope string below and two dev users; `scripts/token.sh`
+// mints real tokens against it for humans and for the generated
+// system suite.
+service Accounts;
+
+use {
+    db Postgres;
+    auth OAuth2;
+    users Keycloak;
+}
+
+record Account {
+    id: Uuid;
+    email: String;
+}
+
+crud Account: Account {
+    read_scope: "accounts:read";
+    write_scope: "accounts:write";
+}

@@ -14,8 +14,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+{%- if c.has_tracing %}
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+{%- endif %}
 
 from app.config import get_settings
+from app.state import current
 
 
 class Base(DeclarativeBase):
@@ -31,12 +35,9 @@ def _urls() -> dict[str, str]:
     }
 
 
-_engines: dict[str, AsyncEngine] = {}
-_sessionmakers: dict[str, async_sessionmaker[AsyncSession]] = {}
-
-
 def get_engine(instance: str = "default") -> AsyncEngine:
-    if instance not in _engines:
+    engines = current().engines
+    if instance not in engines:
         url = _urls()[instance]{% if c.has_sqlite_db %}
         if url.startswith("sqlite"):
             # The database is a local file; aiosqlite creates the file
@@ -45,16 +46,29 @@ def get_engine(instance: str = "default") -> AsyncEngine:
 
             pathlib.Path("data").mkdir(exist_ok=True)
 {%- endif %}
-        _engines[instance] = create_async_engine(url)
-    return _engines[instance]
+        engine = create_async_engine(url)
+{%- if c.has_tracing %}
+        SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
+{%- endif %}
+        engines[instance] = engine
+    return engines[instance]
 
 
 def get_sessionmaker(instance: str = "default") -> async_sessionmaker[AsyncSession]:
-    if instance not in _sessionmakers:
-        _sessionmakers[instance] = async_sessionmaker(
+    state = current()
+    if state.world is not None:
+        # v0.17 M5: the checkpoint's database port. `state.world` supplies
+        # a fake session factory instead of a real engine-backed one; every
+        # call site below (`session_dep`, worker/job `session_with`) is
+        # unaware of the difference, since both shapes are used the same
+        # way: `async with sessionmaker() as session:`.
+        return state.world.fake_sessionmaker(instance)
+    sessionmakers = state.sessionmakers
+    if instance not in sessionmakers:
+        sessionmakers[instance] = async_sessionmaker(
             get_engine(instance), expire_on_commit=False
         )
-    return _sessionmakers[instance]
+    return sessionmakers[instance]
 
 {% for inst in c.db_instances %}
 async def {{ inst.session_dep }}() -> AsyncIterator[AsyncSession]:

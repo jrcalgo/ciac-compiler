@@ -1,0 +1,136 @@
+// v0.14 M7 flagship: threads together everything this version added —
+// the extended query-verb set (`where` predicates against `db.count`,
+// `cache` for invalidation), scope-enforced routes on both a `crud`
+// resource and a plain scoped `api`, and two of the v0.14 M5 std
+// blueprints (`Webhook`, `RateLimitedApi`). The original
+// 14UpdatePlan.md forecast imagined a third std blueprint,
+// `std/outbox.ciac`; it doesn't exist — docs/blueprints.md explains
+// why (no loop construct means "drain every pending row" can't be
+// expressed as a single handler body) — so this example uses the two
+// std blueprints that do exist instead.
+//
+// `Customer` and `Order` are deliberately split across the two ways
+// this language owns persistence: `crud` manages `Customer` completely
+// (its own table, real REST verbs, scope-gated); `Order` is a `table`
+// a handler body reads/writes directly with the extended verb set.
+// The two can't be combined on one record — `crud` owns a table no
+// handler body can address, and a handler-body `table` has no REST
+// surface of its own (see `docs/language.md`) — so a resource is one
+// or the other, not both.
+service OrderSystem;
+
+import "std/webhook.ciac";
+import "std/rate-limited-api.ciac";
+
+use {
+    db Postgres;
+    cache Redis;
+    queue NATS;
+    auth JWT;
+}
+
+record Customer {
+    id: Uuid;
+    name: String;
+    email: String;
+}
+
+// The typed CRUD surface: real columns, cache-aside reads, and a
+// scope required per verb family (v0.14 M6) — `customers:read` for
+// GET/LIST, `customers:write` for POST/PUT/DELETE. Declaring either
+// scope without an `auth` capability in `use { .. }` is `CIAC0019`.
+crud Customer: Customer {
+    cache_ttl: 30;
+    page_size: 50;
+    read_scope: "customers:read";
+    write_scope: "customers:write";
+}
+
+record Order {
+    id: Uuid;
+    customer_id: Uuid;
+    status: enum { Pending, Shipped, Cancelled };
+    total: Float;
+}
+
+table Orders: Order;
+
+record OrderUpdate {
+    id: Uuid;
+    customer_id: Uuid;
+    total: Float;
+}
+
+// Every typed handler used as a pipeline step is called with exactly
+// one payload value (see query-verbs.ciac) — even a handler that
+// conceptually needs no input still takes a record, here used for a
+// second `where` term alongside the enum comparison.
+record SummaryFilter {
+    min_total: Float;
+}
+
+// `db.count(..) where ..` with a two-term conjunction (v0.14 M1/M2): a
+// cheap aggregate, still worth not recomputing on every request.
+handler ShippedSummary(filter: SummaryFilter) -> Int {
+    let shipped = db.count(Orders) where status == Shipped && total >= filter.min_total;
+    cache.set("orders:shipped-count", shipped);
+    return shipped;
+}
+
+// Full record in, enum literal in a functional-update-style
+// construction, `db.update` called for effect (its own `record?`
+// result is discarded — same pattern as query-verbs.ciac's `Replace`),
+// then the cached summary is invalidated since it's now stale.
+handler MarkShipped(payload: OrderUpdate) -> Order {
+    let updated = Order {
+        id: payload.id,
+        customer_id: payload.customer_id,
+        status: Shipped,
+        total: payload.total
+    };
+    db.update(Orders, updated.id, updated);
+    cache.delete("orders:shipped-count");
+    return updated;
+}
+
+api ShippedSummaryApi: SummaryFilter {
+    path: "/orders/summary/shipped";
+    scope: "orders:read";
+}
+pipeline ShippedSummaryApi: Auth -> ShippedSummary -> Return;
+
+api MarkShippedApi: OrderUpdate {
+    method: POST;
+    path: "/orders/mark-shipped";
+    scope: "orders:write";
+}
+pipeline MarkShippedApi: Auth -> MarkShipped -> Return;
+
+// `std/webhook.ciac`: a typed inbound endpoint that republishes onto a
+// stream — the event feed other services (or a `worker` in this one)
+// react to. `std/rate-limited-api.ciac`: a request-capped typed POST,
+// the shape a public order-submission endpoint needs regardless of
+// what validates the order itself.
+record OrderEvent {
+    id: Uuid;
+    kind: String;
+}
+
+// `ciac check` reports `ReceivedOrderEvent` as having "no publisher"
+// (CIAC0007, a warning) even though `Webhook`'s own `Receive` handler
+// body does `publish Received(payload);` — the reachability pass only
+// walks pipeline-level `publish <Stream>` steps, not `publish`
+// statements inside a typed handler body, so it can't see this one.
+// Benign and pre-existing (same gap any inline-handler publisher has);
+// not a v0.14 M7 regression.
+expand Webhook<OrderEvent> {
+    path: "/orders/webhook";
+}
+
+worker OrderEventSink on ReceivedOrderEvent;
+pipeline OrderEventSink: RecordEvent;
+
+expand RateLimitedApi<Order> {
+    path: "/orders/submit";
+    limit: 1000;
+}

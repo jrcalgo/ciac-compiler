@@ -2,6 +2,8 @@
 
 import asyncio
 
+from app.config import get_settings
+from app.state import AppState, set_current
 from app.workers import (
 {%- for worker in c.workers %}
     {{ worker.snake }},
@@ -16,6 +18,7 @@ from app.workers import (
 
 
 async def main() -> None:
+    set_current(AppState.production(get_settings()))
     await asyncio.gather(
 {%- for worker in c.workers %}
         {{ worker.snake }}.run(),

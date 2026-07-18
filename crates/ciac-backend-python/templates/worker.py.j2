@@ -42,6 +42,10 @@ from aiokafka import AIOKafkaConsumer
 {%- else %}
 import nats
 {%- endif %}
+{%- if c.has_tracing %}
+from opentelemetry import trace
+from opentelemetry.propagate import extract
+{%- endif %}
 
 from app.config import get_settings
 {%- if worker.needs_cache %}
@@ -71,6 +75,9 @@ QUEUE_GROUP = "{{ worker.queue_group }}"
 CONCURRENCY = {{ worker.concurrency }}
 MAX_RETRIES = {{ worker.max_retries }}
 logger = logging.getLogger(__name__)
+{%- if c.has_tracing %}
+tracer = trace.get_tracer(__name__)
+{%- endif %}
 
 {% set payload_type = worker.payload.class_name if worker.payload else "dict[str, Any]" %}
 
@@ -115,7 +122,17 @@ async def _consume(worker_index: int) -> None:
     logger.info("worker {{ worker.name }} consumer %s subscribed", worker_index)
     try:
         async for message in consumer:
+{%- if c.has_tracing %}
+            carrier = {k: v.decode() for k, v in (message.headers or [])}
+            with tracer.start_as_current_span(
+                "worker.{{ worker.name }}", context=extract(carrier)
+            ):
 {%- if worker.payload %}
+                await handle_message({{ worker.payload.class_name }}.model_validate_json(message.value))
+{%- else %}
+                await handle_message(json.loads(message.value))
+{%- endif %}
+{%- elif worker.payload %}
             await handle_message({{ worker.payload.class_name }}.model_validate_json(message.value))
 {%- else %}
             await handle_message(json.loads(message.value))
@@ -127,7 +144,16 @@ async def _consume(worker_index: int) -> None:
     subscription = await client.subscribe(SUBJECT, queue=QUEUE_GROUP)
     logger.info("worker {{ worker.name }} consumer %s subscribed", worker_index)
     async for message in subscription.messages:
+{%- if c.has_tracing %}
+        with tracer.start_as_current_span(
+            "worker.{{ worker.name }}", context=extract(message.headers or {})
+        ):
 {%- if worker.payload %}
+            await handle_message({{ worker.payload.class_name }}.model_validate_json(message.data))
+{%- else %}
+            await handle_message(json.loads(message.data))
+{%- endif %}
+{%- elif worker.payload %}
         await handle_message({{ worker.payload.class_name }}.model_validate_json(message.data))
 {%- else %}
         await handle_message(json.loads(message.data))

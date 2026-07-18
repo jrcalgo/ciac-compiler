@@ -337,7 +337,9 @@ expression: json
   "tables": [
     {
       "name": "Videos",
-      "record": 0
+      "record": 0,
+      "service": 0,
+      "db_instance": 0
     }
   ],
   "pipelines": [

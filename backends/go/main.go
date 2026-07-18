@@ -26,7 +26,12 @@ import (
 	"unicode"
 )
 
-const protocolVersion = 1
+// v0.22 M2: bumped to 2 alongside ciac-codegen::protocol::PROTOCOL_VERSION
+// — FieldCtx's py_type/py_out_type/rust_type/db_rust_type fields were
+// dropped from the wire (see docs/external-backends.md's v2 migration
+// note). This backend never read them (it already maps type_kind, per
+// the doc's long-standing advice), so no other change was needed.
+const protocolVersion = 2
 
 // Only the fields this backend actually reads are declared here —
 // encoding/json ignores everything else in the request, so this is

@@ -1,5 +1,6 @@
 use crate::evolution::RecordSchema;
 use crate::migrations::TableSchema;
+use crate::semantic_model::SemanticModel;
 use crate::{FileRole, GeneratedProject};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,6 +36,40 @@ pub struct Manifest {
     /// so manifests written before v0.8 M5 still deserialize.
     #[serde(default)]
     pub records: BTreeMap<String, RecordSchema>,
+    /// v0.18 M1: the canonical `SemanticModel` produced by this build,
+    /// cached for `ciac diff --semantic --out <tree>`'s *advisory*
+    /// local comparison mode — never the checked-in baseline generated
+    /// CI gates on (`ciac baseline`'s own file), and never advanced by
+    /// a failed build. `None` for manifests written before v0.18 M1, or
+    /// if a build never reached this point.
+    #[serde(default)]
+    pub semantic_snapshot: Option<SemanticModel>,
+    /// v0.18 M5: the exact `ciac build` invocation that produced this
+    /// tree — `ciac rename --out <tree>` replays this recipe against
+    /// the renamed source rather than guessing target/profile/deploy
+    /// flags. `None` for manifests written before v0.18 M5 (a "legacy
+    /// recipe"); rename refuses `--out` against one of those rather
+    /// than guessing (18UpdatePlan.md Pillar 7).
+    #[serde(default)]
+    pub recipe: Option<BuildRecipe>,
+}
+
+/// See [`Manifest::recipe`]. Every field a fresh `ciac build` needs to
+/// reproduce this exact tree, recorded once so a later tool (rename
+/// today; anything else that needs to replay a build tomorrow) never
+/// has to ask the user to re-supply flags they already gave once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildRecipe {
+    pub entry: String,
+    pub target: String,
+    pub name: Option<String>,
+    pub deploy: Vec<String>,
+    pub profile: String,
+    pub secrets: bool,
+    pub image_prefix: Option<String>,
+    pub image_tag: String,
+    pub clients: Vec<String>,
+    pub semantic_baseline: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +120,8 @@ pub fn build_manifest(
         tables: BTreeMap::new(),
         next_migration_seq: first_migration_seq(),
         records: BTreeMap::new(),
+        semantic_snapshot: None,
+        recipe: None,
     }
 }
 

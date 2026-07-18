@@ -1,4 +1,4 @@
-# The CIaC Language (v0.13.0)
+# The CIaC Language (v0.20.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -8,12 +8,14 @@ references after parsing the whole file.
 ## Implementation status
 
 CIaC's contract is that **whatever `ciac build` accepts, the generated
-system actually does**. As of v0.13, both bundled targets (Python,
-Rust) implement every construct and provider in this document — there
-is no currently-gated construct to list. A backend that doesn't
-implement something a program uses still fails `ciac build` with
-`CIAC0011` (never a silent miscompile) — the mechanism a new backend
-or provider grows into on the way to full support, most recently
+system actually does**. As of v0.13 through v0.15, both bundled
+targets (Python, Rust) implemented every construct and provider in
+this document. v0.16 adds one still-gated exception: a `Reference<T>`
+field with `cardinality: many` type-checks and gets real sema/
+migration support, but has no wire exposure yet (see below), so `ciac
+build`/`ciac check` accept it while `ciac build` itself refuses to
+generate for it — `CIAC0011`, the same mechanism a new backend or
+provider grows into on the way to full support, most recently
 exercised by external backends (`docs/external-backends.md`).
 
 ## Grammar
@@ -181,13 +183,38 @@ pairs (`CIAC0013` otherwise):
 | `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance |
 | `scheduler` | `Cron` | in-process scheduled jobs |
 | `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
+| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers (both: `traceparent` propagation across `call`/broker hops) |
+| `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6) |
 
 Every provider above generates on both bundled targets (as of v0.13 —
 `MySQL` and `Kafka` landed on Rust in v0.13 M1/M2, closing the last
 Python-only gap; `SQLite` is new in v0.13 M3 and needs no container at
 all, just a `data/` volume). `auth OAuth2` requires an `issuer`
 attribute (and optional `audience`): bearer RS256 tokens are validated
-against `{issuer}/.well-known/jwks.json` on both backends.
+against `{issuer}/.well-known/jwks.json` on both backends — unless
+`users Keycloak` is declared in the same `use { .. }` block, in which
+case `issuer` may be omitted and defaults to the dev Keycloak
+container's realm URL (v0.15 M6; still overridable with an explicit
+`issuer`).
+
+`tracing OpenTelemetry` (v0.15 M3/M4) adds an `otel-collector` +
+Jaeger to the dev compose stack; every service that declares it
+exports spans for its own HTTP server/client calls and broker
+produce/consume, so a `call`/`publish`→worker chain shows up as one
+continuous trace. `users Keycloak` (v0.15 M6) adds a `keycloak`
+container seeded with a `dev` realm — a public password-grant client,
+one client scope per distinct `scope`/`read_scope`/`write_scope`
+string declared anywhere in the system, and two dev users
+(`dev-admin`/`dev-user`, password `dev-password`). It's a dev/test
+identity provider only: no user CRUD in the model, no registration or
+login UI, no session management — the resource-server stance from
+`auth OAuth2` stands. Neither `tracing` nor `users` is emitted as a
+k8s/Terraform resource; both are compose-only, disclosed as dev-only
+(a `users`-backed OAuth2 service deployed with `--deploy k8s` gets an
+explicit `REPLACE-ME` issuer placeholder in its ConfigMap instead of
+the dev Keycloak URL, so a misconfigured deploy fails loudly rather
+than silently pointing at a container that doesn't exist in the
+cluster).
 
 Both `SES` and `SMTP` email providers send over SMTP — for SES, point
 the generated `SMTP_*` variables at your SES SMTP endpoint. Handlers
@@ -209,6 +236,77 @@ under a different keyword: it compiles to a raisable exception
 data model, for use with `fail <Name>(..)` in a handler body — see
 `docs/expressions.md`.
 
+### `Reference<T>` fields (v0.16)
+
+A field may declare `Reference<T>` instead of a scalar type, followed
+by a required attribute block naming the relation:
+
+```ciac
+record Order {
+    id: Uuid;
+    customer: Reference<Customer> {
+        references: Customers;   // required: the `table` this relation targets
+        cardinality: one;        // required: `one` or `many`
+        on_delete: restrict;     // required: `restrict` or `cascade`
+        on_update: cascade;      // required: `restrict` or `cascade`
+        unique: false;           // optional, `cardinality: one` only; default false
+    }
+    total: Float;
+}
+```
+
+`references` must name a `table <Name>: <Record>;` declaration, not a
+`crud <Name>: <Record>;` one (`CIAC0058`, `RefRequiresTypedStorage`) —
+`crud` has no fixed row identity a foreign key can target the way an
+explicit `table` does. Missing/invalid attribute values are `CIAC0054`/
+`CIAC0055`; a reference from one service's storage to a table owned by
+a different `db` instance or service is `CIAC0056`; a chain of
+required `cardinality: one` references that cycles back to its own
+record is `CIAC0057` (many-relations use a link table and can't create
+this kind of cycle).
+
+**Wire contract**: a `Reference<T>` field is a flat foreign-key id
+*everywhere* — `customer: Reference<Customer>` becomes a
+`customer_id: string` property on the Pydantic schema, the SQLAlchemy/
+sqlx row model, the OpenAPI schema, and the generated TypeScript
+client, never a nested `customer: Customer` object. This is
+deliberately narrower than a full ORM-style embed/hydrate contract (no
+N+1 traversal, no batching, no lazy-loading switch to design and keep
+consistent across two backends) — the target record and its
+`on_delete`/`on_update` actions still travel as metadata alongside the
+id, so a consumer knows a field is a relation without the compiler
+hydrating it: `FieldTypeKind::Reference` in `docs/protocol-schema.json`,
+`x-ciac-ref`/`x-ciac-on-delete`/`x-ciac-on-update` OpenAPI extension
+keys, and a JSDoc comment (`/** References \`Order\` by id. */`) on the
+TypeScript client's generated field.
+
+**Cardinality**: `cardinality: one` is fully supported end to end —
+the source table gets a `<field>_id` foreign-key column with a real,
+named `FOREIGN KEY ... ON DELETE .. ON UPDATE ..` constraint (`restrict`/
+`cascade`, enforced by the database engine itself, not application
+code), and `unique: true` adds a matching `UNIQUE` constraint (a 1:1
+shape — at most one dependent row per target). `cardinality: many`
+resolves to a compiler-owned link table (composite `(source_id,
+target_id)` primary key, both columns real foreign keys, always
+`ON DELETE/UPDATE CASCADE` since the link row has no existence of its
+own) — the sema/migration side is real, but there is no wire exposure
+yet: no field appears on the owning record's schema for it, and `ciac
+build` refuses a program using one (`CIAC0011`) until a read/write path
+for the link table ships. `ciac check` still fully validates it.
+
+**Not implemented**: field-level validation attributes
+(`non_empty`/`min_length`/`max_length`/`pattern`/… as sketched in early
+planning) were never built — only a `Reference<T>` field's own
+attributes above, plus `index: true`/`false` on any field, are
+recognized; anything else is `CIAC0018` (unknown attribute). A
+handler body's own `if`/`fail` logic is how a program enforces a
+business rule like "total must not be negative" today (see
+`docs/expressions.md`) — there is no declarative field constraint that
+does it for you. A foreign-key or unique-constraint violation the
+database rejects also isn't mapped to a structured 409/422 response;
+it surfaces as whatever the ORM/driver's raised exception becomes
+(an unhandled 500 today).
+
 ### Attributes
 
 `api`, `worker`, `job`, `channel`, `stream`, and `crud` declarations may end in an
@@ -229,6 +327,33 @@ preconditions are `CIAC0019`.
 | `stream` | `subject` | string | `<service>.<stream>` | duplicate subjects are `CIAC0003` |
 | `crud` | `cache_ttl` | integer >= 1 | `300` | requires `cache` |
 | `crud` | `page_size` | integer >= 1 | `100` | |
+| `crud` | `read_scope` | string | none (v0.14 M6) | requires an `auth` capability |
+| `crud` | `write_scope` | string | none (v0.14 M6) | requires an `auth` capability |
+
+### Authorization scopes (v0.14 M6)
+
+`scope`/`read_scope`/`write_scope` are enforced, not just parsed: both
+backends check the token's `scope`/`scp` claim against the declared
+scope on every matching request, returning 403 if it's missing. A
+plain `api`'s `scope` requires `Auth` first in its pipeline
+(`CIAC0019` otherwise, checked at compile time); `crud`'s
+`read_scope`/`write_scope` require *some* `auth` capability on the
+service (also `CIAC0019`) — `crud` gates every route with that
+capability automatically once it's declared, `read_scope`/
+`write_scope` add a specific scope requirement on top for
+list/get vs. create/update/delete.
+
+Every scoped route gets a generated behavioral test proving both
+halves — a token missing the scope gets 403, a token carrying it
+clears the auth layer — in the project's own test suite, no live
+server needed (`tests/test_smoke.py` / `tests/scope_tests.rs`, JWT
+scheme only; OAuth2 needs a live JWKS issuer, so it's excluded from
+this no-infra suite). When `users Keycloak` is also declared, the
+generated `tests/system/` suite (v0.8 M4, compose-backed) gains the
+same 403-without/200-with assertions for OAuth2 too, using real
+tokens minted from the live dev realm via `scripts/token.sh` instead
+of a locally-signed JWT (v0.15 M6) — `ciac verify --system` is what
+proves it, not the no-infra suite above.
 
 ### `stream <Name>: <Record>;`
 
@@ -336,15 +461,40 @@ Declares a real database table backed by `<Record>` (requires `db`,
 `CIAC0005`; unknown record is `CIAC0015`), for `db.insert`/`db.get`
 calls in a handler body to target (`CIAC0042` for an unrecognized
 table). Unlike `crud`, a `table` has no REST surface of its own — it's
-plain storage a handler body reads and writes.
+plain storage a handler body reads and writes, and it's the only kind
+of storage a `Reference<T>` field may target (see above).
+
+The physical SQL table/column identifier is the declared name's
+snake_case form (`OrderAudits` becomes `order_audits`), matching what
+both backends' generated queries already address (the Python ORM's
+`__tablename__`, the Rust backend's per-query table name) — migration
+DDL uses the same name so a multi-word `table` name doesn't produce a
+database identifier the generated app can't find (Postgres case-folds
+an unquoted identifier to lowercase without inserting a separator, so
+using the literal declared name verbatim in `CREATE TABLE` would silently
+diverge from what the app queries the moment a table name is more than
+one word).
+
+A multi-service `project` resolves each `table`'s owning `db` instance
+and service the same way a handler body's own capability calls do
+(the nearest `use { db .. }` block, or the sole instance if only one
+exists; ambiguous when a service binds more than one `db` instance —
+`CIAC0044`-style resolution, not a new rule).
 
 Schema changes are additive-only, incremental SQL migrations: a new
 `table` or a new field on one produces a numbered migration file
 (`CREATE TABLE` / `ALTER TABLE ... ADD COLUMN`); a field being removed
 or retyped, or a table disappearing, is refused as `CIAC0046` rather
-than guessed at — write that change by hand. Migration files are
+than guessed at — write that change by hand. A `Reference<T>` field
+added to an existing table is refused outright rather than guessed at
+too (there is no optional-field/backfill story yet, so a new required
+FK column has no safe default); a foreign key's target/action changing
+on an existing column is likewise refused. Migration files are
 `Seeded` (see `docs/regeneration.md`): once generated, later builds
-leave them alone.
+leave them alone. New tables within one migration file are ordered so
+a table's `CREATE TABLE` never precedes a table its foreign keys
+reference, regardless of name — declaration order and alphabetical
+order are both irrelevant to this ordering.
 
 ### `pipeline <Name>: Step -> Step -> ..;`
 

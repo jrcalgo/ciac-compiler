@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(publish "order_system.received_order_event" payload)
+(return payload)

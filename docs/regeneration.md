@@ -18,7 +18,7 @@ Every build writes `.ciac/manifest.json` at the output root:
     "app/services/store.py": { "role": "seeded", "hash": "sha256..." }
   },
   "tables": {
-    "Videos": { "columns": [["id", "TEXT"], ["title", "TEXT"]] }
+    "videos": { "columns": [["id", "TEXT"], ["title", "TEXT"]] }
   },
   "next_migration_seq": 2,
   "records": {
@@ -38,6 +38,30 @@ refuses (`CIAC0051`) a removed or retyped field a live consumer still
 depends on; a record that never crosses a boundary (every record in a
 single-service program included) is never tracked. See
 `docs/deployment.md` and `crates/ciac-codegen/src/evolution.rs`.
+
+`tables` is keyed by each table's *physical* (snake_case) SQL name —
+`OrderAudits` snapshots under `order_audits`, matching what both
+backends' generated queries actually address — and each entry gained
+`foreign_keys`/`unique_columns`/`is_link_table` in v0.16 (all
+`#[serde(default)]`, so a pre-v0.16 manifest still deserializes). A
+`Reference<T>` field's foreign key is refused rather than migrated
+automatically in two cases a plain new/changed column doesn't hit:
+added to an existing table (`CIAC0046`, `ForeignKeyAddedToExistingTable`
+— no safe default for a new required FK column) and its target/action
+changed on an existing column (`CIAC0046`, `ForeignKeyChanged`). Within
+one migration file, new tables are ordered so a `CREATE TABLE` never
+precedes a table its own foreign keys reference — plain alphabetical
+(`BTreeMap`) order doesn't guarantee that the moment a referencing
+table's name sorts before its target's.
+
+Every `ciac build` also records a `recipe` (v0.18 M5): the exact
+`--target`/`--deploy`/`--profile`/`--secrets`/`--image-prefix`/
+`--image-tag`/`--client`/`--semantic-baseline` this tree was last built
+with. `ciac rename --out DIR` and `ciac backfill plan --out DIR` both
+read it to replay this tree's own regeneration against edited source
+without the caller having to repeat every flag — and both refuse a
+**legacy manifest** with no recorded recipe rather than guess. See
+[docs/evolution.md](evolution.md).
 
 ## File roles
 

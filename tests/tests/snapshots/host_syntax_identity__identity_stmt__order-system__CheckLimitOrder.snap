@@ -1,0 +1,13 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(assign v1 (db.count (no-predicate)))
+(if (>= v1 1000)
+    (fail TooManyRequestsOrder 1000)
+ else
+    (empty-block)
+)
+(db-insert! TicketsOrder (record-cons TicketOrder (id (uuid-new))))
+(discard (record-cons TicketOrder (id (uuid-new))))
+(return payload)

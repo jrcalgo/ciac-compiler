@@ -1,0 +1,24 @@
+[package]
+name = "ciac-sim"
+description = "Deterministic whole-system simulation contracts for CIaC (v0.17): plan, scenario, replay, and SIM diagnostic codes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+ciac-ir.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+ciac-diagnostics.workspace = true
+ciac-sema.workspace = true
+ciac-syntax.workspace = true
+
+[lints]
+workspace = true

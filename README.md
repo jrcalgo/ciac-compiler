@@ -160,6 +160,38 @@ silently miscompiling — if it builds, the generated system actually
 does it. The per-provider support table lives in
 [docs/language.md](docs/language.md).
 
+v0.15 turns a generated system into one a team can operate and point
+other software at: every `ciac build` emits an `openapi.json`, and
+`--client ts` adds a dependency-free typed TypeScript `fetch` client
+alongside it; `use { tracing OpenTelemetry; }` gets one trace id
+spanning a `call`/`publish`→worker chain, with an otel-collector and
+Jaeger wired into dev compose; `--deploy ci` emits a GitHub Actions
+workflow that mirrors `ciac verify` exactly; `use { users Keycloak; }`
+makes an `auth OAuth2` system runnable without an external IdP — a
+seeded dev realm, two dev users, and a `scripts/token.sh` to mint real
+tokens. And the compiler's own diagnostics grew a `fixes` field: the
+mechanical, unambiguous ones (a missing capability, a typo'd
+provider/field name, a missing required attribute) carry an applyable
+edit, the same data an editor's quick-fix and an agent's
+check → apply → re-check loop both consume. Details in
+[docs/operations.md](docs/operations.md) and
+[docs/deployment.md](docs/deployment.md).
+
+v0.16 adds relations and explicit database transactions: a
+`Reference<T>` field on a `table`-backed record gets a real, named
+foreign-key constraint (`restrict`/`cascade`, enforced by the database
+engine) and an optional `unique` constraint, on both targets; a
+`transaction { .. }` block groups a handler body's `db.*` writes so
+they succeed or fail together — real end to end on the Python backend,
+validated-but-not-yet-atomic on Rust (disclosed, not hidden — see
+[docs/expressions.md](docs/expressions.md)). The wire contract stays
+deliberately narrow: a relation is a flat foreign-key id everywhere
+(`customer_id: string`), never a nested embedded object, and
+`cardinality: many` has real sema/migration support but no wire
+exposure yet. Details in [docs/language.md](docs/language.md)'s
+`Reference<T>` section and [docs/expressions.md](docs/expressions.md)'s
+`transaction` section.
+
 ## Quick start
 
 ```sh
@@ -261,7 +293,7 @@ Full per-provider support lives in [docs/language.md](docs/language.md)
 |---------|---------|
 | `ciac new DIR [--template crud\|multi-service\|kafka\|minimal]` | Scaffold a new project from a proven example |
 | `ciac check file.ciac` | Parse + validate, print diagnostics |
-| `ciac build file.ciac --target python\|rust --out DIR [--deploy k8s]` | Generate a project, optionally with Kubernetes manifests |
+| `ciac build file.ciac --target python\|rust --out DIR [--deploy k8s\|terraform\|ci] [--client ts]` | Generate a project, optionally with deploy artifacts and/or a typed TypeScript client |
 | `ciac dev file.ciac --target python\|rust --out DIR` | Watch, regenerate, restart the compose stack, and re-probe health on every save |
 | `ciac diff file.ciac --target python\|rust --out DIR` | Preview regeneration drift |
 | `ciac verify file.ciac --target python\|rust --out DIR [--system]` | Check regeneration drift and generated project validity, optionally running compose-backed system tests |
@@ -269,15 +301,23 @@ Full per-provider support lives in [docs/language.md](docs/language.md)
 | `ciac explain CIAC0005` | Explain an error code |
 | `ciac describe` | Print the language's full vocabulary as one versioned JSON document |
 | `ciac codegen-schema` | Print the external-backend wire-contract JSON Schema |
-| `ciac lsp` | Language Server Protocol server over stdio (diagnostics, hover, completion) |
-| `ciac mcp` | Model Context Protocol server over stdio (check/build/diff/verify/graph/explain/describe as tools) |
+| `ciac lsp` | Language Server Protocol server over stdio (diagnostics, hover, completion, rename) |
+| `ciac mcp` | Model Context Protocol server over stdio (check/build/diff/verify/graph/explain/describe/fix/diff_semantic/rename as tools) |
+| `ciac diff file.ciac --semantic [--deny-breaking]` | Compare architecture (not generated files) against a baseline, classifying each change `Breaking`/`Additive`/`Internal` |
+| `ciac baseline file.ciac [--update --accept-breaking]` | Create/replace the checked-in semantic baseline `--semantic`/generated CI compare against |
+| `ciac rename entry.ciac Old New [--apply] [--out DIR]` | Whole-program, multi-file symbol rename, with transactional `--out` regeneration replay |
+| `ciac backfill plan file.ciac --out DIR [--allow-destructive ID]` | The expand/backfill/contract ladder for a breaking storage change |
 | `ciac targets` | List code-generation targets |
 
 `check`, `build`, `diff`, and `verify` all accept `--json`: one
 machine-readable document on stdout (diagnostics resolved to
 file/line/column; for `diff`, the regeneration plan), human narration
-on stderr. `ciac describe` and `ciac mcp` are the same machine-facing
-front door for an agent client — see [docs/agents.md](docs/agents.md).
+on stderr. Mechanical, unambiguous diagnostics also carry a `fixes`
+array (v0.15) — the same edits `ciac lsp`'s quick-fix and `ciac mcp`'s
+`fix` tool apply, so an editor and an agent's check → apply → re-check
+loop consume identical data. `ciac describe` and `ciac mcp` are the
+same machine-facing front door for an agent client — see
+[docs/agents.md](docs/agents.md).
 
 Multi-file programs (`import "path";`), reusable `blueprint`/`expand`
 templates, and cross-project `registry:` imports (v0.12, cached and
@@ -286,6 +326,15 @@ pinnable to a git ref) are all accepted directly by `file.ciac` above
 [docs/authoring.md](docs/authoring.md). Deployment (compose, k8s,
 Terraform, and `ciac verify --system`) is covered end to end in
 [docs/deployment.md](docs/deployment.md).
+
+Architecture changes over time — not just generated-file drift — are
+a first-class comparison (v0.18): `ciac diff --semantic` classifies
+each change as `Breaking`/`Additive`/`Internal` against a checked-in
+baseline, `ciac rename` is a whole-program multi-file rename with
+transactional regeneration replay, and `ciac backfill plan` walks a
+breaking storage change through an expand/backfill/contract ladder a
+human completes one seeded step of. See
+[docs/evolution.md](docs/evolution.md).
 
 ## Building from source
 
@@ -310,7 +359,7 @@ cargo run -p ciac -- check examples/video-platform.ciac
 | `examples/` | valid example programs |
 | `editors/` | TextMate grammar + VS Code extension for `.ciac` |
 | `tests/` | golden snapshots, negative suite, determinism tests |
-| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [authoring](docs/authoring.md) · [dev loop](docs/dev-loop.md) · [agents](docs/agents.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [external backends](docs/external-backends.md) · [regeneration](docs/regeneration.md) · [deployment](docs/deployment.md) · [errors](docs/errors.md) |
+| `docs/` | [language](docs/language.md) · [expressions](docs/expressions.md) · [blueprints](docs/blueprints.md) · [authoring](docs/authoring.md) · [dev loop](docs/dev-loop.md) · [agents](docs/agents.md) · [architecture](docs/architecture.md) · [IR](docs/ir.md) · [backends](docs/backends.md) · [external backends](docs/external-backends.md) · [regeneration](docs/regeneration.md) · [evolution](docs/evolution.md) · [deployment](docs/deployment.md) · [operations](docs/operations.md) · [errors](docs/errors.md) |
 
 ## License
 

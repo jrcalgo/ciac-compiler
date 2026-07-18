@@ -21,6 +21,14 @@ pub struct Capability {
     pub doc: &'static str,
 }
 
+// target-literal-ok: v0.22 M1 deliberately deferred deriving `targets`
+// from `Backend::supports()` to M4 (`22UpdatePlan.md` Pillar 1/4) —
+// `supports()` is unconditionally `true` on both bundled backends
+// today (no per-component discrimination to derive from yet), so a
+// derivation now would carry zero information over this literal and
+// would force `PROVIDERS` off `const` (every consumer touches it as
+// compile-time data). M4's `ciac targets --json` + docs-drift-test
+// milestone is where this becomes real, registry-derived data.
 const BOTH: &[&str] = &["python", "rust"];
 
 /// Language keywords, in docs/language.md's vocabulary.
@@ -78,6 +86,10 @@ pub const CAPABILITIES: &[Capability] = &[
         doc: "Metrics endpoint.",
     },
     Capability {
+        name: "tracing",
+        doc: "Distributed tracing across `call`/stream edges.",
+    },
+    Capability {
         name: "object_store",
         doc: "Blob storage.",
     },
@@ -101,6 +113,10 @@ pub const CAPABILITIES: &[Capability] = &[
         name: "external_http",
         doc: "A typed client for an external HTTP service (`base_url` attr).",
     },
+    Capability {
+        name: "users",
+        doc: "Dev/test identity provider; `auth OAuth2`'s `issuer` defaults to it when omitted.",
+    },
 ];
 
 /// The closed provider registry. `targets` is the per-backend truth
@@ -116,6 +132,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { name: "Kafka", capability: "queue", targets: BOTH, doc: "Apache Kafka (aiokafka / rdkafka); topics reuse the `<service>.<stream>` subject names." },
     Provider { name: "Structured", capability: "logging", targets: BOTH, doc: "Structured logs (structlog / tracing)." },
     Provider { name: "Prometheus", capability: "metrics", targets: BOTH, doc: "Prometheus metrics endpoint." },
+    Provider { name: "OpenTelemetry", capability: "tracing", targets: BOTH, doc: "OTLP export to an otel-collector, with Jaeger wired in dev compose." },
     Provider { name: "S3", capability: "object_store", targets: BOTH, doc: "S3-compatible blob storage (MinIO in dev)." },
     Provider { name: "SES", capability: "email", targets: BOTH, doc: "AWS SES." },
     Provider { name: "SMTP", capability: "email", targets: BOTH, doc: "Plain SMTP (Mailpit in dev)." },
@@ -123,6 +140,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { name: "Cron", capability: "scheduler", targets: BOTH, doc: "In-process cron scheduling (default when the provider is omitted)." },
     Provider { name: "WebSocket", capability: "realtime", targets: BOTH, doc: "WebSocket fan-out." },
     Provider { name: "SSE", capability: "realtime", targets: BOTH, doc: "Server-sent events (default when the provider is omitted)." },
+    Provider { name: "Keycloak", capability: "users", targets: BOTH, doc: "Dev-only Keycloak container seeded with a realm, a public client, and two dev users (`dev-admin`/`dev-user`); `scripts/token.sh` mints real tokens." },
 ];
 
 /// Pipeline steps with built-in meaning (everything else names a handler).
@@ -211,4 +229,30 @@ pub fn doc_for(word: &str) -> Option<String> {
         return Some((*doc).to_owned());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v0.22 M6: `docs/language.md`'s hand-written provider table is
+    /// the "README/docs support table" the plan means to protect from
+    /// silent drift. `PROVIDERS` lives in a lib-less binary crate (the
+    /// `tests` crate can't import it — see `targets_cli.rs`'s own
+    /// subprocess workaround for the same constraint), so the check
+    /// lives here instead, mirroring `tests/tests/docs.rs`'s
+    /// `error_docs_cover_every_code` pattern.
+    #[test]
+    fn language_md_mentions_every_provider() {
+        let doc = include_str!("../../../docs/language.md");
+        for provider in PROVIDERS {
+            assert!(
+                doc.contains(provider.name),
+                "docs/language.md's provider table is missing `{}` (capability `{}`) — \
+                 update the table when PROVIDERS changes",
+                provider.name,
+                provider.capability,
+            );
+        }
+    }
 }

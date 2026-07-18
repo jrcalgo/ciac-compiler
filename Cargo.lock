@@ -166,13 +166,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
+ "wasm-bindgen",
  "windows-link",
 ]
 
 [[package]]
 name = "ciac"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "ciac-backend-python",
@@ -181,6 +183,7 @@ dependencies = [
  "ciac-diagnostics",
  "ciac-ir",
  "ciac-sema",
+ "ciac-sim",
  "ciac-syntax",
  "clap",
  "ctrlc",
@@ -189,12 +192,13 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "sha2",
  "similar",
 ]
 
 [[package]]
 name = "ciac-backend-python"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ciac-codegen",
  "ciac-diagnostics",
@@ -205,11 +209,12 @@ dependencies = [
  "include_dir",
  "minijinja",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "ciac-backend-rust"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ciac-codegen",
  "ciac-diagnostics",
@@ -220,11 +225,25 @@ dependencies = [
  "include_dir",
  "minijinja",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ciac-backend-skeleton-internal"
+version = "0.20.0"
+dependencies = [
+ "ciac-codegen",
+ "ciac-diagnostics",
+ "ciac-ir",
+ "ciac-sema",
+ "ciac-syntax",
+ "include_dir",
+ "minijinja",
 ]
 
 [[package]]
 name = "ciac-codegen"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "ciac-ir",
@@ -241,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-diagnostics"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ariadne",
  "serde",
@@ -249,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-integration-tests"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ciac-backend-python",
  "ciac-backend-rust",
@@ -265,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-ir"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "schemars",
@@ -275,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "ciac-sema"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "ciac-ir",
@@ -284,8 +303,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciac-sim"
+version = "0.20.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "ciac-diagnostics",
+ "ciac-ir",
+ "ciac-sema",
+ "ciac-syntax",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "ciac-syntax"
-version = "0.13.0"
+version = "0.20.0"
 dependencies = [
  "ciac-diagnostics",
  "logos",

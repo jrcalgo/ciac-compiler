@@ -1,0 +1,98 @@
+// v0.17 M5 checkpoint fixture: the narrowest program that exercises
+// the exact chain the Rollout strategy names -- "API -> transaction ->
+// call -> publish -> third worker attempt -> virtual-time job" -- using
+// only the insert-only database surface the M5 checkpoint's disclosed
+// scope covers (no `Reference<T>`, no update/delete/query verbs; those
+// are M6's full relational fake). "call" is interpreted here as an
+// in-process pipeline handler chained after the transaction, not a
+// cross-service `call Service.Handler` -- true cross-service calls need
+// the multi-service single-process runner that's M9's job, not this
+// checkpoint's. See 17UpdatePlan.md's M5 milestone entry.
+service SimVerticalSlice;
+
+use {
+    scheduler jobs Cron;
+    db Postgres;
+    queue NATS;
+}
+
+record Order {
+    id: Uuid;
+    total: Float;
+}
+table Orders: Order;
+
+record AuditEntry {
+    id: Uuid;
+    note: String;
+}
+table AuditEntries: AuditEntry;
+
+record ProcessedOrder {
+    id: Uuid;
+    order_id: Uuid;
+}
+table ProcessedOrders: ProcessedOrder;
+
+stream OrderCreated: Order;
+
+// The "transaction" step: PlaceOrder's own body wraps its write in a
+// `transaction` block, matching how the checkpoint's own fake session
+// hooks the FailureEngine at `db.commit`.
+handler PlaceOrder(order: Order) -> Order {
+    transaction {
+        db.insert(Orders, order);
+    }
+    return order;
+}
+
+// The "call" step: a second, independent handler run after PlaceOrder
+// in the same pipeline -- see the file header for why this stands in
+// for a cross-service `call`.
+handler RecordAudit(order: Order) -> Order {
+    db.insert(AuditEntries, AuditEntry { id: Uuid.new(), note: "order placed" });
+    return order;
+}
+
+api PlaceOrderApi: Order {
+    method: POST;
+    path: "/orders";
+}
+pipeline PlaceOrderApi:
+    PlaceOrder
+    -> RecordAudit
+    -> publish OrderCreated
+    -> Return;
+
+// The "third worker attempt" step: the checkpoint's scenario injects a
+// failure at the first two occurrences of this worker's `db.commit`
+// effect (via the runner's FailureEngine) and expects the pre-existing
+// generated retry loop (`handle_message`, unchanged since M1's
+// findings) to succeed on the third.
+worker ProcessOrder on OrderCreated {
+    max_retries: 2;
+}
+
+handler HandleOrderCreated(order: Order) -> Order {
+    transaction {
+        db.insert(ProcessedOrders, ProcessedOrder { id: Uuid.new(), order_id: order.id });
+    }
+    return order;
+}
+
+pipeline ProcessOrder:
+    HandleOrderCreated;
+
+// The "virtual-time job" step: the runner calls the generated
+// `handle_tick_once()` directly at the virtual instant `ciac-sim`'s
+// `CronSchedule` (v0.17 M4) says is due, never a real 24-hour wait.
+job Reconcile {
+    schedule: "0 3 * * *";
+}
+
+handler RunReconcile {
+    db: default;
+}
+
+pipeline Reconcile:
+    RunReconcile;

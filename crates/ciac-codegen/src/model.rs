@@ -11,10 +11,44 @@ use ciac_ir::{
     Component, EdgeKind, FieldType, HttpMethod, NodeId, NodeKind, NormalizedIr, QueueEngine,
     RealtimeProvider, RecordId, ServiceId, Step, StepKind,
 };
-use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
+use heck::{ToKebabCase, ToLowerCamelCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Dev-only issuer URL for the `users Keycloak` container (v0.15 M6):
+/// realm `dev` in the shared `keycloak` compose service, port 8080 --
+/// `ciac-codegen::users` seeds a realm import matching this exactly.
+pub const KEYCLOAK_DEV_ISSUER: &str = "http://keycloak:8080/realms/dev";
+
+/// Every casing variant of a declared name, computed once here instead
+/// of precomputed per-language in the shared model (v0.22 M2 —
+/// `22UpdatePlan.md` Pillar 2 Move 1). Templates and backends pick the
+/// form their language wants (`{{ api.name.camel }}`); nothing
+/// per-language is precomputed in this crate.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NameForms {
+    /// As declared, e.g. `PlaceOrderApi`.
+    pub original: String,
+    pub snake: String,
+    pub pascal: String,
+    pub camel: String,
+    pub kebab: String,
+    pub screaming: String,
+}
+
+impl NameForms {
+    pub fn new(original: &str) -> Self {
+        NameForms {
+            original: original.to_owned(),
+            snake: original.to_snake_case(),
+            pascal: original.to_pascal_case(),
+            camel: original.to_lower_camel_case(),
+            kebab: original.to_kebab_case(),
+            screaming: original.to_shouty_snake_case(),
+        }
+    }
+}
 
 /// The generated system: one deployable project per declared service, or
 /// a single unprefixed project for single-service programs.
@@ -35,6 +69,19 @@ pub struct SystemModel {
     /// Any service declares databases (drives the compose volume list).
     pub has_db: bool,
     pub has_object_store: bool,
+    /// Any service declares `tracing OpenTelemetry` (the system compose
+    /// then runs one shared otel-collector + Jaeger every service's
+    /// `otel_exporter_otlp_endpoint` points at).
+    pub has_tracing: bool,
+    /// Any service declares `users Keycloak` (v0.15 M6): the system
+    /// compose then runs one shared Keycloak container seeded with a
+    /// dev realm covering every scope declared anywhere in the system.
+    pub has_users: bool,
+    /// Every distinct scope string declared anywhere in the system
+    /// (union of each service's [`Ctx::scopes`]) — the dev Keycloak
+    /// realm needs one client scope per entry regardless of which
+    /// service declared `users` itself, since the realm is shared.
+    pub all_scopes: Vec<String>,
 }
 
 /// Root template context for one deployable project.
@@ -91,6 +138,15 @@ pub struct Ctx {
     pub table_db_engine: String,
     pub has_logging: bool,
     pub has_metrics: bool,
+    /// `use { tracing OpenTelemetry; }` (v0.15 M3): OTel SDK wiring,
+    /// FastAPI/HTTPX auto-instrumentation, and `traceparent`
+    /// propagation across broker publish/consume.
+    pub has_tracing: bool,
+    /// `use { users Keycloak; }` (v0.15 M6): this service's `auth
+    /// OAuth2` issuer, when not explicitly set, defaults to the dev
+    /// Keycloak container's URL, and the shared compose stack seeds a
+    /// realm covering every declared scope.
+    pub has_users: bool,
     pub queue_engine: Option<String>,
     /// Subject of the default stream backing the legacy `Queue` step.
     pub events_subject: String,
@@ -124,6 +180,13 @@ pub struct Ctx {
     pub typed_handlers: Vec<NodeId>,
     /// Downstream services invoked via `call`, one typed client each.
     pub call_targets: Vec<CallTargetCtx>,
+    /// Every distinct scope string declared anywhere in this service
+    /// (api `scope`, crud `read_scope`/`write_scope`) — v0.14 M6. Drives
+    /// the generated `require_scope`/`Claims::require_scope`
+    /// behavioral test: one 403-without/passes-with assertion pair per
+    /// entry, proving the *mechanism* every scoped route calls without
+    /// needing a live server per route shape.
+    pub scopes: Vec<String>,
 }
 
 /// A resolved `table <Name>: <Record>;` declaration, ready for a
@@ -197,23 +260,31 @@ pub enum FieldTypeKind {
         name: String,
         variants: Vec<String>,
     },
+    /// A `cardinality: one` `Reference<T>` field (v0.16 M4). Wire and
+    /// row shape are identical: a plain id (`FieldCtx::py_type`/
+    /// `rust_type` are the same as `Uuid`'s) named `<field>_id`. This
+    /// variant exists so OpenAPI/the TS client/external backends can
+    /// still see *which* record it targets and what happens on
+    /// delete/update, without the compiler ever embedding the target's
+    /// own fields inline. `cardinality: many` has no `FieldCtx` at all
+    /// yet — it isn't part of a record's own row, and wire exposure is
+    /// v0.16 M5/M6.
+    Reference {
+        target_record: String,
+        on_delete: String,
+        on_update: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct FieldCtx {
     pub name: String,
-    /// Language-neutral type, for backends with no dedicated
-    /// `<host>_type` field below (v0.10 M1).
+    /// Language-neutral type (v0.10 M1). Per-language spellings
+    /// (`py_type`/`py_out_type`/`rust_type`/`db_rust_type`, deleted
+    /// v0.22 M2) are backend-owned minijinja filters over this now —
+    /// `{{ field | py_type }}` / `{{ field | rust_type }}`, see
+    /// `ciac-backend-python`/`ciac-backend-rust`'s `filters.rs`.
     pub type_kind: FieldTypeKind,
-    /// Python annotation, e.g. `str`, `datetime`, `Literal["A", "B"]`.
-    pub py_type: String,
-    /// Python annotation on the read path; enums come back from storage
-    /// as their text form, so `Literal[..]` widens to `str`.
-    pub py_out_type: String,
-    /// Rust type, e.g. `String`, `chrono::DateTime<chrono::Utc>`, `VideoStatus`.
-    pub rust_type: String,
-    /// Rust type as stored in the database (enums are TEXT → `String`).
-    pub db_rust_type: String,
     /// Postgres column type, e.g. `TEXT`, `BIGINT`, `JSONB`.
     pub sql_type: String,
     pub is_json: bool,
@@ -619,6 +690,11 @@ pub struct ResourceCtx {
     pub has_cache: bool,
     pub cache_ttl: u32,
     pub page_size: u32,
+    /// Scope required on top of `has_auth`'s bearer-token check for
+    /// read (`GET` list/get) / write (`POST`/`PUT`/`PATCH`/`DELETE`)
+    /// routes — v0.14 M6. `None` means no specific scope is required.
+    pub read_scope: Option<String>,
+    pub write_scope: Option<String>,
     /// Session dependency backing this resource's store.
     pub db_session: SessionCtx,
     /// `get_cache(..)` expression when caching is enabled.
@@ -694,6 +770,19 @@ pub fn build_system(ir: &NormalizedIr, opts: &GenOptions) -> SystemModel {
         has_queue: services.iter().any(|c| c.has_queue),
         has_db: services.iter().any(|c| c.has_db),
         has_object_store: services.iter().any(|c| c.has_object_store),
+        has_tracing: services.iter().any(|c| c.has_tracing),
+        has_users: services.iter().any(|c| c.has_users),
+        all_scopes: {
+            let mut scopes: Vec<String> = Vec::new();
+            for ctx in &services {
+                for scope in &ctx.scopes {
+                    if !scopes.contains(scope) {
+                        scopes.push(scope.clone());
+                    }
+                }
+            }
+            scopes
+        },
         services,
     }
 }
@@ -803,7 +892,7 @@ fn build_scoped(
                 name,
             }
         })
-        .collect();
+        .collect::<Vec<ApiCtx>>();
 
     let realtime_provider = capability(NodeKind::Realtime).and_then(|node| match &node.component {
         Component::Realtime { provider, .. } => Some(match provider {
@@ -1022,6 +1111,8 @@ fn build_scoped(
                 has_cache: access.cache_expr.is_some(),
                 cache_ttl: resource.config.cache_ttl,
                 page_size: resource.config.page_size,
+                read_scope: resource.config.read_scope.clone(),
+                write_scope: resource.config.write_scope.clone(),
                 db_session: access.db.unwrap_or(SessionCtx {
                     param: "session".to_owned(),
                     dep: "get_session".to_owned(),
@@ -1156,13 +1247,40 @@ fn build_scoped(
             service.db_engine = engine_of(field);
         }
     }
-    let all_fields = |records: &[RecordCtx]| -> Vec<String> {
+    // v0.22 M2: was `f.py_type` string-sniffing ("datetime" / contains
+    // "Any" / starts_with "Literal") — both backends need these flags
+    // (Rust's Cargo.toml.j2 gates the chrono dependency on the same
+    // `records_use_datetime`), so they belong on neutral `type_kind`,
+    // not a Python-rendered string that happened to be lying around.
+    let all_field_kinds = |records: &[RecordCtx]| -> Vec<FieldTypeKind> {
         records
             .iter()
-            .flat_map(|r| r.fields.iter().map(|f| f.py_type.clone()))
+            .flat_map(|r| r.fields.iter().map(|f| f.type_kind.clone()))
             .collect()
     };
-    let field_types = all_fields(&records);
+    let field_kinds = all_field_kinds(&records);
+
+    let scopes: Vec<String> = {
+        let mut scopes: Vec<String> = Vec::new();
+        for api in &apis {
+            if let Some(scope) = &api.scope {
+                if !scopes.contains(scope) {
+                    scopes.push(scope.clone());
+                }
+            }
+        }
+        for resource in &resources {
+            for scope in [&resource.read_scope, &resource.write_scope]
+                .into_iter()
+                .flatten()
+            {
+                if !scopes.contains(scope) {
+                    scopes.push(scope.clone());
+                }
+            }
+        }
+        scopes
+    };
 
     Ctx {
         service_name: base_name,
@@ -1178,7 +1296,15 @@ fn build_scoped(
             _ => String::new(),
         },
         auth_issuer: match capability(NodeKind::Auth).map(|n| &n.component) {
-            Some(Component::Auth { issuer, .. }) => issuer.clone().unwrap_or_default(),
+            Some(Component::Auth {
+                issuer: Some(issuer),
+                ..
+            }) => issuer.clone(),
+            // `issuer` omitted only ever type-checks (v0.15 M6) when
+            // `users Keycloak` is declared in the same `use { .. }`
+            // block, so this is the dev Keycloak container's realm --
+            // never emitted by k8s.rs/terraform.rs (see there).
+            Some(Component::Auth { issuer: None, .. }) => KEYCLOAK_DEV_ISSUER.to_owned(),
             _ => String::new(),
         },
         auth_audience: match capability(NodeKind::Auth).map(|n| &n.component) {
@@ -1234,6 +1360,8 @@ fn build_scoped(
         has_queue: capability(NodeKind::Queue).is_some(),
         has_logging: capability(NodeKind::Logging).is_some(),
         has_metrics: capability(NodeKind::Metrics).is_some(),
+        has_tracing: capability(NodeKind::Tracing).is_some(),
+        has_users: capability(NodeKind::Users).is_some(),
         queue_engine: capability(NodeKind::Queue).map(|n| match n.component {
             Component::Queue {
                 engine: QueueEngine::Nats,
@@ -1246,9 +1374,13 @@ fn build_scoped(
             _ => unreachable!("queue singleton is a queue"),
         }),
         events_subject: default_subject,
-        records_use_datetime: field_types.iter().any(|t| t == "datetime"),
-        records_use_json: field_types.iter().any(|t| t.contains("Any")),
-        records_use_enum: field_types.iter().any(|t| t.starts_with("Literal")),
+        records_use_datetime: field_kinds
+            .iter()
+            .any(|k| matches!(k, FieldTypeKind::Timestamp)),
+        records_use_json: field_kinds.iter().any(|k| matches!(k, FieldTypeKind::Json)),
+        records_use_enum: field_kinds
+            .iter()
+            .any(|k| matches!(k, FieldTypeKind::Enum { .. })),
         records,
         tables,
         table_db_field,
@@ -1259,6 +1391,7 @@ fn build_scoped(
         jobs,
         consumers,
         services,
+        scopes,
         resources,
         call_targets,
         module,
@@ -1984,6 +2117,16 @@ fn rust_variant(
 /// Postgres column type for a field's declared `FieldType`. Shared by
 /// `build_record` (schema/model codegen) and `ciac-codegen::migrations`
 /// (the v0.7 table migration differ) so the two never drift apart.
+fn ref_action_name(action: ciac_ir::RefAction) -> &'static str {
+    match action {
+        ciac_ir::RefAction::Restrict => "restrict",
+        ciac_ir::RefAction::Cascade => "cascade",
+    }
+}
+
+/// Postgres column type for a field's declared `FieldType`. Shared by
+/// `build_record` (schema/model codegen) and `ciac-codegen::migrations`
+/// (the v0.7 table migration differ) so the two never drift apart.
 pub fn field_sql_type(ty: &FieldType) -> &'static str {
     match ty {
         FieldType::Str | FieldType::Uuid | FieldType::Enum { .. } => "TEXT",
@@ -1992,6 +2135,25 @@ pub fn field_sql_type(ty: &FieldType) -> &'static str {
         FieldType::Bool => "BOOLEAN",
         FieldType::Timestamp => "TIMESTAMPTZ",
         FieldType::Json => "JSONB",
+        // v0.16 M4: a `cardinality: one` reference's FK column is a
+        // plain Uuid-shaped column (same SQL type as `FieldType::Uuid`)
+        // — `snapshot_schema` (migrations.rs) already renders it that
+        // way independently; this keeps the two in agreement.
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::One,
+            ..
+        } => "TEXT",
+        // `cardinality: many` has no column on this table at all (it's
+        // a separate compiler-owned link table, v0.16 M3) — wire
+        // exposure lands in M5/M6. `commands::generate` refuses to
+        // reach any backend while one exists in the program, so this
+        // arm is unreachable today.
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::Many,
+            ..
+        } => {
+            unreachable!("many-relation codegen is gated until v0.16 M5/M6 land")
+        }
     }
 }
 
@@ -2001,31 +2163,6 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
     let mut enums = Vec::new();
     for field in &record.fields {
         let sql_type = field_sql_type(&field.ty);
-        let (py_type, rust_type) = match &field.ty {
-            FieldType::Str => ("str".to_owned(), "String".to_owned()),
-            FieldType::Int => ("int".to_owned(), "i64".to_owned()),
-            FieldType::Float => ("float".to_owned(), "f64".to_owned()),
-            FieldType::Bool => ("bool".to_owned(), "bool".to_owned()),
-            FieldType::Uuid => ("str".to_owned(), "String".to_owned()),
-            FieldType::Timestamp => (
-                "datetime".to_owned(),
-                "chrono::DateTime<chrono::Utc>".to_owned(),
-            ),
-            FieldType::Json => ("dict[str, Any]".to_owned(), "serde_json::Value".to_owned()),
-            FieldType::Enum { variants } => {
-                let enum_name = format!("{}{}", record.name, field.name.to_pascal_case());
-                let literal = variants
-                    .iter()
-                    .map(|v| format!("\"{v}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                enums.push(EnumCtx {
-                    name: enum_name.clone(),
-                    variants: variants.clone(),
-                });
-                (format!("Literal[{literal}]"), enum_name)
-            }
-        };
         let is_enum = matches!(field.ty, FieldType::Enum { .. });
         let type_kind = match &field.ty {
             FieldType::Str => FieldTypeKind::Str,
@@ -2035,30 +2172,56 @@ pub fn build_record(ir: &NormalizedIr, id: RecordId) -> RecordCtx {
             FieldType::Uuid => FieldTypeKind::Uuid,
             FieldType::Timestamp => FieldTypeKind::Timestamp,
             FieldType::Json => FieldTypeKind::Json,
-            FieldType::Enum { variants } => FieldTypeKind::Enum {
-                // Same generated type name the `rust_type` arm above
-                // computed, e.g. `VideoStatus`.
-                name: rust_type.clone(),
-                variants: variants.clone(),
+            FieldType::Enum { variants } => {
+                let enum_name = format!("{}{}", record.name, field.name.to_pascal_case());
+                enums.push(EnumCtx {
+                    name: enum_name.clone(),
+                    variants: variants.clone(),
+                });
+                FieldTypeKind::Enum {
+                    name: enum_name,
+                    variants: variants.clone(),
+                }
+            }
+            // v0.16 M4: a `cardinality: one` reference is, at the wire
+            // and row level, a plain Uuid-shaped id — the disclosed
+            // contract is `customer: Reference<Customer>` maps to a
+            // `customer_id` property/column, not a nested object; the
+            // target's own fields are reached with a second request/
+            // query, never embedded. `cardinality: many` has no wire
+            // exposure yet (gated below, same as `field_sql_type`).
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::One,
+                target,
+                on_delete,
+                on_update,
+                ..
+            } => FieldTypeKind::Reference {
+                target_record: ir.record(*target).name.clone(),
+                on_delete: ref_action_name(*on_delete).to_owned(),
+                on_update: ref_action_name(*on_update).to_owned(),
             },
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::Many,
+                ..
+            } => unreachable!("many-relation codegen is gated until v0.16 M5/M6 land"),
+        };
+        // A `cardinality: one` reference's declared field name (e.g.
+        // `customer`) names the property/column `customer_id` — the
+        // storage mapping is part of the documented contract (see
+        // `docs/language.md`), never inferred by casing downstream.
+        let field_name = match &field.ty {
+            FieldType::Reference {
+                cardinality: ciac_ir::Cardinality::One,
+                ..
+            } => format!("{}_id", field.name),
+            _ => field.name.clone(),
         };
         fields.push(FieldCtx {
-            name: field.name.clone(),
+            name: field_name,
             type_kind,
             is_json: matches!(field.ty, FieldType::Json),
-            py_out_type: if is_enum {
-                "str".to_owned()
-            } else {
-                py_type.clone()
-            },
-            db_rust_type: if is_enum {
-                "String".to_owned()
-            } else {
-                rust_type.clone()
-            },
             is_enum,
-            py_type,
-            rust_type,
             sql_type: sql_type.to_owned(),
         });
     }
@@ -2146,6 +2309,8 @@ fn binding_kind(kind: NodeKind) -> Option<&'static str> {
         NodeKind::Realtime => "realtime",
         NodeKind::Logging => "logging",
         NodeKind::Metrics => "metrics",
+        NodeKind::Tracing => "tracing",
+        NodeKind::Users => "users",
         NodeKind::Api
         | NodeKind::Service
         | NodeKind::Worker

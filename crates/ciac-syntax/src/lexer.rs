@@ -82,6 +82,19 @@ pub enum TokenKind {
     #[token("fail")]
     Fail,
 
+    // v0.14 M1: predicate ("query modifier") grammar for `db.query`/
+    // `db.count`/`db.delete_where`.
+    #[token("where")]
+    Where,
+    #[token("contains")]
+    Contains,
+
+    // v0.16 M1: relations, transactions.
+    #[token("Reference")]
+    Reference,
+    #[token("transaction")]
+    Transaction,
+
     #[token("{")]
     LBrace,
     #[token("}")]
@@ -182,6 +195,10 @@ impl TokenKind {
             TokenKind::Extern => "`extern`",
             TokenKind::Return => "`return`",
             TokenKind::Fail => "`fail`",
+            TokenKind::Where => "`where`",
+            TokenKind::Contains => "`contains`",
+            TokenKind::Reference => "`Reference`",
+            TokenKind::Transaction => "`transaction`",
             TokenKind::LBrace => "`{`",
             TokenKind::RBrace => "`}`",
             TokenKind::Semi => "`;`",
@@ -441,6 +458,28 @@ mod tests {
                 TokenKind::RBracket,
                 TokenKind::EqEq,
                 TokenKind::Number,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_where_and_contains_keywords() {
+        let (kinds, diags) = lex_kinds("db.query(Notes) where title contains a");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::Dot,
+                TokenKind::Ident,
+                TokenKind::LParen,
+                TokenKind::Ident,
+                TokenKind::RParen,
+                TokenKind::Where,
+                TokenKind::Ident,
+                TokenKind::Contains,
+                TokenKind::Ident,
                 TokenKind::Eof,
             ]
         );

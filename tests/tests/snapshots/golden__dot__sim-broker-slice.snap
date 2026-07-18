@@ -1,0 +1,31 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph SimBrokerSlice {
+    rankdir=LR;
+    n0 [label="database default Postgres", shape=cylinder];
+    n1 [label="queue default Nats", shape=cds];
+    n2 [label="cache default Redis", shape=cylinder];
+    n3 [label="stream Pings", shape=parallelogram];
+    n4 [label="api Widget", shape=rarrow];
+    n5 [label="service WidgetStore", shape=box];
+    n6 [label="api EmitApi", shape=rarrow];
+    n7 [label="worker ConsumerA", shape=component];
+    n8 [label="worker ConsumerB", shape=component];
+    n9 [label="service Emit", shape=box];
+    n10 [label="service HandleA", shape=box];
+    n11 [label="service HandleB", shape=box];
+    n3 -> n1 [label="DependsOn", style=dotted];
+    n4 -> n5 [label="RequestFlow", style=solid];
+    n5 -> n0 [label="DataFlow", style=bold];
+    n5 -> n2 [label="DataFlow", style=bold];
+    n3 -> n7 [label="AsyncMessage", style=dashed];
+    n3 -> n8 [label="AsyncMessage", style=dashed];
+    n6 -> n9 [label="RequestFlow", style=solid];
+    n9 -> n3 [label="AsyncMessage", style=dashed];
+    n10 -> n0 [label="DataFlow", style=bold];
+    n7 -> n10 [label="RequestFlow", style=solid];
+    n11 -> n0 [label="DataFlow", style=bold];
+    n8 -> n11 [label="RequestFlow", style=solid];
+}

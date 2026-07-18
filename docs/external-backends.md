@@ -23,8 +23,20 @@ in any language; the only contract is JSON over stdin/stdout.
    it doesn't support, a protocol version it doesn't speak) should be
    a message on stderr and a **non-zero exit**. `ciac` reports it and
    fails the build; there is no capability pre-negotiation.
-5. Both halves carry `protocol_version` (currently `1`); `ciac`
+5. Both halves carry `protocol_version` (currently `2`); `ciac`
    refuses a response with a mismatched version rather than guessing.
+
+   **v2 migration note (v0.22 M2):** `FieldCtx` dropped its
+   `py_type`/`py_out_type`/`rust_type`/`db_rust_type` fields — those
+   were always host-language spellings the bundled Python/Rust
+   backends rendered for themselves, and now do so as minijinja
+   filters over `type_kind` instead of precomputed wire fields (see
+   `22UpdatePlan.md` Pillar 2). `type_kind` itself is unchanged and was
+   already the documented, recommended field to map (next paragraph) —
+   an external backend already following that advice needs no changes
+   at all; one still reading the removed fields needs to switch to
+   `type_kind` the same way the in-repo Go reference backend already
+   does.
 
 The full schema of both payloads is published:
 

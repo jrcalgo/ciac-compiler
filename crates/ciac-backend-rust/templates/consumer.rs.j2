@@ -43,11 +43,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 {%- else -%}
 pub async fn run(state: AppState) -> anyhow::Result<()> {
-    let mut subscription = state
-        .queue
-        .client()
-        .queue_subscribe(SUBJECT, QUEUE_GROUP.to_owned())
-        .await?;
+    let mut subscription = state.queue.queue_subscribe(SUBJECT, QUEUE_GROUP).await?;
     tracing::info!(subject = SUBJECT, "consumer {{ consumer.name }} listening");
     while let Some(message) = subscription.next().await {
         let payload: serde_json::Value = match serde_json::from_slice(&message.payload) {

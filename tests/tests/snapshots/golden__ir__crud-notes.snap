@@ -96,7 +96,9 @@ expression: json
       "record": null,
       "config": {
         "cache_ttl": 300,
-        "page_size": 100
+        "page_size": 100,
+        "read_scope": null,
+        "write_scope": null
       }
     }
   ],

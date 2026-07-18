@@ -1,0 +1,23 @@
+[package]
+name = "ciac-backend-skeleton-internal"
+description = "Reference skeleton for authoring a new in-process CIaC backend (v0.22 M5, not a real target)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ciac-codegen.workspace = true
+ciac-ir.workspace = true
+include_dir.workspace = true
+minijinja.workspace = true
+
+[dev-dependencies]
+ciac-diagnostics.workspace = true
+ciac-sema.workspace = true
+ciac-syntax.workspace = true
+
+[lints]
+workspace = true

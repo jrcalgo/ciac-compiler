@@ -1,0 +1,15 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph Accounts {
+    rankdir=LR;
+    n0 [label="database default Postgres", shape=cylinder];
+    n1 [label="auth default OAuth2", shape=hexagon];
+    n2 [label="users default Keycloak", shape=note];
+    n3 [label="api Account", shape=rarrow];
+    n4 [label="service AccountStore", shape=box];
+    n3 -> n1 [label="RequestFlow", style=solid];
+    n1 -> n4 [label="RequestFlow", style=solid];
+    n4 -> n0 [label="DataFlow", style=bold];
+}

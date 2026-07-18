@@ -260,6 +260,16 @@ impl SystemGraph {
         &self.records[id.0 as usize]
     }
 
+    /// Mutable access to a registered record (v0.16 M2): resolves a
+    /// `Reference<T>` field's placeholder type into the real
+    /// `FieldType::Reference` once its target/table/attributes are
+    /// known — a second pass, run only after every record and table in
+    /// the program has been registered (see
+    /// `ciac_sema::build::Builder::resolve_references`).
+    pub fn record_mut(&mut self, id: RecordId) -> &mut Record {
+        &mut self.records[id.0 as usize]
+    }
+
     pub fn records(&self) -> impl Iterator<Item = (RecordId, &Record)> {
         self.records
             .iter()
@@ -386,7 +396,9 @@ impl SystemGraph {
                 NodeKind::ExternalHttp => "tab",
                 NodeKind::Scheduler => "oval",
                 NodeKind::Realtime => "doublecircle",
-                NodeKind::Logging | NodeKind::Metrics => "note",
+                NodeKind::Logging | NodeKind::Metrics | NodeKind::Tracing | NodeKind::Users => {
+                    "note"
+                }
             };
             let _ = writeln!(
                 out,

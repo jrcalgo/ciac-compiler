@@ -109,7 +109,7 @@ class {{ resource.store_class }}:
         return {
 {%- for field in resource.record.fields %}
 {%- if field.name != "id" %}
-            "{{ field.name }}": {% if field.py_type == "datetime" %}entity.{{ field.name }}.isoformat(){% else %}entity.{{ field.name }}{% endif %},
+            "{{ field.name }}": {% if (field | py_type) == "datetime" %}entity.{{ field.name }}.isoformat(){% else %}entity.{{ field.name }}{% endif %},
 {%- endif %}
 {%- endfor %}
         }

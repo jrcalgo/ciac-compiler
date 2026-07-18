@@ -246,10 +246,15 @@ impl Parser<'_> {
                         items.push(ServiceItem::Expand(item));
                     }
                 }
+                TokenKind::Table => {
+                    if let Some(Item::Table(item)) = self.table_decl() {
+                        items.push(ServiceItem::Table(item));
+                    }
+                }
                 _ => {
                     self.error_expected(
                         "a service item (`use`, `api`, `worker`, `job`, `channel`, `crud`, `events`, \
-                         `handler`, `extern`, `pipeline`, `expand`) or `}`",
+                         `handler`, `extern`, `pipeline`, `expand`, `table`) or `}`",
                     );
                     self.recover_inside_block();
                 }
@@ -385,11 +390,21 @@ impl Parser<'_> {
         let name = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
         let record = self.expect_ident()?;
-        let semi = self.expect(TokenKind::Semi)?;
+        let (attrs, tail_span) = self.decl_tail()?;
+        let db = attrs.into_iter().find_map(|attr| {
+            (attr.name.text == "db").then_some(match attr.value {
+                AttrValue::Ident(ident) => ident,
+                other => Ident {
+                    text: String::new(),
+                    span: other.span(),
+                },
+            })
+        });
         Some(Item::Table(TableDecl {
-            span: kw.span.to(semi.span),
+            span: kw.span.to(tail_span),
             name,
             record,
+            db,
         }))
     }
 
@@ -448,6 +463,7 @@ impl Parser<'_> {
                         params.push(Field {
                             name: field_name,
                             ty,
+                            attrs: Vec::new(),
                             span,
                         });
                     }
@@ -484,9 +500,40 @@ impl Parser<'_> {
                         body.push(BlueprintItem::Handler(item));
                     }
                 }
+                TokenKind::Record => {
+                    if let Some(Item::Record(item)) = self.record_decl(RecordKind::Data) {
+                        body.push(BlueprintItem::Record(item));
+                    }
+                }
+                TokenKind::Error => {
+                    if let Some(Item::Record(item)) = self.record_decl(RecordKind::Error) {
+                        body.push(BlueprintItem::Record(item));
+                    }
+                }
+                TokenKind::Table => {
+                    if let Some(Item::Table(item)) = self.table_decl() {
+                        body.push(BlueprintItem::Table(item));
+                    }
+                }
+                TokenKind::Api => {
+                    if let Some(Item::Api(item)) = self.api_decl() {
+                        body.push(BlueprintItem::Api(item));
+                    }
+                }
+                TokenKind::Worker => {
+                    if let Some(Item::Worker(item)) = self.worker_decl() {
+                        body.push(BlueprintItem::Worker(item));
+                    }
+                }
+                TokenKind::Pipeline => {
+                    if let Some(Item::Pipeline(item)) = self.pipeline_decl() {
+                        body.push(BlueprintItem::Pipeline(item));
+                    }
+                }
                 _ => {
                     self.error_expected(
-                        "a blueprint item (`use`, `crud`, `stream`, `handler`) or `}`",
+                        "a blueprint item (`use`, `crud`, `stream`, `handler`, `record`, \
+                         `error`, `table`, `api`, `worker`, `pipeline`) or `}`",
                     );
                     self.recover_inside_block();
                 }
@@ -557,13 +604,26 @@ impl Parser<'_> {
                     span: tok.span,
                 }))
             }
-            TokenKind::Number => {
-                let tok = self.bump();
-                let raw = &self.src[tok.span.range()];
-                let value = raw.parse::<u64>().unwrap_or(0);
-                Some(AttrValue::Number {
-                    value,
-                    span: tok.span,
+            TokenKind::Number => self.numeric_attr_value(false),
+            // v0.16 M1: signed numeric attribute literals (`min: -5;`).
+            // The lexer has no unary-minus number token, so a leading
+            // `Minus` immediately followed by `Number` is folded here.
+            TokenKind::Minus => {
+                let minus = self.bump();
+                if !self.at(TokenKind::Number) {
+                    self.error_expected("a number after `-`");
+                    return None;
+                }
+                self.numeric_attr_value(true).map(|v| match v {
+                    AttrValue::Number { value, span } => AttrValue::Number {
+                        value,
+                        span: minus.span.to(span),
+                    },
+                    AttrValue::Float { value, span } => AttrValue::Float {
+                        value,
+                        span: minus.span.to(span),
+                    },
+                    other => other,
                 })
             }
             TokenKind::Str => {
@@ -578,6 +638,29 @@ impl Parser<'_> {
                 self.error_expected("an attribute value");
                 None
             }
+        }
+    }
+
+    /// Parses the `Number` token itself (`self.peek()` must be
+    /// `TokenKind::Number`), applying `negative` and choosing
+    /// `AttrValue::Float` over `AttrValue::Number` when the literal text
+    /// contains a decimal point.
+    fn numeric_attr_value(&mut self, negative: bool) -> Option<AttrValue> {
+        let tok = self.bump();
+        let raw = &self.src[tok.span.range()];
+        let sign = if negative { "-" } else { "" };
+        if raw.contains('.') {
+            let value: f64 = format!("{sign}{raw}").parse().unwrap_or(0.0);
+            Some(AttrValue::Float {
+                value,
+                span: tok.span,
+            })
+        } else {
+            let value: i64 = format!("{sign}{raw}").parse().unwrap_or(0);
+            Some(AttrValue::Number {
+                value,
+                span: tok.span,
+            })
         }
     }
 
@@ -773,6 +856,14 @@ impl Parser<'_> {
                     value,
                 })
             }
+            TokenKind::Transaction => {
+                let kw = self.bump();
+                let (body, close_span) = self.block()?;
+                Some(Stmt::Transaction {
+                    span: kw.span.to(close_span),
+                    body,
+                })
+            }
             _ => {
                 let expr = self.expr(0)?;
                 // A block's final statement may omit the `;` — it's the
@@ -909,7 +1000,74 @@ impl Parser<'_> {
                 _ => break,
             }
         }
+        // v0.14 M1: a `where <predicate>` clause trailing a capability
+        // verb call (`db.query(Notes) where author == a`). Parsed
+        // generically after any `Call` — see `Expr::Query`'s doc.
+        if matches!(expr, Expr::Call { .. }) && self.at(TokenKind::Where) {
+            expr = self.query_expr(expr)?;
+        }
         Some(expr)
+    }
+
+    /// Wraps `call` with the `where <predicate>` clause that follows it
+    /// (v0.14 M1).
+    fn query_expr(&mut self, call: Expr) -> Option<Expr> {
+        let start = call.span();
+        let predicate = self.predicate()?;
+        let span = start.to(predicate.span);
+        Some(Expr::Query {
+            call: Box::new(call),
+            predicate,
+            span,
+        })
+    }
+
+    /// `where <field> <op> <value> (&& <field> <op> <value>)*` (v0.14 M1).
+    fn predicate(&mut self) -> Option<Predicate> {
+        let kw = self.bump();
+        let mut terms = vec![self.pred_term()?];
+        let mut end = terms[0].span;
+        while self.eat(TokenKind::AndAnd).is_some() {
+            let term = self.pred_term()?;
+            end = term.span;
+            terms.push(term);
+        }
+        Some(Predicate {
+            span: kw.span.to(end),
+            terms,
+        })
+    }
+
+    /// One `<field> <op> <value>` comparison of a [`Predicate`]. `value`
+    /// is parsed at a binding power tight enough to exclude further
+    /// comparisons/`&&`/`||` (those belong to the predicate's own
+    /// conjunction, not the value), leaving `+`/`-`/`*`/`/` available.
+    fn pred_term(&mut self) -> Option<PredTerm> {
+        let field = self.expect_ident()?;
+        let op = match self.peek().kind {
+            TokenKind::EqEq => PredOp::Eq,
+            TokenKind::NotEq => PredOp::NotEq,
+            TokenKind::Lt => PredOp::Lt,
+            TokenKind::LtEq => PredOp::LtEq,
+            TokenKind::Gt => PredOp::Gt,
+            TokenKind::GtEq => PredOp::GtEq,
+            TokenKind::Contains => PredOp::Contains,
+            _ => {
+                self.error_expected(
+                    "a comparison operator (`==`, `!=`, `<`, `<=`, `>`, `>=`, `contains`)",
+                );
+                return None;
+            }
+        };
+        self.bump();
+        let value = self.expr(7)?;
+        let span = field.span.to(value.span());
+        Some(PredTerm {
+            field,
+            op,
+            value,
+            span,
+        })
     }
 
     /// `{ name: value, .. }` — the field list of a record
@@ -1076,14 +1234,17 @@ impl Parser<'_> {
                         self.recover_inside_block();
                         continue;
                     };
-                    let span = field_name.span.to(self.peek().span);
-                    if self.expect(TokenKind::Semi).is_none() {
+                    // v0.16 M1: fields gain the same `;` | `{ attrs }` tail
+                    // every other attributed declaration already has.
+                    let Some((attrs, tail_span)) = self.decl_tail() else {
                         self.recover_inside_block();
                         continue;
-                    }
+                    };
+                    let span = field_name.span.to(tail_span);
                     fields.push(Field {
                         name: field_name,
                         ty,
+                        attrs,
                         span,
                     });
                 }
@@ -1102,7 +1263,8 @@ impl Parser<'_> {
         }))
     }
 
-    /// A field type: a named type or `enum { A, B, .. }`.
+    /// A field type: a named type, `enum { A, B, .. }`, or `[Type]` (a
+    /// list type, v0.14 M1).
     fn type_expr(&mut self) -> Option<TypeExpr> {
         if let Some(kw) = self.eat(TokenKind::Enum) {
             self.expect(TokenKind::LBrace)?;
@@ -1116,10 +1278,27 @@ impl Parser<'_> {
                 span: kw.span.to(close.span),
             });
         }
+        if let Some(open) = self.eat(TokenKind::LBracket) {
+            let inner = self.type_expr()?;
+            let close = self.expect(TokenKind::RBracket)?;
+            return Some(TypeExpr::List {
+                inner: Box::new(inner),
+                span: open.span.to(close.span),
+            });
+        }
+        if let Some(kw) = self.eat(TokenKind::Reference) {
+            self.expect(TokenKind::Lt)?;
+            let target = self.expect_ident()?;
+            let close = self.expect(TokenKind::Gt)?;
+            return Some(TypeExpr::Reference {
+                target,
+                span: kw.span.to(close.span),
+            });
+        }
         if self.at(TokenKind::Ident) {
             return Some(TypeExpr::Named(self.expect_ident()?));
         }
-        self.error_expected("a type like `String` or `enum { A, B }`");
+        self.error_expected("a type like `String`, `enum { A, B }`, `[String]`, or `Reference<T>`");
         None
     }
 
@@ -1965,5 +2144,65 @@ mod tests {
         );
         assert!(!diags.is_empty());
         assert!(matches!(program.items.last(), Some(Item::Service(_))));
+    }
+
+    #[test]
+    fn parses_list_type_in_handler_signature() {
+        let (program, diags) = parse_src("handler F(items: [String]) -> [Video] { return items; }");
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        assert!(matches!(handler.params[0].ty, TypeExpr::List { .. }));
+        assert!(matches!(handler.return_ty, Some(TypeExpr::List { .. })));
+    }
+
+    #[test]
+    fn parses_query_with_predicate() {
+        let (program, diags) = parse_src(
+            r#"handler F() -> Video {
+                   let items = db.query(Videos) where status == Ready && title contains a;
+                   return items;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let body = handler.body.as_ref().unwrap();
+        let Stmt::Let {
+            value: Expr::Query { predicate, .. },
+            ..
+        } = &body[0]
+        else {
+            panic!("expected a `where`-wrapped query, got {:?}", body[0]);
+        };
+        assert_eq!(predicate.terms.len(), 2);
+        assert_eq!(predicate.terms[0].field.text, "status");
+        assert_eq!(predicate.terms[0].op, PredOp::Eq);
+        assert_eq!(predicate.terms[1].field.text, "title");
+        assert_eq!(predicate.terms[1].op, PredOp::Contains);
+    }
+
+    #[test]
+    fn query_without_where_is_a_plain_call() {
+        let (program, diags) = parse_src(
+            r#"handler F() -> Video {
+                   let items = db.query(Videos);
+                   return items;
+               }"#,
+        );
+        assert!(diags.is_empty(), "unexpected: {:?}", diags.codes());
+        let Item::Handler(handler) = &program.items[0] else {
+            panic!("expected handler decl");
+        };
+        let body = handler.body.as_ref().unwrap();
+        assert!(matches!(
+            &body[0],
+            Stmt::Let {
+                value: Expr::Call { .. },
+                ..
+            }
+        ));
     }
 }

@@ -10,7 +10,7 @@ services:
       interval: 1s
       timeout: 3s
       retries: 30
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_auth or c.has_object_store or c.has_email or c.has_search or c.call_targets or c.has_tracing %}
     environment:
 {%- for inst in c.db_instances %}
       {{ inst.env_var }}: {% if inst.db_engine == "sqlite" %}{{ backend.sqlite_url_prefix }}{{ inst.db_name }}.db{{ backend.sqlite_url_suffix }}{% elif inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% else %}{{ backend.db_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% endif %}
@@ -37,6 +37,9 @@ services:
       NATS_URL: nats://queue:4222
 {%- endif %}
 {%- endif %}
+{%- if c.has_tracing %}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+{%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
       OAUTH_ISSUER: {{ c.auth_issuer }}
 {%- if c.auth_audience %}
@@ -46,7 +49,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me}
 {%- endif %}
 {%- endif %}
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.has_tracing or (c.auth_scheme == "oauth2" and c.has_users) %}
     depends_on:
 {%- for inst in c.db_instances %}
 {%- if inst.db_engine != "sqlite" %}
@@ -73,6 +76,14 @@ services:
 {%- if c.has_queue %}
       queue:
         condition: service_started
+{%- endif %}
+{%- if c.has_tracing %}
+      otel-collector:
+        condition: service_started
+{%- endif %}
+{%- if c.auth_scheme == "oauth2" and c.has_users %}
+      keycloak:
+        condition: service_healthy
 {%- endif %}
 {%- endif %}
 {%- if c.has_sqlite_db %}
@@ -84,7 +95,7 @@ services:
   {{ c.dir }}-workers:
     build: ./{{ c.dir }}
     command: {{ backend.workers_command }}
-{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets %}
+{%- if c.has_db or c.has_cache or c.has_queue or c.has_object_store or c.has_email or c.has_search or c.call_targets or c.has_tracing or (c.auth_scheme == "oauth2" and c.has_users) %}
     environment:
 {%- for inst in c.db_instances %}
       {{ inst.env_var }}: {% if inst.db_engine == "sqlite" %}{{ backend.sqlite_url_prefix }}{{ inst.db_name }}.db{{ backend.sqlite_url_suffix }}{% elif inst.db_engine == "mysql" %}{{ backend.mysql_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% else %}{{ backend.db_scheme }}://{{ inst.db_user }}:{{ inst.db_user }}@{{ inst.container }}:{{ inst.db_container_port }}/{{ inst.db_name }}{% endif %}
@@ -110,6 +121,9 @@ services:
 {%- else %}
       NATS_URL: nats://queue:4222
 {%- endif %}
+{%- endif %}
+{%- if c.has_tracing %}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
 {%- endif %}
     depends_on:
 {%- for inst in c.db_instances %}
@@ -137,6 +151,14 @@ services:
 {%- if c.has_queue %}
       queue:
         condition: service_started
+{%- endif %}
+{%- if c.has_tracing %}
+      otel-collector:
+        condition: service_started
+{%- endif %}
+{%- if c.auth_scheme == "oauth2" and c.has_users %}
+      keycloak:
+        condition: service_healthy
 {%- endif %}
 {%- endif %}
 {%- if c.has_sqlite_db %}
@@ -163,7 +185,7 @@ services:
     volumes:
       - {{ inst.container }}-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
       interval: 2s
       timeout: 3s
       retries: 20
@@ -250,6 +272,42 @@ services:
     ports:
       - "4222:4222"
 {%- endif %}
+{%- endif %}
+{%- if m.has_tracing %}
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      jaeger:
+        condition: service_started
+{%- endif %}
+{%- if m.has_users %}
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak-realm.json:/opt/keycloak/data/import/dev-realm.json:ro
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
 {%- endif %}
 {%- if m.has_db or m.has_object_store %}
 

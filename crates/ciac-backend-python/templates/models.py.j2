@@ -12,9 +12,9 @@ table names doesn't collide. Enums are stored as text.
 {%- if resource.record %}
 {%- for field in resource.record.fields %}
 {%- if field.is_json %}{% set ns.any_json = true %}{% endif %}
-{%- if field.py_type == "datetime" %}{% set ns.any_dt = true %}{% endif %}
+{%- if (field | py_type) == "datetime" %}{% set ns.any_dt = true %}{% endif %}
 {%- if field.is_enum %}{% set ns.any_literal = true %}{% endif %}
-{%- if field.name != "id" and field.py_type == "str" and not field.is_enum and not field.is_json %}{% set ns.any_text = true %}{% endif %}
+{%- if field.name != "id" and (field | py_type) == "str" and not field.is_enum and not field.is_json %}{% set ns.any_text = true %}{% endif %}
 {%- endfor %}
 {%- else %}
 {%- set ns.any_untyped = true %}
@@ -23,8 +23,8 @@ table names doesn't collide. Enums are stored as text.
 {%- for table in c.tables %}
 {%- for field in table.record.fields %}
 {%- if field.is_json %}{% set ns.any_json = true %}{% endif %}
-{%- if field.py_type == "datetime" %}{% set ns.any_dt = true %}{% endif %}
-{%- if field.name != "id" and field.py_type == "str" and not field.is_enum and not field.is_json %}{% set ns.any_text = true %}{% endif %}
+{%- if (field | py_type) == "datetime" %}{% set ns.any_dt = true %}{% endif %}
+{%- if field.name != "id" and (field | py_type) == "str" and not field.is_enum and not field.is_json %}{% set ns.any_text = true %}{% endif %}
 {%- endfor %}
 {%- endfor %}
 {% if ns.any_dt %}
@@ -54,10 +54,10 @@ class {{ resource.name }}(Base):
     {{ field.name }}: Mapped[str] = mapped_column(String(64))
 {%- elif field.is_json %}
     {{ field.name }}: Mapped[dict[str, Any]] = mapped_column(JSON)
-{%- elif field.py_type == "str" %}
+{%- elif (field | py_type) == "str" %}
     {{ field.name }}: Mapped[str] = mapped_column(Text)
 {%- else %}
-    {{ field.name }}: Mapped[{{ field.py_type }}]
+    {{ field.name }}: Mapped[{{ (field | py_type) }}]
 {%- endif %}
 {%- endif %}
 {%- endfor %}
@@ -68,7 +68,7 @@ class {{ resource.name }}In(BaseModel):
     is server-generated."""
 {% for field in resource.record.fields %}
 {%- if field.name != "id" %}
-    {{ field.name }}: {{ field.py_type }}
+    {{ field.name }}: {{ (field | py_type) }}
 {%- endif %}
 {%- endfor %}
 
@@ -77,7 +77,7 @@ class {{ resource.name }}Out(BaseModel):
     id: str
 {%- for field in resource.record.fields %}
 {%- if field.name != "id" %}
-    {{ field.name }}: {{ field.py_out_type }}
+    {{ field.name }}: {{ (field | py_out_type) }}
 {%- endif %}
 {%- endfor %}
 {%- else %}
@@ -111,10 +111,10 @@ class {{ table.class_name }}(Base):
     {{ field.name }}: Mapped[str] = mapped_column(String(64))
 {%- elif field.is_json %}
     {{ field.name }}: Mapped[dict[str, Any]] = mapped_column(JSON)
-{%- elif field.py_type == "str" %}
+{%- elif (field | py_type) == "str" %}
     {{ field.name }}: Mapped[str] = mapped_column(Text)
 {%- else %}
-    {{ field.name }}: Mapped[{{ field.py_type }}]
+    {{ field.name }}: Mapped[{{ (field | py_type) }}]
 {%- endif %}
 {%- endfor %}
 {%- if not table.record.has_id %}

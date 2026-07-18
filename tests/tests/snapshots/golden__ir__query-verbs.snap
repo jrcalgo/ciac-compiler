@@ -1,0 +1,681 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "QueryVerbs",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "QueryVerbs"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Sqlite"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Api",
+      "name": "ListActiveApi",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "CountActiveApi",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Api",
+      "name": "DeleteByActiveApi",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "Api",
+      "name": "ReplaceApi",
+      "request": 2,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Api",
+      "name": "RemoveApi",
+      "request": 3,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Service",
+      "name": "ListActive",
+      "signature": {
+        "params": [
+          [
+            "filter",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "List": {
+            "Record": 0
+          }
+        },
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Return": {
+              "Query": {
+                "capability": 0,
+                "verb": {
+                  "DbQuery": 0
+                },
+                "predicate": {
+                  "terms": [
+                    {
+                      "field": "active",
+                      "field_ty": "Bool",
+                      "op": "Eq",
+                      "value": {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 1
+                              }
+                            }
+                          },
+                          "field": "active",
+                          "ty": "Bool"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "ty": {
+                  "List": {
+                    "Record": 0
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "service": 0,
+      "kind": "Service",
+      "name": "CountActive",
+      "signature": {
+        "params": [
+          [
+            "filter",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": "Int",
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Return": {
+              "Query": {
+                "capability": 0,
+                "verb": {
+                  "DbCount": 0
+                },
+                "predicate": {
+                  "terms": [
+                    {
+                      "field": "active",
+                      "field_ty": "Bool",
+                      "op": "Eq",
+                      "value": {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 1
+                              }
+                            }
+                          },
+                          "field": "active",
+                          "ty": "Bool"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "ty": "Int"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "service": 0,
+      "kind": "Service",
+      "name": "DeleteByActive",
+      "signature": {
+        "params": [
+          [
+            "filter",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": "Int",
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Return": {
+              "Query": {
+                "capability": 0,
+                "verb": {
+                  "DbDeleteWhere": 0
+                },
+                "predicate": {
+                  "terms": [
+                    {
+                      "field": "active",
+                      "field_ty": "Bool",
+                      "op": "Eq",
+                      "value": {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 1
+                              }
+                            }
+                          },
+                          "field": "active",
+                          "ty": "Bool"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "ty": "Int"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "service": 0,
+      "kind": "Service",
+      "name": "Replace",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 2
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 2
+          },
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Let": {
+              "slot": 1,
+              "value": {
+                "RecordCons": {
+                  "record": 0,
+                  "base_value": null,
+                  "fields": [
+                    [
+                      "id",
+                      {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 2
+                              }
+                            }
+                          },
+                          "field": "id",
+                          "ty": "Uuid"
+                        }
+                      }
+                    ],
+                    [
+                      "title",
+                      {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 2
+                              }
+                            }
+                          },
+                          "field": "title",
+                          "ty": "Str"
+                        }
+                      }
+                    ],
+                    [
+                      "active",
+                      {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 2
+                              }
+                            }
+                          },
+                          "field": "active",
+                          "ty": "Bool"
+                        }
+                      }
+                    ]
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbUpdate": 0
+                },
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 1,
+                          "ty": {
+                            "Record": 0
+                          }
+                        }
+                      },
+                      "field": "id",
+                      "ty": "Uuid"
+                    }
+                  },
+                  {
+                    "Local": {
+                      "slot": 1,
+                      "ty": {
+                        "Record": 0
+                      }
+                    }
+                  }
+                ],
+                "ty": {
+                  "Option": {
+                    "Record": 0
+                  }
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 1,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "service": 0,
+      "kind": "Service",
+      "name": "Remove",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 3
+            }
+          ]
+        ],
+        "return_ty": "Bool",
+        "locals": [
+          {
+            "Record": 3
+          }
+        ],
+        "body": [
+          {
+            "Return": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbDelete": 0
+                },
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 3
+                          }
+                        }
+                      },
+                      "field": "id",
+                      "ty": "Uuid"
+                    }
+                  }
+                ],
+                "ty": "Bool"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 6,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 1,
+      "from": 1,
+      "to": 6,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 2,
+      "from": 7,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 2,
+      "to": 7,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 4,
+      "from": 8,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 5,
+      "from": 3,
+      "to": 8,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 6,
+      "from": 9,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 7,
+      "from": 4,
+      "to": 9,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 8,
+      "from": 10,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 5,
+      "to": 10,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Note",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "active",
+          "ty": {
+            "type": "Bool"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "ActiveFilter",
+      "fields": [
+        {
+          "name": "active",
+          "ty": {
+            "type": "Bool"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "NoteUpdate",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "active",
+          "ty": {
+            "type": "Bool"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "IdOnly",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [
+    {
+      "name": "Notes",
+      "record": 0,
+      "service": 0,
+      "db_instance": 0
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "ListActiveApi",
+      "service": 0,
+      "owner": 1,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 6
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "CountActiveApi",
+      "service": 0,
+      "owner": 2,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 7
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "DeleteByActiveApi",
+      "service": 0,
+      "owner": 3,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 8
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "ReplaceApi",
+      "service": 0,
+      "owner": 4,
+      "payload": 2,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 9
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "RemoveApi",
+      "service": 0,
+      "owner": 5,
+      "payload": 3,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 10
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

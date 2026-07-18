@@ -11,6 +11,7 @@ from email.message import EmailMessage
 import aiosmtplib
 
 from app.config import get_settings
+from app.state import current
 
 
 class Email:
@@ -48,13 +49,15 @@ class Email:
         )
 
 
-_senders: dict[str, Email] = {}
-
-
 def get_email(instance: str = "default") -> Email:
-    if instance not in _senders:
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's email port.
+        return state.world.fake_email(instance)
+    senders = state.emails
+    if instance not in senders:
         settings = get_settings()
-        _senders[instance] = {
+        senders[instance] = {
 {%- for inst in c.email_instances %}
             "{{ inst.snake }}": lambda s=settings: Email(
                 host=s.{{ inst.cfg[0].field }},
@@ -66,4 +69,4 @@ def get_email(instance: str = "default") -> Email:
             ),
 {%- endfor %}
         }[instance]()
-    return _senders[instance]
+    return senders[instance]

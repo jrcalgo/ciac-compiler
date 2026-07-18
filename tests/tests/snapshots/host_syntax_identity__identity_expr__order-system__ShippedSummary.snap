@@ -1,0 +1,7 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(let v1 (db.count (where (status = "Shipped") (total >= (field-access filter min_total)))))
+(expr-stmt (cache-set "orders:shipped-count" v1))
+(return v1)

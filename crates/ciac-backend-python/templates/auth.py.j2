@@ -11,27 +11,37 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import get_settings
+from app.state import current
 
 _bearer = HTTPBearer()
 
 
 {% if c.auth_scheme == "oauth2" -%}
-_jwks_client: jwt.PyJWKClient | None = None
-
-
 def _jwks() -> jwt.PyJWKClient:
     """Lazily built, cached JWKS client for the configured issuer."""
-    global _jwks_client
-    if _jwks_client is None:
+    state = current()
+    if state.jwks_client is None:
         issuer = get_settings().oauth_issuer.rstrip("/")
-        _jwks_client = jwt.PyJWKClient(f"{issuer}/.well-known/jwks.json")
-    return _jwks_client
+        state.jwks_client = jwt.PyJWKClient(f"{issuer}/.well-known/jwks.json")
+    return state.jwks_client
 
 
 async def require_auth(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict[str, Any]:
     """Verifies the bearer token against the issuer's JWKS (RS256)."""
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's auth port -- bypasses real JWT/
+        # JWKS verification entirely rather than faking the JWKS HTTP
+        # round-trip; see `sim/pyrunner/world.py`'s `FakeAuth` docstring.
+        try:
+            return state.world.auth.verify(credentials.credentials)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid or expired token",
+            ) from exc
     settings = get_settings()
     try:
         key = _jwks().get_signing_key_from_jwt(credentials.credentials)
@@ -58,6 +68,16 @@ async def require_auth(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
 ) -> dict[str, Any]:
     """Verifies the request's bearer token and returns its claims."""
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's auth port.
+        try:
+            return state.world.auth.verify(credentials.credentials)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid or expired token",
+            ) from exc
     settings = get_settings()
     try:
         return jwt.decode(

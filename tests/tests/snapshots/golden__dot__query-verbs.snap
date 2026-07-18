@@ -1,0 +1,28 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph QueryVerbs {
+    rankdir=LR;
+    n0 [label="database default Sqlite", shape=cylinder];
+    n1 [label="api ListActiveApi", shape=rarrow];
+    n2 [label="api CountActiveApi", shape=rarrow];
+    n3 [label="api DeleteByActiveApi", shape=rarrow];
+    n4 [label="api ReplaceApi", shape=rarrow];
+    n5 [label="api RemoveApi", shape=rarrow];
+    n6 [label="service ListActive", shape=box];
+    n7 [label="service CountActive", shape=box];
+    n8 [label="service DeleteByActive", shape=box];
+    n9 [label="service Replace", shape=box];
+    n10 [label="service Remove", shape=box];
+    n6 -> n0 [label="DataFlow", style=bold];
+    n1 -> n6 [label="RequestFlow", style=solid];
+    n7 -> n0 [label="DataFlow", style=bold];
+    n2 -> n7 [label="RequestFlow", style=solid];
+    n8 -> n0 [label="DataFlow", style=bold];
+    n3 -> n8 [label="RequestFlow", style=solid];
+    n9 -> n0 [label="DataFlow", style=bold];
+    n4 -> n9 [label="RequestFlow", style=solid];
+    n10 -> n0 [label="DataFlow", style=bold];
+    n5 -> n10 [label="RequestFlow", style=solid];
+}

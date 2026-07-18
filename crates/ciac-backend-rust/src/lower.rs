@@ -1,224 +1,39 @@
 //! Direct lowering of the typed HIR (`ciac_ir::hir`) into Rust source.
 //!
-//! Simpler than the Python backend's `lower.rs` in one respect: Rust's
-//! `if`/`match` are real expressions and `{ stmts; tail }` is a real
-//! block-expression, so `if`/`match`-as-a-`let`-value and `db.insert`'s
-//! "run a statement, then yield the original value" both lower as plain
-//! nested expressions. There's no need for Python's `Sink`/`lower_tail`
-//! split, which exists only because Python statements aren't
-//! expressions.
+//! The walker (block/tail shaping, precedence, enum-literal use-site
+//! recovery, float-literal fidelity, divergence truncation) lives in
+//! `ciac_codegen::lower` (`22UpdatePlan.md` Pillar 3, Parts 2-3);
+//! [`RustSyntax`] supplies only the leaf constructors genuinely
+//! specific to this target — raw SQL text (not an ORM), `Ok(..)`
+//! wrapping (`handle()` returns `anyhow::Result<T>`), and the E0382
+//! clone discipline described below.
 //!
-//! One thing Rust needs that Python didn't: enum values are a *named*
-//! type (`VideoStatus::Ready`), not a bare string, so a bare
-//! [`ciac_ir::HirExpr::EnumLit`] can't be lowered in isolation — its
-//! enclosing context (a comparison LHS, a record field) is what tells
-//! us which named enum it belongs to. See `field_access_enum_name`.
+//! One thing Rust needs that a `Statement`-oriented target doesn't:
+//! enum values are a *named* type (`VideoStatus::Ready`), not a bare
+//! string, so a bare [`ciac_ir::HirExpr::EnumLit`] can't be lowered in
+//! isolation — its enclosing context (a comparison LHS, a record
+//! field) is what tells us which named enum it belongs to. See
+//! [`ciac_codegen::lower::field_access_enum_name`].
 
+pub(crate) use ciac_codegen::lower::scan;
+use ciac_codegen::lower::{
+    self, fidelity_checked_float, indent_lines, strip_outer_parens, HostSyntax, IndexKey,
+    LoweredPredicate, MatchArm, Orientation, PredValue, Wrap,
+};
 use ciac_codegen::model as context;
 use ciac_ir::{
-    BinOp, Builtin, FieldType, HandlerBody, HirArm, HirExpr, HirStmt, HirType, NormalizedIr,
-    RecordId, TableId, UnOp, Verb,
+    BinOp, HandlerBody, HirExpr, HirType, NormalizedIr, PredOp, RecordId, TableId, UnOp, Verb,
 };
-use heck::{ToPascalCase, ToSnakeCase};
+use heck::ToSnakeCase;
 use serde::Serialize;
 
-/// Everything referenced by a handler body that the emitting backend
-/// needs to know about to write `use`s and a constructor. No per-verb
-/// breakdown (`db_insert` vs `db_get`, ...) — that only existed on the
-/// Python side to drive generated mock-test assertions, and Rust has no
-/// generated behavioral test in this milestone (see the M4 plan's
-/// Non-goals: no mock/trait seam for `sqlx::PgPool`/`redis::Client`/
-/// `ObjectStore` exists yet).
-#[derive(Debug, Default)]
-pub struct Needs {
-    pub db: bool,
-    pub cache: bool,
-    pub queue: bool,
-    pub uuid: bool,
-    pub datetime: bool,
-    pub tables: Vec<TableId>,
-    /// Tables actually read via `db.get` — the only verb that needs the
-    /// model type as a Rust type name (`db.insert` only binds the
-    /// value's own fields, never names the model type).
-    pub db_get_tables: Vec<TableId>,
-    pub records: Vec<RecordId>,
-    /// Named enum types (`VideoStatus`) actually spelled out in the
-    /// lowered body — via an enum-literal comparison or record field
-    /// value (see `field_access_enum_name`). Deliberately *not* "every
-    /// enum any referenced record has": a record with an enum field
-    /// doesn't mean the body ever names that enum type directly (e.g. a
-    /// `db.get` never does — the conversion is fully inside
-    /// `models.rs`'s `TryFrom` impl), and importing an unused one is an
-    /// `unused_imports` error under `-D warnings`.
-    pub enums: Vec<String>,
-}
-
-impl Needs {
-    fn record(&mut self, id: RecordId) {
-        if !self.records.contains(&id) {
-            self.records.push(id);
-        }
-    }
-
-    fn table(&mut self, id: TableId) {
-        if !self.tables.contains(&id) {
-            self.tables.push(id);
-        }
-    }
-
-    fn enum_name(&mut self, name: String) {
-        if !self.enums.contains(&name) {
-            self.enums.push(name);
-        }
-    }
-
-    fn ty(&mut self, ty: &HirType) {
-        match ty {
-            HirType::Record(id) => self.record(*id),
-            HirType::Option(inner) => self.ty(inner),
-            _ => {}
-        }
-    }
-}
-
-pub fn scan(ir: &NormalizedIr, body: &HandlerBody) -> Needs {
-    let mut needs = Needs::default();
-    for (_, ty) in &body.params {
-        needs.ty(ty);
-    }
-    needs.ty(&body.return_ty);
-    if let Some(stmts) = &body.body {
-        scan_block(ir, stmts, &mut needs);
-    }
-    for table in needs.tables.clone() {
-        needs.record(ir.table(table).record);
-    }
-    needs
-}
-
-fn scan_block(ir: &NormalizedIr, stmts: &[HirStmt], needs: &mut Needs) {
-    for stmt in stmts {
-        match stmt {
-            HirStmt::Let { value, .. } | HirStmt::Expr(value) => scan_expr(ir, value, needs),
-            HirStmt::Return(Some(value)) => scan_expr(ir, value, needs),
-            HirStmt::Return(None) => {}
-            HirStmt::Fail { error, args } => {
-                needs.record(*error);
-                for arg in args {
-                    scan_expr(ir, arg, needs);
-                }
-            }
-            HirStmt::Publish { value, .. } => {
-                needs.queue = true;
-                scan_expr(ir, value, needs);
-            }
-        }
-    }
-}
-
-fn scan_expr(ir: &NormalizedIr, expr: &HirExpr, needs: &mut Needs) {
-    match expr {
-        HirExpr::Local { ty, .. } => needs.ty(ty),
-        HirExpr::FieldAccess { base, ty, .. } => {
-            scan_expr(ir, base, needs);
-            needs.ty(ty);
-        }
-        HirExpr::Index { base, index } => {
-            scan_expr(ir, base, needs);
-            scan_expr(ir, index, needs);
-        }
-        HirExpr::RecordCons {
-            record,
-            base_value,
-            fields,
-        } => {
-            needs.record(*record);
-            if let Some(base) = base_value {
-                scan_expr(ir, base, needs);
-            }
-            for (name, value) in fields {
-                if matches!(value, HirExpr::EnumLit { .. }) {
-                    let enum_name = format!("{}{}", ir.record(*record).name, name.to_pascal_case());
-                    needs.enum_name(enum_name);
-                }
-                scan_expr(ir, value, needs);
-            }
-        }
-        HirExpr::Binary { lhs, rhs, ty, .. } => {
-            if let Some(enum_name) = field_access_enum_name(ir, lhs) {
-                if matches!(rhs.as_ref(), HirExpr::EnumLit { .. }) {
-                    needs.enum_name(enum_name);
-                }
-            }
-            scan_expr(ir, lhs, needs);
-            scan_expr(ir, rhs, needs);
-            needs.ty(ty);
-        }
-        HirExpr::Unary { expr, ty, .. } => {
-            scan_expr(ir, expr, needs);
-            needs.ty(ty);
-        }
-        HirExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ty,
-        } => {
-            scan_expr(ir, cond, needs);
-            scan_block(ir, then_branch, needs);
-            scan_block(ir, else_branch, needs);
-            needs.ty(ty);
-        }
-        HirExpr::Match {
-            scrutinee,
-            arms,
-            ty,
-        } => {
-            if let Some(enum_name) = field_access_enum_name(ir, scrutinee) {
-                needs.enum_name(enum_name);
-            }
-            scan_expr(ir, scrutinee, needs);
-            for arm in arms {
-                scan_block(ir, &arm.body, needs);
-            }
-            needs.ty(ty);
-        }
-        HirExpr::VerbCall { verb, args, ty, .. } => {
-            match verb {
-                Verb::DbInsert(table) => {
-                    needs.db = true;
-                    needs.table(*table);
-                }
-                Verb::DbGet(table) => {
-                    needs.db = true;
-                    needs.table(*table);
-                    if !needs.db_get_tables.contains(table) {
-                        needs.db_get_tables.push(*table);
-                    }
-                }
-                Verb::CacheGet | Verb::CacheSet => needs.cache = true,
-                Verb::ObjectStorePut | Verb::ObjectStoreGet => {}
-            }
-            for arg in args {
-                scan_expr(ir, arg, needs);
-            }
-            needs.ty(ty);
-        }
-        HirExpr::BuiltinCall(Builtin::UuidNew) => needs.uuid = true,
-        HirExpr::BuiltinCall(Builtin::TimestampNow) => needs.datetime = true,
-        HirExpr::IntLit(_)
-        | HirExpr::FloatLit(_)
-        | HirExpr::StrLit(_)
-        | HirExpr::BoolLit(_)
-        | HirExpr::EnumLit { .. } => {}
-    }
-}
-
-/// Rust type annotation for a HIR type. A bare (field-less) `Enum` type
-/// has no named Rust type to reach for — the language surface never
-/// puts one directly in a param/return position (enums only ever show
-/// up as record fields, resolved through `field_access_enum_name`), so
-/// this panics rather than silently emitting something wrong.
+/// Rust type annotation for a HIR type — a handler *signature*
+/// concern (param/return types), not part of the `HostSyntax` body
+/// contract. A bare (field-less) `Enum` type has no named Rust type
+/// to reach for — the language surface never puts one directly in a
+/// param/return position (enums only ever show up as record fields,
+/// resolved through `field_access_enum_name`), so this panics rather
+/// than silently emitting something wrong.
 pub fn rust_type(ir: &NormalizedIr, ty: &HirType) -> String {
     match ty {
         HirType::Str | HirType::Uuid => "String".to_owned(),
@@ -232,427 +47,473 @@ pub fn rust_type(ir: &NormalizedIr, ty: &HirType) -> String {
         }
         HirType::Record(id) => ir.record(*id).name.clone(),
         HirType::Option(inner) => format!("Option<{}>", rust_type(ir, inner)),
+        HirType::List(inner) => format!("Vec<{}>", rust_type(ir, inner)),
         HirType::Unit | HirType::Never => "()".to_owned(),
     }
 }
 
-fn slot_name(body: &HandlerBody, slot: u32) -> String {
-    let slot = slot as usize;
-    if slot < body.params.len() {
-        body.params[slot].0.clone()
-    } else {
-        format!("v{slot}")
+/// Engine of the handler's bound db instance, straight from the IR
+/// node its binding edge points at — `postgres` when unbound.
+/// Handler-level (not per-verb-call), so [`RustSyntax`] resolves it
+/// once at construction and every db-verb leaf reuses it.
+fn db_engine_of(ir: &NormalizedIr, body: &HandlerBody) -> &'static str {
+    for id in body.capability_nodes() {
+        if let ciac_ir::Component::Database { engine, .. } = &ir.node(id).component {
+            return match engine {
+                ciac_ir::DbEngine::MySql => "mysql",
+                ciac_ir::DbEngine::Sqlite => "sqlite",
+                ciac_ir::DbEngine::Postgres => "postgres",
+            };
+        }
     }
+    "postgres"
 }
 
 fn model_class_name(ir: &NormalizedIr, table: TableId) -> String {
     ir.table(table).name.clone()
 }
 
-fn record_class_name(ir: &NormalizedIr, record: RecordId) -> String {
+fn record_class_name(ir: &NormalizedIr, record: ciac_ir::RecordId) -> String {
     ir.record(record).name.clone()
 }
 
-fn stream_subject(ir: &NormalizedIr, stream: ciac_ir::NodeId) -> String {
-    match &ir.node(stream).component {
-        ciac_ir::Component::Stream { subject, .. } => subject.clone(),
-        other => unreachable!("publish target is a stream, found {other:?}"),
-    }
+/// The `Orientation::Expression` `HostSyntax` implementation for this
+/// target: `if`/`match`/every db verb lower as real Rust expressions,
+/// so there is no `Sink`/`Dest` concept here at all — the shared
+/// dispatcher never calls any `Statement`-oriented leaf on this type.
+/// Holds `ir` (every leaf resolves table/record/enum names through
+/// it) and `db_engine` (resolved once per handler, v0.13 M1, since
+/// every db-verb leaf needs the same placeholder style).
+struct RustSyntax<'a> {
+    ir: &'a NormalizedIr,
+    db_engine: &'static str,
 }
 
-/// A Rust float literal that's actually valid as `f64` — `format!("{f}")`
-/// on `1.0_f64` prints `"1"`, which Rust parses as an integer literal.
-fn rust_float_lit(f: f64) -> String {
-    let s = format!("{f}");
-    if s.contains(['.', 'e', 'E']) || s == "inf" || s == "-inf" || s == "NaN" {
-        s
-    } else {
-        format!("{s}.0")
-    }
-}
-
-/// Recovers a field access's *named* enum type (e.g. `VideoStatus` for
-/// `inserted.status`) from the base's record type — the only place this
-/// information exists, since [`HirType::Enum`] is structural (a bare
-/// variant set), not nominal. `None` when `expr` isn't a field access on
-/// a record, or the field isn't an enum.
-fn field_access_enum_name(ir: &NormalizedIr, expr: &HirExpr) -> Option<String> {
-    let HirExpr::FieldAccess { base, field, .. } = expr else {
-        return None;
-    };
-    let HirType::Record(id) = base.ty() else {
-        return None;
-    };
-    let record = ir.record(id);
-    let matched = record.fields.iter().find(|f| &f.name == field)?;
-    matches!(matched.ty, FieldType::Enum { .. })
-        .then(|| format!("{}{}", record.name, field.to_pascal_case()))
-}
-
-fn indent(text: &str, pad: &str) -> String {
-    text.lines()
-        .map(|line| format!("{pad}{line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// `rust_binary`/`rust_expr` always wrap a value in `(..)` so it composes
-/// safely when nested inside another expression. An `if`/`match`
-/// condition is never nested that way, so the outermost pair is
-/// redundant there — and redundant parens are `unused_parens`, promoted
-/// to a hard error by `-D warnings`.
-fn strip_outer_parens(s: String) -> String {
-    if !s.starts_with('(') || !s.ends_with(')') {
-        return s;
-    }
-    let mut depth = 0i32;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 && i != s.len() - 1 {
-                    // The first `(` closes before the string ends, so
-                    // the leading/trailing chars aren't a single
-                    // wrapping pair (e.g. `(a) + (b)`) — leave it alone.
-                    return s;
-                }
-            }
-            _ => {}
-        }
-    }
-    s[1..s.len() - 1].to_owned()
-}
-
-/// Lowers a single expression to a Rust expression string.
-pub fn rust_expr(ir: &NormalizedIr, body: &HandlerBody, expr: &HirExpr) -> String {
-    match expr {
-        HirExpr::Local { slot, .. } => slot_name(body, *slot),
-        HirExpr::IntLit(n) => n.to_string(),
-        HirExpr::FloatLit(f) => rust_float_lit(*f),
-        HirExpr::StrLit(s) => format!("{s:?}.to_owned()"),
-        HirExpr::BoolLit(b) => if *b { "true" } else { "false" }.to_owned(),
-        HirExpr::BuiltinCall(Builtin::UuidNew) => "uuid::Uuid::new_v4().to_string()".to_owned(),
-        HirExpr::BuiltinCall(Builtin::TimestampNow) => "chrono::Utc::now()".to_owned(),
-        HirExpr::EnumLit { variant, .. } => unreachable!(
-            "bare enum literal `{variant}` must be lowered at its use site \
-             (comparison/record field), not as a standalone expression"
-        ),
-        HirExpr::FieldAccess { base, field, .. } => {
-            format!("{}.{field}", rust_expr(ir, body, base))
-        }
-        HirExpr::Index { base, index } => {
-            let key = match index.as_ref() {
-                HirExpr::StrLit(s) => format!("{s:?}"),
-                other => rust_expr(ir, body, other),
-            };
-            format!("{}[{key}]", rust_expr(ir, body, base))
-        }
-        HirExpr::RecordCons {
-            record,
-            base_value,
-            fields,
-        } => rust_record_cons(ir, body, *record, base_value.as_deref(), fields),
-        HirExpr::Binary { op, lhs, rhs, .. } => rust_binary(ir, body, *op, lhs, rhs),
-        HirExpr::Unary { op, expr, .. } => {
-            let inner = rust_expr(ir, body, expr);
-            match op {
-                UnOp::Neg => format!("(-{inner})"),
-                UnOp::Not => format!("(!{inner})"),
-            }
-        }
-        HirExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => format!(
-            "if {} {{\n{}\n}} else {{\n{}\n}}",
-            strip_outer_parens(rust_expr(ir, body, cond)),
-            indent(&rust_block(ir, body, then_branch, Tail::Plain), "    "),
-            indent(&rust_block(ir, body, else_branch, Tail::Plain), "    "),
-        ),
-        HirExpr::Match {
-            scrutinee, arms, ..
-        } => rust_match(ir, body, scrutinee, arms),
-        HirExpr::VerbCall { verb, args, .. } => rust_verb_expr(ir, body, *verb, args),
-    }
-}
-
-fn rust_record_cons(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    record: RecordId,
-    base_value: Option<&HirExpr>,
-    fields: &[(String, HirExpr)],
-) -> String {
-    let record_name = record_class_name(ir, record);
-    let field_strs: Vec<String> = fields
-        .iter()
-        .map(|(name, value)| {
-            if let HirExpr::EnumLit { variant, .. } = value {
-                let enum_name = format!("{record_name}{}", name.to_pascal_case());
-                format!("{name}: {enum_name}::{variant}")
-            } else {
-                format!("{name}: {}", rust_expr(ir, body, value))
-            }
-        })
-        .collect();
-    match base_value {
-        None => format!("{record_name} {{ {} }}", field_strs.join(", ")),
-        Some(base) => format!(
-            "{record_name} {{ {}, ..{} }}",
-            field_strs.join(", "),
-            rust_expr(ir, body, base)
-        ),
-    }
-}
-
-fn rust_binary(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    op: BinOp,
-    lhs: &HirExpr,
-    rhs: &HirExpr,
-) -> String {
-    if matches!(op, BinOp::Eq | BinOp::NotEq) {
-        if let HirExpr::EnumLit { variant, .. } = rhs {
-            let enum_name = field_access_enum_name(ir, lhs)
-                .expect("enum comparison LHS must be a record field access");
-            let op_s = if op == BinOp::Eq { "==" } else { "!=" };
-            return format!(
-                "({} {op_s} {enum_name}::{variant})",
-                rust_expr(ir, body, lhs)
-            );
-        }
-    }
-    let lhs_ty = lhs.ty();
-    let rhs_ty = rhs.ty();
-    let lhs_s = rust_expr(ir, body, lhs);
-    let rhs_s = rust_expr(ir, body, rhs);
-    if op == BinOp::Add && (lhs_ty == HirType::Str || rhs_ty == HirType::Str) {
-        // `String + String` doesn't compile and mixed-type numeric
-        // stringification is finicky; `format!` handles any
-        // `Display`-able pair uniformly.
-        return format!("format!(\"{{}}{{}}\", {lhs_s}, {rhs_s})");
-    }
-    let py_op = match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Eq => "==",
-        BinOp::NotEq => "!=",
-        BinOp::Lt => "<",
-        BinOp::LtEq => "<=",
-        BinOp::Gt => ">",
-        BinOp::GtEq => ">=",
-        BinOp::And => "&&",
-        BinOp::Or => "||",
-    };
-    format!("({lhs_s} {py_op} {rhs_s})")
-}
-
-fn rust_match(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    scrutinee: &HirExpr,
-    arms: &[HirArm],
-) -> String {
-    let enum_name = field_access_enum_name(ir, scrutinee)
-        .expect("match scrutinee must be a record field access");
-    let scrut_s = rust_expr(ir, body, scrutinee);
-    let mut out = format!("match {scrut_s} {{\n");
-    for arm in arms {
-        let pattern = match &arm.variant {
-            Some(v) => format!("{enum_name}::{v}"),
-            None => "_".to_owned(),
+impl RustSyntax<'_> {
+    /// Builds a ` WHERE ..` clause (empty string if there's no
+    /// predicate) and the ordered `.bind(..)` expressions it needs
+    /// (v0.14 M2). Written with Postgres-style `$N` placeholders and
+    /// rewritten per-engine by `sqlph`, same as every other SQL string
+    /// this backend emits. A bare enum comparison binds the variant's
+    /// string form directly (`"Ready"`) rather than through
+    /// `enum_literal`, which requires a named type this raw-SQL
+    /// position has no use for (`term.field` is a raw SQL column name,
+    /// not a `FieldAccess`).
+    fn where_clause(&self, predicate: Option<&LoweredPredicate>) -> (String, Vec<String>) {
+        let Some(predicate) = predicate else {
+            return (String::new(), Vec::new());
         };
-        let arm_body = indent(&rust_block(ir, body, &arm.body, Tail::Plain), "        ");
-        out.push_str(&format!("    {pattern} => {{\n{arm_body}\n    }}\n"));
-    }
-    out.push('}');
-    out
-}
-
-/// Lowers every verb call — all of them fit a single Rust expression
-/// (unlike Python, `db.insert`'s statement-then-value shape is just a
-/// block-expression).
-fn rust_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[HirExpr]) -> String {
-    match verb {
-        Verb::DbInsert(table) => {
-            let engine = db_engine_of(ir, body);
-            let table_snake = ir.table(table).name.to_snake_case();
-            let record_ctx = context::build_record(ir, ir.table(table).record);
-            let value = rust_expr(ir, body, &args[0]);
-            let binds: String = record_ctx
-                .fields
-                .iter()
-                .map(|f| {
-                    if f.is_enum {
-                        format!("\n        .bind(__row.{}.as_str())", f.name)
+        let mut conditions = Vec::with_capacity(predicate.terms.len());
+        let mut binds = Vec::with_capacity(predicate.terms.len());
+        for (i, term) in predicate.terms.iter().enumerate() {
+            let idx = i + 1;
+            let bind_expr = match &term.value {
+                PredValue::EnumVariant(v) => format!("{v:?}"),
+                PredValue::BoolLit(b) => if *b { "true" } else { "false" }.to_owned(),
+                PredValue::Rendered(s) => {
+                    if term.field_ty == HirType::Uuid {
+                        format!("{s}.to_string()")
                     } else {
-                        format!("\n        .bind(&__row.{})", f.name)
+                        s.clone()
                     }
-                })
-                .collect();
-            // Cloned into `__row` rather than moving `{value}` straight
-            // into the block: the source value (typically a plain local
-            // like `v`) may still be referenced later in the handler
-            // body (e.g. a `fail` after the insert), and Rust — unlike
-            // Python — would reject that as a use of a moved value.
-            format!(
-                "{{\n    let __row = {value}.clone();\n    sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n        .execute(self.db)\n        .await?;\n    __row\n}}",
-                cols = record_ctx.select_cols,
-                phs = ciac_codegen::template::sqlph(&record_ctx.insert_placeholders, engine),
-            )
-        }
-        Verb::DbGet(table) => {
-            let engine = db_engine_of(ir, body);
-            let model = model_class_name(ir, table);
-            let record_name = record_class_name(ir, ir.table(table).record);
-            let table_snake = ir.table(table).name.to_snake_case();
-            let record_ctx = context::build_record(ir, ir.table(table).record);
-            let key = rust_expr(ir, body, &args[0]);
-            format!(
-                "{{\n    let row: Option<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .fetch_optional(self.db)\n        .await?;\n    row.map({record_name}::try_from).transpose()?\n}}",
-                cols = record_ctx.select_cols,
-                ph = ciac_codegen::template::sqlph("$1", engine),
-            )
-        }
-        Verb::CacheGet => {
-            let key = rust_expr(ir, body, &args[0]);
-            format!(
-                "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let raw: Option<String> = conn.get(&{key}).await?;\n    match raw {{\n        Some(s) => Some(serde_json::from_str(&s)?),\n        None => None,\n    }}\n}}"
-            )
-        }
-        Verb::CacheSet => {
-            let key = rust_expr(ir, body, &args[0]);
-            let value = rust_expr(ir, body, &args[1]);
-            format!(
-                "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.set(&{key}, serde_json::to_string(&{value})?).await?;\n}}"
-            )
-        }
-        Verb::ObjectStorePut => {
-            let key = rust_expr(ir, body, &args[0]);
-            let payload = if matches!(args[1].ty(), HirType::Record(_)) {
-                format!("&serde_json::to_vec(&{})?", rust_expr(ir, body, &args[1]))
-            } else {
-                format!("{}.to_string().as_bytes()", rust_expr(ir, body, &args[1]))
+                }
             };
-            format!("self.object_store.put(&{key}, {payload}).await?")
-        }
-        Verb::ObjectStoreGet => {
-            let key = rust_expr(ir, body, &args[0]);
-            format!("serde_json::from_slice(&self.object_store.get(&{key}).await?)?")
-        }
-    }
-}
-
-fn stmt_diverges(stmt: &HirStmt) -> bool {
-    match stmt {
-        HirStmt::Return(_) | HirStmt::Fail { .. } => true,
-        HirStmt::Let { value, .. } | HirStmt::Expr(value) => value.ty() == HirType::Never,
-        HirStmt::Publish { .. } => false,
-    }
-}
-
-/// Where a block's tail statement (if it's a bare `HirStmt::Expr`) ends
-/// up: `None` for a mid-block statement (always `expr;`), `Plain` for a
-/// nested `if`/`match` branch's own tail (just the bare value, feeding
-/// the enclosing expression), `Wrapped` for the function body's own
-/// tail (needs `Ok(..)` — `handle()` returns `anyhow::Result<T>`).
-#[derive(Clone, Copy)]
-enum Tail {
-    None,
-    Plain,
-    Wrapped,
-}
-
-fn rust_stmt(ir: &NormalizedIr, body: &HandlerBody, stmt: &HirStmt, tail: Tail) -> String {
-    match stmt {
-        HirStmt::Let { slot, value } => {
-            if value.ty() == HirType::Never {
-                // Every path through `value` returns/fails, so it never
-                // actually produces anything to bind — a `let` here
-                // would be an unused-variable warning, promoted to a
-                // hard error by `-D warnings`. Just run it.
-                format!("{};", rust_expr(ir, body, value))
+            let field = &term.field;
+            let op = match term.op {
+                PredOp::Eq => "=",
+                PredOp::NotEq => "!=",
+                PredOp::Lt => "<",
+                PredOp::LtEq => "<=",
+                PredOp::Gt => ">",
+                PredOp::GtEq => ">=",
+                PredOp::Contains => "LIKE",
+            };
+            conditions.push(format!("{field} {op} ${idx}"));
+            if term.op == PredOp::Contains {
+                binds.push(format!("format!(\"%{{}}%\", {bind_expr})"));
             } else {
+                binds.push(bind_expr);
+            }
+        }
+        let sql = ciac_codegen::template::sqlph(
+            &format!(" WHERE {}", conditions.join(" AND ")),
+            self.db_engine,
+        );
+        (sql, binds)
+    }
+
+    /// Renders `value` as a `serde_json::Value`-typed argument for
+    /// `search.index`/`external_http.request`'s untyped payload
+    /// params — the 3-way (Record/Json/else) branch is a real,
+    /// pre-existing divergence from `cache.set`/`object_store.put`'s
+    /// 2-way branch, not something to unify away.
+    fn json_value(&self, value: &str, value_ty: &HirType) -> String {
+        match value_ty {
+            HirType::Record(_) => format!("serde_json::to_value(&{value})?"),
+            HirType::Json => value.to_owned(),
+            _ => format!("serde_json::json!({{\"value\": {value}}})"),
+        }
+    }
+}
+
+const SEARCH_INDEX_NAME: &str = "documents";
+
+impl HostSyntax for RustSyntax<'_> {
+    const ORIENTATION: Orientation = Orientation::Expression;
+
+    fn int_lit(&self, n: i64) -> String {
+        n.to_string()
+    }
+    fn float_lit(&self, f: f64) -> String {
+        fidelity_checked_float(f)
+    }
+    fn str_lit(&self, s: &str) -> String {
+        format!("{s:?}.to_owned()")
+    }
+    fn bool_lit(&self, b: bool) -> String {
+        if b { "true" } else { "false" }.to_owned()
+    }
+    fn field_access(&self, base: &str, field: &str) -> String {
+        format!("{base}.{field}")
+    }
+    fn index(&self, base: &str, key: IndexKey<'_>) -> String {
+        let k = match key {
+            IndexKey::StrKey(s) => format!("{s:?}"),
+            IndexKey::Expr(e) => e,
+        };
+        format!("{base}[{k}]")
+    }
+    fn uuid_new(&self) -> String {
+        "uuid::Uuid::new_v4().to_string()".to_owned()
+    }
+    fn timestamp_now(&self) -> String {
+        "chrono::Utc::now()".to_owned()
+    }
+    fn enum_literal(&self, enum_name: Option<&str>, variant: &str) -> String {
+        let name = enum_name.unwrap_or_else(|| {
+            unreachable!(
+                "bare enum literal `{variant}` must be lowered at its use site \
+                 (comparison/record field), not as a standalone expression"
+            )
+        });
+        format!("{name}::{variant}")
+    }
+    /// Renders an expression used as a record-construction field value
+    /// (or `..base`) — the one place, across every verb, that a
+    /// still-live handler-input value's *field* can end up borrowed
+    /// into a brand-new owned record. `x.field` used this way must be
+    /// cloned, not moved: unlike a GC'd/statement-oriented target,
+    /// Rust rejects a later whole-value use of `x` (e.g. returning the
+    /// handler's input parameter itself after only one of its fields
+    /// was pulled into an inserted/updated row) as a use of a
+    /// partially moved value — found live via `ciac verify -t rust` on
+    /// `sim-vertical-slice.ciac`/`sim-broker-slice.ciac` (v0.17 M11),
+    /// whose handlers do exactly that. Always cloning here (rather
+    /// than tracking whether the source is actually reused later) is
+    /// the simplest correct rule: cloning a `Copy` field is a harmless
+    /// no-op, and every non-`Copy` field this compiler generates
+    /// (`String`, `serde_json::Value`, ..) is cheap enough that this
+    /// is not a meaningful cost next to the query it feeds.
+    fn value_for_record_field(&self, rendered: String, original: &HirExpr) -> String {
+        if matches!(original, HirExpr::FieldAccess { .. }) {
+            format!("{rendered}.clone()")
+        } else {
+            rendered
+        }
+    }
+    fn record_cons(
+        &self,
+        record_name: &str,
+        fields: &[(String, String)],
+        base: Option<&str>,
+    ) -> String {
+        let field_strs: Vec<String> = fields
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect();
+        match base {
+            None => format!("{record_name} {{ {} }}", field_strs.join(", ")),
+            Some(base) => format!("{record_name} {{ {}, ..{base} }}", field_strs.join(", ")),
+        }
+    }
+    fn binary(
+        &self,
+        op: BinOp,
+        lhs: &str,
+        rhs: &str,
+        lhs_ty: &HirType,
+        rhs_ty: &HirType,
+    ) -> String {
+        if op == BinOp::Add && (*lhs_ty == HirType::Str || *rhs_ty == HirType::Str) {
+            // `String + String` doesn't compile and mixed-type numeric
+            // stringification is finicky; `format!` handles any
+            // `Display`-able pair uniformly.
+            return format!("format!(\"{{}}{{}}\", {lhs}, {rhs})");
+        }
+        let op_s = match op {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Eq => "==",
+            BinOp::NotEq => "!=",
+            BinOp::Lt => "<",
+            BinOp::LtEq => "<=",
+            BinOp::Gt => ">",
+            BinOp::GtEq => ">=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+        };
+        format!("({lhs} {op_s} {rhs})")
+    }
+    fn unary(&self, op: UnOp, operand: &str) -> String {
+        match op {
+            UnOp::Neg => format!("(-{operand})"),
+            UnOp::Not => format!("(!{operand})"),
+        }
+    }
+
+    fn if_expr(&self, cond: &str, then_block: &str, else_block: &str) -> String {
+        format!(
+            "if {} {{\n{}\n}} else {{\n{}\n}}",
+            strip_outer_parens(cond.to_owned()),
+            indent_lines(then_block, "    "),
+            indent_lines(else_block, "    "),
+        )
+    }
+    fn match_expr(&self, enum_name: &str, scrutinee: &str, arms: &[MatchArm]) -> String {
+        let mut out = format!("match {scrutinee} {{\n");
+        for arm in arms {
+            let pattern = match &arm.variant {
+                Some(v) => format!("{enum_name}::{v}"),
+                None => "_".to_owned(),
+            };
+            let arm_body = indent_lines(&arm.body, "        ");
+            out.push_str(&format!("    {pattern} => {{\n{arm_body}\n    }}\n"));
+        }
+        out.push('}');
+        out
+    }
+    fn db_insert_expr(&self, table: TableId, value: &str) -> String {
+        let table_snake = self.ir.table(table).name.to_snake_case();
+        let record_ctx = context::build_record(self.ir, self.ir.table(table).record);
+        let binds: String = record_ctx
+            .fields
+            .iter()
+            .map(|f| {
+                if f.is_enum {
+                    format!("\n        .bind(__row.{}.as_str())", f.name)
+                } else {
+                    format!("\n        .bind(&__row.{})", f.name)
+                }
+            })
+            .collect();
+        // Cloned into `__row` rather than moving `{value}` straight
+        // into the block: the source value (typically a plain local
+        // like `v`) may still be referenced later in the handler body
+        // (e.g. a `fail` after the insert), and Rust would reject that
+        // as a use of a moved value.
+        //
+        // The `self.world` branch is the v0.17 M11 world-guard: when
+        // `AppState::simulation` constructed this handler, `db.insert`
+        // writes to the in-memory `SimWorld` (and can be
+        // failure-injected) instead of ever touching `self.db`.
+        format!(
+            "{{\n    let __row = {value}.clone();\n    if let Some(world) = self.world {{\n        world.db_insert_checked(\"{table_snake}\", serde_json::to_value(&__row)?)?;\n    }} else {{\n        sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n            .execute(self.db)\n            .await?;\n    }}\n    __row\n}}",
+            cols = record_ctx.select_cols,
+            phs = ciac_codegen::template::sqlph(&record_ctx.insert_placeholders, self.db_engine),
+        )
+    }
+    fn db_update_expr(&self, table: TableId, key: &str, value: &str) -> String {
+        let table_snake = self.ir.table(table).name.to_snake_case();
+        let record_ctx = context::build_record(self.ir, self.ir.table(table).record);
+        let binds: String = record_ctx
+            .fields
+            .iter()
+            .filter(|f| f.name != "id")
+            .map(|f| {
+                if f.is_enum {
+                    format!("\n        .bind(__row.{}.as_str())", f.name)
+                } else {
+                    format!("\n        .bind(&__row.{})", f.name)
+                }
+            })
+            .collect();
+        // Same clone-into-`__row` reasoning as `db.insert` above: the
+        // source value may still be referenced later in the body.
+        format!(
+            "{{\n    let __row = {value}.clone();\n    let __updated = sqlx::query(\"UPDATE {table_snake} SET {assignments} WHERE id = {where_ph}\"){binds}\n        .bind({key}.to_string())\n        .execute(self.db)\n        .await?;\n    if __updated.rows_affected() == 0 {{ None }} else {{ Some(__row) }}\n}}",
+            assignments = ciac_codegen::template::sqlph(&record_ctx.update_assignments, self.db_engine),
+            where_ph = ciac_codegen::template::sqlph(&record_ctx.update_where, self.db_engine),
+        )
+    }
+    fn db_delete_expr(&self, table: TableId, key: &str) -> String {
+        let table_snake = self.ir.table(table).name.to_snake_case();
+        format!(
+            "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .execute(self.db)\n        .await?;\n    __deleted.rows_affected() > 0\n}}",
+            ph = ciac_codegen::template::sqlph("$1", self.db_engine),
+        )
+    }
+    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>) -> String {
+        match verb {
+            Verb::DbQuery(table) => {
+                let table_snake = self.ir.table(table).name.to_snake_case();
+                let model = model_class_name(self.ir, table);
+                let record_name = record_class_name(self.ir, self.ir.table(table).record);
+                let record_ctx = context::build_record(self.ir, self.ir.table(table).record);
+                let (where_sql, binds) = self.where_clause(predicate);
+                let bind_lines: String = binds
+                    .iter()
+                    .map(|b| format!("\n        .bind({b})"))
+                    .collect();
                 format!(
-                    "let {} = {};",
-                    slot_name(body, *slot),
-                    rust_expr(ir, body, value)
+                    "{{\n    let __rows: Vec<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_all(self.db)\n        .await?;\n    __rows.into_iter().map({record_name}::try_from).collect::<Result<Vec<_>, _>>()?\n}}",
+                    cols = record_ctx.select_cols,
                 )
             }
-        }
-        HirStmt::Expr(e) => {
-            let e_s = rust_expr(ir, body, e);
-            match tail {
-                Tail::None => format!("{e_s};"),
-                Tail::Plain => e_s,
-                Tail::Wrapped => format!("Ok({e_s})"),
+            Verb::DbCount(table) => {
+                let table_snake = self.ir.table(table).name.to_snake_case();
+                let (where_sql, binds) = self.where_clause(predicate);
+                let bind_lines: String = binds
+                    .iter()
+                    .map(|b| format!("\n        .bind({b})"))
+                    .collect();
+                format!(
+                    "{{\n    let __count: i64 = sqlx::query_scalar(\"SELECT COUNT(*) FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_one(self.db)\n        .await?;\n    __count\n}}"
+                )
             }
-        }
-        HirStmt::Return(None) => "return Ok(());".to_owned(),
-        HirStmt::Return(Some(e)) => format!("return Ok({});", rust_expr(ir, body, e)),
-        HirStmt::Fail { error, args } => {
-            let name = record_class_name(ir, *error);
-            let record = ir.record(*error);
-            let field_inits: Vec<String> = record
-                .fields
-                .iter()
-                .zip(args)
-                .map(|(f, a)| format!("{}: {}", f.name, rust_expr(ir, body, a)))
-                .collect();
-            format!(
-                "return Err({name} {{ {} }}.into());",
-                field_inits.join(", ")
-            )
-        }
-        HirStmt::Publish { stream, value } => {
-            let subject = stream_subject(ir, *stream);
-            format!(
-                "self.queue.publish({subject:?}, serde_json::to_vec(&{})?).await?;",
-                rust_expr(ir, body, value)
-            )
+            Verb::DbDeleteWhere(table) => {
+                let table_snake = self.ir.table(table).name.to_snake_case();
+                let (where_sql, binds) = self.where_clause(predicate);
+                let bind_lines: String = binds
+                    .iter()
+                    .map(|b| format!("\n        .bind({b})"))
+                    .collect();
+                format!(
+                    "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake}{where_sql}\"){bind_lines}\n        .execute(self.db)\n        .await?;\n    __deleted.rows_affected() as i64\n}}"
+                )
+            }
+            _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
         }
     }
-}
+    fn let_binding(&self, name: &str, value: &str) -> String {
+        format!("let {name} = {value};")
+    }
+    fn wrap_tail(&self, value: &str, wrap: Wrap) -> String {
+        match wrap {
+            Wrap::None => format!("{value};"),
+            Wrap::Plain => value.to_owned(),
+            Wrap::Wrapped => format!("Ok({value})"),
+        }
+    }
+    fn unit_literal(&self) -> String {
+        "()".to_owned()
+    }
+    // v0.16 M6 (assessed, deliberately deferred): sema fully validates
+    // `transaction` blocks, but making this genuinely atomic needs
+    // every `db.*` verb inside to execute against a held
+    // `sqlx::Transaction<'_, _>` instead of `self.db` — sqlx's
+    // `Transaction` has no `Deref`-to-pool trick that lets
+    // already-generated `.execute(self.db)` call sites transparently
+    // keep working, so real atomicity means threading an executor
+    // choice through the entire recursive lowering call graph (30+
+    // sites: every arm that can nest a db verb, not just the db-verb
+    // arms themselves) rather than the one `in_tx: bool` flag that
+    // suffices for a `Statement`-oriented target's uniform session.
+    // That's a materially larger, riskier change to code every
+    // existing Rust example depends on, so it's tracked as a
+    // follow-up rather than attempted here. Interim: lower the body
+    // exactly as if unwrapped — correct per-statement, just not yet
+    // atomic across the whole block. See docs/language.md's
+    // transactions section.
+    fn transaction_expr(&self, inner: &str) -> String {
+        let note =
+            "// NOTE: this block is not yet atomic on the Rust backend (see docs/language.md)";
+        format!("{note}\n{inner}")
+    }
 
-/// Lowers a `Vec<HirStmt>` block into Rust statement lines, joined with
-/// `\n`. Statements after one that diverges are dropped — Rust's
-/// `-D warnings` promotes `unreachable_code` to a hard build failure, so
-/// this isn't optional cosmetics (mirrors the same truncation in
-/// Python's `lower.rs`).
-fn rust_block(ir: &NormalizedIr, body: &HandlerBody, stmts: &[HirStmt], tail: Tail) -> String {
-    if stmts.is_empty() {
-        return match tail {
-            Tail::Wrapped => "Ok(())".to_owned(),
-            _ => "()".to_owned(),
+    fn return_stmt(&self, value: Option<&str>, _indent: &str) -> String {
+        match value {
+            Some(v) => format!("return Ok({v});"),
+            None => "return Ok(());".to_owned(),
+        }
+    }
+    fn fail(&self, error: RecordId, args: &[String], _indent: &str) -> String {
+        let name = record_class_name(self.ir, error);
+        let record = self.ir.record(error);
+        let field_inits: Vec<String> = record
+            .fields
+            .iter()
+            .zip(args)
+            .map(|(f, a)| format!("{}: {a}", f.name))
+            .collect();
+        format!(
+            "return Err({name} {{ {} }}.into());",
+            field_inits.join(", ")
+        )
+    }
+    fn publish(&self, subject: &str, value: &str, _value_ty: &HirType, _indent: &str) -> String {
+        format!("self.queue.publish({subject:?}, serde_json::to_vec(&{value})?).await?;")
+    }
+    fn db_get(&self, table: TableId, key: &str) -> String {
+        let model = model_class_name(self.ir, table);
+        let record_name = record_class_name(self.ir, self.ir.table(table).record);
+        let table_snake = self.ir.table(table).name.to_snake_case();
+        let record_ctx = context::build_record(self.ir, self.ir.table(table).record);
+        format!(
+            "{{\n    let row: Option<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .fetch_optional(self.db)\n        .await?;\n    row.map({record_name}::try_from).transpose()?\n}}",
+            cols = record_ctx.select_cols,
+            ph = ciac_codegen::template::sqlph("$1", self.db_engine),
+        )
+    }
+    fn cache_get(&self, key: &str) -> String {
+        format!(
+            "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let raw: Option<String> = conn.get(&{key}).await?;\n    match raw {{\n        Some(s) => Some(serde_json::from_str(&s)?),\n        None => None,\n    }}\n}}"
+        )
+    }
+    fn cache_set(&self, key: &str, value: &str, _value_ty: &HirType) -> String {
+        format!(
+            "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.set(&{key}, serde_json::to_string(&{value})?).await?;\n}}"
+        )
+    }
+    fn cache_delete(&self, key: &str) -> String {
+        format!(
+            "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.del(&{key}).await?;\n}}"
+        )
+    }
+    fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
+        let payload = if matches!(value_ty, HirType::Record(_)) {
+            format!("&serde_json::to_vec(&{value})?")
+        } else {
+            format!("{value}.to_string().as_bytes()")
         };
+        format!("self.object_store.put(&{key}, {payload}).await?")
     }
-    let mut lines = Vec::new();
-    for (i, stmt) in stmts.iter().enumerate() {
-        let is_last = i + 1 == stmts.len();
-        lines.push(rust_stmt(
-            ir,
-            body,
-            stmt,
-            if is_last { tail } else { Tail::None },
-        ));
-        if stmt_diverges(stmt) {
-            break;
-        }
+    fn object_store_get(&self, key: &str) -> String {
+        format!("serde_json::from_slice(&self.object_store.get(&{key}).await?)?")
     }
-    lines.join("\n")
-}
-
-/// Lowers a full handler body into the `handle()` method's Rust source
-/// (the function-body's own tail gets `Ok(..)`-wrapped).
-pub fn lower_body(ir: &NormalizedIr, body: &HandlerBody) -> String {
-    let stmts = body.body.as_deref().unwrap_or(&[]);
-    rust_block(ir, body, stmts, Tail::Wrapped)
+    fn object_store_delete(&self, key: &str) -> String {
+        format!("self.object_store.delete(&{key}).await?")
+    }
+    fn object_store_list(&self, prefix: &str) -> String {
+        format!("self.object_store.list(&{prefix}).await?")
+    }
+    fn email_send(&self, to: &str, subject: &str, body: &str) -> String {
+        format!("self.email.send(&{to}, &{subject}, &{body}).await?")
+    }
+    fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String {
+        let document = self.json_value(document, document_ty);
+        format!("self.search.index({SEARCH_INDEX_NAME:?}, &{doc_id}, &{document}).await?")
+    }
+    fn search_query(&self, query: &str) -> String {
+        format!(
+            "self.search.search({SEARCH_INDEX_NAME:?}, &serde_json::json!({{\"query\": {{\"query_string\": {{\"query\": {query}}}}}}})).await?"
+        )
+    }
+    fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String {
+        let json_val = self.json_value(json_body, body_ty);
+        format!("self.http.post(&{url}).json(&{json_val}).send().await?.json::<serde_json::Value>().await?")
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -683,21 +544,6 @@ pub struct LogicFileCtx {
     pub schema_imports: Vec<String>,
     pub model_imports: Vec<String>,
     pub body: String,
-}
-
-/// Engine of the handler's bound db instance, straight from the IR
-/// node its binding edge points at — `postgres` when unbound.
-fn db_engine_of(ir: &NormalizedIr, body: &HandlerBody) -> &'static str {
-    for id in body.capability_nodes() {
-        if let ciac_ir::Component::Database { engine, .. } = &ir.node(id).component {
-            return match engine {
-                ciac_ir::DbEngine::MySql => "mysql",
-                ciac_ir::DbEngine::Sqlite => "sqlite",
-                ciac_ir::DbEngine::Postgres => "postgres",
-            };
-        }
-    }
-    "postgres"
 }
 
 /// Builds the render context for one typed handler node. `name` is the
@@ -732,8 +578,12 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         })
         .collect();
 
+    let db_engine = db_engine_of(ir, hir);
     let body = match &hir.body {
-        Some(_) => lower_body(ir, hir),
+        Some(_) => {
+            let syntax = RustSyntax { ir, db_engine };
+            lower::lower_body_expr(&syntax, ir, hir)
+        }
         None => "Err(anyhow::anyhow!(\"not implemented\"))".to_owned(),
     };
 
@@ -748,7 +598,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         needs_queue: needs.queue,
         rust_db_field: access.rust_db_field,
         rust_cache_field: access.rust_cache_field,
-        db_engine: db_engine_of(ir, hir).to_owned(),
+        db_engine: db_engine.to_owned(),
         extras,
         schema_imports,
         model_imports,

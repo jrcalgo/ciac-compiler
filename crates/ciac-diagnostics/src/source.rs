@@ -66,6 +66,18 @@ impl SourceFile {
         let col = offset - self.line_starts[line];
         (line as u32 + 1, col + 1)
     }
+
+    /// The inverse of [`SourceFile::line_col`] (v0.18 M4, position-based
+    /// rename): the byte offset of a 1-based `(line, column)`, or `None`
+    /// when either is out of range. `column` is a byte offset within the
+    /// line, matching `line_col`'s own byte-oriented convention (CIaC
+    /// identifiers are ASCII, so this never needs UTF-16/UTF-8 width
+    /// reconciliation the way an LSP-facing position would).
+    pub fn offset_of(&self, line: u32, column: u32) -> Option<u32> {
+        let line_start = *self.line_starts.get((line as usize).checked_sub(1)?)?;
+        let offset = line_start + column.checked_sub(1)?;
+        (offset as usize <= self.src.len()).then_some(offset)
+    }
 }
 
 /// Registry of all source files participating in a compilation.

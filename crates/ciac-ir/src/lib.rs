@@ -16,16 +16,17 @@ pub use component::{
     ApiConfig, AuthScheme, CacheEngine, ChannelConfig, Component, CrudConfig, DbEngine,
     EmailProvider, HttpMethod, JobConfig, LoggingProvider, MetricsProvider, NodeKind,
     ObjectStoreProvider, QueueEngine, RealtimeProvider, SchedulerProvider, SearchProvider,
-    WorkerConfig,
+    TracingProvider, UsersProvider, WorkerConfig,
 };
 pub use graph::{
     Edge, EdgeId, EdgeKind, EventStream, MatchArm, Node, NodeId, Pipeline, Resource, Service,
     ServiceId, Step, StepKind, SystemGraph,
 };
 pub use hir::{
-    BinOp, Builtin, HandlerBody, HirArm, HirExpr, HirStmt, HirType, Table, TableId, UnOp, Verb,
+    BinOp, Builtin, HandlerBody, HirArm, HirExpr, HirPredTerm, HirPredicate, HirStmt, HirType,
+    PredOp, Table, TableId, UnOp, Verb,
 };
-pub use record::{FieldType, Record, RecordField, RecordId, RecordKind};
+pub use record::{Cardinality, FieldType, Record, RecordField, RecordId, RecordKind, RefAction};
 
 use serde::Serialize;
 

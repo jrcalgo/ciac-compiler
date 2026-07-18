@@ -13,19 +13,28 @@
 //! * backends must not embed timestamps, absolute paths, or randomness;
 //! * IR iteration order is itself deterministic (declaration order).
 
+pub mod backfill;
+pub mod ci;
 pub mod compose;
+pub mod emit;
 pub mod evolution;
 pub mod external;
 pub mod k8s;
+pub mod lower;
 pub mod manifest;
 pub mod migrations;
 pub mod model;
+pub mod openapi;
 mod project;
 pub mod protocol;
 pub mod regen;
+pub mod semantic_diff;
+pub mod semantic_model;
 pub mod system_tests;
 pub mod template;
 pub mod terraform;
+pub mod ts_client;
+pub mod users;
 
 pub use project::{FileRole, GeneratedProject};
 
@@ -149,6 +158,115 @@ pub trait Backend {
         ir: &NormalizedIr,
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError>;
+
+    /// The whole CLI/CI/compose/dev-loop/sim integration surface for this
+    /// target, as data (v0.22 M1 — `22UpdatePlan.md` Pillar 1). Every
+    /// caller that used to `match target { "python" => .., "rust" => ..
+    /// }` reads this instead, so adding a target is a registry entry, not
+    /// an edit to six files.
+    fn target_info(&self) -> &'static TargetInfo;
+}
+
+/// One command `ciac verify`/`ciac build` runs against a generated
+/// project, in order, with its own environment and a human-readable
+/// clause for error messages (v0.22 M1).
+#[derive(Debug, Clone, Copy)]
+pub struct ValidateStep {
+    /// e.g. `"uv"`, `"cargo"`, `"npm"`.
+    pub program: &'static str,
+    pub args: &'static [&'static str],
+    /// e.g. `[("RUSTFLAGS", "-D warnings")]`, `[("CGO_ENABLED", "0")]`.
+    pub env: &'static [(&'static str, &'static str)],
+    /// Names what this step proves, so a failure reads "type-checks
+    /// failed" rather than only "npm exited 1".
+    pub purpose: &'static str,
+}
+
+/// Whether `ciac dev` restarts the target's process on rebuild or
+/// delegates to the target's own file watcher. Every current target is
+/// restart-style; the field exists so a future watcher-style target
+/// doesn't force a special case into `dev.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartStyle {
+    Restart,
+    DelegatedWatch,
+}
+
+/// Commands `ciac dev`'s watch loop uses to rebuild/restart a generated
+/// project on change (v0.22 M1).
+#[derive(Debug, Clone, Copy)]
+pub struct DevCommands {
+    /// Re-run after a successful regeneration, e.g. `npm run build` /
+    /// `go build ./...`. Empty for targets whose restart implies rebuild
+    /// (both current targets).
+    pub rebuild: &'static [ValidateStep],
+    pub restart: RestartStyle,
+}
+
+/// A target's `ciac sim` support level (v0.22 M1, generalizing the
+/// v0.17 M11 Rust narrowing). `None` with a reason is a permanently
+/// valid state — a refusal must be clean and specific, never a silent
+/// no-op.
+#[derive(Clone, Copy)]
+pub enum SimSupport {
+    /// Every verb/capability the language supports is simulatable
+    /// (Python).
+    Full,
+    /// Only a subset is simulatable; the function names the specific
+    /// unsupported verbs/capabilities a program uses, if any (promoted
+    /// from `ciac_backend_rust::unsupported_sim_capabilities`).
+    Narrow {
+        unsupported: fn(&NormalizedIr) -> Vec<String>,
+    },
+    /// Simulation is not implemented for this target at all.
+    None { reason: &'static str },
+}
+
+impl std::fmt::Debug for SimSupport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SimSupport::Full => write!(f, "Full"),
+            SimSupport::Narrow { .. } => write!(f, "Narrow"),
+            SimSupport::None { reason } => write!(f, "None({reason})"),
+        }
+    }
+}
+
+/// The whole per-target integration surface, as data (v0.22 M1 —
+/// `22UpdatePlan.md` Pillar 1). Replaces ~25 scattered
+/// `match target { "python" => .., "rust" => .. }` sites across
+/// `commands.rs`/`ci.rs`/`vocab.rs`/`dev.rs`/`compose.rs`.
+#[derive(Debug)]
+pub struct TargetInfo {
+    /// Project marker file identifying a generated project root, e.g.
+    /// `"pyproject.toml"`, `"Cargo.toml"`. Consumed by
+    /// `find_project_dirs` everywhere.
+    pub project_marker: &'static str,
+    /// Where CIaC-owned migration SQL lives inside the project, e.g.
+    /// `"app/migrations"`, `"migrations"`.
+    pub migrations_dir: &'static str,
+    /// Per-target migration filename mapping. Identity for every
+    /// current target.
+    pub migration_filename: fn(seq: u32, slug: &str) -> String,
+    /// Commands `ciac verify`/`build` run to validate a generated
+    /// project, in order.
+    pub validate: &'static [ValidateStep],
+    /// The literal CI test-step YAML `ci.rs` embeds for this target.
+    pub ci_test_steps: &'static str,
+    /// Compose parameterization (the pre-existing `BackendComposeOpts`,
+    /// now reached through the trait instead of a separate per-call-site
+    /// match).
+    pub compose: compose::BackendComposeOpts,
+    /// Commands `ciac dev` uses to rebuild/restart on change.
+    pub dev: DevCommands,
+    /// Extension (no dot) of this target's seeded handler source files
+    /// under `app/services`/`src/services`, e.g. `"py"`, `"rs"`. `ciac
+    /// dev`'s watch loop unions this across every registered backend
+    /// (v0.22 M1) rather than hardcoding the current two — unchanged
+    /// behavior today, automatic coverage for the next target.
+    pub source_extension: &'static str,
+    /// Simulation support level.
+    pub sim: SimSupport,
 }
 
 /// Verifies every component in the IR is supported by `backend`, returning

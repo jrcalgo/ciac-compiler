@@ -8,6 +8,7 @@
 //! Backends (once they exist for this construct) consume only this HIR,
 //! never the raw AST.
 
+use crate::graph::{NodeId, ServiceId};
 use crate::record::RecordId;
 use serde::Serialize;
 
@@ -18,10 +19,21 @@ use serde::Serialize;
 pub struct TableId(pub u32);
 
 /// A resolved `table <Name>: <Record>;` declaration.
+///
+/// `service`/`db_instance` (v0.16 M2) are the table's ownership: which
+/// service declares it and which resolved `db` capability instance node
+/// backs it. `None` for a single-service program with no `service { .. }`
+/// blocks at all (there's exactly one implicit service, so ownership is
+/// unambiguous without recording it) — both are `Some` for every table
+/// registered inside an explicit `service { .. }` block or a
+/// multi-database single-service program. `Reference<T>` resolution
+/// compares two tables' `db_instance` to decide `CrossStorageReference`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Table {
     pub name: String,
     pub record: RecordId,
+    pub service: Option<ServiceId>,
+    pub db_instance: Option<NodeId>,
 }
 
 /// The type of a value inside a handler body. Extends [`crate::FieldType`]
@@ -42,6 +54,11 @@ pub enum HirType {
     Record(RecordId),
     /// `db.get` and friends: absent vs. present, not an error.
     Option(Box<HirType>),
+    /// `db.query`, `object_store.list`, `search.query` (v0.14 M1): an
+    /// ordered collection, returned whole (there is no loop/iteration
+    /// construct in the language — a handler either passes a list
+    /// straight through as its `return` value or stores it as-is).
+    List(Box<HirType>),
     /// The type of a verb call or `publish` with nothing meaningful to
     /// return, and of a statement-position expression.
     Unit,
@@ -98,14 +115,48 @@ pub enum UnOp {
 /// which declared table they operate on. Deliberately small for M2 —
 /// see `07UpdatePlan.md`'s own scope-creep warning; adding a verb is one
 /// new match arm in `typeck.rs`'s verb table, not a redesign.
+///
+/// v0.14 M1 extends the set with query/mutation verbs across every
+/// capability. Lowering (turning these into generated Python/Rust code)
+/// is out of scope for M1 — see `14UpdatePlan.md`'s M2-M4 — so both
+/// backends' `lower.rs` currently `todo!()` on them; typeck fully
+/// validates and constructs the HIR regardless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Verb {
     DbInsert(TableId),
     DbGet(TableId),
+    /// Update the row named by a `Uuid` key with a full record value;
+    /// `None` (absent vs. present, like `DbGet`) if no row has that key.
+    DbUpdate(TableId),
+    /// Delete the row named by a `Uuid` key; `true` if a row was deleted.
+    DbDelete(TableId),
+    /// `db.query(Table) [where <predicate>]` — every matching row, or
+    /// every row when no predicate is given. See [`HirExpr::Query`].
+    DbQuery(TableId),
+    /// `db.count(Table) [where <predicate>]` — the number of matching
+    /// (or all) rows. See [`HirExpr::Query`].
+    DbCount(TableId),
+    /// `db.delete_where(Table) [where <predicate>]` — deletes every
+    /// matching (or all) rows, yielding the number deleted. See
+    /// [`HirExpr::Query`].
+    DbDeleteWhere(TableId),
     CacheGet,
     CacheSet,
+    CacheDelete,
     ObjectStorePut,
     ObjectStoreGet,
+    ObjectStoreDelete,
+    /// `object_store.list(prefix)` — every key under `prefix`.
+    ObjectStoreList,
+    /// `email.send(to, subject, body)`.
+    EmailSend,
+    /// `search.index(doc_id, value)` — upserts `value` under `doc_id`.
+    SearchIndex,
+    /// `search.query(query)` — every matching document.
+    SearchQuery,
+    /// `external_http.request(url, body)` — a synchronous POST, returning
+    /// the response body as `Json`.
+    HttpCall,
 }
 
 /// Niladic builtin functions available in any handler body, independent
@@ -123,6 +174,38 @@ impl Builtin {
             Builtin::TimestampNow => HirType::Timestamp,
         }
     }
+}
+
+/// A resolved [`crate::ast`]-independent mirror of
+/// `ciac_syntax::ast::PredOp` (v0.14 M1) — kept as a separate type so
+/// `ciac-ir` doesn't depend on `ciac-syntax`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PredOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    Contains,
+}
+
+/// One resolved `<field> <op> <value>` comparison of a [`HirPredicate`]
+/// (v0.14 M1). `field`/`field_ty` are resolved against the target
+/// verb's table; `value` is a fully type-checked expression.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HirPredTerm {
+    pub field: String,
+    pub field_ty: HirType,
+    pub op: PredOp,
+    pub value: HirExpr,
+}
+
+/// A resolved `where` clause: a conjunction of [`HirPredTerm`]s (v0.14
+/// M1). See `ciac_syntax::ast::Predicate`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HirPredicate {
+    pub terms: Vec<HirPredTerm>,
 }
 
 /// A type-checked expression. Every variant carries (or is) enough to
@@ -198,6 +281,16 @@ pub enum HirExpr {
         args: Vec<HirExpr>,
         ty: HirType,
     },
+    /// `db.query`/`db.count`/`db.delete_where`, with or without a
+    /// `where` clause (v0.14 M1). Kept distinct from [`HirExpr::VerbCall`]
+    /// because these three verbs carry a predicate, which isn't a plain
+    /// argument list — see `ciac_syntax::ast::Expr::Query`.
+    Query {
+        capability: crate::NodeId,
+        verb: Verb,
+        predicate: Option<HirPredicate>,
+        ty: HirType,
+    },
 }
 
 impl HirExpr {
@@ -209,7 +302,8 @@ impl HirExpr {
             | HirExpr::Unary { ty, .. }
             | HirExpr::If { ty, .. }
             | HirExpr::Match { ty, .. }
-            | HirExpr::VerbCall { ty, .. } => ty.clone(),
+            | HirExpr::VerbCall { ty, .. }
+            | HirExpr::Query { ty, .. } => ty.clone(),
             HirExpr::IntLit(_) => HirType::Int,
             HirExpr::FloatLit(_) => HirType::Float,
             HirExpr::StrLit(_) => HirType::Str,
@@ -246,6 +340,15 @@ pub enum HirStmt {
     Publish {
         stream: crate::NodeId,
         value: HirExpr,
+    },
+    /// `transaction { .. }` (v0.16 M1/M2): every database verb in `body`
+    /// shares one database transaction. Sema (`typeck.rs`) has already
+    /// rejected `return`, nested `transaction`, `publish`, and every
+    /// non-database capability verb inside — `body` contains only
+    /// `Let`/`Expr`/`Fail` and (recursively, inside `if`/`match`) more of
+    /// the same, so lowering never has to re-check these invariants.
+    Transaction {
+        body: Vec<HirStmt>,
     },
 }
 
@@ -290,6 +393,7 @@ fn capability_nodes_block(stmts: &[HirStmt], out: &mut Vec<crate::NodeId>) {
                 }
             }
             HirStmt::Publish { value, .. } => capability_nodes_expr(value, out),
+            HirStmt::Transaction { body } => capability_nodes_block(body, out),
         }
     }
 }
@@ -343,6 +447,20 @@ fn capability_nodes_expr(expr: &HirExpr, out: &mut Vec<crate::NodeId>) {
             capability_nodes_expr(scrutinee, out);
             for arm in arms {
                 capability_nodes_block(&arm.body, out);
+            }
+        }
+        HirExpr::Query {
+            capability,
+            predicate,
+            ..
+        } => {
+            if !out.contains(capability) {
+                out.push(*capability);
+            }
+            if let Some(predicate) = predicate {
+                for term in &predicate.terms {
+                    capability_nodes_expr(&term.value, out);
+                }
             }
         }
         HirExpr::Local { .. }

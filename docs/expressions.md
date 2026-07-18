@@ -1,4 +1,4 @@
-# Handler-Body Expressions (v0.7)
+# Handler-Body Expressions (v0.7, extended v0.14, v0.16)
 
 Through v0.6, a pipeline handler was always an opaque business-logic
 unit: the compiler generated a typed constructor and a `handle` stub,
@@ -46,12 +46,14 @@ list, not a representative sample. Anything outside it is `extern`.
 ## Statements
 
 ```ebnf
-stmt      = let-stmt | expr-stmt | return-stmt | fail-stmt | publish-stmt ;
+stmt      = let-stmt | expr-stmt | return-stmt | fail-stmt | publish-stmt
+          | transaction-stmt ;
 let-stmt    = "let" IDENT "=" expr ";" ;
 expr-stmt   = expr ";" ;
 return-stmt = "return" [ expr ] ";" ;
 fail-stmt   = "fail" IDENT "(" [ expr { "," expr } ] ")" ";" ;
 publish-stmt = "publish" IDENT "(" expr ")" ";" ;
+transaction-stmt = "transaction" "{" { stmt } "}" ;
 ```
 
 - **`let <name> = <expr>;`** — single-assignment, block-scoped binding.
@@ -111,26 +113,88 @@ expr-arm     = ( IDENT | "_" ) "->" "{" { stmt } "}" ;
 - **Calls** (`callee(args)`) are how every capability verb and builtin
   is invoked — see below. There is no other kind of call: no
   user-defined functions, no recursion.
+- **`[Type]`** is a list type (v0.14 M1) — valid as a handler parameter
+  or return type (`items: [String]`, `-> [Note]`). It is *not* valid as
+  a `record` field type yet (`CIAC0053`): lists only ever arise from a
+  list-returning verb (`db.query`, `object_store.list`,
+  `search.query`), and a handler passes one through whole — there is no
+  loop construct to iterate it with, matching the "no loops" rule
+  above.
 
 ## The closed verb set
 
 A handler body can only call a *bound capability instance*'s verbs —
 the exact set below, nothing else (`CIAC0043` for an unknown verb or
 wrong arity/argument types; `CIAC0044` if the capability kind has no
-bound instance in scope):
+bound instance in scope). Every verb below generates on **both**
+bundled targets (`ciac build --target python|rust`) — there is no
+front-end-only verb left as of v0.14 M7.
 
-| Capability | Verb | Signature | Behavior |
-|------------|------|-----------|----------|
-| `db` | `insert` | `(table, record) -> record` | Inserts a row into a declared `table`, returns it back. |
-| `db` | `get` | `(table, id) -> record` | Fetches a row by primary key. |
-| `cache` | `get` | `(key) -> Json` | Reads a cached value. |
-| `cache` | `set` | `(key, value) -> Unit` | Writes a cached value. |
-| `object_store` | `put` | `(key, value) -> Unit` | Uploads a value under a key. |
-| `object_store` | `get` | `(key) -> Json` | Downloads a value by key. |
+| Capability | Verb | Signature | Behavior | Python lowering | Rust lowering |
+|------------|------|-----------|----------|------------------|----------------|
+| `db` | `insert` | `(table, record) -> record` | Inserts a row into a declared `table`, returns it back. | `session.add` + `flush`, SQLAlchemy Core model | `sqlx::query` `INSERT ... RETURNING`, engine-aware placeholders |
+| `db` | `get` | `(table, id) -> record?` | Fetches a row by primary key. | `session.get(Model, str(id))` | `sqlx::query_as` `SELECT ... WHERE id = ?/$1`, `Option<Row>` |
+| `db` | `update` | `(table, id, record) -> record?` | Updates the row at `id` with `record`'s fields. | `session.get` then attribute assignment + `flush` | `UPDATE` with per-engine bind order (`?`-style binds fields first, id last) |
+| `db` | `delete` | `(table, id) -> Bool` | Deletes the row at `id`; `true` if one was deleted. | `session.get` + `session.delete`, `rowcount`-style bool | `sqlx::query` `DELETE ... WHERE id = ?/$1`, `rows_affected() > 0` |
+| `db` | `query` | `(table) [where <predicate>] -> [record]` | Every row, or every matching row when a `where` clause is given. | SQLAlchemy Core `select(Model).where(...)`, bound parameters | `sqlx::query_as` with a built `WHERE` clause, bound parameters |
+| `db` | `count` | `(table) [where <predicate>] -> Int` | The number of rows, or matching rows. | `select(func.count()).select_from(Model).where(...)` | `SELECT COUNT(*) FROM ... WHERE ...`, `i64` |
+| `db` | `delete_where` | `(table) [where <predicate>] -> Int` | Deletes every (matching) row, returns the count deleted. | Core `delete(Model).where(...)`, `result.rowcount` | `sqlx::query` `DELETE ... WHERE ...`, `rows_affected()` |
+| `cache` | `get` | `(key) -> Json?` | Reads a cached value. | `redis.get` + `json.loads` if present | `redis` `GET` + `serde_json::from_str` if present |
+| `cache` | `set` | `(key, value) -> Unit` | Writes a cached value. | `redis.set` with `json.dumps`-encoded value | `redis` `SET` with `serde_json::to_string`-encoded value |
+| `cache` | `delete` | `(key) -> Unit` | Removes a cached value. | `redis.delete` | `redis` `DEL` |
+| `object_store` | `put` | `(key, value) -> Unit` | Uploads a value under a key. | `put_object` (aioboto3), record → JSON bytes | `put_object` (rust-s3), record → JSON bytes |
+| `object_store` | `get` | `(key) -> Json?` | Downloads a value by key. | `get_object` + `json.loads` | `get_object` + `serde_json::from_slice` |
+| `object_store` | `delete` | `(key) -> Unit` | Removes an object by key. | `delete_object` | `delete_object` |
+| `object_store` | `list` | `(prefix) -> [String]` | Every key under `prefix`. | `list_objects_v2` paginated, keys collected | `list_objects` paginated, keys collected |
+| `email` | `send` | `(to, subject, body) -> Unit` | Sends an email. | `aiosmtplib.send` | `lettre` async transport `send` |
+| `search` | `index` | `(doc_id, value) -> Unit` | Upserts `value` under `doc_id`. | OpenSearch client `index` against the service's fixed index name | OpenSearch client `index` against the service's fixed index name |
+| `search` | `query` | `(query) -> [Json]` | Every matching document. | OpenSearch `search` with a `query_string` body | OpenSearch `search` with a `query_string` body |
+| `external_http` | `request` | `(url, body) -> Json` | A synchronous POST, returning the response body. | `httpx.AsyncClient.post(...).json()` | `reqwest::Client::post(...).json()` |
 
-`db.insert`/`db.get`'s first argument names a `table <Name>: <Record>;`
-declaration (`CIAC0042` if it isn't one); the record type on both sides
-is the table's declared record.
+`db.*`'s table argument names a `table <Name>: <Record>;` declaration
+(`CIAC0042` if it isn't one); the record type is the table's declared
+record. `search.index`/`search.query` use one fixed index name derived
+from the service (there is no per-call index argument).
+
+This table's shape reflects how the verb set actually grew:
+`db.insert`/`db.get`, `cache.get`/`cache.set`, and
+`object_store.put`/`object_store.get` shipped in v0.7 alongside the
+handler-body language itself. Every other row — the `where`-clause
+query family, `update`/`delete`-by-key, `cache.delete`,
+`object_store.delete`/`list`, `email.send`, both `search` verbs, and
+`external_http.request` — was added by v0.14: M1 landed the front-end
+(grammar, typeck, the `where`-clause grammar below) for the whole set
+at once so both backends target one frozen surface; M2 lowered the
+`db` query/mutation family on both backends against live Postgres,
+MySQL, and SQLite; M3 lowered `cache`/`external_http`; M4 lowered
+`email`/`object_store`/`search`.
+
+### `where` clauses (predicates)
+
+`db.query`, `db.count`, and `db.delete_where` optionally take a
+trailing `where` clause — a conjunction of comparisons against the
+target table's columns:
+
+```ebnf
+query        = call "where" predicate ;
+predicate    = pred-term { "&&" pred-term } ;
+pred-term    = IDENT pred-op expr ;
+pred-op      = "==" | "!=" | "<" | "<=" | ">" | ">=" | "contains" ;
+```
+
+```ciac
+handler ActiveByAuthor(author: String) -> [Note] {
+    return db.query(Notes) where author == author && active == true;
+}
+```
+
+A `where` clause's left-hand side always names a column of the verb's
+table — it is a *separate* namespace from the handler body's own
+locals (unlike a normal expression, a bare identifier there can never
+mean a `let`/param). Its right-hand side is a normal expression,
+evaluated in the enclosing scope, so it can reference params and
+`let`s. `contains` is substring matching and only applies to `Str`
+columns. Attaching a `where` clause to any other verb is `CIAC0052`.
 
 ## Builtins
 
@@ -141,6 +205,70 @@ capability bindings:
 |---------|---------|
 | `Uuid.new()` | a fresh `Uuid` |
 | `Timestamp.now()` | the current `Timestamp` |
+
+## `transaction { .. }` blocks (v0.16)
+
+Wraps a sequence of statements so their `db.*` writes commit or roll
+back together:
+
+```ciac
+handler PlaceOrder(order: Order) -> Order {
+    transaction {
+        db.insert(Orders, order);
+        if order.total < 0.0 {
+            fail InvalidOrder("order total must not be negative");
+        };
+        db.insert(OrderAudits, OrderAudit { id: Uuid.new(), note: "order placed", total: order.total });
+    }
+    return order;
+}
+```
+
+A `transaction` block may contain `let`/bare-expression statements,
+`if`/`match` (nested arbitrarily), and `fail` — but not `return`, a
+nested `transaction`, or `publish` (`CIAC0061`, `InvalidTransactionBlock`,
+for an empty block, a nested `transaction`, or a `return` inside one).
+Every capability verb it calls must be a `db.*` verb — `cache`,
+`object_store`, `email`, `search`, and `external_http` calls are
+`CIAC0062` (`NonTransactionalEffect`) inside a `transaction`, since
+none of them roll back with the database (an email already sent can't
+be un-sent). A block with no `db.*` verb at all is also `CIAC0061` —
+there'd be nothing for the transaction to make atomic.
+
+**The exact guarantee differs by backend today, and that's disclosed,
+not hidden:**
+
+- **Python**: real atomicity. Every verb inside the block shares one
+  `AsyncSession`; individual verbs' own commits are suppressed while
+  inside a `transaction`, and the whole block is wrapped in a single
+  `try`/`except` that commits once on success or rolls back on any
+  exception (including a `fail`'s raised error) — proven live: a
+  negative-`total` `PlaceOrder` call leaves *neither* the `Orders` nor
+  the `OrderAudits` row behind.
+- **Rust**: validated, but not yet atomic. Sema fully enforces every
+  rule above, and the block lowers correctly — but each `db.*` verb
+  still executes (and commits) against `self.db` independently, exactly
+  as if the `transaction { .. }` wrapper weren't there. Real atomicity
+  needs every verb inside the block to run against a held
+  `sqlx::Transaction<'_, _>` instead, and `sqlx`'s `Transaction` type
+  has no transparent substitute for `self.db` in already-generated
+  `.execute(self.db)` call sites — doing this properly means choosing
+  an executor per call site across `rust_expr`'s entire recursive call
+  graph (every arm that can nest a `db.*` verb, not just the verb arms
+  themselves), a much larger and riskier change than the Python
+  backend's single `tx: bool` flag threaded through three lowering
+  functions. The generated Rust source carries the same disclosure
+  inline (`// NOTE: this block is not yet atomic on the Rust backend`)
+  above the lowered body. Proven live with the same negative-`total`
+  request against the Rust backend: the invalid `Orders` row it wrote
+  before the `fail` survives, unlike the Python backend's rollback.
+
+Neither backend maps a failure — a `fail`'s typed error, or a
+database-rejected foreign-key/unique-constraint violation — to a
+structured HTTP status; it's an unhandled exception today (a raw 500).
+There is also no whole-handler, whole-pipeline, or distributed
+transaction: a `transaction` block covers exactly the statements
+written inside its braces, nothing implicit before or after.
 
 ## `table <Name>: <Record>;` and migrations
 
@@ -160,6 +288,8 @@ behavior.
 
 ## Errors
 
-Every error this document mentions (`CIAC0038`-`CIAC0046`) is
-documented in full in `docs/errors.md`, including which are warnings
-vs. hard errors and how to fix each one.
+Every error this document mentions (`CIAC0038`-`CIAC0046`,
+`CIAC0052`-`CIAC0053`, `CIAC0061`-`CIAC0062`) is documented in full in
+`docs/errors.md`, including which are warnings vs. hard errors and how
+to fix each one. `Reference<T>`'s own errors (`CIAC0054`-`CIAC0060`)
+are covered in `docs/language.md`'s `Reference<T>` section instead.

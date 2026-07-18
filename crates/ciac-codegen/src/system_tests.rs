@@ -92,6 +92,39 @@ struct CacheProbe {
     redis_db: u32,
 }
 
+/// A `tracing OpenTelemetry`-enabled api whose pipeline crosses a
+/// `call` and/or a `publish`→worker hop (v0.15 M3/M4): the trace it
+/// produces should be one continuous span tree from the entry request
+/// through every hop, not a dangling root span per service.
+struct TraceContinuityCheck {
+    /// Test name component, e.g. `checkout_submit`.
+    name: String,
+    producer: Producer,
+    /// OTel `service.name` the producing api's own service reports as
+    /// — what to query Jaeger for.
+    jaeger_service: String,
+    /// Minimum span count the trace must contain to call the chain
+    /// proven: 2 for a single hop (call *or* publish/consume), 3 for
+    /// both in the same pipeline.
+    min_spans: u32,
+}
+
+/// A scoped CRUD resource on a `users Keycloak` service (v0.15 M6):
+/// unlike a plain `has_auth` resource (skipped by
+/// [`build_capability_checks`], "no credentials to present"), a real
+/// IdP is running, so `scripts/token.sh` can mint real
+/// `dev-admin`/`dev-user` tokens and the 403-without/200-with claim
+/// from v0.14 M6 gets a live assertion instead of an in-process one.
+struct ScopeCheck {
+    service: String,
+    resource: String,
+    plural: String,
+    host_port: u16,
+    sample_json: String,
+    read_scope: Option<String>,
+    write_scope: Option<String>,
+}
+
 /// Builds `tests/system/`'s file set from the validated IR. `None` when
 /// the graph has no whole-system edge worth generating a test for.
 pub fn build(ir: &NormalizedIr) -> Option<Vec<(String, String)>> {
@@ -102,11 +135,15 @@ pub fn build(ir: &NormalizedIr) -> Option<Vec<(String, String)>> {
     let delivery_checks = build_delivery_checks(&system, &producers);
     let channel_checks = build_channel_checks(&system, &producers);
     let capability_checks = build_capability_checks(ir, &system);
+    let trace_checks = build_trace_continuity_checks(ir, &system);
+    let scope_checks = build_scope_checks(ir, &system);
 
     if call_checks.is_empty()
         && delivery_checks.is_empty()
         && channel_checks.is_empty()
         && capability_checks.is_empty()
+        && trace_checks.is_empty()
+        && scope_checks.is_empty()
     {
         return None;
     }
@@ -144,6 +181,18 @@ pub fn build(ir: &NormalizedIr) -> Option<Vec<(String, String)>> {
         files.push((
             "test_capabilities.py".to_string(),
             render_capabilities(&capability_checks),
+        ));
+    }
+    if !trace_checks.is_empty() {
+        files.push((
+            "test_trace_continuity.py".to_string(),
+            render_trace_continuity(&trace_checks),
+        ));
+    }
+    if !scope_checks.is_empty() {
+        files.push((
+            "test_scopes.py".to_string(),
+            render_scope_tests(&scope_checks),
         ));
     }
     Some(files)
@@ -360,6 +409,90 @@ fn build_capability_checks(ir: &NormalizedIr, system: &SystemModel) -> Vec<Capab
     checks
 }
 
+/// One check per tracing-enabled api whose pipeline crosses a `call`
+/// and/or a `publish` step — the shape a trace-continuity claim is
+/// actually about. An api with neither (plain request/response) has
+/// nothing cross-service to prove here even if its service declares
+/// `tracing`.
+fn build_trace_continuity_checks(
+    ir: &NormalizedIr,
+    system: &SystemModel,
+) -> Vec<TraceContinuityCheck> {
+    let mut checks = Vec::new();
+    for service in &system.services {
+        if !service.has_tracing {
+            continue;
+        }
+        for api in &service.apis {
+            let has_call = api.steps.iter().any(|s| s.kind == "call");
+            if !has_call && !api.has_publish_step {
+                continue;
+            }
+            let sample_json = api
+                .payload
+                .as_ref()
+                .and_then(|p| ir.find_record(&p.class_name))
+                .map(|id| sample_json(ir.record(id)))
+                .unwrap_or_else(|| "{}".to_string());
+            checks.push(TraceContinuityCheck {
+                name: format!(
+                    "{}_{}",
+                    to_snake(&service.service_name),
+                    to_snake(&api.name)
+                ),
+                producer: Producer {
+                    host_port: service.host_port,
+                    route: api.route.clone(),
+                    method_lower: api.method_lower.clone(),
+                    sample_json,
+                },
+                jaeger_service: service.service_name.clone(),
+                min_spans: if has_call && api.has_publish_step {
+                    3
+                } else {
+                    2
+                },
+            });
+        }
+    }
+    checks
+}
+
+/// One check per scoped CRUD resource on a service whose `auth
+/// OAuth2` issuer resolves to a live `users Keycloak` container --
+/// the only case `scripts/token.sh` can mint a real token against.
+/// Resources with neither `read_scope` nor `write_scope` have nothing
+/// scope-specific to prove here even if the service has `users`.
+fn build_scope_checks(ir: &NormalizedIr, system: &SystemModel) -> Vec<ScopeCheck> {
+    let mut checks = Vec::new();
+    for service in &system.services {
+        if !(service.auth_scheme == "oauth2" && service.has_users) {
+            continue; // no live IdP to mint real tokens from.
+        }
+        for resource in &service.resources {
+            if resource.read_scope.is_none() && resource.write_scope.is_none() {
+                continue;
+            }
+            let sample_json = resource
+                .record
+                .as_ref()
+                .and_then(|record_ctx| ir.find_record(&record_ctx.name))
+                .map(|id| sample_json_without_id(ir.record(id)))
+                .unwrap_or_else(|| "{}".to_string());
+            checks.push(ScopeCheck {
+                service: service.service_name.clone(),
+                resource: resource.snake.clone(),
+                plural: resource.plural.clone(),
+                host_port: service.host_port,
+                sample_json,
+                read_scope: resource.read_scope.clone(),
+                write_scope: resource.write_scope.clone(),
+            });
+        }
+    }
+    checks
+}
+
 fn clone_producer(p: &Producer) -> Producer {
     Producer {
         host_port: p.host_port,
@@ -384,14 +517,56 @@ fn sample_value(ty: &FieldType) -> serde_json::Value {
         FieldType::Enum { variants } => {
             json!(variants.first().cloned().unwrap_or_default())
         }
+        // v0.16 M4: a to-one reference is a plain id on the wire (see
+        // `ciac_codegen::model::FieldTypeKind::Reference`); a fixed
+        // placeholder is exactly as synthetic as every other sample
+        // value here. Real per-build topological ids (create the
+        // target first, thread its actual id through) are v0.16 M7's
+        // flagship work, not this generator's job.
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::One,
+            ..
+        } => json!("00000000-0000-0000-0000-000000000000"),
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::Many,
+            ..
+        } => unreachable!("many-relation codegen is gated until v0.16 M5/M6 land"),
     }
+}
+
+/// The wire property name for a field (v0.16 M4): a to-one reference's
+/// declared name (`customer`) maps to `customer_id`, matching
+/// `ciac_codegen::model::build_record`'s field-name computation exactly
+/// — kept as one small helper rather than risking the two drifting.
+fn wire_field_name(field: &RecordField) -> String {
+    match &field.ty {
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::One,
+            ..
+        } => format!("{}_id", field.name),
+        _ => field.name.clone(),
+    }
+}
+
+/// A to-many reference has no wire exposure yet (v0.16 M4; it isn't
+/// part of a record's own row — see `build_record`), so it's excluded
+/// from the sample payload rather than sampled at all.
+fn is_wire_field(field: &RecordField) -> bool {
+    !matches!(
+        field.ty,
+        FieldType::Reference {
+            cardinality: ciac_ir::Cardinality::Many,
+            ..
+        }
+    )
 }
 
 fn sample_json(record: &Record) -> String {
     let fields: Vec<(String, serde_json::Value)> = record
         .fields
         .iter()
-        .map(|f: &RecordField| (f.name.clone(), sample_value(&f.ty)))
+        .filter(|f| is_wire_field(f))
+        .map(|f: &RecordField| (wire_field_name(f), sample_value(&f.ty)))
         .collect();
     let object: serde_json::Map<String, serde_json::Value> = fields.into_iter().collect();
     serde_json::to_string(&serde_json::Value::Object(object)).expect("json map always serializes")
@@ -403,8 +578,8 @@ fn sample_json_without_id(record: &Record) -> String {
     let object: serde_json::Map<String, serde_json::Value> = record
         .fields
         .iter()
-        .filter(|f| f.name != "id")
-        .map(|f| (f.name.clone(), sample_value(&f.ty)))
+        .filter(|f| f.name != "id" && is_wire_field(f))
+        .map(|f| (wire_field_name(f), sample_value(&f.ty)))
         .collect();
     serde_json::to_string(&serde_json::Value::Object(object)).expect("json map always serializes")
 }
@@ -590,6 +765,75 @@ fn render_capabilities(checks: &[CapabilityCheck]) -> String {
     out
 }
 
+/// Generated by CIaC (v0.15 M3/M4). Trace-continuity tests: hits an
+/// edge-bearing route over real HTTP, then polls Jaeger's query API
+/// (the queryable backend behind the otel-collector every traced
+/// service exports to) for a trace reported under that service's
+/// name, and asserts the returned trace contains enough spans for the
+/// whole call/publish/consume chain to plausibly be one trace, not a
+/// dangling root span per hop. Requires `ciac verify --system` with
+/// `tracing OpenTelemetry` declared (otel-collector + Jaeger up).
+fn render_trace_continuity(checks: &[TraceContinuityCheck]) -> String {
+    let mut out = String::from(
+        "\"\"\"Generated by CIaC (v0.15 M3/M4). Trace-continuity tests: hits an\nedge-bearing route over real HTTP, then polls Jaeger's query API (the\nqueryable backend behind the otel-collector every traced service\nexports to) for a trace reported under that service's name, and\nasserts the returned trace has enough spans for the whole\ncall/publish/consume chain to be one trace, not a dangling root span\nper hop. Requires `ciac verify --system` with `tracing OpenTelemetry`\ndeclared (otel-collector + Jaeger up).\n\"\"\"\n\nimport asyncio\nimport json\n\nimport httpx\nimport pytest\n\nJAEGER_URL = \"http://localhost:16686\"\n",
+    );
+    for check in checks {
+        out.push_str(&format!(
+            "\n\n@pytest.mark.anyio\nasync def test_trace_{name}_spans_the_full_hop() -> None:\n    payload = json.loads('{sample}')\n    async with httpx.AsyncClient(base_url=\"http://localhost:{port}\") as client:\n        response = await client.{method}(\"{route}\", json=payload)\n    assert response.status_code == 200\n\n    deadline = asyncio.get_event_loop().time() + 20\n    trace = None\n    async with httpx.AsyncClient(base_url=JAEGER_URL) as jaeger:\n        while asyncio.get_event_loop().time() < deadline:\n            resp = await jaeger.get(\"/api/traces\", params={{\"service\": \"{jaeger_service}\", \"limit\": 5}})\n            if resp.status_code == 200:\n                traces = resp.json().get(\"data\", [])\n                if traces:\n                    trace = traces[0]\n                    break\n            await asyncio.sleep(1)\n    assert trace is not None, \"no trace reported to Jaeger for {jaeger_service}\"\n    span_count = len(trace[\"spans\"])\n    assert span_count >= {min_spans}, (\n        f\"expected the request/call/publish/consume chain to produce at least \"\n        f\"{min_spans} spans under one trace id, got {{span_count}}\"\n    )\n",
+            name = check.name,
+            sample = check.producer.sample_json,
+            port = check.producer.host_port,
+            method = check.producer.method_lower,
+            route = check.producer.route,
+            jaeger_service = check.jaeger_service,
+            min_spans = check.min_spans,
+        ));
+    }
+    out
+}
+
+/// Generated by CIaC (v0.15 M6). Scope-enforcement tests against a
+/// live IdP: mints real access tokens from the dev Keycloak realm via
+/// `scripts/token.sh` (the resource-owner-password-credentials
+/// grant), then asserts a request with no token is rejected, one with
+/// a token that lacks the required scope is rejected, and one with a
+/// token that carries it succeeds -- the 403-without/200-with claim
+/// from v0.14 M6, now against a real IdP instead of a locally-signed
+/// JWT (only possible for the `jwt` scheme; see `scope_tests.rs.j2`/
+/// `test_smoke.py.j2`'s `jwt`-only gate). Requires `ciac verify
+/// --system` with `users Keycloak` declared (Keycloak up, realm
+/// imported).
+fn render_scope_tests(checks: &[ScopeCheck]) -> String {
+    let mut out = String::from(
+        "\"\"\"Generated by CIaC (v0.15 M6). Scope-enforcement tests against a\nlive IdP: mints real access tokens from the dev Keycloak realm via\n`scripts/token.sh` (password grant), then asserts a request with no\ntoken is rejected, one with a token lacking the required scope is\nrejected, and one with a token that carries it succeeds. Requires\n`ciac verify --system` with `users Keycloak` declared (Keycloak up,\nrealm imported).\n\"\"\"\n\nimport json\nimport subprocess\nfrom pathlib import Path\n\nimport httpx\nimport pytest\n\nTOKEN_SCRIPT = Path(__file__).resolve().parents[2] / \"scripts\" / \"token.sh\"\n\n\ndef _token(user: str, scope: str) -> str:\n    result = subprocess.run(\n        [\"bash\", str(TOKEN_SCRIPT), user, scope],\n        capture_output=True,\n        text=True,\n        check=True,\n    )\n    return result.stdout.strip()\n",
+    );
+    for check in checks {
+        let service_snake = to_snake(&check.service);
+        if let Some(read_scope) = &check.read_scope {
+            out.push_str(&format!(
+                "\n\n@pytest.mark.anyio\nasync def test_{service_snake}_{resource}_read_requires_scope() -> None:\n    async with httpx.AsyncClient(base_url=\"http://localhost:{port}\") as client:\n        anon = await client.get(\"/{plural}\")\n        assert anon.status_code in (401, 403), anon.text\n\n        no_scope = _token(\"dev-user\", \"\")\n        forbidden = await client.get(\n            \"/{plural}\", headers={{\"Authorization\": f\"Bearer {{no_scope}}\"}}\n        )\n        assert forbidden.status_code == 403, forbidden.text\n\n        scoped = _token(\"dev-admin\", \"{scope}\")\n        allowed = await client.get(\n            \"/{plural}\", headers={{\"Authorization\": f\"Bearer {{scoped}}\"}}\n        )\n        assert allowed.status_code not in (401, 403), allowed.text\n",
+                service_snake = service_snake,
+                resource = check.resource,
+                port = check.host_port,
+                plural = check.plural,
+                scope = read_scope,
+            ));
+        }
+        if let Some(write_scope) = &check.write_scope {
+            out.push_str(&format!(
+                "\n\n@pytest.mark.anyio\nasync def test_{service_snake}_{resource}_write_requires_scope() -> None:\n    payload = json.loads('{sample}')\n    async with httpx.AsyncClient(base_url=\"http://localhost:{port}\") as client:\n        anon = await client.post(\"/{plural}\", json=payload)\n        assert anon.status_code in (401, 403), anon.text\n\n        no_scope = _token(\"dev-user\", \"\")\n        forbidden = await client.post(\n            \"/{plural}\", json=payload, headers={{\"Authorization\": f\"Bearer {{no_scope}}\"}}\n        )\n        assert forbidden.status_code == 403, forbidden.text\n\n        scoped = _token(\"dev-admin\", \"{scope}\")\n        allowed = await client.post(\n            \"/{plural}\", json=payload, headers={{\"Authorization\": f\"Bearer {{scoped}}\"}}\n        )\n        assert allowed.status_code not in (401, 403), allowed.text\n",
+                service_snake = service_snake,
+                resource = check.resource,
+                sample = check.sample_json,
+                port = check.host_port,
+                plural = check.plural,
+                scope = write_scope,
+            ));
+        }
+    }
+    out
+}
+
 fn to_snake(name: &str) -> String {
     use heck::ToSnakeCase;
     name.to_snake_case()
@@ -690,6 +934,51 @@ service Transcoder {
         assert!(
             build(&ir).is_none(),
             "auth-gated crud has no credentials to present"
+        );
+    }
+
+    #[test]
+    fn scoped_oauth2_resource_without_users_builds_no_scope_tests() {
+        let ir = compile(
+            "service Accounts;\nuse { db Postgres; auth OAuth2 { issuer: \"https://real-idp.example\"; } }\nrecord Account { id: Uuid; email: String; }\ncrud Account: Account { read_scope: \"accounts:read\"; write_scope: \"accounts:write\"; }\n",
+        );
+        // No `users Keycloak` -- no live IdP to mint a real token from,
+        // and nothing else here qualifies (auth-gated crud is also
+        // skipped by capability checks), so there's nothing to build.
+        assert!(build(&ir).is_none());
+    }
+
+    #[test]
+    fn scoped_oauth2_resource_with_users_builds_live_scope_tests() {
+        let ir = compile(
+            "service Accounts;\nuse { db Postgres; auth OAuth2; users Keycloak; }\nrecord Account { id: Uuid; email: String; }\ncrud Account: Account { read_scope: \"accounts:read\"; write_scope: \"accounts:write\"; }\n",
+        );
+        let files = build(&ir).expect("scoped resource on a users-backed oauth2 service qualifies");
+        let (_, scopes) = files
+            .iter()
+            .find(|(p, _)| p == "test_scopes.py")
+            .expect("test_scopes.py generated");
+        assert!(
+            scopes.contains("test_accounts_account_read_requires_scope"),
+            "{scopes}"
+        );
+        assert!(
+            scopes.contains("test_accounts_account_write_requires_scope"),
+            "{scopes}"
+        );
+        assert!(
+            scopes.contains(r#"_token("dev-admin", "accounts:read")"#),
+            "{scopes}"
+        );
+        assert!(
+            scopes.contains(r#"_token("dev-admin", "accounts:write")"#),
+            "{scopes}"
+        );
+        assert!(scopes.contains(r#"_token("dev-user", "")"#), "{scopes}");
+        assert!(scopes.contains("parents[2]"), "{scopes}");
+        assert!(
+            scopes.contains(r#"json.loads('{"email":"test"}')"#),
+            "{scopes}"
         );
     }
 

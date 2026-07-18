@@ -29,9 +29,19 @@ pub struct AppState {
     pub queue: crate::queue::Queue,
 {%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
-    /// JWKS fetched from the issuer at startup; `Claims` selects the
-    /// key matching each token's `kid`.
-    pub jwks: jsonwebtoken::jwk::JwkSet,
+    /// Lazy, cached JWKS lookup; `Claims` selects the key matching
+    /// each token's `kid`.
+    pub jwks: crate::auth::Jwks,
+{%- endif %}
+{%- if c.has_db or c.has_queue %}
+    /// `None` in production; `Some` only when constructed via
+    /// [`AppState::simulation`] (v0.17 M11) -- every world-guarded
+    /// call site (`db.insert`, broker `publish`) checks this first,
+    /// reading/writing the in-memory `SimWorld` instead of the real
+    /// pool/broker client fields above, which still exist (so this
+    /// struct's shape doesn't fork between production and simulation
+    /// builds) but are never touched while `world` is `Some`.
+    pub world: Option<std::sync::Arc<crate::world::SimWorld>>,
 {%- endif %}
 }
 
@@ -86,19 +96,17 @@ impl AppState {
 {%- endfor %}
 {%- if c.has_queue %}
 {%- if c.queue_engine == "kafka" %}
-        let queue = crate::queue::Queue::connect(&config.kafka_url).await?;
+        let queue = crate::queue::Queue::new(&config.kafka_url)?;
 {%- else %}
-        let queue = crate::queue::Queue::connect(&config.nats_url).await?;
+        // Lazy: no broker connection happens here (v0.17 M11) -- the
+        // first publish/subscribe call connects and caches the client.
+        let queue = crate::queue::Queue::new(&config.nats_url);
 {%- endif %}
 {%- endif %}
 {%- if c.auth_scheme == "oauth2" %}
-        let jwks: jsonwebtoken::jwk::JwkSet = reqwest::get(format!(
-            "{}/.well-known/jwks.json",
-            config.oauth_issuer.trim_end_matches('/')
-        ))
-        .await?
-        .json()
-        .await?;
+        // Lazy: no network call happens here (v0.17 M11) -- the first
+        // request bearing a token triggers the fetch, cached after.
+        let jwks = crate::auth::Jwks::new(config.oauth_issuer.clone());
 {%- endif %}
         Ok(Self {
             config,
@@ -126,6 +134,45 @@ impl AppState {
 {%- if c.auth_scheme == "oauth2" %}
             jwks,
 {%- endif %}
+{%- if c.has_db or c.has_queue %}
+            world: None,
+{%- endif %}
         })
     }
+{%- if c.has_db or c.has_queue %}
+
+    /// Constructs `AppState` against an in-memory [`crate::world::
+    /// SimWorld`] instead of real infrastructure (v0.17 M11). Delegates
+    /// to [`AppState::new`] for every other field -- safe because every
+    /// one of them is already lazy (`connect_lazy` pools, the lazy
+    /// broker client, the lazy JWKS lookup all added earlier this same
+    /// milestone specifically so this could be true): constructing them
+    /// never touches the network, and the world-guarded call sites
+    /// never fall through to them once `world` is `Some`. `config` is
+    /// still required, not defaulted: a still-unguarded field (e.g. an
+    /// OAuth2 issuer) may be read even under simulation, a gap this
+    /// constructor discloses by requiring real config rather than
+    /// inventing placeholder values.
+    pub async fn simulation(
+        config: Config,
+        world: std::sync::Arc<crate::world::SimWorld>,
+    ) -> anyhow::Result<Self> {
+        let mut state = Self::new(config).await?;
+        state.world = Some(world);
+        Ok(state)
+    }
+{%- endif %}
+{%- if c.has_queue %}
+
+    /// Publishes to the broker -- the world-guarded path every
+    /// generated publish call site goes through (v0.17 M11), instead
+    /// of calling `self.queue.publish` directly, so it never touches
+    /// the real broker client while `self.world` is `Some`.
+    pub async fn publish(&self, subject: &str, payload: Vec<u8>) -> anyhow::Result<()> {
+        if let Some(world) = &self.world {
+            return world.publish_checked(subject, payload);
+        }
+        self.queue.publish(subject, payload).await
+    }
+{%- endif %}
 }

@@ -7,6 +7,9 @@
 {% if t.schema_imports -%}
 use crate::schemas::{{ "{" }}{{ t.schema_imports | join(", ") }}{{ "}" }};
 {% endif -%}
+{%- if c.has_tracing %}
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+{% endif -%}
 use crate::state::AppState;
 
 /// Calls `{{ t.service }}` over HTTP and unwraps its response envelope.
@@ -26,8 +29,20 @@ impl<'a> {{ t.class_name }}<'a> {
 {%- if not a.has_body %}
         let _ = payload;
 {%- endif %}
+{%- if c.has_tracing %}
+        let mut headers = reqwest::header::HeaderMap::new();
+        opentelemetry::global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(
+                &tracing::Span::current().context(),
+                &mut opentelemetry_http::HeaderInjector(&mut headers),
+            )
+        });
+{%- endif %}
         let response = reqwest::Client::new()
             .{{ a.http_method_lower }}(format!("{}{{ a.path }}", self.base_url))
+{%- if c.has_tracing %}
+            .headers(headers)
+{%- endif %}
 {%- if a.has_body %}
             .json(&payload)
 {%- endif %}

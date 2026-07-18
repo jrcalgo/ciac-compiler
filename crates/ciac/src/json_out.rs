@@ -5,9 +5,10 @@
 //! to ciac's release number.
 
 use ciac_diagnostics::{Diagnostics, Severity, SourceMap};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-pub const JSON_VERSION: u32 = 1;
+/// v0.15 M7 bumped this from 1: `JsonDiagnostic` gained `fixes`.
+pub const JSON_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
 pub struct Envelope {
@@ -18,6 +19,65 @@ pub struct Envelope {
     /// `diff --json` only (v0.10 M4): the regeneration plan as data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entries: Option<Vec<DiffEntry>>,
+    /// `diff --semantic --json` only (v0.18 M3): the typed architecture
+    /// changelist. Disjoint from `entries` — a given `diff` invocation
+    /// is regeneration-diff or semantic-diff, never both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SemanticDiffResult>,
+    /// `sim --json` only (v0.17 M10): the per-scenario outcomes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sim: Option<SimResult>,
+}
+
+/// `ciac sim`'s result payload: the plan the scenarios ran against, and
+/// one outcome per `--scenario`.
+#[derive(Debug, Serialize)]
+pub struct SimResult {
+    pub plan_hash: String,
+    pub source_hash: String,
+    pub scenarios: Vec<SimScenarioOutcome>,
+}
+
+/// One scenario's outcome, parsed directly from `auto_driver.py`'s own
+/// one-line JSON reply (v0.17 M10's bounded child protocol) — field
+/// names match its output verbatim, so nothing is relabeled crossing
+/// from the Python side to the Rust side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimScenarioOutcome {
+    pub scenario: String,
+    pub passed: bool,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub worker_attempts: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    pub job_runs: std::collections::BTreeMap<String, u32>,
+}
+
+/// `ciac diff --semantic`'s result payload (v0.18 M3).
+#[derive(Debug, Serialize)]
+pub struct SemanticDiffResult {
+    pub semantic_diff_version: u32,
+    pub policy: SemanticDiffPolicy,
+    pub summary: SemanticDiffSummary,
+    pub changes: Vec<ciac_codegen::semantic_diff::Change>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SemanticDiffPolicy {
+    pub deny_breaking: bool,
+    /// `false` only when `deny_breaking` is set and at least one
+    /// `Breaking` change was found — a policy failure still returns
+    /// the complete valid result (18UpdatePlan.md Pillar 8), it's
+    /// never folded into `success` alone without also being visible
+    /// here.
+    pub passed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SemanticDiffSummary {
+    pub breaking: usize,
+    pub additive: usize,
+    pub internal: usize,
 }
 
 /// One regeneration-plan entry — what a real `ciac build` would do to
@@ -48,6 +108,11 @@ pub struct JsonDiagnostic {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
     pub labels: Vec<JsonLabel>,
+    /// Applyable fixes (v0.15 M7) — mechanical, unambiguous edits only.
+    /// Never applied by `ciac check` itself; an editor's quick-fix or
+    /// an agent's check → apply → re-check loop applies one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<JsonFix>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +124,28 @@ pub struct JsonLabel {
     pub end_line: u32,
     pub end_column: u32,
     pub message: String,
+}
+
+/// A [`ciac_diagnostics::Fix`] with every edit's span resolved to
+/// file/line/column, same shape as [`JsonLabel`] (v0.15 M7).
+/// `Deserialize` too: `ciac lsp`'s `codeAction` handler round-trips
+/// this through an LSP diagnostic's `data` field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonFix {
+    pub title: String,
+    pub edits: Vec<JsonEdit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonEdit {
+    pub file: String,
+    /// 1-based, inclusive. `line == end_line && column == end_column`
+    /// is a pure insertion.
+    pub line: u32,
+    pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub replacement: String,
 }
 
 pub fn envelope(
@@ -94,6 +181,30 @@ pub fn envelope(
                     }
                 })
                 .collect(),
+            fixes: diag
+                .fixes
+                .iter()
+                .map(|fix| JsonFix {
+                    title: fix.title.clone(),
+                    edits: fix
+                        .edits
+                        .iter()
+                        .map(|edit| {
+                            let file = sources.file(edit.span.file);
+                            let (line, column) = file.line_col(edit.span.start);
+                            let (end_line, end_column) = file.line_col(edit.span.end);
+                            JsonEdit {
+                                file: file.name.clone(),
+                                line,
+                                column,
+                                end_line,
+                                end_column,
+                                replacement: edit.replacement.clone(),
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
         })
         .collect();
     Envelope {
@@ -102,6 +213,8 @@ pub fn envelope(
         success,
         diagnostics,
         entries: None,
+        semantic: None,
+        sim: None,
     }
 }
 

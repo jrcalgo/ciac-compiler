@@ -8,6 +8,7 @@ instance gets its own client.
 import redis.asyncio as redis
 
 from app.config import get_settings
+from app.state import current
 
 
 def _urls() -> dict[str, str]:
@@ -19,12 +20,14 @@ def _urls() -> dict[str, str]:
     }
 
 
-_clients: dict[str, redis.Redis] = {}
-
-
 def get_cache(instance: str = "default") -> redis.Redis:
-    if instance not in _clients:
-        _clients[instance] = redis.Redis.from_url(
+    state = current()
+    if state.world is not None:
+        # v0.17 M7: the checkpoint's cache port.
+        return state.world.fake_cache(instance)
+    caches = state.caches
+    if instance not in caches:
+        caches[instance] = redis.Redis.from_url(
             _urls()[instance], decode_responses=True
         )
-    return _clients[instance]
+    return caches[instance]

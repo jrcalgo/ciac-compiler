@@ -10,6 +10,7 @@ mod lexer;
 pub mod module;
 mod parser;
 mod registry;
+pub mod rename_index;
 
 pub use lexer::{lex, Token, TokenKind};
 pub use module::load;

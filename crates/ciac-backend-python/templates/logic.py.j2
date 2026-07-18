@@ -28,6 +28,9 @@ from redis.asyncio import Redis
 {%- if handler.needs_db %}
 from sqlalchemy.ext.asyncio import AsyncSession
 {%- endif %}
+{%- if handler.sa_query_imports %}
+from sqlalchemy import {{ handler.sa_query_imports | join(", ") }}
+{%- endif %}
 {%- for extra in handler.extras %}
 {%- if extra.kind != "external_http" %}
 from app.{{ extra.py_module }} import {{ extra.py_type }}

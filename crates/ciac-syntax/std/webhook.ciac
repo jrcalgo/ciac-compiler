@@ -1,0 +1,26 @@
+// Standard blueprint: a webhook receiver. Exposes a typed POST
+// endpoint at `path` that accepts a `Payload`, republishes it
+// unmodified onto a stream (`Received`), and echoes it back to the
+// caller — the shape every inbound-webhook integration starts from:
+// validate the shape at the edge, hand the event to the rest of the
+// system as a stream, done. A `worker` elsewhere in the service (or
+// in another service, via its own `stream`-consuming `worker`) reacts
+// to `Received`; this blueprint doesn't presume what that reaction is.
+blueprint Webhook<Payload: record> {
+    params { path: String; }
+
+    stream Received: Payload;
+
+    handler Receive(payload: Payload) -> Payload {
+        publish Received(payload);
+        return payload;
+    }
+
+    api Ingest: Payload {
+        method: POST;
+        path: path;
+    }
+    pipeline Ingest:
+        Receive
+        -> Return;
+}

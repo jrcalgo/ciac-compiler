@@ -13,9 +13,25 @@
 //! Scope, per 13UpdatePlan.md: `check`, `build`, `diff`, `verify`
 //! (no `--system`/`--live` — those boot Docker and belong to a human
 //! at a terminal), `graph`, `explain`, `describe`.
+//!
+//! v0.18 M7 (18UpdatePlan.md Pillar 8) adds `diff_semantic` (reusing
+//! [`commands::diff_semantic_envelope`] verbatim) and `rename` (reusing
+//! [`crate::rename::rename_tool`]) — the same envelope-sharing
+//! discipline extended to the two new features.
+//!
+//! v0.17 M10 adds `verify_sim`: `verify`'s static truth followed by
+//! bounded, in-process simulation (Python-only) — reusing
+//! [`commands::verify_sim_envelope`]. Its own claim boundary is stated
+//! inline in the tool's `description` (17UpdatePlan.md's MCP
+//! disclosure requirement), not deferred to `docs/simulation.md`
+//! alone. Bounded for unattended callers: a fixed scenario-count cap
+//! and wall-clock timeout ([`commands::MCP_SIM_MAX_SCENARIOS`],
+//! [`commands::MCP_SIM_WALL_TIMEOUT`]) neither the CLI's `ciac sim` nor
+//! `verify --sim` enforce, since a human at a terminal can already
+//! interrupt a stuck run.
 
 use crate::commands;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -155,6 +171,22 @@ fn tools_list_result() -> Value {
             }),
         ),
         tool(
+            "verify_sim",
+            "Bounded, in-process behavioral verification (v0.17): after the same static check `verify` performs, runs each given scenario's scripted requests/publishes/time-advances against the generated project's real code with in-memory fakes standing in for the database, broker, cache, object store, email, search, and external HTTP -- no Docker, no network, no wall-clock sleep. `target: python` fakes every capability; `target: rust` (v0.17 M11) fakes only db.insert/broker publish-consume/cron jobs and is refused with the specific reason for any program calling something it doesn't cover. Claim boundary: this proves the exercised generated logic and topology behave as scripted against these fakes; it does NOT prove SQL dialect fidelity, broker delivery durability, cryptography, or real network behavior -- `verify --system` against real provider containers remains the outer truth for those. User-authored target code (handlers, extern logic) executes for real during this call. Bounded for unattended use: at most 5 scenarios per call, and the whole call is killed if it exceeds a fixed wall-clock limit. Cannot boot Docker, cannot run --live/--system, and cannot write an arbitrary --record/--replay path.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop, "target": target_prop, "out": out_prop, "name": name_prop,
+                    "scenario": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One or more portable scenario JSON file paths (ciac_sim::Scenario), at most 5.",
+                    },
+                },
+                "required": ["file", "target", "out", "scenario"],
+            }),
+        ),
+        tool(
             "graph",
             "Dump the validated system graph.",
             json!({
@@ -179,6 +211,52 @@ fn tools_list_result() -> Value {
             "describe",
             "The language and CLI's machine-facing vocabulary (capabilities, providers, field types, builtin steps, declaration kinds, error codes, scaffold templates) as one versioned JSON document.",
             json!({"type": "object", "properties": {}}),
+        ),
+        tool(
+            "fix",
+            "Apply a named fix `check` offered for a diagnostic (v0.15 M7): `code` selects the diagnostic (e.g. CIAC0005), `index` selects among its offered fixes when it has more than one (default 0). Dry-run by default -- pass apply: true to write the patched source and re-check.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop,
+                    "code": {"type": "string", "description": "Diagnostic code carrying the fix, e.g. CIAC0005."},
+                    "index": {"type": "integer", "description": "Which of that diagnostic's offered fixes to use. Defaults to 0."},
+                    "apply": {"type": "boolean", "description": "Write the patched source to `file` and re-check. Defaults to false (preview only)."},
+                },
+                "required": ["file", "code"],
+            }),
+        ),
+        tool(
+            "diff_semantic",
+            "Compare this program's canonical semantic model against a baseline (checked-in by default), classifying each change as breaking, additive, or internal (v0.18 Pillar 1/2).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop,
+                    "against": {"type": "string", "description": "Compare against another .ciac source file instead of a baseline."},
+                    "baseline": {"type": "string", "description": "Compare against a specific checked-in baseline JSON file instead of the default."},
+                    "deny_breaking": {"type": "boolean", "description": "Fail if any breaking change is present. Defaults to false."},
+                },
+                "required": ["file"],
+            }),
+        ),
+        tool(
+            "rename",
+            "Rename a declared symbol across the whole program (v0.18 Pillar 6). Locate the symbol either by position (`target_file`+`line`+`column`) or by qualified name (`old`); `to`/`new_name` gives the replacement. Dry-run by default -- pass apply: true to stage, recompile-check, and commit the edits. Source-only: does not replay any generated --out tree's regeneration.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": file_prop,
+                    "target_file": {"type": "string", "description": "File containing the symbol, for position-based lookup."},
+                    "line": {"type": "integer", "description": "1-based line of the symbol, for position-based lookup."},
+                    "column": {"type": "integer", "description": "1-based column of the symbol, for position-based lookup."},
+                    "to": {"type": "string", "description": "New name, for position-based lookup."},
+                    "old": {"type": "string", "description": "Qualified old name, e.g. `Order` or `Order.total`, for name-based lookup."},
+                    "new_name": {"type": "string", "description": "New name, for name-based lookup."},
+                    "apply": {"type": "boolean", "description": "Write the renamed files. Defaults to false (preview only)."},
+                },
+                "required": ["file"],
+            }),
         ),
     ]})
 }
@@ -206,6 +284,7 @@ fn tools_call(params: &Value) -> Result<Value> {
                 image_tag: "latest".to_owned(),
                 profile: "dev".to_owned(),
                 secrets: false,
+                semantic_baseline: None,
             };
             let (envelope, _code) = commands::build_envelope(&file, &target, &out, deploy, name)?;
             serde_json::to_string_pretty(&envelope)?
@@ -227,6 +306,23 @@ fn tools_call(params: &Value) -> Result<Value> {
             let (envelope, _code) = commands::verify_envelope(&file, &target, &out, name)?;
             serde_json::to_string_pretty(&envelope)?
         }
+        "verify_sim" => {
+            let file = arg_path(&args, "file")?;
+            let target = arg_str(&args, "target")?;
+            let out = arg_path(&args, "out")?;
+            let name = arg_opt_str(&args, "name");
+            let scenario = arg_path_list(&args, "scenario")?;
+            let (envelope, _code) = commands::verify_sim_envelope(
+                &file,
+                &target,
+                &out,
+                &scenario,
+                name,
+                Some(commands::MCP_SIM_WALL_TIMEOUT),
+                Some(commands::MCP_SIM_MAX_SCENARIOS),
+            )?;
+            serde_json::to_string_pretty(&envelope)?
+        }
         "graph" => {
             let file = arg_path(&args, "file")?;
             let format = args.get("format").and_then(Value::as_str).unwrap_or("json");
@@ -242,6 +338,81 @@ fn tools_call(params: &Value) -> Result<Value> {
             commands::explain_document(&code)?
         }
         "describe" => serde_json::to_string_pretty(&crate::describe::build())?,
+        "fix" => {
+            let file = arg_path(&args, "file")?;
+            let code = arg_str(&args, "code")?;
+            let index = args.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let (_, _, _sources, diags) = commands::front_end_quiet(&file)?;
+            let diag = diags
+                .iter()
+                .find(|d| <&'static str>::from(d.code) == code)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no `{code}` diagnostic reported for {}", file.display())
+                })?;
+            let fix = diag.fixes.get(index).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`{code}` offers no fix at index {index} (has {})",
+                    diag.fixes.len()
+                )
+            })?;
+            let src = std::fs::read_to_string(&file)
+                .with_context(|| format!("cannot read {}", file.display()))?;
+            let patched = fix.apply(&src);
+            if apply {
+                std::fs::write(&file, &patched)
+                    .with_context(|| format!("cannot write {}", file.display()))?;
+                let (envelope, _code) = commands::check_envelope(&file)?;
+                serde_json::to_string_pretty(&json!({
+                    "applied": true,
+                    "fix": fix.title,
+                    "recheck": envelope,
+                }))?
+            } else {
+                serde_json::to_string_pretty(&json!({
+                    "applied": false,
+                    "fix": fix.title,
+                    "patched_source": patched,
+                }))?
+            }
+        }
+        "diff_semantic" => {
+            let file = arg_path(&args, "file")?;
+            let against = arg_opt_str(&args, "against").map(PathBuf::from);
+            let baseline = arg_opt_str(&args, "baseline").map(PathBuf::from);
+            let deny_breaking = args
+                .get("deny_breaking")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (envelope, _code) = commands::diff_semantic_envelope(
+                &file,
+                against.as_deref(),
+                baseline.as_deref(),
+                deny_breaking,
+            )?;
+            serde_json::to_string_pretty(&envelope)?
+        }
+        "rename" => {
+            let file = arg_path(&args, "file")?;
+            let target_file = arg_opt_str(&args, "target_file").map(PathBuf::from);
+            let line = args.get("line").and_then(Value::as_u64).map(|v| v as u32);
+            let column = args.get("column").and_then(Value::as_u64).map(|v| v as u32);
+            let to = arg_opt_str(&args, "to");
+            let old = arg_opt_str(&args, "old");
+            let new_name = arg_opt_str(&args, "new_name");
+            let apply = args.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            let result = crate::rename::rename_tool(
+                &file,
+                target_file.as_deref(),
+                line,
+                column,
+                to.as_deref(),
+                old.as_deref(),
+                new_name.as_deref(),
+                apply,
+            )?;
+            serde_json::to_string_pretty(&result)?
+        }
         other => anyhow::bail!("unknown tool `{other}`"),
     };
     Ok(json!({"content": [{"type": "text", "text": text}], "isError": false}))
@@ -260,4 +431,19 @@ fn arg_opt_str(args: &Value, key: &str) -> Option<String> {
 
 fn arg_path(args: &Value, key: &str) -> Result<PathBuf> {
     arg_str(args, key).map(PathBuf::from)
+}
+
+fn arg_path_list(args: &Value, key: &str) -> Result<Vec<PathBuf>> {
+    let items = args
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("missing required argument `{key}`"))?;
+    items
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("`{key}` must be an array of strings"))
+        })
+        .collect()
 }

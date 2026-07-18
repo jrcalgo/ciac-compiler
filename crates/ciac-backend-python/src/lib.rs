@@ -18,10 +18,14 @@
 //! running: database, cache, and queue clients are created lazily, so the
 //! generated smoke tests pass on a bare checkout.
 
+mod filters;
 mod lower;
 
 use ciac_codegen::model as context;
-use ciac_codegen::{Backend, BackendError, GenOptions, GeneratedProject};
+use ciac_codegen::{
+    Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
+    TargetInfo, ValidateStep,
+};
 use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
@@ -42,6 +46,51 @@ const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
         data_mount: "/app/data",
     };
 
+/// The literal CI test-step YAML for this target (v0.22 M1, formerly
+/// `ciac-codegen::ci::PYTHON_TEST_STEPS`). Not `"\` + indented
+/// continuation lines: a backslash-newline in a Rust string literal
+/// strips *all* leading whitespace on the next line, not just the
+/// newline, which silently de-indents the first YAML step.
+const CI_TEST_STEPS: &str = "      - uses: astral-sh/setup-uv@v3\n      - run: uv sync\n      - run: uv run ruff check .\n      - run: uv run pytest -q\n";
+
+/// This target's whole CLI/CI/compose/dev-loop/sim integration surface
+/// (v0.22 M1 — `22UpdatePlan.md` Pillar 1), consumed by `commands.rs`/
+/// `dev.rs`/`vocab.rs` through the `Backend` trait instead of a
+/// per-call-site `match target { "python" => .., .. }`.
+static TARGET_INFO: TargetInfo = TargetInfo {
+    project_marker: "pyproject.toml",
+    migrations_dir: "app/migrations",
+    migration_filename: |seq, _slug| format!("{seq:04}_migration.sql"),
+    validate: &[
+        ValidateStep {
+            program: "uv",
+            args: &["sync", "-q"],
+            env: &[],
+            purpose: "dependencies installed",
+        },
+        ValidateStep {
+            program: "uv",
+            args: &["run", "ruff", "check", "."],
+            env: &[],
+            purpose: "lints",
+        },
+        ValidateStep {
+            program: "uv",
+            args: &["run", "pytest", "-q"],
+            env: &[],
+            purpose: "unit tests pass",
+        },
+    ],
+    ci_test_steps: CI_TEST_STEPS,
+    compose: COMPOSE_OPTS,
+    dev: DevCommands {
+        rebuild: &[],
+        restart: RestartStyle::Restart,
+    },
+    source_extension: "py",
+    sim: SimSupport::Full,
+};
+
 #[derive(Debug, Default)]
 pub struct PythonBackend;
 
@@ -60,18 +109,24 @@ impl Backend for PythonBackend {
         true
     }
 
+    fn target_info(&self) -> &'static TargetInfo {
+        &TARGET_INFO
+    }
+
     fn generate(
         &self,
         ir: &NormalizedIr,
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
+        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
             (
                 f.path().to_str().expect("template names are utf-8"),
                 f.contents_utf8().expect("templates are utf-8"),
             )
         }))?;
+        env.add_filter("py_type", filters::py_type);
+        env.add_filter("py_out_type", filters::py_out_type);
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -94,6 +149,22 @@ impl Backend for PythonBackend {
                 env.get_template("system-README.md.j2")?
                     .render(context! { m => m })?,
             );
+            project.add_file(
+                "openapi.json",
+                serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
+                    .map_err(|e| BackendError::Other(e.to_string()))?,
+            );
+            if model.has_tracing {
+                project.add_file(
+                    "otel-collector-config.yaml",
+                    ciac_codegen::compose::OTEL_COLLECTOR_CONFIG,
+                );
+            }
+            if model.has_users {
+                for (path, content) in ciac_codegen::users::build(&model) {
+                    project.add_file(path, content);
+                }
+            }
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
                  `docker compose up` runs them all together"
@@ -139,11 +210,32 @@ fn emit_service(
     project.add_file(at("pyproject.toml"), render("pyproject.toml.j2", empty())?);
     project.add_file(at("README.md"), render("README.md.j2", empty())?);
     project.add_file(at("Dockerfile"), render("Dockerfile.j2", empty())?);
+    // Docker doesn't read .gitignore — without this, a `.venv/` left
+    // behind by a native `uv sync` run against this project (as `ciac
+    // verify` does before handing off to `docker compose`) becomes
+    // part of the build context on every image layer transfer.
+    project.add_file(at(".dockerignore"), ".venv\n__pycache__\n.pytest_cache\n");
     if !multi {
         project.add_file(
             at("docker-compose.yml"),
             ciac_codegen::compose::render_service_compose(ctx, &COMPOSE_OPTS)?,
         );
+        if ctx.has_tracing {
+            project.add_file(
+                at("otel-collector-config.yaml"),
+                ciac_codegen::compose::OTEL_COLLECTOR_CONFIG,
+            );
+        }
+        if ctx.has_users {
+            project.add_file(
+                at("keycloak-realm.json"),
+                ciac_codegen::users::realm_json(&ctx.scopes),
+            );
+            project.add_file(
+                at("scripts/token.sh"),
+                ciac_codegen::users::token_script(&ctx.scopes),
+            );
+        }
     }
     project.add_file(at("conftest.py"), render("conftest.py.j2", empty())?);
     project.add_file(
@@ -154,7 +246,13 @@ fn emit_service(
         ),
     );
     project.add_file(at("app/main.py"), render("main.py.j2", empty())?);
+    project.add_file(
+        at("openapi.json"),
+        serde_json::to_string_pretty(&ciac_codegen::openapi::build_document(ctx))
+            .map_err(|e| BackendError::Other(e.to_string()))?,
+    );
     project.add_file(at("app/config.py"), render("config.py.j2", empty())?);
+    project.add_file(at("app/state.py"), render("state.py.j2", empty())?);
     if ctx.has_auth {
         project.add_file(at("app/auth.py"), render("auth.py.j2", empty())?);
     }
@@ -197,7 +295,7 @@ fn emit_service(
             );
         }
     }
-    if ctx.has_logging || ctx.has_metrics {
+    if ctx.has_logging || ctx.has_metrics || ctx.has_tracing {
         project.add_file(
             at("app/observability.py"),
             render("observability.py.j2", empty())?,

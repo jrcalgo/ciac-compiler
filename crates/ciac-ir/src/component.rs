@@ -62,10 +62,17 @@ pub struct ChannelConfig {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CrudConfig {
     pub cache_ttl: u32,
     pub page_size: u32,
+    /// Scope required to read (`GET` list/get) — v0.14 M6. `None`
+    /// means reads only need whatever `crud`'s automatic auth gating
+    /// already requires (any valid token, no specific scope).
+    pub read_scope: Option<String>,
+    /// Scope required to write (`POST`/`PUT`/`PATCH`/`DELETE`) —
+    /// v0.14 M6.
+    pub write_scope: Option<String>,
 }
 
 impl Default for CrudConfig {
@@ -73,6 +80,8 @@ impl Default for CrudConfig {
         Self {
             cache_ttl: 300,
             page_size: 100,
+            read_scope: None,
+            write_scope: None,
         }
     }
 }
@@ -120,6 +129,16 @@ pub enum MetricsProvider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum TracingProvider {
+    OpenTelemetry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum UsersProvider {
+    Keycloak,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ObjectStoreProvider {
     S3,
 }
@@ -161,6 +180,8 @@ pub enum NodeKind {
     Auth,
     Logging,
     Metrics,
+    Tracing,
+    Users,
     ObjectStore,
     Email,
     Search,
@@ -249,6 +270,19 @@ pub enum Component {
         name: String,
         provider: MetricsProvider,
     },
+    Tracing {
+        name: String,
+        provider: TracingProvider,
+    },
+    /// A dev/test identity provider (v0.15 M6): compose gains a seeded
+    /// Keycloak realm (a client plus two dev users), and `auth OAuth2`'s
+    /// `issuer` defaults to this container's dev URL when the program's
+    /// own `use { .. }` block omits one. Never emitted as a k8s/
+    /// Terraform resource -- dev-and-test only, not an identity product.
+    Users {
+        name: String,
+        provider: UsersProvider,
+    },
     ObjectStore {
         name: String,
         provider: ObjectStoreProvider,
@@ -291,6 +325,8 @@ impl Component {
             Component::Auth { .. } => NodeKind::Auth,
             Component::Logging { .. } => NodeKind::Logging,
             Component::Metrics { .. } => NodeKind::Metrics,
+            Component::Tracing { .. } => NodeKind::Tracing,
+            Component::Users { .. } => NodeKind::Users,
             Component::ObjectStore { .. } => NodeKind::ObjectStore,
             Component::Email { .. } => NodeKind::Email,
             Component::Search { .. } => NodeKind::Search,
@@ -315,6 +351,8 @@ impl Component {
             | Component::Auth { name, .. }
             | Component::Logging { name, .. }
             | Component::Metrics { name, .. }
+            | Component::Tracing { name, .. }
+            | Component::Users { name, .. }
             | Component::ObjectStore { name, .. }
             | Component::Email { name, .. }
             | Component::Search { name, .. }
@@ -339,6 +377,8 @@ impl Component {
             Component::Auth { name, scheme, .. } => format!("auth {name} {scheme:?}"),
             Component::Logging { name, provider } => format!("logging {name} {provider:?}"),
             Component::Metrics { name, provider } => format!("metrics {name} {provider:?}"),
+            Component::Tracing { name, provider } => format!("tracing {name} {provider:?}"),
+            Component::Users { name, provider } => format!("users {name} {provider:?}"),
             Component::ObjectStore { name, provider, .. } => {
                 format!("object_store {name} {provider:?}")
             }

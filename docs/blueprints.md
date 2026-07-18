@@ -1,4 +1,4 @@
-# Blueprints (v0.8)
+# Blueprints (v0.8, extended v0.14 M5)
 
 Modules (`import "path";`, v0.8 M1) let a system be split across
 files; blueprints are the other half of "compose programs from
@@ -33,7 +33,9 @@ textually identical apart from the type argument — see Hygiene below.
 blueprint-decl = "blueprint" IDENT "<" IDENT ":" "record" ">"
                  "{" "params" "{" { field } "}"
                      { blueprint-item } "}" ;
-blueprint-item = use-block | crud-decl | stream-decl | handler-decl ;
+blueprint-item = use-block | crud-decl | stream-decl | handler-decl
+                | record-decl | error-decl | table-decl
+                | api-decl | worker-decl | pipeline-decl ;
 expand-stmt    = "expand" IDENT "<" IDENT ">" decl-tail ;
 ```
 
@@ -45,19 +47,33 @@ just at whichever scope it's written in.
   is checked against the record names declared anywhere in the
   resolved program; `expand Blueprint<NotARecord> { .. };` is
   `CIAC0050` (blueprint constraint violation).
-- **A closed body**: `use` / `crud` / `stream` / `handler` only —
-  deliberately *not* `pipeline`/`api`/`worker`/`job`. A blueprint body
-  declares no api/worker/job for a pipeline to attach to, so a
-  `pipeline` inside one has nothing to be a pipeline *of* yet. This is
-  the same "closed, not everything" scoping call `docs/expressions.md`
-  makes for handler bodies.
+- **A closed body**: `use` / `crud` / `stream` / `handler` / `record` /
+  `error` / `table` / `api` / `worker` / `pipeline` — still not the
+  full `Item`/`ServiceItem` grammar (no nested `blueprint`/`expand`/
+  `import`/`job`/`channel`/`events`). v0.8 M2 shipped just
+  `use`/`crud`/`stream`/`handler`; v0.14 M5 grew this to the rest so a
+  body can declare a *complete, self-contained* api-plus-pipeline
+  shape — see "The `std/` blueprint library" below for two real ones.
+  A `pipeline` inside a body may only attach to an `api`/`worker`
+  declared in the *same* body (both get renamed under the same
+  hygiene substitution, so the pair stays attached post-expansion);
+  nothing mechanically stops a step from naming something in the
+  enclosing scope, but the expanded program still has to pass the
+  same graph-build/typeck resolution any hand-written program does,
+  so a dangling or accidental cross-scope reference surfaces as the
+  ordinary "unknown X" diagnostic it would outside a blueprint.
 - **Scalar `params { name: Type; }`**: `String`/`Int` only, matching
   `attr-value`'s existing closed set. Every param is required — no
   optional/defaultable params yet (see Non-goals in
   `08UpdatePlan.md`'s v0.8 M3 plan). An `expand` site's args must name
   every declared param with a value of the declared type, or it's
   `CIAC0049` (blueprint arity mismatch) — missing, unknown, or
-  wrong-typed.
+  wrong-typed. A `params` value reaches three places in the body:
+  attribute values (`path: path;`), a declared name it exactly matches
+  (the param-driven hygiene exception below), and — since v0.14 M5 —
+  bare identifiers inside a handler-body expression (`if accepted >=
+  limit { .. }`), substituted in as the literal `Str`/`Int`/`Bool`
+  value.
 - **Unknown blueprint name**: `expand` naming a blueprint nothing
   declares (or that isn't `import`ed) is `CIAC0048`.
 
@@ -91,14 +107,14 @@ site, so two expansions of the same blueprint never collide:
   the ordinary `CIAC0003` (duplicate declaration) check, the same as
   two hand-written declarations sharing a name.
 
-## The `std/` blueprint library (v0.8 M3)
+## The `std/` blueprint library
 
 `import "std/<name>.ciac";` resolves against a small library embedded
 in the compiler at build time (`crates/ciac-syntax/std/`), not the
 filesystem — a reserved namespace that works regardless of the
 importing file's location or the user's own directory layout.
 
-Today's one entry, `std/crud.ciac`:
+`std/crud.ciac` (v0.8 M3):
 
 ```ciac
 blueprint Crud<R: record> {
@@ -121,11 +137,56 @@ verb vocabulary (`query`, pagination, cache-aside as expressible
 handler-body operations) the language doesn't have yet, a
 substantially larger feature than a std library on its own.
 
-Further `std/` blueprints (an event pipeline, a webhook receiver, an
-outbox publisher, a rate-limited API) are deferred: each needs
-`worker`/`pipeline` inside a blueprint body, a real `BlueprintItem`
-extension with its own hygiene questions, better justified once a
-second concrete blueprint actually needs it.
+`std/webhook.ciac` (v0.14 M5) — a webhook receiver: a typed POST
+endpoint that republishes its validated payload onto a stream for a
+worker elsewhere to react to:
+
+```ciac
+blueprint Webhook<Payload: record> {
+    params { path: String; }
+    stream Received: Payload;
+    handler Receive(payload: Payload) -> Payload {
+        publish Received(payload);
+        return payload;
+    }
+    api Ingest: Payload { method: POST; path: path; }
+    pipeline Ingest: Receive -> Return;
+}
+```
+
+`std/rate-limited-api.ciac` (v0.14 M5) — a request-capped typed API.
+The original forecast for this blueprint (see `14UpdatePlan.md`)
+sketched a cache-backed counter inspected with `if cache.get k as V
+is v { .. }`-style optional unwrapping; that construct doesn't exist
+yet (v0.14 M1 deliberately deferred `is`-unwrap over verb-returned
+optionals — see `docs/expressions.md`), so this blueprint reaches the
+same request-capping effect with what's actually expressible today: a
+`Ticket` row per accepted request and `db.count` against the running
+total — a cumulative quota (accept up to `limit` requests, ever)
+rather than a decaying time window. `limit` is supplied per `expand`
+site and reaches the handler body directly, proving `params`
+substitution now covers expression code, not just attributes and
+declaration-name overrides:
+
+```ciac
+expand RateLimitedApi<Comment> { path: "/comments"; limit: 100; }
+```
+
+Both are proven by `tests/tests/blueprints.rs`'s
+`std_webhook_blueprint_generates_on_both_backends` and
+`std_rate_limited_api_blueprint_generates_on_both_backends` — the
+behavioral half of the "byte-equivalence-or-behavioral" discipline
+`std/crud.ciac` established, since neither has a hand-written
+primitive to diff against. `std/outbox.ciac` (also sketched in the
+v0.14 forecast) stays out of the library: a transactional-outbox
+worker that *drains* a table — process every pending row, publish
+each — needs a loop, and the language has none (a handler body is a
+straight-line effect script by design, see the v0.14 design stance in
+`14UpdatePlan.md`); `db.query`'s result is an opaque list a body can
+only pass through or store whole, never iterate, so "publish one
+event per pending row" isn't expressible as a single handler
+invocation. A future version with a bounded iteration construct could
+revisit this.
 
 ## `registry:` imports (v0.12 M3)
 

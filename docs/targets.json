@@ -1,0 +1,141 @@
+{
+  "targets_version": 1,
+  "targets": [
+    {
+      "id": "python",
+      "description": "Python 3.11+ project using FastAPI, SQLAlchemy, redis-py, and nats-py",
+      "kind": "internal",
+      "project_marker": "pyproject.toml",
+      "validate": [
+        {
+          "program": "uv",
+          "purpose": "dependencies installed"
+        },
+        {
+          "program": "uv",
+          "purpose": "lints"
+        },
+        {
+          "program": "uv",
+          "purpose": "unit tests pass"
+        }
+      ],
+      "sim": {
+        "level": "full"
+      },
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
+    },
+    {
+      "id": "rust",
+      "description": "Rust project using Axum, SQLx, redis, and async-nats/rdkafka",
+      "kind": "internal",
+      "project_marker": "Cargo.toml",
+      "validate": [
+        {
+          "program": "cargo",
+          "purpose": "type-checks (deny warnings)"
+        },
+        {
+          "program": "cargo",
+          "purpose": "unit and generated tests pass"
+        }
+      ],
+      "sim": {
+        "level": "narrow"
+      },
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
+    }
+  ]
+}

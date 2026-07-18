@@ -1,0 +1,7 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(db-insert! AuditEntries (record-cons AuditEntry (id (uuid-new)) (note "order placed")))
+(discard (record-cons AuditEntry (id (uuid-new)) (note "order placed")))
+(return order)

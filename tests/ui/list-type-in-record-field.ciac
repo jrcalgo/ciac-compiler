@@ -1,0 +1,6 @@
+// expect: CIAC0053
+service BadListField;
+
+record Tagged {
+    tags: [String];
+}

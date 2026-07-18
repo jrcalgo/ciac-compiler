@@ -9,6 +9,7 @@ from typing import Any
 from opensearchpy import AsyncOpenSearch
 
 from app.config import get_settings
+from app.state import current
 
 
 class Search:
@@ -28,15 +29,17 @@ class Search:
         await self._client.delete(index=index, id=doc_id)
 
 
-_clients: dict[str, Search] = {}
-
-
 def get_search(instance: str = "default") -> Search:
-    if instance not in _clients:
+    state = current()
+    if state.world is not None:
+        # v0.17 M8: the checkpoint's search port.
+        return state.world.fake_search(instance)
+    clients = state.searches
+    if instance not in clients:
         settings = get_settings()
-        _clients[instance] = {
+        clients[instance] = {
 {%- for inst in c.search_instances %}
             "{{ inst.snake }}": lambda s=settings: Search(url=s.{{ inst.cfg[0].field }}),
 {%- endfor %}
         }[instance]()
-    return _clients[instance]
+    return clients[instance]

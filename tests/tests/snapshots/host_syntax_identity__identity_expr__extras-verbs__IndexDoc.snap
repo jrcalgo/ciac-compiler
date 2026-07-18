@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(expr-stmt (search-index (field-access payload id) (field-access payload title)))
+(return true)

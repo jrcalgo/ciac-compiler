@@ -110,6 +110,11 @@ pub enum ServiceItem {
     /// `expand <Blueprint><<Record>> { .. };` (v0.8) inside a service
     /// block. See `Item::Expand`.
     Expand(ExpandStmt),
+    /// `table <Name>: <Record> [{ db: <instance>; }];` (v0.16 M2) inside
+    /// a service block — the owning-service form `Reference<T>`
+    /// resolution needs. See `Item::Table` for the single-service
+    /// top-level form.
+    Table(TableDecl),
 }
 
 /// `blueprint <Name><<TypeParam>: record> { params { .. } <body> }`
@@ -128,21 +133,32 @@ pub struct BlueprintDecl {
     pub span: Span,
 }
 
-/// The closed set of declarations a `blueprint` body may contain
-/// (v0.8 M2). Not the full `Item`/`ServiceItem` grammar: no nested
-/// `record`/`table`/`api`/`worker`/`job`/`channel`/`events`/
-/// `blueprint`/`expand`/`import` — a deliberate scope limit, not an
-/// oversight. No `pipeline` either: a blueprint body declares no
-/// `api`/`worker`/`job` of its own for one to attach to (`crud`
-/// expands to a complete REST resource on its own, with no pipeline
-/// involved); a pipeline that attaches to something in the *enclosing*
-/// scope belongs there, not inside the template.
+/// The closed set of declarations a `blueprint` body may contain.
+/// v0.8 M2 shipped `use`/`crud`/`stream`/`handler`; v0.14 M5 grows
+/// this to `api`/`worker`/`pipeline`/`record`/`table` — enough to
+/// express a self-contained api-plus-pipeline shape (a webhook
+/// receiver, an outbox) inside a template. Still not the full
+/// `Item`/`ServiceItem` grammar: no `job`/`channel`/`events`/
+/// `blueprint`/`expand`/`import` nesting — a deliberate scope limit,
+/// not an oversight. A `pipeline` in the body may only attach to an
+/// `api`/`worker` declared in the *same* body (hygiene renames both
+/// under the same substitution, so the pair stays attached post
+/// expansion); referencing anything from the enclosing scope is not
+/// mechanically prevented here, but the expanded output still has to
+/// pass the ordinary graph-build/typeck resolution every hand-written
+/// program does, so a dangling or cross-scope reference surfaces as
+/// the same "unknown X" diagnostic it would outside a blueprint.
 #[derive(Debug, Clone, Serialize)]
 pub enum BlueprintItem {
     Use(UseBlock),
     Crud(CrudDecl),
     Stream(StreamDecl),
     Handler(HandlerDecl),
+    Record(RecordDecl),
+    Table(TableDecl),
+    Api(ApiDecl),
+    Worker(WorkerDecl),
+    Pipeline(PipelineDecl),
 }
 
 /// `expand <Blueprint><<Record>> { field: value; .. };` (v0.8).
@@ -180,26 +196,54 @@ pub enum RecordKind {
     Error,
 }
 
-/// One `name: Type;` line of a record body.
+/// One `name: Type;` or `name: Type { attr: value; .. }` line of a record
+/// body (v0.16 M1 adds the attribute tail — `unique`, `index`,
+/// `non_empty`, `min`/`max`, the `Reference<T>` relation attributes, and
+/// so on all share this one syntactic slot).
 #[derive(Debug, Clone, Serialize)]
 pub struct Field {
     pub name: Ident,
     pub ty: TypeExpr,
+    pub attrs: Vec<Attr>,
     pub span: Span,
 }
 
-/// A field type: a named type (primitive in v0.2) or an inline enum.
+/// A field type: a named type (primitive in v0.2), an inline enum, a
+/// `[Type]` list (v0.14 M1), or a `Reference<T>` relation (v0.16 M1).
+/// List types type-check as a handler parameter/return type;
+/// `ciac-sema` rejects them as a `record` field type for now (see
+/// `CIAC0053`) — lists only ever arise from a list-returning verb call
+/// (`db.query`, `object_store.list`, `search.query`), never as stored
+/// data shape. `Reference<T>` is the opposite: legal only as a stored
+/// record field, resolved against another record/table in a second
+/// sema pass (see `ciac_sema::build`).
 #[derive(Debug, Clone, Serialize)]
 pub enum TypeExpr {
     Named(Ident),
-    Enum { variants: Vec<Ident>, span: Span },
+    Enum {
+        variants: Vec<Ident>,
+        span: Span,
+    },
+    List {
+        inner: Box<TypeExpr>,
+        span: Span,
+    },
+    /// `Reference<Customer>` — `target` names the referenced record;
+    /// cardinality/actions/storage are field attributes (`cardinality:
+    /// one;`, `on_delete: restrict;`, ...), not part of the type itself.
+    Reference {
+        target: Ident,
+        span: Span,
+    },
 }
 
 impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named(ident) => ident.span,
-            TypeExpr::Enum { span, .. } => *span,
+            TypeExpr::Enum { span, .. }
+            | TypeExpr::List { span, .. }
+            | TypeExpr::Reference { span, .. } => *span,
         }
     }
 }
@@ -214,10 +258,15 @@ pub struct StreamDecl {
 
 /// `table <Name>: <Record>;` — a named, typed persistent table (v0.7).
 /// `db.*` verbs in handler bodies operate on tables, not raw records.
+/// `db: <instance>;` (v0.16 M2) names the owning database capability
+/// instance explicitly — required when a service has more than one
+/// unambiguous `db` instance; otherwise inferred the same way any other
+/// unqualified capability use is (`Builder::default_capability`).
 #[derive(Debug, Clone, Serialize)]
 pub struct TableDecl {
     pub name: Ident,
     pub record: Ident,
+    pub db: Option<Ident>,
     pub span: Span,
 }
 
@@ -276,15 +325,30 @@ pub struct Attr {
 #[derive(Debug, Clone, Serialize)]
 pub enum AttrValue {
     Ident(Ident),
-    Number { value: u64, span: Span },
-    Str { value: String, span: Span },
+    Number {
+        value: i64,
+        span: Span,
+    },
+    /// A decimal literal (v0.16 M1: `min`/`max` bounds on `Float`
+    /// fields). Kept distinct from `Number` rather than folding integers
+    /// into `f64`, so an `Int` bound attribute stays exact.
+    Float {
+        value: f64,
+        span: Span,
+    },
+    Str {
+        value: String,
+        span: Span,
+    },
 }
 
 impl AttrValue {
     pub fn span(&self) -> Span {
         match self {
             AttrValue::Ident(ident) => ident.span,
-            AttrValue::Number { span, .. } | AttrValue::Str { span, .. } => *span,
+            AttrValue::Number { span, .. }
+            | AttrValue::Float { span, .. }
+            | AttrValue::Str { span, .. } => *span,
         }
     }
 }
@@ -438,6 +502,11 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    /// `transaction { <stmts> }` (v0.16 M1) — every database verb inside
+    /// the block shares one database transaction; `return` is rejected
+    /// inside the block (`ciac-sema`), since it could bypass the
+    /// generated commit/rollback epilogue.
+    Transaction { body: Vec<Stmt>, span: Span },
 }
 
 impl Stmt {
@@ -446,7 +515,8 @@ impl Stmt {
             Stmt::Let { span, .. }
             | Stmt::Return { span, .. }
             | Stmt::Fail { span, .. }
-            | Stmt::Publish { span, .. } => *span,
+            | Stmt::Publish { span, .. }
+            | Stmt::Transaction { span, .. } => *span,
             Stmt::Expr(expr) => expr.span(),
         }
     }
@@ -527,6 +597,16 @@ pub enum Expr {
         arms: Vec<ExprArm>,
         span: Span,
     },
+    /// `<call> where <predicate>` (v0.14 M1) — a query modifier trailing
+    /// a capability verb call, e.g. `db.query(Notes) where author == a`.
+    /// Parsed generically after any `Call` (see `Parser::expr_postfix`)
+    /// so the grammar doesn't need to know which verbs accept a `where`
+    /// clause; `ciac-sema` rejects it on verbs that don't (`CIAC0052`).
+    Query {
+        call: Box<Expr>,
+        predicate: Predicate,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -543,9 +623,47 @@ impl Expr {
             | Expr::Binary { span, .. }
             | Expr::Unary { span, .. }
             | Expr::If { span, .. }
-            | Expr::Match { span, .. } => *span,
+            | Expr::Match { span, .. }
+            | Expr::Query { span, .. } => *span,
         }
     }
+}
+
+/// A `where <field> <op> <value> (&& <field> <op> <value>)*` clause
+/// (v0.14 M1): a conjunction of comparisons against fields of the target
+/// verb's table. Deliberately not the general `Expr` grammar reused
+/// as-is — a bare identifier here always names a table column, which
+/// would collide with `Expr::Ident`'s "a local variable" meaning inside
+/// a normal handler-body expression.
+#[derive(Debug, Clone, Serialize)]
+pub struct Predicate {
+    pub terms: Vec<PredTerm>,
+    pub span: Span,
+}
+
+/// One `<field> <op> <value>` comparison of a [`Predicate`]. `value` is
+/// a normal handler-body expression, evaluated in the enclosing scope
+/// (so it can reference params/`let`s), not the predicate's field
+/// namespace.
+#[derive(Debug, Clone, Serialize)]
+pub struct PredTerm {
+    pub field: Ident,
+    pub op: PredOp,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PredOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    /// `contains` — substring match on a `Str` field (v0.14 M1; list
+    /// fields aren't expressible yet, see `TypeExpr::List`'s doc).
+    Contains,
 }
 
 /// One `name: value` entry of a record literal or functional update.

@@ -10,18 +10,19 @@
 //! step survives as sugar for publishing to an auto-created default
 //! stream (`<service>.events`).
 
-use ciac_diagnostics::{Diagnostic, Diagnostics, ErrorCode, Span};
+use ciac_diagnostics::{Diagnostic, Diagnostics, Edit, ErrorCode, Fix, Span};
 use ciac_ir::{
-    ApiConfig, AuthScheme, CacheEngine, ChannelConfig, Component, CrudConfig, DbEngine, EdgeKind,
-    EmailProvider, EventStream, FieldType, HandlerBody, HttpMethod, JobConfig, LoggingProvider,
-    MatchArm, MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline, QueueEngine,
-    RealtimeProvider, Record, RecordField, RecordId, RecordKind as IrRecordKind, Resource,
-    SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph, Table, TableId,
+    ApiConfig, AuthScheme, CacheEngine, Cardinality, ChannelConfig, Component, CrudConfig,
+    DbEngine, EdgeKind, EmailProvider, EventStream, FieldType, HandlerBody, HttpMethod, JobConfig,
+    LoggingProvider, MatchArm, MetricsProvider, NodeId, NodeKind, ObjectStoreProvider, Pipeline,
+    QueueEngine, RealtimeProvider, Record, RecordField, RecordId, RecordKind as IrRecordKind,
+    Resource, SchedulerProvider, SearchProvider, ServiceId, Step, StepKind, SystemGraph, Table,
+    TableId, TracingProvider, UsersProvider,
 };
 use ciac_syntax::ast::{
     ApiDecl, Attr, AttrValue, ChannelDecl, ComponentDecl, CrudDecl, HandlerDecl, Ident, Item,
     JobDecl, PipelineDecl, Program, RecordDecl, RecordKind, ServiceBlock, ServiceItem, StepExpr,
-    StreamDecl, TableDecl, TypeExpr, UseEntry, WorkerDecl,
+    StreamDecl, TableDecl, TypeExpr, UseBlock, UseEntry, WorkerDecl,
 };
 use heck::{ToKebabCase, ToSnakeCase};
 use std::collections::{BTreeMap, HashMap};
@@ -48,6 +49,16 @@ pub(crate) struct Builder<'d> {
     records: HashMap<String, (RecordId, Span)>,
     /// Table names → ids (v0.7 M2; own namespace, resolved after records).
     tables: HashMap<String, (TableId, Span)>,
+    /// Record → the (first) table backing it (v0.16 M2) — a
+    /// `Reference<T>` field's source record must be backed by typed
+    /// storage (`RefRequiresTypedStorage` otherwise), and its owning
+    /// table's service/database instance is what `CrossStorageReference`
+    /// compares against the target's.
+    record_tables: HashMap<RecordId, TableId>,
+    /// Every `Reference<T>` field seen during record registration,
+    /// deferred until every record and table in the program is
+    /// registered (v0.16 M2) — see `resolve_references`.
+    pending_references: Vec<PendingReference>,
     /// Handler service nodes created implicitly from pipeline steps.
     handlers: HashMap<String, NodeId>,
     /// Handler declarations by name; missing entries keep legacy implicit bindings.
@@ -68,6 +79,19 @@ pub(crate) struct Builder<'d> {
     stream_subjects: BTreeMap<String, Span>,
     /// Lazily-created default stream backing the legacy `Queue` step.
     default_stream: Option<NodeId>,
+    /// True while processing entries of a `use { .. }` block that also
+    /// declares `users Keycloak` (v0.15 M6) — lets the `auth OAuth2`
+    /// arm of [`Self::use_entry`] accept a missing `issuer` attribute,
+    /// since it defaults to the dev Keycloak container's URL instead.
+    current_block_has_users: bool,
+    /// Per-service insertion point for "add a capability line to this
+    /// service's `use { .. }` block" fixes (v0.15 M7): a zero-width
+    /// span right before the first entry (or right before the closing
+    /// `}` when the block is empty). Absent when the service has no
+    /// `use { .. }` block at all -- `missing_capability_fix` then
+    /// offers no fix rather than synthesizing a new block, a disclosed
+    /// scope cut (see its doc comment).
+    use_block_insertion: HashMap<ServiceId, Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +99,18 @@ struct BindingSpec {
     kind: NodeKind,
     instance: String,
     span: Span,
+}
+
+/// A `Reference<T>` field seen during record registration, deferred
+/// until `resolve_references` runs (v0.16 M2) — see
+/// `Builder::pending_references`.
+#[derive(Debug, Clone)]
+struct PendingReference {
+    record: RecordId,
+    field_index: usize,
+    target: Ident,
+    attrs: Vec<Attr>,
+    field_span: Span,
 }
 
 impl<'d> Builder<'d> {
@@ -87,6 +123,8 @@ impl<'d> Builder<'d> {
             current_service: None,
             records: HashMap::new(),
             tables: HashMap::new(),
+            record_tables: HashMap::new(),
+            pending_references: Vec::new(),
             handlers: HashMap::new(),
             handler_bindings: HashMap::new(),
             handler_signatures: HashMap::new(),
@@ -97,6 +135,8 @@ impl<'d> Builder<'d> {
             channel_paths: BTreeMap::new(),
             stream_subjects: BTreeMap::new(),
             default_stream: None,
+            current_block_has_users: false,
+            use_block_insertion: HashMap::new(),
         }
     }
 
@@ -106,17 +146,15 @@ impl<'d> Builder<'d> {
             .iter()
             .any(|item| matches!(item, Item::ServiceBlock(_)));
         self.project_name(program, has_service_blocks);
-        // Types first: streams and components reference them. Tables
-        // resolve after records (a table's backing record must already be
-        // registered).
+        // Records first: streams, tables, and `Reference<T>` fields all
+        // name them. Tables resolve after records but before `use`
+        // blocks/service registration is done per branch below (v0.16
+        // M2: a table's owning database instance must be resolved
+        // against capability instances that only exist once `use`
+        // entries for that service have been processed).
         for item in &program.items {
             if let Item::Record(decl) = item {
                 self.record(decl);
-            }
-        }
-        for item in &program.items {
-            if let Item::Table(decl) = item {
-                self.table(decl);
             }
         }
         self.register_services(program, has_service_blocks);
@@ -147,13 +185,27 @@ impl<'d> Builder<'d> {
                             "move this declaration into a service block",
                         ),
                     ),
+                    // v0.16 M2: a top-level table doesn't identify a
+                    // service/database ownership boundary in a
+                    // multi-service project — it must be declared inside
+                    // the owning `service { .. }` block.
+                    Item::Table(_) => self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::InvalidServiceScope,
+                            "in a multi-service project, `table` must be declared inside its \
+                             owning `service { .. }` block",
+                        )
+                        .with_label(
+                            item_span(item),
+                            "move this declaration into a service block",
+                        ),
+                    ),
                     Item::ServiceBlock(block) => self.build_service_block_decls(block),
                     Item::Import(_)
                     | Item::Project(_)
                     | Item::Service(_)
                     | Item::Record(_)
-                    | Item::Stream(_)
-                    | Item::Table(_) => {}
+                    | Item::Stream(_) => {}
                     // `blueprints::expand` (v0.8 M2) always runs before
                     // `build_graph` and eliminates every `Blueprint`/
                     // `Expand` item from its output — unlike `Import`
@@ -173,9 +225,16 @@ impl<'d> Builder<'d> {
             self.current_service = self.graph.services().next().map(|service| service.id);
             for item in &program.items {
                 if let Item::Use(block) = item {
+                    self.current_block_has_users =
+                        block.entries.iter().any(|e| e.capability.text == "users");
+                    if let Some(sid) = self.current_service {
+                        self.use_block_insertion
+                            .insert(sid, use_block_insertion_point(block));
+                    }
                     for entry in &block.entries {
                         self.use_entry(entry);
                     }
+                    self.current_block_has_users = false;
                 }
             }
             for item in &program.items {
@@ -183,9 +242,20 @@ impl<'d> Builder<'d> {
                     self.stream(decl, true);
                 }
             }
+            // v0.16 M2: after `use` (capability instances now exist) so
+            // `{ db: <instance>; }` — or the implicit default — resolves;
+            // before `build_flat_items`, since `Reference<T>` resolution
+            // (deferred to `resolve_references` below) needs every table.
+            for item in &program.items {
+                if let Item::Table(decl) = item {
+                    self.table(decl);
+                }
+            }
             self.build_flat_items(&program.items);
         }
         self.check_scoped_apis();
+        self.check_scoped_cruds();
+        self.resolve_references();
         self.graph
     }
 
@@ -327,9 +397,24 @@ impl<'d> Builder<'d> {
     fn build_service_items(&mut self, items: &[ServiceItem]) {
         for item in items {
             if let ServiceItem::Use(block) = item {
+                self.current_block_has_users =
+                    block.entries.iter().any(|e| e.capability.text == "users");
+                if let Some(sid) = self.current_service {
+                    self.use_block_insertion
+                        .insert(sid, use_block_insertion_point(block));
+                }
                 for entry in &block.entries {
                     self.use_entry(entry);
                 }
+                self.current_block_has_users = false;
+            }
+        }
+        // v0.16 M2: after `use` (capability instances exist to resolve
+        // `{ db: <instance>; }` — or the implicit default — against) and
+        // before handlers/api/etc, which don't depend on table order.
+        for item in items {
+            if let ServiceItem::Table(decl) = item {
+                self.table(decl);
             }
         }
         for item in items {
@@ -345,7 +430,10 @@ impl<'d> Builder<'d> {
                 ServiceItem::Channel(decl) => self.channel(decl),
                 ServiceItem::Crud(decl) => self.crud(decl),
                 ServiceItem::Events(decl) => self.events(decl),
-                ServiceItem::Use(_) | ServiceItem::Handler(_) | ServiceItem::Pipeline(_) => {}
+                ServiceItem::Use(_)
+                | ServiceItem::Handler(_)
+                | ServiceItem::Pipeline(_)
+                | ServiceItem::Table(_) => {}
                 ServiceItem::Expand(_) => {
                     unreachable!("blueprints::expand did not eliminate this item")
                 }
@@ -366,6 +454,14 @@ impl<'d> Builder<'d> {
             return;
         }
         let mut fields: Vec<RecordField> = Vec::new();
+        // v0.16 M2: a `Reference<T>` field's real type isn't known until
+        // every record and table in the program is registered (the
+        // target might be declared later in the file, and its owning
+        // table's service/database instance must exist). A placeholder
+        // `Json` field holds the slot — same position, same name — so
+        // field order is preserved; `resolve_references` overwrites
+        // `fields[field_index].ty` once resolution runs.
+        let mut deferred: Vec<(usize, Ident, Vec<Attr>, Span)> = Vec::new();
         for field in &decl.fields {
             if fields.iter().any(|f| f.name == field.name.text) {
                 self.diags.push(
@@ -401,6 +497,24 @@ impl<'d> Builder<'d> {
                 TypeExpr::Enum { variants, .. } => FieldType::Enum {
                     variants: variants.iter().map(|v| v.text.clone()).collect(),
                 },
+                TypeExpr::List { span, .. } => {
+                    self.diags.push(
+                        Diagnostic::new(
+                            ErrorCode::UnsupportedFieldType,
+                            "list types aren't supported as record field types yet",
+                        )
+                        .with_label(*span, "not valid here")
+                        .with_help(
+                            "`[Type]` is valid as a handler parameter/return type, or as the \
+                             result of `db.query`/`object_store.list`/`search.query`",
+                        ),
+                    );
+                    continue;
+                }
+                TypeExpr::Reference { target, span } => {
+                    deferred.push((fields.len(), target.clone(), field.attrs.clone(), *span));
+                    FieldType::Json
+                }
             };
             fields.push(RecordField {
                 name: field.name.text.clone(),
@@ -417,6 +531,15 @@ impl<'d> Builder<'d> {
             kind,
         });
         self.records.insert(decl.name.text.clone(), (id, decl.span));
+        for (field_index, target, attrs, field_span) in deferred {
+            self.pending_references.push(PendingReference {
+                record: id,
+                field_index,
+                target,
+                attrs,
+                field_span,
+            });
+        }
     }
 
     /// Resolves an optional record reference, reporting `CIAC0015` when
@@ -456,11 +579,214 @@ impl<'d> Builder<'d> {
         let Some(record) = self.resolve_record(&decl.record) else {
             return;
         };
+        // v0.16 M2: resolve the table's owning database instance — named
+        // (`{ db: primary; }`) or the service's unambiguous default,
+        // exactly like any other unqualified capability use. `None` only
+        // when the service has no `db` capability at all; existing
+        // programs with exactly one instance are unaffected.
+        let db_instance = match &decl.db {
+            Some(name) => self.resolve_capability(NodeKind::Database, &name.text, name.span),
+            None => self.default_capability(
+                NodeKind::Database,
+                &format!("table `{}`", decl.name.text),
+                decl.span,
+            ),
+        };
         let id = self.graph.add_table(Table {
             name: decl.name.text.clone(),
             record,
+            service: self.current_service,
+            db_instance,
         });
         self.tables.insert(decl.name.text.clone(), (id, decl.span));
+        self.record_tables.entry(record).or_insert(id);
+    }
+
+    /// Resolves every `Reference<T>` field deferred by `record()` (v0.16
+    /// M2). Runs once, after every record and table in the *entire*
+    /// program has been registered — a reference may target a record or
+    /// table declared later in the file, and cross-service/instance
+    /// checks need every table's ownership to already be known.
+    fn resolve_references(&mut self) {
+        let pending = std::mem::take(&mut self.pending_references);
+        let mut one_edges: Vec<(RecordId, RecordId, Span)> = Vec::new();
+        for pending_ref in &pending {
+            if let Some((target, cardinality)) = self.resolve_one_reference(pending_ref) {
+                if cardinality == Cardinality::One {
+                    one_edges.push((pending_ref.record, target, pending_ref.field_span));
+                }
+            }
+        }
+        find_reference_cycles(&one_edges, self.diags);
+    }
+
+    /// Resolves one deferred `Reference<T>` field. On success, patches
+    /// the record's placeholder `Json` field into the real
+    /// `FieldType::Reference` and returns `(target, cardinality)` so the
+    /// caller can fold it into the cycle-detection edge set. Every
+    /// failure path pushes exactly one diagnostic and leaves the
+    /// placeholder in place (the field's static type never becomes
+    /// visibly wrong; the build simply also reports the error).
+    fn resolve_one_reference(
+        &mut self,
+        pending: &PendingReference,
+    ) -> Option<(RecordId, Cardinality)> {
+        let Some((target_id, _)) = self.records.get(&pending.target.text).copied() else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownReferenceTarget,
+                    format!("unknown record `{}`", pending.target.text),
+                )
+                .with_label(pending.target.span, "not a declared record")
+                .with_help(format!(
+                    "declare it with `record {} {{ .. }}`",
+                    pending.target.text
+                )),
+            );
+            return None;
+        };
+
+        let parsed = attrs::apply_reference_attrs(&pending.attrs, self.diags);
+
+        let Some(references) = &parsed.references else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    "`Reference<T>` field is missing a `references` attribute",
+                )
+                .with_label(pending.field_span, "add `references: <Table>;`"),
+            );
+            return None;
+        };
+        let Some((table_id, _)) = self.tables.get(&references.text).copied() else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownReferenceTarget,
+                    format!("unknown table `{}`", references.text),
+                )
+                .with_label(references.span, "not a declared table"),
+            );
+            return None;
+        };
+        if self.graph.table(table_id).record != target_id {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::UnknownReferenceTarget,
+                    format!(
+                        "table `{}` is not backed by record `{}`",
+                        references.text, pending.target.text
+                    ),
+                )
+                .with_label(references.span, "backed by a different record"),
+            );
+            return None;
+        }
+
+        let mut missing = Vec::new();
+        if parsed.cardinality.is_none() {
+            missing.push("cardinality");
+        }
+        if parsed.on_delete.is_none() {
+            missing.push("on_delete");
+        }
+        if parsed.on_update.is_none() {
+            missing.push("on_update");
+        }
+        if !missing.is_empty() {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    format!(
+                        "`Reference<T>` field is missing required attribute(s): {}",
+                        missing.join(", ")
+                    ),
+                )
+                .with_label(
+                    pending.field_span,
+                    "every reference states cardinality and both actions explicitly",
+                ),
+            );
+            return None;
+        }
+        let cardinality = parsed.cardinality.unwrap();
+        let on_delete = parsed.on_delete.unwrap();
+        let on_update = parsed.on_update.unwrap();
+
+        if parsed.unique && cardinality == Cardinality::Many {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    "`unique: true` is only valid on a `cardinality: one` reference",
+                )
+                .with_label(pending.field_span, "not valid on a `many` reference"),
+            );
+            return None;
+        }
+
+        let target_has_id = self
+            .graph
+            .record(target_id)
+            .fields
+            .iter()
+            .any(|f| f.name == "id" && f.ty == FieldType::Uuid);
+        if !target_has_id {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::InvalidReferenceDefinition,
+                    format!(
+                        "record `{}` has no `id: Uuid` field, which the stores are built on",
+                        pending.target.text
+                    ),
+                )
+                .with_label(pending.field_span, "target lacks an `id: Uuid` field"),
+            );
+            return None;
+        }
+
+        let Some(&source_table_id) = self.record_tables.get(&pending.record) else {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::RefRequiresTypedStorage,
+                    "a record with a `Reference<T>` field must be backed by an explicit `table`",
+                )
+                .with_label(pending.field_span, "no `table` backs this record")
+                .with_help(
+                    "declare `table <Name>: <Record>;` for the record this field belongs to",
+                ),
+            );
+            return None;
+        };
+        let source_table = self.graph.table(source_table_id);
+        let target_table = self.graph.table(table_id);
+        if source_table.service != target_table.service
+            || source_table.db_instance != target_table.db_instance
+        {
+            self.diags.push(
+                Diagnostic::new(
+                    ErrorCode::CrossStorageReference,
+                    format!(
+                        "`{}` and `{}` belong to different services or database instances",
+                        source_table.name, target_table.name
+                    ),
+                )
+                .with_label(
+                    pending.field_span,
+                    "cannot reference across services/instances",
+                ),
+            );
+            return None;
+        }
+
+        self.graph.record_mut(pending.record).fields[pending.field_index].ty =
+            FieldType::Reference {
+                target: target_id,
+                table: table_id,
+                cardinality,
+                on_delete,
+                on_update,
+                unique: parsed.unique,
+            };
+        Some((target_id, cardinality))
     }
 
     /// Resolves a bare table name (e.g. the first argument of a `db.*`
@@ -482,6 +808,23 @@ impl<'d> Builder<'d> {
         }
     }
 
+    /// The "add `line` to the current service's `use { .. }` block"
+    /// fix for a missing-capability diagnostic (v0.15 M7). `None` when
+    /// this service has no `use { .. }` block to insert into at all --
+    /// synthesizing a brand-new block is out of scope (a disclosed cut,
+    /// same spirit as the plan's "fixes that can't meet the bar ship as
+    /// prose `help`, not a fix").
+    fn missing_capability_fix(&self, line: &str) -> Option<Fix> {
+        let at = *self.use_block_insertion.get(&self.current_service?)?;
+        Some(Fix {
+            title: format!("Add `{line}` to the use block"),
+            edits: vec![Edit {
+                span: at,
+                replacement: format!("{line}\n    "),
+            }],
+        })
+    }
+
     fn use_entry(&mut self, entry: &UseEntry) {
         let capability = entry.capability.text.as_str();
         let provider = entry.provider.as_ref().map(|p| p.text.as_str());
@@ -498,20 +841,46 @@ impl<'d> Builder<'d> {
                 audience: None,
             },
             ("auth", Some("OAuth2")) => {
-                let Some(issuer) = attr_string(&entry.attrs, "issuer") else {
-                    self.diags.push(
-                        Diagnostic::new(
-                            ErrorCode::UnsupportedProviderConfig,
-                            "auth OAuth2 requires an `issuer` string attribute",
-                        )
-                        .with_label(entry.span, "missing `issuer`"),
+                let issuer = attr_string(&entry.attrs, "issuer");
+                if issuer.is_none() && !self.current_block_has_users {
+                    let mut diag = Diagnostic::new(
+                        ErrorCode::UnsupportedProviderConfig,
+                        "auth OAuth2 requires an `issuer` string attribute",
+                    )
+                    .with_label(entry.span, "missing `issuer`")
+                    .with_help(
+                        "add `issuer: \"...\"`, or declare `users Keycloak;` in the \
+                         same `use { .. }` block to default to its dev issuer",
                     );
+                    // v0.15 M7: only the bare `auth OAuth2;` shape (no
+                    // `{ .. }` block at all yet) gets a fix -- rewriting
+                    // an existing `{ .. }` block (e.g. one that already
+                    // sets `audience`) would need to preserve every
+                    // other attribute, which the entry's span alone
+                    // doesn't give us a safe way to splice around.
+                    if entry.attrs.is_empty() {
+                        diag = diag.with_fix(Fix {
+                            title: "Add a placeholder `issuer`".to_owned(),
+                            edits: vec![Edit {
+                                span: entry.span,
+                                replacement: format!(
+                                    "auth {} {{ issuer: \"http://localhost:8080\"; }}",
+                                    provider.unwrap_or("OAuth2")
+                                ),
+                            }],
+                        });
+                    }
+                    self.diags.push(diag);
                     return;
-                };
+                }
                 Component::Auth {
                     name: name.to_owned(),
                     scheme: AuthScheme::OAuth2,
-                    issuer: Some(issuer),
+                    // `None` here means "defaulted from `users Keycloak`"
+                    // (v0.15 M6) -- `ciac-codegen::model` resolves the
+                    // dev issuer URL, not sema, since the URL is a
+                    // deployment-shape fact, not a language fact.
+                    issuer,
                     audience: attr_string(&entry.attrs, "audience"),
                 }
             }
@@ -546,6 +915,14 @@ impl<'d> Builder<'d> {
             ("metrics", Some("Prometheus")) => Component::Metrics {
                 name: name.to_owned(),
                 provider: MetricsProvider::Prometheus,
+            },
+            ("tracing", Some("OpenTelemetry")) => Component::Tracing {
+                name: name.to_owned(),
+                provider: TracingProvider::OpenTelemetry,
+            },
+            ("users", Some("Keycloak")) => Component::Users {
+                name: name.to_owned(),
+                provider: UsersProvider::Keycloak,
             },
             ("object_store", Some("S3")) => Component::ObjectStore {
                 name: name.to_owned(),
@@ -593,15 +970,25 @@ impl<'d> Builder<'d> {
                 provider: RealtimeProvider::Sse,
             },
             _ => {
-                let provider = provider.unwrap_or("<none>");
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::UnknownProvider,
-                        format!("unknown capability `{capability} {provider}`"),
-                    )
-                    .with_label(entry.span, "not a supported capability/provider pair")
-                    .with_help(ErrorCode::UnknownProvider.explanation()),
-                );
+                let provider_str = provider.unwrap_or("<none>");
+                let mut diag = Diagnostic::new(
+                    ErrorCode::UnknownProvider,
+                    format!("unknown capability `{capability} {provider_str}`"),
+                )
+                .with_label(entry.span, "not a supported capability/provider pair")
+                .with_help(ErrorCode::UnknownProvider.explanation());
+                if let Some(provider_ident) = &entry.provider {
+                    if let Some((sc, sp)) = nearest_capability_provider(capability, provider_str) {
+                        diag = diag.with_fix(Fix {
+                            title: format!("Rename to `{sc} {sp}`"),
+                            edits: vec![Edit {
+                                span: entry.capability.span.to(provider_ident.span),
+                                replacement: format!("{sc} {sp}"),
+                            }],
+                        });
+                    }
+                }
+                self.diags.push(diag);
                 return;
             }
         };
@@ -722,14 +1109,16 @@ impl<'d> Builder<'d> {
         match self.default_capability(NodeKind::Queue, what, span) {
             Some(queue) => Some(queue),
             None => {
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::MissingCapability,
-                        format!("{what} requires a queue capability"),
-                    )
-                    .with_label(span, "used here")
-                    .with_help("add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block"),
-                );
+                let mut diag = Diagnostic::new(
+                    ErrorCode::MissingCapability,
+                    format!("{what} requires a queue capability"),
+                )
+                .with_label(span, "used here")
+                .with_help("add `queue NATS;` (or `queue Kafka;`) to the `use { .. }` block");
+                if let Some(fix) = self.missing_capability_fix("queue NATS;") {
+                    diag = diag.with_fix(fix);
+                }
+                self.diags.push(diag);
                 None
             }
         }
@@ -959,14 +1348,16 @@ impl<'d> Builder<'d> {
             &format!("job `{}`", decl.name.text),
             decl.span,
         ) else {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::MissingCapability,
-                    format!("job `{}` requires a scheduler capability", decl.name.text),
-                )
-                .with_label(decl.span, "declared here")
-                .with_help("add `scheduler Cron;` to the `use { .. }` block"),
-            );
+            let mut diag = Diagnostic::new(
+                ErrorCode::MissingCapability,
+                format!("job `{}` requires a scheduler capability", decl.name.text),
+            )
+            .with_label(decl.span, "declared here")
+            .with_help("add `scheduler Cron;` to the `use { .. }` block");
+            if let Some(fix) = self.missing_capability_fix("scheduler Cron;") {
+                diag = diag.with_fix(fix);
+            }
+            self.diags.push(diag);
             return;
         };
         self.graph.add_edge(node, scheduler, EdgeKind::DependsOn);
@@ -1004,14 +1395,16 @@ impl<'d> Builder<'d> {
             &format!("channel `{}`", decl.name.text),
             decl.span,
         ) else {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::MissingCapability,
-                    format!("channel `{}` requires a realtime capability", decl.name.text),
-                )
-                .with_label(decl.span, "declared here")
-                .with_help("add `realtime live WebSocket;` (or `realtime live SSE;`) to the `use { .. }` block"),
-            );
+            let mut diag = Diagnostic::new(
+                ErrorCode::MissingCapability,
+                format!("channel `{}` requires a realtime capability", decl.name.text),
+            )
+            .with_label(decl.span, "declared here")
+            .with_help("add `realtime live WebSocket;` (or `realtime live SSE;`) to the `use { .. }` block");
+            if let Some(fix) = self.missing_capability_fix("realtime WebSocket;") {
+                diag = diag.with_fix(fix);
+            }
+            self.diags.push(diag);
             return;
         };
         self.graph.add_edge(stream, node, EdgeKind::AsyncMessage);
@@ -1035,14 +1428,16 @@ impl<'d> Builder<'d> {
             &format!("`crud {}`", decl.name.text),
             decl.span,
         ) else {
-            self.diags.push(
-                Diagnostic::new(
-                    ErrorCode::MissingCapability,
-                    format!("`crud {}` requires a database", decl.name.text),
-                )
-                .with_label(decl.span, "declared here")
-                .with_help("add `db Postgres;` to the `use { .. }` block"),
-            );
+            let mut diag = Diagnostic::new(
+                ErrorCode::MissingCapability,
+                format!("`crud {}` requires a database", decl.name.text),
+            )
+            .with_label(decl.span, "declared here")
+            .with_help("add `db Postgres;` to the `use { .. }` block");
+            if let Some(fix) = self.missing_capability_fix("db Postgres;") {
+                diag = diag.with_fix(fix);
+            }
+            self.diags.push(diag);
             return;
         };
         let name = decl.name.text.clone();
@@ -1300,14 +1695,16 @@ impl<'d> Builder<'d> {
                 match self.default_capability(NodeKind::Auth, "the `Auth` step", ident.span) {
                     Some(node) => Some(step(StepKind::Auth { node }, ident.span)),
                     None => {
-                        self.diags.push(
-                            Diagnostic::new(
-                                ErrorCode::MissingCapability,
-                                "the `Auth` step requires an auth capability",
-                            )
-                            .with_label(ident.span, "used here")
-                            .with_help("add `auth JWT;` to the `use { .. }` block"),
-                        );
+                        let mut diag = Diagnostic::new(
+                            ErrorCode::MissingCapability,
+                            "the `Auth` step requires an auth capability",
+                        )
+                        .with_label(ident.span, "used here")
+                        .with_help("add `auth JWT;` to the `use { .. }` block");
+                        if let Some(fix) = self.missing_capability_fix("auth JWT;") {
+                            diag = diag.with_fix(fix);
+                        }
+                        self.diags.push(diag);
                         None
                     }
                 }
@@ -1685,6 +2082,120 @@ impl<'d> Builder<'d> {
             }
         }
     }
+
+    /// `crud`'s per-verb `read_scope`/`write_scope` attrs (v0.14 M6)
+    /// require *some* auth capability to actually enforce against —
+    /// unlike a plain `api`, a `crud` resource has no pipeline of its
+    /// own for `check_scoped_apis` to inspect, so this is a separate
+    /// check over `graph.resources` rather than an extension of that
+    /// one. Same "declared but silently unenforced" failure mode the
+    /// plain-`api` check exists to kill.
+    fn check_scoped_cruds(&mut self) {
+        for resource in &self.graph.resources {
+            if resource.auth.is_some() {
+                continue;
+            }
+            for (attr_name, scope) in [
+                ("read_scope", &resource.config.read_scope),
+                ("write_scope", &resource.config.write_scope),
+            ] {
+                let Some(scope) = scope else { continue };
+                let mut diag = Diagnostic::new(
+                    ErrorCode::InvalidAttributeValue,
+                    format!(
+                        "crud `{}` declares `{attr_name}: \"{scope}\"` but the service has no auth capability",
+                        resource.name
+                    ),
+                )
+                .with_help("add `auth JWT;` (or `auth OAuth2;`) to the `use { .. }` block");
+                if let Some(span) = self.graph.node(resource.api).span {
+                    diag = diag.with_label(span, "scoped crud declared here");
+                }
+                self.diags.push(diag);
+            }
+        }
+    }
+}
+
+/// The zero-width span a "add a capability line here" fix (v0.15 M7)
+/// can insert text at: right before the first entry (so the new line
+/// inherits its indentation), or -- for an empty `use {}` -- right
+/// before the closing brace.
+fn use_block_insertion_point(block: &UseBlock) -> Span {
+    match block.entries.first() {
+        Some(first) => Span::new(first.span.file, first.span.start, first.span.start),
+        None => {
+            let at = block.span.end.saturating_sub(1);
+            Span::new(block.span.file, at, at)
+        }
+    }
+}
+
+/// Every `capability Provider` pair the closed registry accepts
+/// (`use_entry`'s big match, above) -- the candidate set a v0.15 M7
+/// "did you mean" rename fix searches for the nearest match in.
+const KNOWN_CAPABILITY_PROVIDERS: &[(&str, &str)] = &[
+    ("auth", "JWT"),
+    ("auth", "OAuth2"),
+    ("db", "Postgres"),
+    ("db", "MySQL"),
+    ("db", "SQLite"),
+    ("cache", "Redis"),
+    ("queue", "NATS"),
+    ("queue", "Kafka"),
+    ("logging", "Structured"),
+    ("metrics", "Prometheus"),
+    ("tracing", "OpenTelemetry"),
+    ("users", "Keycloak"),
+    ("object_store", "S3"),
+    ("email", "SES"),
+    ("email", "SMTP"),
+    ("search", "OpenSearch"),
+    ("scheduler", "Cron"),
+    ("realtime", "WebSocket"),
+    ("realtime", "SSE"),
+];
+
+/// The closest known `(capability, provider)` pair to `(capability,
+/// provider)`, by Levenshtein distance over the lowercased `"cap
+/// provider"` string -- `None` when nothing is close enough to be a
+/// plausible typo rather than a coincidence.
+fn nearest_capability_provider(
+    capability: &str,
+    provider: &str,
+) -> Option<(&'static str, &'static str)> {
+    let query = format!("{capability} {provider}").to_lowercase();
+    KNOWN_CAPABILITY_PROVIDERS
+        .iter()
+        .map(|&(c, p)| {
+            (
+                c,
+                p,
+                levenshtein(&query, &format!("{c} {p}").to_lowercase()),
+            )
+        })
+        .min_by_key(|&(_, _, dist)| dist)
+        .and_then(|(c, p, dist)| (dist <= 5).then_some((c, p)))
+}
+
+/// Classic O(n*m) edit-distance, one row at a time -- these strings
+/// are always short (capability/provider names, record field names),
+/// so no need for anything smarter. `pub(crate)` for reuse by
+/// `typeck.rs`'s unknown-field "did you mean" fix (v0.15 M7).
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
 }
 
 fn kind_noun(kind: NodeKind) -> &'static str {
@@ -1724,6 +2235,8 @@ pub(crate) fn binding_kind(capability: &str) -> Option<NodeKind> {
         "realtime" => NodeKind::Realtime,
         "logging" => NodeKind::Logging,
         "metrics" => NodeKind::Metrics,
+        "tracing" => NodeKind::Tracing,
+        "users" => NodeKind::Users,
         _ => return None,
     })
 }
@@ -1733,7 +2246,7 @@ fn attr_string(attrs: &[Attr], name: &str) -> Option<String> {
         (attr.name.text == name).then(|| match &attr.value {
             AttrValue::Str { value, .. } => Some(value.clone()),
             AttrValue::Ident(ident) => Some(ident.text.clone()),
-            AttrValue::Number { .. } => None,
+            AttrValue::Number { .. } | AttrValue::Float { .. } => None,
         })?
     })
 }
@@ -1758,6 +2271,61 @@ fn item_span(item: &Item) -> Span {
         Item::Events(decl) => decl.span,
         Item::Handler(decl) => decl.span,
         Item::Pipeline(decl) => decl.span,
+    }
+}
+
+/// Detects cycles in the directed graph of `cardinality: one`
+/// `Reference<T>` edges (v0.16 M2) — a `many` reference creates a
+/// separate link table and never requires the target to exist first, so
+/// it never participates in a cycle. A required-reference cycle (direct
+/// self-reference included) is uninsertable: no row in the cycle could
+/// ever be written first. Colored DFS; reports the back-edge that closes
+/// each cycle found, at that field's own span.
+fn find_reference_cycles(edges: &[(RecordId, RecordId, Span)], diags: &mut Diagnostics) {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Color {
+        White,
+        Gray,
+        Black,
+    }
+
+    fn visit(
+        node: RecordId,
+        adj: &HashMap<RecordId, Vec<(RecordId, Span)>>,
+        color: &mut HashMap<RecordId, Color>,
+        diags: &mut Diagnostics,
+    ) {
+        color.insert(node, Color::Gray);
+        if let Some(targets) = adj.get(&node) {
+            for &(next, span) in targets {
+                match color.get(&next).copied().unwrap_or(Color::White) {
+                    Color::White => visit(next, adj, color, diags),
+                    Color::Gray => {
+                        diags.push(
+                            Diagnostic::new(
+                                ErrorCode::CyclicReferenceGraph,
+                                "this reference is part of a cycle of required references",
+                            )
+                            .with_label(span, "closes the cycle here"),
+                        );
+                    }
+                    Color::Black => {}
+                }
+            }
+        }
+        color.insert(node, Color::Black);
+    }
+
+    let mut adj: HashMap<RecordId, Vec<(RecordId, Span)>> = HashMap::new();
+    for &(from, to, span) in edges {
+        adj.entry(from).or_default().push((to, span));
+    }
+    let mut color: HashMap<RecordId, Color> = HashMap::new();
+    let nodes: Vec<RecordId> = adj.keys().copied().collect();
+    for start in nodes {
+        if color.get(&start).copied().unwrap_or(Color::White) == Color::White {
+            visit(start, &adj, &mut color, diags);
+        }
     }
 }
 
@@ -1962,10 +2530,93 @@ mod attrs {
                         invalid_value(attr, "crud `page_size` must be an integer >= 1", diags)
                     }
                 },
+                "read_scope" => match string_value(attr) {
+                    Some(scope) => config.read_scope = Some(scope.to_owned()),
+                    None => invalid_value(attr, "crud `read_scope` must be a string", diags),
+                },
+                "write_scope" => match string_value(attr) {
+                    Some(scope) => config.write_scope = Some(scope.to_owned()),
+                    None => invalid_value(attr, "crud `write_scope` must be a string", diags),
+                },
                 _ => unknown_attr(attr, "crud", diags),
             }
         }
         config
+    }
+
+    /// Parsed `Reference<T>` field attributes (v0.16 M2). All four of
+    /// `references`/`cardinality`/`on_delete`/`on_update` are `None`
+    /// when missing or invalid — the caller (`Builder::resolve_one_reference`)
+    /// reports `InvalidReferenceDefinition` naming exactly which are
+    /// absent, rather than this function guessing a default.
+    #[derive(Default)]
+    pub struct ReferenceAttrs {
+        pub references: Option<Ident>,
+        pub cardinality: Option<ciac_ir::Cardinality>,
+        pub on_delete: Option<ciac_ir::RefAction>,
+        pub on_update: Option<ciac_ir::RefAction>,
+        pub unique: bool,
+    }
+
+    pub fn apply_reference_attrs(attrs: &[Attr], diags: &mut Diagnostics) -> ReferenceAttrs {
+        let mut result = ReferenceAttrs::default();
+        let mut seen = BTreeMap::new();
+        for attr in attrs {
+            if duplicate_attr(attr, &mut seen, diags) {
+                continue;
+            }
+            match attr.name.text.as_str() {
+                "references" => match &attr.value {
+                    AttrValue::Ident(ident) => result.references = Some(ident.clone()),
+                    _ => invalid_ref_value(attr, "`references` must name a declared table", diags),
+                },
+                "cardinality" => match ident_value(attr) {
+                    Some("one") => result.cardinality = Some(ciac_ir::Cardinality::One),
+                    Some("many") => result.cardinality = Some(ciac_ir::Cardinality::Many),
+                    _ => invalid_ref_value(attr, "`cardinality` must be `one` or `many`", diags),
+                },
+                "on_delete" => match ident_value(attr) {
+                    Some("restrict") => result.on_delete = Some(ciac_ir::RefAction::Restrict),
+                    Some("cascade") => result.on_delete = Some(ciac_ir::RefAction::Cascade),
+                    _ => invalid_ref_value(
+                        attr,
+                        "`on_delete` must be `restrict` or `cascade`",
+                        diags,
+                    ),
+                },
+                "on_update" => match ident_value(attr) {
+                    Some("restrict") => result.on_update = Some(ciac_ir::RefAction::Restrict),
+                    Some("cascade") => result.on_update = Some(ciac_ir::RefAction::Cascade),
+                    _ => invalid_ref_value(
+                        attr,
+                        "`on_update` must be `restrict` or `cascade`",
+                        diags,
+                    ),
+                },
+                "unique" => match bool_value(attr) {
+                    Some(value) => result.unique = value,
+                    None => invalid_ref_value(attr, "`unique` must be `true` or `false`", diags),
+                },
+                // Storage-attribute surface shared with scalar fields
+                // (Pillar 2, v0.16 M4): recognized here so a reference
+                // field carrying it doesn't spuriously fail as an
+                // "unknown attribute" before that milestone lands.
+                "index" => {
+                    if bool_value(attr).is_none() {
+                        invalid_ref_value(attr, "`index` must be `true` or `false`", diags);
+                    }
+                }
+                _ => unknown_attr(attr, "reference", diags),
+            }
+        }
+        result
+    }
+
+    fn invalid_ref_value(attr: &Attr, message: &str, diags: &mut Diagnostics) {
+        diags.push(
+            Diagnostic::new(ErrorCode::InvalidReferenceDefinition, message)
+                .with_label(attr.value.span(), "invalid value"),
+        );
     }
 
     fn duplicate_attr(
@@ -2085,5 +2736,30 @@ mod attrs {
             }
         };
         base_valid
+    }
+}
+
+#[cfg(test)]
+mod fix_tests {
+    use super::*;
+
+    #[test]
+    fn levenshtein_is_zero_for_equal_strings_and_counts_substitutions() {
+        assert_eq!(levenshtein("mysql", "mysql"), 0);
+        assert_eq!(levenshtein("mongo", "mysql"), 4);
+        assert_eq!(levenshtein("", "abc"), 3);
+    }
+
+    #[test]
+    fn nearest_capability_provider_finds_a_close_typo() {
+        assert_eq!(
+            nearest_capability_provider("db", "Mongo"),
+            Some(("db", "MySQL"))
+        );
+        assert_eq!(
+            nearest_capability_provider("qeue", "NATS"),
+            Some(("queue", "NATS"))
+        );
+        assert_eq!(nearest_capability_provider("wat", "ThisIsNotReal"), None);
     }
 }

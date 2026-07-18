@@ -815,6 +815,66 @@ documented in the generated README's requirements line.
    this proof is live, not delegated). Goldens begin; `supports()`
    gated to M1 scope; cold/warm `npm ci` times recorded for the CI
    budget ledger.
+
+   **Shipped (v0.23 M1):** `crates/ciac-backend-ts` — `TsBackend`
+   with `TargetInfo` (`project_marker: "package.json"`, `validate`:
+   `npm ci` → `tsc --noEmit` → `eslint .` → `vitest run`,
+   `ci_test_steps` via `actions/setup-node@v4`, `dev.rebuild: npm run
+   build`, `sim: None` until M9). `supports()` is gated to exactly
+   `Component::Api` — the single-construct scope `examples/ping.ciac`
+   exercises; every other component (db/cache/queue/service/worker/
+   job/channel/auth/...) stays `CIAC0011`-refused until its own
+   milestone. `ciac build examples/ping.ciac --target typescript`
+   live-verified end to end against the real toolchain: `npm ci`
+   (0 vulnerabilities), `npx tsc --noEmit`, `npx eslint .`, `npx
+   vitest run` (1/1) all pass on the actually-generated project, and
+   the built server (`npm run build && node dist/main.js`) answers
+   real HTTP requests — `/health` → `{"status":"ok"}`, `/openapi.json`
+   → the real embedded doc, `POST /echo` → `{"status":"accepted",
+   "data":{...}}`, the identical envelope shape Python/Rust already
+   produce. `npm ci` timing (this sandbox, not representative of CI
+   hardware): ~3.8s with an empty npm cache, ~3.3s with npm's package
+   cache warm from a prior install.
+
+   Ecosystem picks actually pinned (real current-as-of-execution
+   versions, not the plan's illustrative ones): Fastify 5.10.0, pino
+   10.3.1, TypeScript 5.9.3 (latest stable 5.x — 7.x exists but is a
+   different, Go-ported compiler outside this plan's stated "5.x"
+   decision), eslint 10.7.0 + `@eslint/js` 10.0.1 +
+   typescript-eslint 8.64.0, vitest 4.1.10 (not the initially-tried
+   3.2.4: `npm audit` found a real critical CVE, GHSA-5xrq-8626-4rwp,
+   in vitest <3.2.6's UI server — disclosed and avoided, not shipped).
+   `@types/node` pinned to 22.20.1 specifically to satisfy vite's
+   (vitest's own dependency) peer-range floor of `>=22.12.0` cleanly
+   — `npm ci` reports zero warnings, not just zero vulnerabilities.
+
+   Two real bugs the live proof caught, not hypothesized: (1) the
+   route template's `state` plugin argument was unconditionally
+   unused at M1 scope (no db/handler/publish step exists yet to read
+   it) but only suppressed for bodyless apis — `eslint`
+   (`no-unused-vars`) failed on `Echo`'s typed-body case; fixed to
+   suppress unconditionally, with a comment explaining exactly when
+   that stops being true (M2 onward). (2) `tests/src/lib.rs`'s
+   `backends()` — the registry `conformance.rs`/`golden.rs`/
+   `targets_cli.rs` correctly iterate registry-agnostically — was
+   *also* being reused by `gating.rs`'s six `..._on_both_backends`
+   tests and by three unguarded `generate()` loops in `blueprints.rs`/
+   `determinism.rs`/`modules.rs` that never called `check_support`
+   first. Both are real, disclosed fixes, not TS-specific patches:
+   added `full_parity_backends()` (Python+Rust only) for the tests
+   whose names and intent are genuinely about those two mature
+   backends, and added the missing `check_support` guard to the three
+   loops that were silently relying on "every backend supports
+   everything" — true only by accident before a narrowly-gated third
+   target existed, and exactly the kind of latent gap 22UpdatePlan.md's
+   own conformance harness was built to catch structurally rather than
+   ad hoc. `docs/targets.json` regenerated (new `typescript` entry,
+   `capabilities: {}` — correctly empty, since `vocab::PROVIDERS`
+   only lists python/rust as of 22 M4's own disclosed disposition). A
+   new golden (`gen__typescript__ping`) is the only accepted snapshot
+   diff. Full verification green: `cargo fmt --check`, `cargo clippy
+   -D warnings`, `cargo test --workspace` (all suites, zero
+   failures).
 2. **M2 — Records, schemas, models, CRUD, keyed store, migrations.**
    schemas.ts (zod + enums + error classes), models.ts (drizzle
    tables), db.ts (engine-keyed pools + migration runner), typed

@@ -103,6 +103,9 @@ fn multi_file_program_generates_identically_to_one_file() {
         ciac_sema::analyze(&one_file_program, &mut one_file_diags).expect("one-file compiles");
 
     for backend in ciac_integration_tests::backends() {
+        if ciac_codegen::check_support(backend.as_ref(), &multi_ir).is_err() {
+            continue;
+        }
         let multi_project = backend
             .generate(&multi_ir, &GenOptions::default())
             .expect("multi-file program generates");

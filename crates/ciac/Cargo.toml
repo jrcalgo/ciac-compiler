@@ -15,6 +15,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 ciac-backend-python.workspace = true
 ciac-backend-rust.workspace = true
+ciac-backend-ts.workspace = true
 ciac-codegen.workspace = true
 ciac-diagnostics.workspace = true
 ciac-ir.workspace = true

@@ -5,7 +5,7 @@
 //! *support* end to end, and the mechanism stands ready for future
 //! providers that arrive engine-by-engine.
 
-use ciac_integration_tests::{backends, compile};
+use ciac_integration_tests::{compile, full_parity_backends};
 
 const KAFKA_PROBE: &str = r#"
 service GatedProbe;
@@ -48,7 +48,7 @@ fn kafka_generates_on_both_backends() {
     );
     let ir = ir.expect("program produces IR");
 
-    for backend in backends() {
+    for backend in full_parity_backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir)
             .unwrap_or_else(|err| panic!("{} must support Kafka: {err}", backend.id()));
         let project = backend
@@ -94,7 +94,7 @@ fn mysql_generates_on_both_backends() {
     assert!(!diags.has_errors(), "probe compiles: {:?}", diags.codes());
     let ir = ir.expect("probe produces IR");
 
-    for backend in backends() {
+    for backend in full_parity_backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir)
             .unwrap_or_else(|err| panic!("{} must support MySQL: {err}", backend.id()));
         let project = backend
@@ -130,7 +130,7 @@ fn scheduler_jobs_are_supported() {
         diags.codes()
     );
     let ir = ir.expect("probe produces IR");
-    for backend in backends() {
+    for backend in full_parity_backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir)
             .unwrap_or_else(|err| panic!("{} must support scheduler jobs: {err}", backend.id()));
     }
@@ -159,7 +159,7 @@ pipeline Upload: publish Progress -> Return;
         diags.codes()
     );
     let ir = ir.expect("probe produces IR");
-    for backend in backends() {
+    for backend in full_parity_backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir)
             .unwrap_or_else(|err| panic!("{} must support realtime channels: {err}", backend.id()));
     }
@@ -209,7 +209,7 @@ fn typed_handler_signature_builds_on_both_backends() {
     );
     let ir = ir.expect("well-typed program produces IR");
 
-    for backend in backends() {
+    for backend in full_parity_backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir).unwrap_or_else(|err| {
             panic!(
                 "{} must support a typed inline handler body: {err}",
@@ -251,7 +251,7 @@ fn extern_handler_signature_builds_on_both_backends() {
     );
     let ir = ir.expect("well-typed program produces IR");
 
-    for backend in backends() {
+    for backend in full_parity_backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir).unwrap_or_else(|err| {
             panic!(
                 "{} must support an extern handler stub: {err}",
@@ -283,7 +283,7 @@ api Ping {
     let (ir, diags) = compile(source);
     assert!(!diags.has_errors(), "probe compiles: {:?}", diags.codes());
     let ir = ir.expect("probe produces IR");
-    for backend in backends() {
+    for backend in full_parity_backends() {
         ciac_codegen::check_support(backend.as_ref(), &ir).unwrap_or_else(|err| {
             panic!(
                 "{} must support ontology runtime kinds: {err}",

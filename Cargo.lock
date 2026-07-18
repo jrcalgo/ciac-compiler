@@ -179,6 +179,7 @@ dependencies = [
  "anyhow",
  "ciac-backend-python",
  "ciac-backend-rust",
+ "ciac-backend-ts",
  "ciac-codegen",
  "ciac-diagnostics",
  "ciac-ir",
@@ -242,6 +243,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciac-backend-ts"
+version = "0.20.0"
+dependencies = [
+ "ciac-codegen",
+ "ciac-diagnostics",
+ "ciac-ir",
+ "ciac-sema",
+ "ciac-syntax",
+ "include_dir",
+ "minijinja",
+ "serde_json",
+]
+
+[[package]]
 name = "ciac-codegen"
 version = "0.20.0"
 dependencies = [
@@ -272,6 +287,7 @@ version = "0.20.0"
 dependencies = [
  "ciac-backend-python",
  "ciac-backend-rust",
+ "ciac-backend-ts",
  "ciac-codegen",
  "ciac-diagnostics",
  "ciac-ir",

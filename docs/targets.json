@@ -136,6 +136,35 @@
           "Keycloak"
         ]
       }
+    },
+    {
+      "id": "typescript",
+      "description": "TypeScript (Node 20+) project using Fastify (v0.23 M1: plain api routes only)",
+      "kind": "internal",
+      "project_marker": "package.json",
+      "validate": [
+        {
+          "program": "npm",
+          "purpose": "install dependencies from the checked-in lockfile"
+        },
+        {
+          "program": "npx",
+          "purpose": "type-checks"
+        },
+        {
+          "program": "npx",
+          "purpose": "lint"
+        },
+        {
+          "program": "npx",
+          "purpose": "test"
+        }
+      ],
+      "sim": {
+        "level": "none",
+        "reason": "TypeScript simulation support lands in 23UpdatePlan.md M9 (gated bet)"
+      },
+      "capabilities": {}
     }
   ]
 }

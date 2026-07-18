@@ -5,7 +5,7 @@
 
 use ciac_codegen::GenOptions;
 use ciac_diagnostics::ErrorCode;
-use ciac_integration_tests::{backends, compile};
+use ciac_integration_tests::{compile, full_parity_backends};
 
 const AUDITED_CRUD: &str = r#"
 service S;
@@ -36,7 +36,7 @@ fn two_expansions_of_the_same_blueprint_are_hygienic() {
     let ir = ir.expect("expands and type-checks");
 
     // Both expansions generate on both backends without collision.
-    for backend in backends() {
+    for backend in full_parity_backends() {
         backend
             .generate(&ir, &GenOptions::default())
             .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
@@ -120,7 +120,7 @@ fn duplicate_blueprint_declaration_is_a_duplicate_declaration() {
 #[test]
 fn std_crud_blueprint_is_byte_identical_to_hand_written_crud() {
     use ciac_codegen::GenOptions;
-    use ciac_integration_tests::{backends, compile_file, project_dump};
+    use ciac_integration_tests::{compile_file, full_parity_backends, project_dump};
     use std::path::{Path, PathBuf};
 
     fn tmp(label: &str) -> PathBuf {
@@ -164,7 +164,7 @@ fn std_crud_blueprint_is_byte_identical_to_hand_written_crud() {
     let hand_ir = compile_file(&hand_entry);
     let std_ir = compile_file(&std_entry);
 
-    for backend in backends() {
+    for backend in full_parity_backends() {
         let hand_project = backend
             .generate(&hand_ir, &GenOptions::default())
             .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
@@ -229,7 +229,7 @@ fn blueprint_body_supports_record_table_api_worker_pipeline() {
     assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
     let ir = ir.expect("expands and type-checks");
 
-    for backend in backends() {
+    for backend in full_parity_backends() {
         backend
             .generate(&ir, &GenOptions::default())
             .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
@@ -252,7 +252,7 @@ fn two_expansions_of_a_self_contained_api_blueprint_are_hygienic() {
     assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
     let ir = ir.expect("expands and type-checks");
 
-    for backend in backends() {
+    for backend in full_parity_backends() {
         backend
             .generate(&ir, &GenOptions::default())
             .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
@@ -283,7 +283,7 @@ blueprint Capped<Payload: record> {
     let (ir, diags) = compile(&low);
     assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
     let ir = ir.expect("expands and type-checks");
-    for backend in backends() {
+    for backend in full_parity_backends() {
         backend
             .generate(&ir, &GenOptions::default())
             .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
@@ -320,7 +320,7 @@ fn std_webhook_blueprint_generates_on_both_backends() {
     .unwrap();
 
     let ir = compile_file(&entry);
-    for backend in backends() {
+    for backend in full_parity_backends() {
         backend
             .generate(&ir, &GenOptions::default())
             .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));
@@ -356,7 +356,7 @@ fn std_rate_limited_api_blueprint_generates_on_both_backends() {
     .unwrap();
 
     let ir = compile_file(&entry);
-    for backend in backends() {
+    for backend in full_parity_backends() {
         backend
             .generate(&ir, &GenOptions::default())
             .unwrap_or_else(|err| panic!("{}: {err}", backend.id()));

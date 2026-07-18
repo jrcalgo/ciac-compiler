@@ -16,9 +16,13 @@ generated output, not in here.
 - `crates/ciac-codegen` — the shared codegen framework: the per-target
   context model (`model.rs`), migrations, evolution/compatibility
   checks, compose/k8s/terraform assembly, the external-backend wire
-  protocol.
+  protocol, and the shared handler-body lowering walker plus the
+  `HostSyntax` leaf-lowering contract (`src/lower/`).
 - `crates/ciac-backend-python`, `crates/ciac-backend-rust` — the two
-  bundled targets (minijinja templates + lowering).
+  bundled targets (minijinja templates + a `HostSyntax` impl each: a
+  new target's own handler-body lowering is ~50 leaf methods against
+  the shared walker in `ciac-codegen::lower`, not a hand-rolled
+  walker — see `docs/backends.md`).
 - `crates/ciac-diagnostics` — the `error_codes!` registry
   (`src/code.rs`, append-only), spans, rendering.
 - `crates/ciac` — the `ciac` binary: `check`, `build`, `diff`,

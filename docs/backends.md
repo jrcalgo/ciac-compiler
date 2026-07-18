@@ -14,6 +14,15 @@ validation never change when a target is added.
 > a shared HIR scanner is computed once, and a conformance harness
 > proves cross-target parity mechanically. See that plan's Pillar 6
 > for the design reasoning; this page is the resulting how-to.
+>
+> Continuation update: Pillar 3's Parts 2-3 (the shared statement/
+> expression dispatcher and the `HostSyntax` leaf-lowering trait),
+> deferred at v0.22 M3 under that milestone's own pre-agreed
+> fallback, have since landed — both bundled backends now implement
+> `HostSyntax` against the shared walker in
+> `ciac_codegen::lower::{lower_body_expr, lower_body_stmt}` rather
+> than each hand-rolling a full walker. Step 6 below reflects the
+> real recipe.
 
 ## The seam
 
@@ -115,19 +124,44 @@ pub trait Backend {
    either bundled backend's `emit_service` for that half, and
    `22UpdatePlan.md`'s M5 section for the disclosed scope boundary.
 6. **HIR lowering** (only if you support typed inline handler bodies):
-   `ciac_codegen::lower::scan(ir, hir_body)` is the one shared HIR
-   traversal both bundled backends call — it returns a `Needs` struct
-   naming every capability/table/record/enum a handler body touches,
-   computed once so a backend can't independently drift on which
-   verbs it actually lowers. Expression/statement lowering itself
-   (`py_expr`/`lower_tail` vs `rust_expr`/`rust_stmt`) is still
-   hand-written per backend — v0.22 M3 shipped the scanner unification
-   only (the correctness-bearing half: `Needs::unguarded_verbs` feeds
-   `ciac sim`'s capability-coverage refusal); a shared leaf-lowering
-   contract (`HostSyntax`) remains real, scoped follow-up work. Study
-   `ciac-backend-python`/`-rust`'s `lower.rs` for the expected shape
-   of your own leaf-lowering (`FieldAccess`, `RecordCons`, each
-   `Verb`, control flow).
+   the walk is shared; you implement `ciac_codegen::lower::HostSyntax`
+   and hand your target's leaf constructors — roughly 50 methods —
+   to a shared statement/expression dispatcher that already owns
+   block/tail shaping, precedence, enum-literal use-site recovery,
+   float-literal fidelity, and divergence truncation.
+   - `ciac_codegen::lower::scan(ir, hir_body)` is the one shared HIR
+     traversal every backend calls first — it returns a `Needs` struct
+     naming every capability/table/record/enum a handler body touches,
+     computed once so a backend can't independently drift on which
+     verbs it actually lowers (`Needs::unguarded_verbs` feeds
+     `ciac sim`'s capability-coverage refusal).
+   - Pick your `Orientation`: `Expression` if `if`/`match`/db verbs are
+     real nested values in your target (Rust), `Statement` if your
+     target's control flow can't be nested inside another expression
+     (Python; Go and Java are expected to be `Statement` too — see
+     `24UpdatePlan.md`/`25UpdatePlan.md`).
+   - Implement `HostSyntax` for a small struct holding `&NormalizedIr`
+     (every leaf resolves table/record/enum names through it) plus
+     whatever your target needs precomputed once per handler (Rust's
+     `RustSyntax` also holds the bound db instance's engine, since
+     every db-verb leaf needs the same placeholder style). Leaves
+     receive already-lowered child strings plus stable IR ids
+     (`TableId`/`RecordId`/`NodeId`) — never raw HIR trees, with one
+     documented exception (`value_for_record_field`'s `original`
+     parameter, for a clone-discipline hook a GC'd target no-ops).
+   - Call `ciac_codegen::lower::lower_body_expr`
+     (`Orientation::Expression`) or `lower_body_stmt`
+     (`Orientation::Statement`) from your own `render()` — see either
+     bundled backend's `lower.rs` for the expected shape, and
+     `ciac_codegen::lower::{IdentitySyntax, IdentitySyntaxStatement}`
+     (exercised in `tests/tests/host_syntax_identity.rs`) for a
+     minimal reference implementation of every leaf against real HIR.
+   - The contract is amendable, not frozen forever: a signature change
+     (e.g. a new verb, or a target-specific tail-shaping need like
+     Go's multiple-return error idiom) lands as its own commit — the
+     trait change, an updated identity-syntax golden, and
+     byte-identical goldens for every *existing* target — before a
+     new target's leaves consume it.
 7. **Register**: add one line to `backends()` in
    `crates/ciac/src/commands.rs` (mirrored in
    `tests/src/lib.rs::backends`). Nothing else changes — no edits to
@@ -164,30 +198,34 @@ Both bundled backends hold the line the next target should match:
 ## What a backend costs today
 
 Measured, not estimated — `22UpdatePlan.md`'s audit before the M1-M5
-factory work, and the actual numbers after it:
+factory work, the actual numbers after it, and this continuation's
+own measured numbers for Pillar 3 Parts 2-3 (the shared dispatcher and
+`HostSyntax`):
 
-| | Before (v0.19.0, pre-factory) | After (v0.22, M1-M5 shipped) |
-| --- | --- | --- |
-| lib.rs emission wiring | ~500 lines/backend | unchanged (~509 rust / ~374 python) — `Emit` exists (M5) but porting the two real backends' per-item loops onto it is disclosed, deferred follow-up |
-| lower.rs (scanner + leaves) | ~1,200 lines/backend | ~800-1,060 lines/backend (scanner moved out; leaf/dispatch lowering — the larger remaining opportunity — still hand-written per backend, disclosed at M3) |
-| shared `ciac-codegen::lower` scanner | did not exist (duplicated ~150 lines/backend instead) | 358 lines, one copy, both backends consume it |
-| templates | ~2,800 lines/backend | unchanged — essential, by design |
-| model.rs per-language fields | ~27 `py_*`/`rust_*` fields | `FieldCtx`'s 4-field group deleted (M2, backend-owned filters instead); ~20 remaining fields (composed filters — `ExtraDepCtx`, `CfgFieldCtx`, `ArmCtx`, `BindingCtx`, ...) are disclosed, deferred follow-up |
-| edits outside your crate | ~6 files, ~25 sites | 1 line (the registry) — closed at M1, held by the grep fence |
-| conformance proof | ad hoc per arc | `tests/tests/conformance.rs`: C1 (generate succeeds), C2 (goldens), C3 (OpenAPI byte-equality), C4 (topology equality) all run automatically once registered; C5 delegates to CI; C6/C7 await a third target |
+| | Before (v0.19.0, pre-factory) | After M1-M5 (v0.22) | After Parts 2-3 (this continuation) |
+| --- | --- | --- | --- |
+| lib.rs emission wiring | ~500 lines/backend | unchanged (~509 rust / ~374 python) — `Emit` exists (M5) but porting the two real backends' per-item loops onto it is disclosed, deferred follow-up | unchanged — out of this continuation's scope |
+| lower.rs | ~1,200 lines/backend | ~800-1,060 lines/backend (scanner moved out; leaf/dispatch lowering still hand-written per backend, disclosed at M3) | **577 (rust) / 869 (python)** — leaves only; Python's figure still includes its ~320-line generated-behavioral-test family (`render_test`/`dummy_value`/...), which depends only on the shared scanner and was never in scope to move. Net of that, both land inside the original M3 cost model's own "~450-600 leaves only" estimate. |
+| shared `ciac-codegen::lower` | 358 lines (scanner only) | 358 lines (scanner only) | **1,980 lines**: `scan.rs` 364 (moved verbatim), `dispatch.rs` 792 (the shared walker + utilities + unit tests), `host_syntax.rs` 317 (the `HostSyntax` trait + support types), `identity.rs` 461 (two complete reference implementations, one per orientation), `mod.rs` 46 |
+| templates | ~2,800 lines/backend | unchanged — essential, by design | unchanged |
+| model.rs per-language fields | ~27 `py_*`/`rust_*` fields | `FieldCtx`'s 4-field group deleted (M2); ~20 remaining fields (composed filters) disclosed, deferred | unchanged — a different, unrelated leftover from M2, not folded into this continuation |
+| edits outside your crate | ~6 files, ~25 sites | 1 line (the registry), held by the grep fence | unchanged |
+| conformance proof | ad hoc per arc | `tests/tests/conformance.rs` (C1-C5 wired, C6/C7 await a third target) | unchanged, plus a new tier: `tests/tests/host_syntax_identity.rs` proves the *contract itself* renders every typed handler in the 26-example corpus from both orientations |
 
-**Honest summary:** the factory closed the seam that was cheapest to
-fix and most dangerous to leave (seam 3 — scattered per-target
-`match` sites, seam 1's clearest instance, and seam 2's
-correctness-bearing scanner half). The largest remaining line-count
-opportunity — unifying per-backend leaf/statement lowering behind a
-shared `HostSyntax` contract, and porting real per-item emission onto
-`Emit` — is real, was scoped and explicitly deferred rather than
-rushed, and is recorded as follow-up work in `22UpdatePlan.md`'s M2,
-M3, and M5 milestone notes. A new backend today is still primarily
-template-writing plus per-backend leaf lowering, not primarily
-archaeology across the compiler's shared crates — which was the
-factory's actual goal.
+**Honest summary:** total line count across the three files
+`lower.rs`+`lower.rs`+`ciac-codegen::lower` went *up*, not down (2,220
+→ 3,426) — Parts 2-3 is not a line-count optimization, and the M1-M5
+table above should not be read as promising one. What moved is *where*
+the lines live and what a *new* backend must write: precedence,
+block/tail shaping, enum-literal use-site recovery, float-literal
+fidelity, and divergence truncation are now defined exactly once,
+proven against both orientations by `host_syntax_identity.rs`, and a
+third backend (TypeScript/Go/Java) consumes that walker for free —
+implementing `HostSyntax`'s roughly 50 leaves, not writing and
+re-debugging a second (or third, or fourth) full walker. `22UpdatePlan.md`'s
+own M3 note named exactly this as the deferred, harder half of seam 2;
+this continuation is where it landed, byte-identical goldens intact
+end to end.
 
 ## Simulation (v0.17)
 

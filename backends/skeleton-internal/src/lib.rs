@@ -12,13 +12,20 @@
 //! (`ciac_codegen::emit`) rendering its whole (tiny, synthetic) file
 //! set. What it does **not** demonstrate: per-language type filters,
 //! `HostSyntax` leaf lowering, or per-item emission (one file per
-//! declared api/worker/job/...) — those aren't a frozen contract yet
-//! (22UpdatePlan.md M3 shipped only the shared `Needs` scanner, not
-//! the leaf trait; M5's `Emit` table deliberately covers only the
-//! static/conditional-single-file subset). A real backend's
-//! `lower.rs` still hand-writes its expression/statement lowering and
-//! per-item loops today, the same way `ciac-backend-python`/`-rust`
-//! do — see their own source for that half of the recipe.
+//! declared api/worker/job/...). The first two now *are* a frozen,
+//! real contract — `ciac_codegen::lower::HostSyntax`, completed as a
+//! `22UpdatePlan.md` Pillar 3 continuation after M3 shipped only the
+//! shared `Needs` scanner — but this skeleton stays deliberately tiny
+//! (no typed inline handlers in its synthetic file set) rather than
+//! also implementing all ~50 leaves; see `ciac-backend-python`/
+//! `-rust`'s own `lower.rs` for two worked implementations, and
+//! `ciac_codegen::lower::{IdentitySyntax, IdentitySyntaxStatement}`
+//! for the contract's own minimal reference implementation. Per-item
+//! emission (one file per declared api/worker/job/consumer/channel/
+//! resource/call-target) remains real, scoped follow-up work — M5's
+//! `Emit` table still covers only the static/conditional-single-file
+//! subset, and a real backend hand-writes that per-item loop today,
+//! the same way `ciac-backend-python`/`-rust` do.
 
 use ciac_codegen::emit::{self, Emit};
 use ciac_codegen::model as context;

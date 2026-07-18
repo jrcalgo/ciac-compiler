@@ -253,6 +253,7 @@ dependencies = [
  "ciac-syntax",
  "include_dir",
  "minijinja",
+ "serde",
  "serde_json",
 ]
 

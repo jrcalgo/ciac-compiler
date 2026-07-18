@@ -4,10 +4,16 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import { loadConfig } from "./config.js";
+{%- if c.resources or c.tables %}
+import { {% if c.resources %}ensureSchema{% endif %}{% if c.resources and c.tables %}, {% endif %}{% if c.tables %}runMigrations{% endif %} } from "./db.js";
+{%- endif %}
 import { loggerOptions } from "./observability.js";
-import { createState } from "./state.js";
+import { createState, type AppState } from "./state.js";
 {%- for api in c.apis %}
 import { {{ api.snake }}Route } from "./routes/{{ api.snake }}.js";
+{%- endfor %}
+{%- for resource in c.resources %}
+import { {{ resource.snake }}Route } from "./routes/{{ resource.snake }}.js";
 {%- endfor %}
 
 // Emitted by `ciac build` alongside this file (openapi.json, derived
@@ -16,9 +22,7 @@ import { {{ api.snake }}Route } from "./routes/{{ api.snake }}.js";
 const openapiPath = fileURLToPath(new URL("../openapi.json", import.meta.url));
 const openapiDocument: unknown = JSON.parse(readFileSync(openapiPath, "utf8"));
 
-export function buildApp() {
-  const config = loadConfig();
-  const state = createState(config);
+export function buildApp(state: AppState) {
   const app = Fastify({ logger: loggerOptions() });
 
   app.get("/health", async () => ({ status: "ok" }));
@@ -26,12 +30,23 @@ export function buildApp() {
 {%- for api in c.apis %}
   app.register({{ api.snake }}Route, { state });
 {%- endfor %}
+{%- for resource in c.resources %}
+  app.register({{ resource.snake }}Route, { state });
+{%- endfor %}
 
   return app;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const app = buildApp();
+  const config = loadConfig();
+  const state = createState(config);
+{%- if c.resources %}
+  await ensureSchema(state);
+{%- endif %}
+{%- if c.tables %}
+  await runMigrations(state);
+{%- endif %}
+  const app = buildApp(state);
   app.listen({ host: "0.0.0.0", port: 8000 }).catch((err: unknown) => {
     app.log.error(err);
     process.exit(1);

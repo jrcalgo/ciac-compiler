@@ -26,6 +26,8 @@ use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 
+mod filters;
+
 static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
 /// This backend's compose-file parameterization (v0.23 M1, per
@@ -114,13 +116,28 @@ impl Backend for TsBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // v0.23 M1 scope: a plain `api` (any method/path, typed or
-        // untyped body, no pipeline steps beyond the implicit
-        // `Return`) is the whole gate — matches `examples/ping.ciac`
-        // exactly. Every other component kind (db/cache/queue/
-        // service/worker/job/channel/auth/...) stays refused
-        // (`CIAC0011`) until its own milestone un-gates it.
-        matches!(component, Component::Api { .. })
+        // v0.23 M1: a plain `api` (any method/path, typed or untyped
+        // body, no pipeline steps beyond the implicit `Return`) —
+        // matches `examples/ping.ciac`. v0.23 M2 adds: `db` on any of
+        // the 3 engines (Postgres/MySQL/SQLite), `cache Redis`, and a
+        // classic binding-style `service` (`signature: None`) — CRUD
+        // resources and keyed-document stores compile to exactly this
+        // component shape (`Database`, `Api`, `Service { signature:
+        // None }`; see `23UpdatePlan.md` M2's own investigation note).
+        // A *typed* `service` (`signature: Some(..)`) still stays
+        // refused until M4's HostSyntax leaves land. Every other
+        // component kind (queue/worker/job/channel/auth/...) stays
+        // refused (`CIAC0011`) until its own milestone un-gates it.
+        matches!(
+            component,
+            Component::Api { .. }
+                | Component::Database { .. }
+                | Component::Cache { .. }
+                | Component::Service {
+                    signature: None,
+                    ..
+                }
+        )
     }
 
     fn target_info(&self) -> &'static TargetInfo {
@@ -133,12 +150,17 @@ impl Backend for TsBackend {
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
+        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
             (
                 f.path().to_str().expect("template names are utf-8"),
                 f.contents_utf8().expect("templates are utf-8"),
             )
         }))?;
+        env.add_filter("ts_type", filters::ts_type);
+        env.add_filter("zod_schema", filters::zod_schema);
+        env.add_filter("drizzle_column", filters::drizzle_column);
+        env.add_filter("sql_ddl_type", filters::sql_ddl_type);
+        env.add_function("id_ddl_type", filters::id_ddl_type);
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -243,6 +265,23 @@ fn emit_service(
             render("route_api.ts.j2", context! { api => api })?,
         );
     }
+    if !ctx.records.is_empty() {
+        project.add_file(at("src/schemas.ts"), render("schemas.ts.j2", empty())?);
+    }
+    if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
+        project.add_file(at("src/models.ts"), render("models.ts.j2", empty())?);
+        project.add_file(at("src/db.ts"), render("db.ts.j2", empty())?);
+    }
+    for resource in &ctx.resources {
+        project.add_file(
+            at(&format!("src/stores/{}.ts", resource.store_module)),
+            render("resource_store.ts.j2", context! { resource => resource })?,
+        );
+        project.add_file(
+            at(&format!("src/routes/{}.ts", resource.snake)),
+            render("route_resource.ts.j2", context! { resource => resource })?,
+        );
+    }
     project.add_file(
         at("tests/state.test.ts"),
         render("state.test.ts.j2", empty())?,
@@ -267,7 +306,7 @@ mod tests {
     const PING_SRC: &str = "service Ping;\n\nrecord Message {\n    id: Uuid;\n    text: String;\n}\n\napi Echo: Message {\n    method: POST;\n    path: \"/echo\";\n}\n\npipeline Echo: Return;\n";
 
     #[test]
-    fn supports_plain_apis_only() {
+    fn supports_v0_23_m2_scope() {
         let backend = TsBackend;
         assert!(backend.supports(&Component::Api {
             name: "X".to_owned(),
@@ -278,9 +317,28 @@ mod tests {
                 scope: None,
             },
         }));
-        assert!(!backend.supports(&Component::Database {
-            name: "db".to_owned(),
-            engine: ciac_ir::DbEngine::Postgres,
+        for engine in [
+            ciac_ir::DbEngine::Postgres,
+            ciac_ir::DbEngine::MySql,
+            ciac_ir::DbEngine::Sqlite,
+        ] {
+            assert!(backend.supports(&Component::Database {
+                name: "db".to_owned(),
+                engine,
+            }));
+        }
+        assert!(backend.supports(&Component::Cache {
+            name: "cache".to_owned(),
+            engine: ciac_ir::CacheEngine::Redis,
+        }));
+        assert!(backend.supports(&Component::Service {
+            name: "svc".to_owned(),
+            signature: None,
+        }));
+        // A worker (broker consumer) still stays refused until M3 lands.
+        assert!(!backend.supports(&Component::Worker {
+            name: "w".to_owned(),
+            config: ciac_ir::WorkerConfig::default(),
         }));
     }
 

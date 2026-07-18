@@ -7,7 +7,13 @@ import { createState } from "../src/state.js";
 
 describe("AppState construction", () => {
   it("never touches the network, even against unreachable config", () => {
-    process.env.DATABASE_URL = "postgres://unreachable-host:1/db";
+{%- for inst in c.db_instances %}
+    process.env.{{ inst.env_var }} =
+      "{% if inst.db_engine == "mysql" %}mysql://unreachable-host:1/db{% elif inst.db_engine == "sqlite" %}file:data/{{ inst.db_name }}.db{% else %}postgres://unreachable-host:1/db{% endif %}";
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+    process.env.{{ inst.env_var }} = "redis://unreachable-host:1";
+{%- endfor %}
     const state = createState(loadConfig());
     expect(state.config).toBeDefined();
   });

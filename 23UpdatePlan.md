@@ -884,6 +884,98 @@ documented in the generated README's requirements line.
    the same zero-infra proof v0.13 M3 used); crud-notes/mysql-notes
    verify statically local, capability round-trips CI-delegated as
    always.
+
+   **Shipped (v0.23 M2):** `schemas.ts` (zod schemas + `z.infer` types
+   + error classes, from `c.records`), `models.ts` (Drizzle table
+   objects for CRUD resources and `table` declarations, column
+   builders called through a real Rust filter — `drizzle_column` in
+   `filters.rs` — rather than picked in Jinja, mirroring the
+   Postgres/MySQL/SQLite `FieldTypeKind` mapping decided in Pillar 2),
+   `db.ts` (hand-written per-engine `CREATE TABLE IF NOT EXISTS` DDL
+   for CRUD resources reached through Drizzle's `$client` escape hatch
+   — there is no declarative-sync API outside drizzle-kit — plus a
+   hand-rolled `_ciac_migrations`-ledger runner for `table` decls,
+   mirroring Python's own runner shape since none of the three drivers'
+   own migration tooling matches CIaC's plain-numbered-`.sql`-file
+   contract), one `stores/<resource>.ts` class per CRUD resource (typed
+   and untyped/keyed-document, Redis cache-aside where `has_cache`,
+   using Drizzle's query builder directly rather than raw placeholder
+   SQL — sidestepping the `sqlph`/bind-order machinery entirely for
+   this pre-built REST layer, since Drizzle already generates correct
+   per-engine SQL from a single portable call), and one
+   `routes/<resource>.ts` Fastify plugin per resource (create/list/
+   get/update/delete, Zod validation via `{{Name}}Schema.omit({id:
+   true})` reused straight from `schemas.ts` rather than a second
+   generated schema). `state.ts` gained one `AppState` field per named
+   db/cache instance — `pg.Pool`/`mysql2`'s pool are lazy by
+   construction (no connection until a query runs), `ioredis` is
+   built with `lazyConnect: true`, and `better-sqlite3` only ever
+   touches a local file — so the M1 "AppState touches zero
+   infrastructure" bar (tested since M1) still holds with real
+   capability instances present. `TsBackend::supports()` widened to
+   `Database` (all 3 engines), `Cache`, and a classic binding-style
+   `Service { signature: None }` — CRUD/keyed-store resources compile
+   to exactly that component triple; a *typed* `service` still stays
+   refused until M4.
+
+   Two real, non-hypothetical type errors the live `tsc --noEmit`
+   proof caught, both fixed by *not* trusting a plausible-looking
+   type annotation: (1) `ReturnType<typeof drizzle>` on an AppState
+   field looked right but is wrong for `drizzle-orm/mysql2`
+   specifically — being a generic function with a defaulted type
+   parameter, `ReturnType` resolves the *default* instantiation
+   (`$client: <callback-style mysql2 Pool>`), not the one the real
+   call site narrows to when handed an actual `mysql2/promise` `Pool`
+   — so the field type and the constructed value structurally
+   disagreed. Fixed by spelling the field type as the concrete
+   intersection (`MySql2Database & { $client: mysql.Pool }`) at every
+   one of the three engines, not just the one that happened to break
+   first. (2) `import Database from "better-sqlite3"; ...: Database`
+   — the default import is a namespace, not a usable type in this
+   project's module setup (`Cannot use namespace 'Database' as a
+   type`); fixed by importing the constructor and the `Database`
+   *type* under separate names (`import SqliteDatabase, { type
+   Database } from "better-sqlite3"`). Both fixes are disclosed
+   because they'd have shipped silently wrong if the M2 gate had been
+   "renders without a template error" instead of a real `tsc`
+   pass — exactly the trust-the-tool-not-the-plausible-guess
+   discipline the M1 vitest-CVE and eslint fixes already established.
+
+   Live proof, real toolchain, zero Docker: `sqlite-notes` — `npm ci`
+   (0 vulnerabilities), `npx tsc --noEmit`, `npx eslint .`, `npx
+   vitest run` (1/1) all pass on the generated project; `npm run
+   build && node dist/main.js` answers a real HTTP CRUD round-trip
+   against an actual SQLite file — `POST /notes` → 201 with a
+   server-generated id, `GET /notes` lists it, `GET /notes/:id`
+   fetches it, `PUT /notes/:id` updates it, `DELETE /notes/:id` → 204,
+   a subsequent `GET /notes/:id` → 404. `mysql-notes` (db + cache, no
+   auth) and the multi-service `inventory-system` golden verify
+   statically (`npm ci`, `tsc --noEmit`, `eslint .` all clean); a live
+   MySQL/Redis round-trip is CI-delegated per the plan's own stated
+   allowance (no local MySQL/Redis daemon in this sandbox). As a
+   disclosed, real deviation from this milestone's own checklist row —
+   not a silent gap — `crud-notes.ciac` (needs `auth JWT`) stays
+   `CIAC0011`-refused this pass: auth is genuinely out of scope until
+   M6, verified by a real `ciac build --target typescript` run against
+   it that fails with exactly that code, not by inspection. Full
+   verification green: `cargo fmt --check`, `cargo clippy -D
+   warnings`, `cargo test --workspace` (61 suites, zero failures); 4
+   new/updated goldens accepted (`ping` — trivial, from the M2
+   `state.test.ts` engine-aware env-var fix below — plus new
+   `sqlite-notes`/`mysql-notes`/`inventory-system` trees).
+
+   One more real fix, found by the same live proof rather than
+   guessed: M1's `state.test.ts` unconditionally set
+   `DATABASE_URL=postgres://unreachable-host:1/db` regardless of which
+   engine(s) the generated project actually declares. Harmless while
+   no backend had a real db instance to construct against it, but once
+   `sqlite-notes` generated a real `better-sqlite3` `AppState` field,
+   that Postgres-shaped URL got handed straight to
+   `new Database(path)` as a literal (non-existent) filesystem path,
+   failing the "never touches the network" test for a reason that had
+   nothing to do with the network. Fixed by generating one
+   engine-appropriate unreachable URL per declared instance instead of
+   a single hardcoded one.
 3. **M3 — Broker, workers, jobs, channels.** nats.js + kafkajs,
    worker retry loop delegating to exported `handleMessageOnce`,
    croner jobs with `handleTickOnce`, WS/SSE channels, publish sites

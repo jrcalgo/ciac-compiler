@@ -2,6 +2,11 @@
 
 {%- import "_steps.ts.j2" as steps %}
 import type { FastifyPluginAsync } from "fastify";
+{%- if api.has_auth_step and api.scope %}
+import { requireScope, verifyToken } from "../auth.js";
+{%- elif api.has_auth_step %}
+import { verifyToken } from "../auth.js";
+{%- endif %}
 {%- if api.has_publish_step %}
 import { publish } from "../queue.js";
 {%- endif %}
@@ -24,6 +29,14 @@ export const {{ api.snake }}Route: FastifyPluginAsync<{ state: AppState }> = asy
   void state;
 {%- endif %}
   app.{{ api.method_lower }}("{{ api.route }}", async (request) => {
+{%- if api.has_auth_step %}
+    const claims = await verifyToken(request, state.config);
+{%- if api.scope %}
+    requireScope(claims, "{{ api.scope }}");
+{%- else %}
+    void claims;
+{%- endif %}
+{%- endif %}
 {%- set mutable = api.steps | reassigns_result %}
 {%- if api.has_body %}
     {% if mutable %}let{% else %}const{% endif %} result: unknown = request.body;

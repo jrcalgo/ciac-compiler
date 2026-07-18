@@ -19,7 +19,15 @@ export interface Config {
 {%- for t in c.call_targets %}
   {{ t.url_field }}: string;
 {%- endfor %}
-{%- if not c.db_instances and not c.cache_instances and not c.queue_engine and not c.call_targets %}
+{%- if c.has_auth %}
+{%- if c.auth_scheme == "oauth2" %}
+  oauth_issuer: string;
+  oauth_audience: string;
+{%- else %}
+  jwt_secret: string;
+{%- endif %}
+{%- endif %}
+{%- if not c.db_instances and not c.cache_instances and not c.queue_engine and not c.call_targets and not c.has_auth %}
   placeholder?: never;
 {%- endif %}
 }
@@ -43,13 +51,21 @@ export function loadConfig(): Config {
 {%- for t in c.call_targets %}
     {{ t.url_field }}: envOr("{{ t.env_var }}", "{{ t.default_url }}"),
 {%- endfor %}
+{%- if c.has_auth %}
+{%- if c.auth_scheme == "oauth2" %}
+    oauth_issuer: envOr("OAUTH_ISSUER", "{{ c.auth_issuer }}"),
+    oauth_audience: envOr("OAUTH_AUDIENCE", "{{ c.auth_audience }}"),
+{%- else %}
+    jwt_secret: envOr("JWT_SECRET", "change-me"),
+{%- endif %}
+{%- endif %}
   };
 }
 
 function envOr(key: string, fallback: string): string {
   return process.env[key] ?? fallback;
 }
-{%- if not c.db_instances and not c.cache_instances and not c.queue_engine and not c.call_targets %}
+{%- if not c.db_instances and not c.cache_instances and not c.queue_engine and not c.call_targets and not c.has_auth %}
 
 // `envOr` is unused until a capability instance needs an
 // environment-driven field — kept here, not deleted-then-reintroduced,

@@ -1437,6 +1437,120 @@ documented in the generated README's requirements line.
    order-system verifies with the suite green under zero
    infrastructure; oauth-echo verifies statically with the
    documented OAuth2 posture.
+
+   **Shipped (v0.23 M6):** `src/auth.ts.j2` — `verifyToken`
+   (`jwtVerify` against a static HS256 secret for JWT, a lazily-
+   constructed `createRemoteJWKSet` for OAuth2/RS256, mirroring the
+   db pools'/broker client's own lazy-construction discipline so
+   `AppState` never makes a network call a route never needs) and
+   `requireScope` (space-joined `scope` string or `scp` array, both
+   real-issuer conventions, matching Python's/Rust's own two-shape
+   check) plus `AuthError` with a real `.statusCode`. Fastify natively
+   respects a thrown error's own `statusCode` (live-verified against
+   a real Fastify instance) — no `setErrorHandler` needed just for
+   401/403, since a scope check is mechanism, not the disclosed
+   cross-target domain-error-mapping gap. `route_api.ts.j2`/
+   `route_resource.ts.j2` call `verifyToken` on every auth-gated
+   route and `requireScope` only where a scope is actually declared
+   (`api.scope`/`resource.read_scope`/`resource.write_scope`).
+   `scope.test.ts.j2` mirrors Rust's `scope_tests.rs.j2` shape
+   exactly — `fastify.inject()` in place of `tower::ServiceExt::
+   oneshot`, `jose`'s `SignJWT` to mint tokens locally, dummy-value
+   macros keyed off `FieldTypeKind`'s internally-tagged shape — and
+   is gated identically: `ctx.auth_scheme == "jwt" && !ctx.scopes.
+   is_empty()`, so a JWT service with no declared scope (typed-video,
+   crud-notes) correctly gets `auth.ts` but no `scope.test.ts`, and
+   an OAuth2 service (oauth-echo) never gets one regardless of scope
+   count. The lib.rs gate comment discloses the same live reason
+   Rust's does: real RS256 verification needs a real issuer's JWKS
+   regardless of how lazily it's fetched — a lazy client just moves
+   *when* the network call happens, not whether it's needed — so a
+   true no-infrastructure OAuth2 scope proof needs a fake auth
+   adapter, disclosed future work this milestone didn't build.
+
+   Four real bugs found live and fixed, all via generating and
+   type-checking order-system/typed-video/oauth-echo against `tsc`
+   and `eslint` (not hypothesized):
+   1. The `publish()` `HostSyntax` leaf called a nonexistent
+      `AppState.publish` method — `queue.ts.j2` only ever defined a
+      free function `publish(state, subject, payload: Buffer)`, never
+      an `AppState` method, and it takes a `Buffer` not a raw string.
+      M4 never caught this because no earlier example called
+      `publish` from inside a typed handler body (only from a
+      pipeline step, wired separately) until order-system's
+      `receive_order_event` handler (from the `std/webhook.ciac`
+      blueprint) did. Fixed in `lower.rs` to call the real free
+      function with `Buffer.from(JSON.stringify(...))`; `logic.ts.j2`
+      gained a conditional `import { publish } from "../queue.js"`
+      gated on a new `LogicFileCtx.needs_queue` field.
+   2. `crud Clip: Video;` in typed-video.ciac — a CRUD resource whose
+      declared name differs from the record it binds — broke
+      `route_resource.ts.j2`'s schema import, which assumed
+      `resource.name` always matched the schema `schemas.ts` actually
+      generates (keyed by *record* name, one schema per `record`
+      declaration). Dormant since M2 since no earlier example had a
+      differently-named crud-to-record binding. Fixed by importing
+      `{{ resource.record.name }}Schema` instead of
+      `{{ resource.name }}Schema` (confirmed `resource_store.ts.j2`
+      has no equivalent bug — it defines its own local
+      `{{ resource.name }}Row`/`Payload` interfaces, never importing
+      from `schemas.ts`). This same bug, previously silent, also
+      affected `audited-crud.ciac`'s `ResourceUser`/`ResourceVideo`
+      resources once their goldens regenerated under the fix.
+   3. `auth.ts.j2` unconditionally imported `createRemoteJWKSet` from
+      `jose` even on JWT-only services that never reference it —
+      `@typescript-eslint/no-unused-vars` caught it on every M6
+      example. Fixed with a scheme-conditional import (only pull
+      `createRemoteJWKSet` in when `c.auth_scheme == "oauth2"`).
+   4. `route_api.ts.j2`/`route_resource.ts.j2` unconditionally
+      imported `requireScope` alongside `verifyToken` whenever a
+      route was auth-gated, even on routes with no declared scope
+      (which only call `verifyToken` and `void claims`) — same
+      eslint unused-import failure, caught on typed-video (no route
+      scope), oauth-echo, and order-system's unscoped routes. Fixed
+      by conditioning the `requireScope` import on the presence of an
+      actual scope (`api.scope`, or `resource.read_scope ||
+      resource.write_scope`).
+
+   Live proof: all three M6 examples (order-system, typed-video,
+   oauth-echo) generated via the real `ciac build --target
+   typescript` binary, `npm ci`, `npx tsc --noEmit` clean, `npx
+   eslint .` clean, `npx vitest run` green — order-system's 9 tests
+   across `tests/state.test.ts` + the new `tests/scope.test.ts`
+   confirm the zero-infrastructure scope-enforcement proof: a request
+   with a missing/wrong scope gets a real `403` before any db/cache
+   client is touched (asserted directly), and a request with the
+   granted scope clears the scope check and reaches the (expected,
+   no-infra) `ECONNREFUSED`/`500` from the unreachable local Postgres
+   — never a `401`/`403` — proving the check itself, not the full
+   round-trip, which is exactly what the milestone's "zero
+   infrastructure" claim is about. typed-video and oauth-echo each
+   correctly emit `auth.ts` with no `scope.test.ts` (no declared
+   scope; OAuth2 scheme, respectively), matching the disclosed gate
+   exactly. `routed-media.ciac`, an existing example with a real
+   declared scope (`"videos:write"`), newly un-gates on TS this
+   milestone and correctly receives both `auth.ts` and
+   `scope.test.ts` in its golden.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green. One stale gating
+   assertion from M3 (`supports_v0_23_m3_scope`, asserting
+   `Component::Auth` was refused) was caught by the test suite and
+   updated to assert both schemes now supported, renamed
+   `supports_v0_23_m6_scope`. Golden acceptance: every TypeScript
+   example's snapshot churned (the `jose` dependency addition and a
+   `package-lock.json` transitive bump — `fast-uri` 4.1.0→4.1.1 from
+   npm's registry state moving since M5's lockfile capture — touch
+   every TS project regardless of auth use), plus six examples
+   gained their first-ever TypeScript golden now that Auth is
+   supported: order-system, typed-video, oauth-echo (this
+   milestone's own proving set), crud-notes, routed-media, and
+   video-platform (existing `auth JWT;` examples that were silently
+   skipped by the golden harness's `check_support`-gated loop until
+   now). All diffs reviewed by hand before accepting — the schema-
+   import rename (bug 2) is visible directly in audited-crud's
+   diff, confirming the fix rather than just the dependency churn.
 7. **M7 — Ontology remainder + call clients + observability
    completion.** S3/email/search/external_http wrappers, typed call
    clients (reuse-or-fork decision recorded), OTel end-to-end with

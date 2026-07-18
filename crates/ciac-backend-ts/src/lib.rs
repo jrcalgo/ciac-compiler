@@ -144,16 +144,23 @@ impl Backend for TsBackend {
         // stay refused here: 23UpdatePlan.md's own capability-parity
         // checklist places their wrapper clients at M7, not M4 (`db`/
         // `cache` already un-gated since M2 are the only capabilities
-        // a typed handler can actually reach this milestone). Likewise
-        // `Component::Auth` stays refused until M6. This is a disclosed
-        // scope boundary, not an oversight: `typed-handlers.ciac`
-        // (needs `object_store`), `typed-video.ciac` (needs `auth`),
-        // and `extras-verbs.ciac` (needs the M7 ontology wrappers) stay
-        // `CIAC0011`-refused this milestone, matching the exact
-        // disclosed-deviation pattern M2 used for `crud-notes.ciac` and
-        // M3 used for traceparent — `domain-orders.ciac`/
-        // `query-verbs.ciac` (db-only) are this milestone's proving
-        // examples instead.
+        // a typed handler can actually reach this milestone). This is
+        // a disclosed scope boundary, not an oversight: `typed-
+        // handlers.ciac` (needs `object_store`) and `extras-verbs.ciac`
+        // (needs the M7 ontology wrappers) stay `CIAC0011`-refused,
+        // matching the exact disclosed-deviation pattern M2 used for
+        // `crud-notes.ciac` and M3 used for traceparent —
+        // `domain-orders.ciac`/`query-verbs.ciac` (db-only) were M4's
+        // proving examples instead. v0.23 M6 adds: `Component::Auth`
+        // (JWT and OAuth2 — `jose` verifies both; only JWT gets the
+        // no-infrastructure `tests/scope.test.ts` suite, OAuth2
+        // excluded for the same live reason Rust's own scope-test gate
+        // discloses: real RS256 verification needs a real issuer's
+        // JWKS regardless of how lazily it's fetched). `typed-
+        // video.ciac` (needs `auth`) un-gates this milestone;
+        // `order-system.ciac` (JWT, the full scope-enforced surface)
+        // and `oauth-echo.ciac` (OAuth2, static-only per the disclosed
+        // gap above) are this milestone's proving examples.
         matches!(
             component,
             Component::Api { .. }
@@ -167,6 +174,7 @@ impl Backend for TsBackend {
                 | Component::Scheduler { .. }
                 | Component::Channel { .. }
                 | Component::Realtime { .. }
+                | Component::Auth { .. }
         )
     }
 
@@ -294,6 +302,9 @@ fn emit_service(
     if ctx.queue_engine.is_some() {
         project.add_file(at("src/queue.ts"), render("queue.ts.j2", empty())?);
     }
+    if ctx.has_auth {
+        project.add_file(at("src/auth.ts"), render("auth.ts.j2", empty())?);
+    }
     for api in &ctx.apis {
         project.add_file(
             at(&format!("src/routes/{}.ts", api.snake)),
@@ -389,6 +400,21 @@ fn emit_service(
         at("tests/state.test.ts"),
         render("state.test.ts.j2", empty())?,
     );
+    // v0.23 M6: scope-enforcement behavioral test, JWT-only. OAuth2 is
+    // excluded from this no-infrastructure suite for the same live
+    // reason Rust's own `scope_tests.rs` gate discloses: real RS256
+    // verification needs a real issuer's JWKS regardless of how
+    // lazily it's fetched — a lazy `createRemoteJWKSet` just moves
+    // *when* that network call happens (construction to first
+    // request), it doesn't remove the need for it. A no-infrastructure
+    // scope proof for OAuth2 needs an actual fake auth adapter, real,
+    // disclosed future work this milestone didn't build.
+    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at("tests/scope.test.ts"),
+            render("scope.test.ts.j2", empty())?,
+        );
+    }
 
     Ok(())
 }
@@ -409,7 +435,7 @@ mod tests {
     const PING_SRC: &str = "service Ping;\n\nrecord Message {\n    id: Uuid;\n    text: String;\n}\n\napi Echo: Message {\n    method: POST;\n    path: \"/echo\";\n}\n\npipeline Echo: Return;\n";
 
     #[test]
-    fn supports_v0_23_m3_scope() {
+    fn supports_v0_23_m6_scope() {
         let backend = TsBackend;
         assert!(backend.supports(&Component::Api {
             name: "X".to_owned(),
@@ -461,13 +487,15 @@ mod tests {
                 path: "/ch".to_owned(),
             },
         }));
-        // Auth still stays refused until M6.
-        assert!(!backend.supports(&Component::Auth {
-            name: "auth".to_owned(),
-            scheme: ciac_ir::AuthScheme::Jwt,
-            issuer: None,
-            audience: None,
-        }));
+        // v0.23 M6: Auth is now supported, both schemes.
+        for scheme in [ciac_ir::AuthScheme::Jwt, ciac_ir::AuthScheme::OAuth2] {
+            assert!(backend.supports(&Component::Auth {
+                name: "auth".to_owned(),
+                scheme,
+                issuer: None,
+                audience: None,
+            }));
+        }
     }
 
     #[test]

@@ -895,7 +895,17 @@ impl HostSyntax for TsSyntax<'_> {
         format!("{indent}throw new {exc}({});", args.join(", "))
     }
     fn publish(&self, subject: &str, value: &str, _value_ty: &HirType, indent: &str) -> String {
-        format!("{indent}await this.state.publish({subject:?}, JSON.stringify({value}));")
+        // The shared `publish(state, subject, payload)` free function
+        // (`queue.ts.j2`) every generated call site goes through — not
+        // an `AppState` method (there isn't one) — taking a `Buffer`,
+        // not a raw string; live-caught by `tsc` on `order-system.ciac`'s
+        // `std/webhook.ciac`-expanded `RecordEvent` handler, the first
+        // typed-handler body (as opposed to a pipeline-level `publish`
+        // step, already wired correctly in `_steps.ts.j2`) this arc
+        // exercised with a `publish` statement.
+        format!(
+            "{indent}await publish(this.state, {subject:?}, Buffer.from(JSON.stringify({value})));"
+        )
     }
     fn db_get(&self, table: TableId, key: &str) -> String {
         let table_snake = self.ir.table(table).name.to_snake_case();
@@ -1018,6 +1028,9 @@ pub struct LogicFileCtx {
     pub params: Vec<ParamCtx>,
     pub return_type: String,
     pub schema_imports: Vec<SchemaImportCtx>,
+    /// Whether this handler's body has a `publish` statement — gates
+    /// the `import { publish } from "../queue.js"` line.
+    pub needs_queue: bool,
     /// Every HIR `Let`'s local name, hoisted into one `let` declaration
     /// at the top of `handle()` — see the module doc for why.
     pub locals: Vec<String>,
@@ -1075,6 +1088,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         params,
         return_type: ts_type(ir, &hir.return_ty),
         schema_imports,
+        needs_queue: needs.queue,
         locals,
         body,
     }

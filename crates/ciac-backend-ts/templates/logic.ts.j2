@@ -11,6 +11,9 @@
 {%- endif %}
 
 import type { AppState } from "../state.js";
+{%- if handler.needs_queue %}
+import { publish } from "../queue.js";
+{%- endif %}
 {%- for imp in handler.schema_imports %}
 {%- if imp.is_error %}
 import { {{ imp.name }} } from "../schemas.js";

@@ -932,6 +932,111 @@ rather than a search (line counts are the audit's, for scale):
    both v0.17 M11 sim CLI proofs (pass, and the narrow-target/refusal
    cases) reproduce unchanged, confirming the scanner move didn't
    perturb `unguarded_verbs`' actual coverage.
+
+   **M3, continued — Parts 2-3 completed (continuation pass, after
+   this plan's own M6 below had already closed the arc out).** The
+   dispatch skeleton and the `HostSyntax` leaf trait this milestone's
+   fallback deferred were subsequently implemented in full, under the
+   identical byte-identical-golden discipline this plan's M2/M3/M5
+   already proved workable. `ciac_codegen::lower` became a directory:
+   `scan.rs` (Part 1, moved verbatim, zero logic change), `dispatch.rs`
+   (the shared statement/expression walker — `lower_scalar`/
+   `lower_expr_any`/`lower_tail`/`lower_block_expr`/`lower_block_stmt`/
+   `lower_stmt`, plus `strip_outer_parens`/`fidelity_checked_float`/
+   `indent_lines` moved verbatim from the Rust backend), `host_syntax.rs`
+   (the `HostSyntax` trait — 44 universal/orientation-shared methods
+   plus 4 `Expression`-only and 4 `Statement`-only leaves, ~52 total,
+   more granular than this plan's original "roughly 30" estimate: enum
+   use-site resolution, the record-field clone hook, and
+   expression-vs-statement db-verb/dest-application leaves each needed
+   their own method once real signatures were derived from the
+   existing code rather than guessed at), and `identity.rs` (the
+   contract's own reference implementation, one struct per
+   orientation, proven against the full example corpus in the new
+   `tests/tests/host_syntax_identity.rs`). Both backends'
+   `py_expr`/`lower_tail`/`lower_block`/`lower_stmt`/`Sink` and
+   `rust_expr`/`rust_stmt`/`rust_block`/`Tail` were deleted outright
+   and replaced by a `PySyntax`/`RustSyntax` implementing `HostSyntax`
+   against the shared walker — zero dead code left behind in either
+   backend crate (checked by grep, not assumed).
+
+   The named risk did not require the pre-agreed fallback: unifying
+   Python's statement orientation and Rust's expression orientation
+   under one dispatcher produced byte-identical output for Rust after
+   one bug found and fixed *before* any golden was accepted (see
+   below), and byte-identical output for Python on the first attempt,
+   with no readability regression in either target's generated code
+   observed during review. The fallback this plan's own Risks section
+   pre-authorized (keep the shared walking skeleton, leave per-backend
+   leaf-level string formatting) was therefore not needed — recorded
+   here because "attempt the real thing first" was itself a deliberate
+   decision, not an accident of things going smoothly.
+
+   **The one real bug this pass found, in its own new code, before
+   landing:** the initial `Wrap` design collapsed Rust's three-state
+   `Tail` (`None`/`Plain`/`Wrapped`) into two states, conflating a
+   mid-block statement's `None` (`;`-terminated, discarded) with a
+   nested branch's own `Plain` tail (bare, feeding the enclosing
+   expression). Invisible for `if`/`match` branches (their own tail
+   always matches the block's `wrap` parameter), but wrong for
+   `transaction { }`'s inner block, which always lowers as `None`
+   regardless of position — the golden suite caught it immediately (a
+   missing `;` after a `db.insert` block-expression inside a
+   `transaction` block, surfaced on `domain-orders.ciac`), fixed by
+   restoring the third `Wrap::None` state before any snapshot was
+   accepted. Recorded here because it is the concrete version of the
+   risk this plan's own text named in advance ("the shared dispatcher
+   becomes a single point of failure for two backends at once") —
+   caught by the acceptance bar this plan is built around, not by
+   inspection.
+
+   Measured LOC (this pass's own acceptance metric, matching this
+   milestone's own reporting discipline): `ciac-backend-rust/src/lower.rs`
+   803 → 577 (−226); `ciac-backend-python/src/lower.rs` 1058 → 869
+   (−189, still including its own ~320-line generated-behavioral-test
+   family — `render_test`/`dummy_value`/`assert_result`/
+   `collect_record_ids` — which depends only on the Part 1 scanner and
+   was never in this pass's scope to move); shared `ciac-codegen::lower`
+   359 → 1,980 (`scan.rs` 364, `dispatch.rs` 792, `host_syntax.rs` 317,
+   `identity.rs` 461, `mod.rs` 46). Net across all three files:
+   2,220 → 3,426 (+1,206) — a real increase, not a reduction; the
+   payoff is architectural (one walker, ~50 leaves per backend, both
+   proven against the same HIR corpus from both orientations by
+   `host_syntax_identity.rs`), not a line-count saving, exactly as this
+   plan's own cost-model framing always said it would be for this
+   pillar. `docs/backends.md`'s cost table carries the full breakdown
+   and is reconciled to no longer describe `HostSyntax` as unshipped.
+
+   Byte-identical goldens hold across all 26 examples for both
+   backends; `typed_handler_python.rs`, `typed_handler_rust.rs`, and
+   `typed_handler_equivalence.rs` all pass unmodified. The v0.17 M11
+   sim CLI proofs were re-run live, not just re-derived from the
+   goldens: `ciac sim --target rust` on `sim-vertical-slice.ciac` and
+   `sim-broker-slice.ciac` both `[PASS]` end to end (a real
+   `cargo build` of the generated project, real sim-runner execution
+   against `SimWorld`), and the narrow-target refusal against
+   `extras-verbs.ciac` (`cache.delete`/`email.send`/`object_store.*`/
+   `search.*`/`http.call` — none of them faked) reproduces the exact
+   reason list `unsupported_sim_capabilities` always produced,
+   confirming the Part 1 scanner this pass deliberately left untouched
+   is in fact untouched. Python's own `ciac sim --target python` proof
+   could not be re-run live in the sandbox this pass executed in (`uv`
+   is not installed there — a pre-existing, environmental gap
+   unrelated to this change: `backfill_cli.rs`'s own `uv sync`-dependent
+   test was confirmed to fail identically against the unmodified,
+   pre-this-pass tree); every Python file generated across all 26
+   examples was instead confirmed to parse cleanly with `python3 -m
+   py_compile`, and `typed_handler_python.rs`'s content assertions on
+   the specific ORM calls the lowering emits continue to pass
+   unmodified.
+
+   Handoff to `23UpdatePlan.md`: its preamble's assumption that
+   "`lower_core`/`HostSyntax`" has shipped is now true, not
+   aspirational; its own M4 ("Typed handlers: `HostSyntax` for
+   TypeScript") can proceed by implementing `HostSyntax` against the
+   now-real, now-tested contract, following the amendment procedure
+   this plan's own Part 3 text froze if TypeScript's leaf needs force
+   a signature change.
 4. **M4 — Conformance harness + `ciac targets --json`.** Matrix,
    OpenAPI/topology equality (run against python×rust immediately —
    any existing divergence found becomes a fix-or-disclose item in
@@ -1262,7 +1367,10 @@ expression-oriented `rust_expr`/`rust_stmt` behind one leaf
 interface — was the plan's own flagged "hardest unification risk";
 attempting it inside M3's time box would have put the highest-risk,
 least-reversible rewrite in the whole four-plan arc through without
-a dedicated review pass. (2) Porting the two real backends' per-item
+a dedicated review pass. *(Since shipped, in a dedicated continuation
+pass — see this file's M3 section's own "M3, continued" addendum for
+the full account, including the one real bug the byte-identical
+discipline caught before landing.)* (2) Porting the two real backends' per-item
 emission loops (one file per declared api/worker/job/consumer/
 channel/resource/call-target) onto `Emit` — `Emit` today only covers
 the always/conditional-single-file tier; per-item emission needs an
@@ -1327,15 +1435,26 @@ happens), `ciac targets --json` (M4, TS's entry appears the moment
 its `Backend` is registered), and the `Emit`/skeleton walkthrough
 (M5, `docs/backends.md`'s 9-step recipe and cost table as the
 literal starting point — copy `backends/skeleton-internal/`, not a
-blank file). What 23UpdatePlan.md's own scope must still design from
-scratch: TS-specific leaf lowering (no `HostSyntax` to lean on — the
-same hand-written-per-backend discipline this plan's own backends
-still use), and TS's own per-item emission (no `Emit::per_x` to lean
-on either). If TypeScript's non-template, non-lowering integration
-cost — the seam-3-equivalent glue — lands materially above what
-`docs/backends.md`'s table now predicts (roughly: near-zero seam-3
-cost, a scanner reuse instead of a fourth `Needs` copy, and template-
-writing plus hand-written leaves as the dominant remaining cost),
-that gap is this plan's defect to fix before Go and Java (24 and 25)
-consume the same factory — per this section's own opening claim, not
-a new claim invented at TypeScript's completion.
+blank file).
+
+**Updated by the M3-continuation addendum above, disclosed here so
+this section doesn't quietly go stale:** at the time this handoff
+paragraph was first written, TS-specific leaf lowering had "no
+`HostSyntax` to lean on." That is no longer true — `HostSyntax` (the
+shared statement/expression dispatcher plus roughly 50 leaf
+constructor methods) shipped in a dedicated continuation pass, proven
+byte-identical against both existing backends and exercised from both
+orientations against the full example corpus by
+`tests/tests/host_syntax_identity.rs`. `23UpdatePlan.md`'s own M4
+("Typed handlers: `HostSyntax` for TypeScript") can therefore proceed
+by implementing the real, frozen contract — pick `Orientation`
+(`Statement`, per that plan's own stated intent for a JS-family
+target), implement the leaves, done — rather than designing a walker
+from scratch. TS's own per-item emission (no `Emit::per_x` to lean on)
+remains genuinely undesigned, unaffected by this addendum. If
+TypeScript's leaf-implementation cost lands materially above what
+`docs/backends.md`'s table now predicts for a `HostSyntax` consumer,
+that is a defect in *this* addendum's contract design, tracked and
+fixed via the amendment procedure Pillar 3's own text froze — the same
+standard this section's original claim always held itself to, just
+now measured against a real contract instead of a hoped-for one.

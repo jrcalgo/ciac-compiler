@@ -1559,6 +1559,165 @@ documented in the generated README's requirements line.
    verify; `--system` CI rows added (typescript × inventory-system,
    × mysql-notes, × sim-vertical-slice) with the standing
    Docker-delegation note.
+
+   **Shipped (v0.23 M7):** `object_store.ts`/`email.ts`/`search.ts`/
+   `http_clients.ts` — one shared wrapper module per ontology
+   capability *kind* (not per named instance, matching Rust's own
+   module shape), gated on `Ctx.has_object_store`/`has_email`/
+   `has_search`/`has_external_http`: `@aws-sdk/client-s3` against
+   MinIO (`forcePathStyle: true`, path-style so MinIO works with no
+   extra config), `nodemailer` SMTP against Mailpit, `@opensearch-
+   project/opensearch`, and a dependency-free `fetch`-based
+   `ExternalHttp` (matching `client.ts.j2`'s own established "no HTTP
+   client dependency needed" precedent — the M5-era typed call
+   clients, already generated and untested until this milestone's
+   examples finally exercised them, needed no changes at all).
+   `state.ts.j2`/`config.ts.j2` gained the same per-instance loop
+   shape `db_instances`/`cache_instances` already used, reusing the
+   target-neutral `Ctx.object_store_instances`/`email_instances`/
+   `search_instances`/`external_http_instances` (`OntologyInstanceCtx`)
+   `ciac-codegen::model` already computed for Python/Rust — no shared
+   model changes needed, confirming 22UpdatePlan.md's factory promise
+   held for this capability set too.
+
+   The `HostSyntax` leaves M4 left "implemented to the trait's letter,
+   untested" (hardcoded `this.state.objectStore`/`.email`/`.search`/
+   `.http`, camelCase, inconsistent with the `db`/`cache` fields'
+   established snake_case `AppState` naming) were corrected to resolve
+   the handler's actually-bound instance via `context::extras_of`,
+   exactly mirroring how `db_field`/`cache_field` already resolve
+   through `context::access_of` — `TsSyntax` gained
+   `object_store_field`/`email_field`/`search_field`/`http_field:
+   Option<String>`, each just `ExtraDepCtx.rust_state_field` reused
+   as-is (already the raw, language-agnostic `AppState` property name
+   despite its `rust_` prefix). Live-caught the naming bug immediately:
+   `extras-verbs.ciac`'s `external_http upstream { .. }` binds to
+   `this.state.http_upstream`, not a bare `this.state.http` — the
+   hardcoded M4 leaf would have silently compiled against a
+   nonexistent field name shape mismatch had a real named
+   `external_http` instance ever reached it before now.
+
+   OTel: `NodeTracerProvider` + `BatchSpanProcessor` +
+   `OTLPTraceExporter` (`@opentelemetry/exporter-trace-otlp-grpc`,
+   gRPC/4317 — the same collector port Python's `OTLPSpanExporter`/
+   Rust's `opentelemetry_otlp` `with_tonic()` already target, not the
+   HTTP/protobuf exporter, so the shared `otel-collector` config needs
+   no target-specific receiver) plus `@fastify/otel` (the officially
+   Fastify-maintained instrumentation — `@opentelemetry/
+   instrumentation-fastify` is itself deprecated in its package's own
+   README in favor of it), `HttpInstrumentation`,
+   `PgInstrumentation` (gated on `c.has_postgres_db`, matching
+   Python's own per-driver `SQLAlchemyInstrumentor` precedent — MySQL/
+   SQLite get no auto-instrumentation on any target today), and
+   `UndiciInstrumentation` — the last one is what makes outbound
+   `fetch` (both the M5 typed call clients and the new
+   `ExternalHttp`) get client spans and `traceparent` propagation "for
+   free", the same free outbound propagation Python's
+   `HTTPXClientInstrumentor`/Rust's `opentelemetry_http` give their
+   own clients. `observability.ts`'s new `traced(name, headers, fn)`
+   helper is the consume-side half of the broker-hop propagation:
+   `queue.ts`'s `publish()` now injects the active span's W3C
+   `traceparent` into a plain string carrier (via `@opentelemetry/
+   api`'s `propagation.inject`) before handing it to
+   `Queue.publish`'s new optional `headers` parameter — real NATS
+   `MsgHdrs` via the `headers()` factory, or a plain object passed
+   straight through to kafkajs's own `IHeaders` — and `worker.ts.j2`/
+   `consumer.ts.j2`'s consume loops (both broker engines) extract that
+   carrier back out of the received message and wrap the handler call
+   in `traced("worker.<name>", ..)`/`traced("consumer.<name>", ..)`,
+   the same span-naming convention Rust's `tracing::info_span!
+   ("worker.{name}")` already established — byte-for-byte the same
+   header contract v0.15 M3/M4 settled, just carried over a different
+   wire representation per broker engine (`MsgHdrs` vs `IHeaders`)
+   the way the publish side already had to. `prom-client`'s default
+   registry (`collectDefaultMetrics`) mounts at `/metrics` gated on
+   `c.has_metrics`, matching Python's `prometheus_client`/Rust's
+   `metrics-exporter-prometheus` shape. `main.ts`/`workers_main.ts`
+   call `configureTracing()` once at process startup (mirroring
+   Rust's single `observability::init()` call site) — never inside
+   `buildApp()` itself, so `state.test.ts`/`scope.test.ts`'s
+   zero-infrastructure suites stay untouched by a live OTLP endpoint
+   requirement.
+
+   Three real bugs found live (via `tsc`/`eslint` against the five
+   newly-un-gated examples), all fixed:
+   1. `@fastify/otel`'s default export resolved to the whole CJS
+      namespace object under this project's `esModuleInterop`
+      settings (`TS2351: This expression is not constructable`) — its
+      own `.d.ts` exposes the class as both `export { X as default }`
+      *and* a plain named export `export { X }`; switching to the
+      named import (`import { FastifyOtelInstrumentation } from
+      "@fastify/otel"`) sidesteps the interop mismatch entirely.
+   2. `logic.ts.j2`'s `extern` handler stub never referenced its own
+      params (`throw new Error("not implemented")` only) —
+      `@typescript-eslint/no-unused-vars` on `typed-handlers.ciac`'s
+      `extern handler Notify(v: Video)`, the first `extern` handler
+      with a named param this arc's examples exercised (v0.7 M6's own
+      `typed-handlers.ciac` predates this backend by two major
+      versions but only just reached TS this milestone). Fixed with a
+      `void <param>;` line per param, gated on `handler.is_extern`,
+      mirroring Rust's own `#[allow(unused_variables)]` stub
+      precedent in spirit if not mechanism.
+   3. `route_api.ts.j2`'s `void state;` fallback only fired when
+      `api.steps` was empty, but a `Return`-only pipeline (`traced-
+      checkout.ciac`'s `Payments.Charge`) still produces one
+      `api.steps` entry (a `Return`-kind step that renders no text of
+      its own — the trailing `return { status, data: result }` is
+      already hardcoded outside the loop) — so `state` went truly
+      unused with no `void` to cover it. Fixed by making `void state;`
+      unconditional: harmless when a later step genuinely reads
+      `state` (a redundant statement, not a lint conflict), correct
+      when nothing does.
+
+   Live proof: all seven examples (`ontology-growth`, `typed-
+   handlers`, `extras-verbs`, `multi-service-media` [5 services],
+   `inventory-system` [2 services], `traced-checkout` [2 services],
+   `dev-identity`) generated through the real `ciac build --target
+   typescript` binary, `npm ci`, `npx tsc --noEmit` clean, `npx eslint
+   .` clean, `npx vitest run` green — 13 project directories in
+   total across the multi-service systems, all independently
+   installed and checked. `extras-verbs.ciac`'s golden confirms every
+   one of the four capability leaves reaches its correctly-resolved
+   field: `this.state.object_store`/`.email`/`.search` (default
+   instances) and `this.state.http_upstream` (the named
+   `external_http upstream { .. }` instance) — the exact naming bug
+   description above, caught in the golden diff itself, not just
+   inferred. `dev-identity.ciac` (`auth OAuth2` + `users Keycloak`,
+   no ontology capabilities at all) confirms the new
+   `Component::Users`/dev-issuer-default path needed no TS-specific
+   code — `ciac-codegen::model`'s existing target-neutral
+   `KEYCLOAK_DEV_ISSUER` default computation carried over unchanged,
+   as expected. No live Jaeger/collector round-trip was attempted
+   (the sandbox this milestone was built in has no Docker daemon,
+   confirmed via `docker ps`) — "the trace test" this milestone
+   proves is structural and static: real `tsc` compilation of the
+   full OTel wiring, byte-for-byte header-contract parity with
+   Python's/Rust's own publish/consume shape (verified by direct
+   comparison of the generated `queue.ts`/`worker.ts` against
+   `queue.py.j2`/`worker.py.j2` and `queue.rs.j2`/`worker.rs.j2`), and
+   the same `Instrument`/span-naming convention — not an actual
+   collected-trace assertion, which stays Docker-delegated to CI like
+   every other `--system` claim this arc already discloses.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green with no code-side test
+   changes needed (the shared `check_support`-gated golden harness
+   picked up all newly-unlocked examples automatically, same M6
+   pattern). Golden acceptance: `package.json`/`package-lock.json`
+   churn on every existing TS example (17 new dependencies — S3,
+   SMTP, OpenSearch, the full OTel Node SDK + instrumentation set,
+   `@fastify/otel`, `prom-client` — added unconditionally, matching
+   this backend's established "fixed dependency set" precedent from
+   M1 rather than per-capability-conditional `package.json`), plus
+   seven brand-new TypeScript goldens for the milestone's own proving
+   examples. `--system` CI rows added for `typescript ×
+   inventory-system`/`× mysql-notes`/`× sim-vertical-slice` in
+   `.github/workflows/ci.yml`, alongside the existing python/rust
+   rows, with the same Docker-delegation disclosure comment those
+   already carry; local codegen + `tsc`/`eslint`/`vitest` for all
+   three confirmed clean before adding the rows (live compose
+   execution untested locally for the same no-Docker reason above).
 8. **M8 — Whole-repo integration.** Every example either verifies or
    is explicitly reason-gated (target: zero gates — TS supports the
    full provider table); golden suite complete; generated docs

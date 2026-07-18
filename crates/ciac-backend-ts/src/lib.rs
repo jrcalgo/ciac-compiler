@@ -161,6 +161,26 @@ impl Backend for TsBackend {
         // `order-system.ciac` (JWT, the full scope-enforced surface)
         // and `oauth-echo.ciac` (OAuth2, static-only per the disclosed
         // gap above) are this milestone's proving examples.
+        // v0.23 M7 adds: `Component::ObjectStore`/`Email`/`Search`/
+        // `ExternalHttp` (S3/SMTP/OpenSearch/undici-free-`fetch`
+        // wrapper clients — `object_store.ts`/`email.ts`/`search.ts`/
+        // `http_clients.ts`, one shared module per capability *kind*,
+        // matching Rust's own one-module-per-kind shape rather than
+        // one file per named instance), closing the scope boundary M4
+        // disclosed (the `HostSyntax` leaves compiled since M4; only
+        // the component gate and the wrapper clients themselves were
+        // missing). Also adds `Component::Metrics`/`Tracing`/
+        // `Logging`/`Users`: prom-client `/metrics`, OTel NodeSDK +
+        // `@fastify/otel`/http/pg/undici auto-instrumentation with
+        // manual W3C traceparent propagation across the broker hop
+        // (byte-for-byte the same header contract v0.15 M3/M4
+        // established), and `users Keycloak`'s dev-issuer default
+        // (already computed target-neutrally in `ciac-codegen::model`,
+        // consumed unchanged — no TS-specific work needed there).
+        // `ontology-growth.ciac`, `typed-handlers.ciac`, `extras-
+        // verbs.ciac`, `multi-service-media.ciac`, `inventory-
+        // system.ciac`, `traced-checkout.ciac`, and `dev-identity.ciac`
+        // un-gate this milestone.
         matches!(
             component,
             Component::Api { .. }
@@ -175,6 +195,14 @@ impl Backend for TsBackend {
                 | Component::Channel { .. }
                 | Component::Realtime { .. }
                 | Component::Auth { .. }
+                | Component::ObjectStore { .. }
+                | Component::Email { .. }
+                | Component::Search { .. }
+                | Component::ExternalHttp { .. }
+                | Component::Metrics { .. }
+                | Component::Tracing { .. }
+                | Component::Logging { .. }
+                | Component::Users { .. }
         )
     }
 
@@ -304,6 +332,28 @@ fn emit_service(
     }
     if ctx.has_auth {
         project.add_file(at("src/auth.ts"), render("auth.ts.j2", empty())?);
+    }
+    // v0.23 M7: one shared wrapper module per ontology capability
+    // *kind* (not per named instance) -- `state.ts`'s per-instance
+    // loop constructs as many clients as declared, all from the same
+    // class.
+    if ctx.has_object_store {
+        project.add_file(
+            at("src/object_store.ts"),
+            render("object_store.ts.j2", empty())?,
+        );
+    }
+    if ctx.has_email {
+        project.add_file(at("src/email.ts"), render("email.ts.j2", empty())?);
+    }
+    if ctx.has_search {
+        project.add_file(at("src/search.ts"), render("search.ts.j2", empty())?);
+    }
+    if ctx.has_external_http {
+        project.add_file(
+            at("src/http_clients.ts"),
+            render("http_clients.ts.j2", empty())?,
+        );
     }
     for api in &ctx.apis {
         project.add_file(

@@ -22,12 +22,13 @@ export const {{ api.snake }}Route: FastifyPluginAsync<{ state: AppState }> = asy
   app,
   { state },
 ) => {
-{%- if not api.steps %}
-  // Unused until a pipeline step actually needs it (db/cache/handler/
-  // publish/call); kept in the plugin signature so route registration
-  // doesn't change shape once this api's pipeline grows one.
+  // A no-op read: `state` may go unused (a pipeline with no db/cache/
+  // handler/publish/call step, e.g. `Return`-only) or genuinely used
+  // below, depending on the pipeline's steps — computing which
+  // per-route isn't worth it when a harmless `void` covers both, kept
+  // in the plugin signature so route registration doesn't change shape
+  // as this api's pipeline grows.
   void state;
-{%- endif %}
   app.{{ api.method_lower }}("{{ api.route }}", async (request) => {
 {%- if api.has_auth_step %}
     const claims = await verifyToken(request, state.config);

@@ -5,6 +5,9 @@
 // not seeded, since v0.1 established this shape as a pure stub with
 // no generated call sites to preserve).
 
+{%- if c.has_tracing %}
+import { traced } from "../observability.js";
+{%- endif %}
 import { logger } from "../observability.js";
 import type { AppState } from "../state.js";
 
@@ -27,11 +30,23 @@ async function consume(state: AppState): Promise<void> {
     eachMessage: async ({ message }) => {
       if (message.value === null) return;
       const payload: unknown = JSON.parse(message.value.toString("utf8"));
+{%- if c.has_tracing %}
+      const traceHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(message.headers ?? {})) {
+        if (v !== undefined) traceHeaders[k] = v.toString();
+      }
+      try {
+        await traced("consumer.{{ consumer.name }}", traceHeaders, () => handleEvent(state, payload));
+      } catch (err) {
+        log.error({ err, consumer: "{{ consumer.name }}" }, "event handling failed");
+      }
+{%- else %}
       try {
         await handleEvent(state, payload);
       } catch (err) {
         log.error({ err, consumer: "{{ consumer.name }}" }, "event handling failed");
       }
+{%- endif %}
     },
   });
 }
@@ -41,11 +56,25 @@ async function consume(state: AppState): Promise<void> {
   const sub = await state.queue.queueSubscribe(SUBJECT, QUEUE_GROUP);
   for await (const msg of sub) {
     const payload: unknown = JSON.parse(Buffer.from(msg.data).toString("utf8"));
+{%- if c.has_tracing %}
+    const traceHeaders: Record<string, string> = {};
+    if (msg.headers) {
+      for (const [k, v] of msg.headers) {
+        traceHeaders[k] = v[0];
+      }
+    }
+    try {
+      await traced("consumer.{{ consumer.name }}", traceHeaders, () => handleEvent(state, payload));
+    } catch (err) {
+      log.error({ err, consumer: "{{ consumer.name }}" }, "event handling failed");
+    }
+{%- else %}
     try {
       await handleEvent(state, payload);
     } catch (err) {
       log.error({ err, consumer: "{{ consumer.name }}" }, "event handling failed");
     }
+{%- endif %}
   }
 }
 {%- endif %}

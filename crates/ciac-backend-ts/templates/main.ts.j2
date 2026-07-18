@@ -7,7 +7,16 @@ import { loadConfig } from "./config.js";
 {%- if c.resources or c.tables %}
 import { {% if c.resources %}ensureSchema{% endif %}{% if c.resources and c.tables %}, {% endif %}{% if c.tables %}runMigrations{% endif %} } from "./db.js";
 {%- endif %}
-import { loggerOptions } from "./observability.js";
+import {
+  loggerOptions,
+{%- if c.has_metrics %}
+  metricsRegistry,
+{%- endif %}
+{%- if c.has_tracing %}
+  configureTracing,
+  fastifyOtelInstrumentation,
+{%- endif %}
+} from "./observability.js";
 import { createState, type AppState } from "./state.js";
 {%- for api in c.apis %}
 import { {{ api.snake }}Route } from "./routes/{{ api.snake }}.js";
@@ -33,9 +42,18 @@ export function buildApp(state: AppState) {
   void state;
 {%- endif %}
   const app = Fastify({ logger: loggerOptions() });
+{%- if c.has_tracing %}
+  app.register(fastifyOtelInstrumentation.plugin());
+{%- endif %}
 
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/openapi.json", async () => openapiDocument);
+{%- if c.has_metrics %}
+  app.get("/metrics", async (request, reply) => {
+    reply.header("content-type", metricsRegistry.contentType);
+    return metricsRegistry.metrics();
+  });
+{%- endif %}
 {%- for api in c.apis %}
   app.register({{ api.snake }}Route, { state });
 {%- endfor %}
@@ -50,6 +68,9 @@ export function buildApp(state: AppState) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+{%- if c.has_tracing %}
+  configureTracing();
+{%- endif %}
   const config = loadConfig();
   const state = createState(config);
 {%- if c.resources %}

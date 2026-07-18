@@ -23,6 +23,18 @@ import { mkdirSync } from "node:fs";
 {%- if c.has_cache %}
 import { Redis } from "ioredis";
 {%- endif %}
+{%- if c.has_object_store %}
+import { ObjectStore } from "./object_store.js";
+{%- endif %}
+{%- if c.has_email %}
+import { Email } from "./email.js";
+{%- endif %}
+{%- if c.has_search %}
+import { Search } from "./search.js";
+{%- endif %}
+{%- if c.has_external_http %}
+import { ExternalHttp } from "./http_clients.js";
+{%- endif %}
 {%- if c.queue_engine %}
 import { Queue } from "./queue.js";
 {%- endif %}
@@ -52,6 +64,18 @@ export interface AppState {
 {%- for inst in c.cache_instances %}
   {{ inst.state_field }}: Redis;
 {%- endfor %}
+{%- for inst in c.object_store_instances %}
+  {{ inst.state_field }}: ObjectStore;
+{%- endfor %}
+{%- for inst in c.email_instances %}
+  {{ inst.state_field }}: Email;
+{%- endfor %}
+{%- for inst in c.search_instances %}
+  {{ inst.state_field }}: Search;
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+  {{ inst.state_field }}: ExternalHttp;
+{%- endfor %}
 {%- if c.queue_engine %}
   queue: Queue;
 {%- endif %}
@@ -76,6 +100,31 @@ export function createState(config: Config): AppState {
 {%- endfor %}
 {%- for inst in c.cache_instances %}
     {{ inst.state_field }}: new Redis(config.{{ inst.url_field }}, { lazyConnect: true }),
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+    {{ inst.state_field }}: new ObjectStore(
+      config.{{ inst.cfg[0].field }},
+      config.{{ inst.cfg[1].field }},
+      config.{{ inst.cfg[2].field }},
+      config.{{ inst.cfg[3].field }},
+      config.{{ inst.cfg[4].field }},
+    ),
+{%- endfor %}
+{%- for inst in c.email_instances %}
+    {{ inst.state_field }}: new Email(
+      config.{{ inst.cfg[0].field }},
+      config.{{ inst.cfg[1].field }},
+      config.{{ inst.cfg[2].field }},
+      config.{{ inst.cfg[3].field }},
+      config.{{ inst.cfg[4].field }},
+      config.{{ inst.cfg[5].field }},
+    ),
+{%- endfor %}
+{%- for inst in c.search_instances %}
+    {{ inst.state_field }}: new Search(config.{{ inst.cfg[0].field }}),
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+    {{ inst.state_field }}: new ExternalHttp(config.{{ inst.cfg[0].field }}),
 {%- endfor %}
 {%- if c.queue_engine == "kafka" %}
     queue: new Queue(config.kafkaUrl),

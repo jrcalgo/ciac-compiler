@@ -140,6 +140,20 @@ struct TsSyntax<'a> {
     db_engine: &'static str,
     db_field: Option<String>,
     cache_field: Option<String>,
+    /// `AppState` field of this handler's bound ontology instance, one
+    /// per capability kind — resolved the same way as `db_field`/
+    /// `cache_field` (via `context::extras_of`, over the same
+    /// `hir_bindings` this handler already computes), reused as-is
+    /// rather than re-derived: `ExtraDepCtx.rust_state_field` is
+    /// already just the raw `AppState` property name (e.g.
+    /// `object_store`, `object_store_media`, `http_upstream`),
+    /// language-agnostic despite the `rust_` prefix in its own field
+    /// name — the same reuse `db_field`/`cache_field` already make of
+    /// `Access::rust_db_field`/`rust_cache_field`.
+    object_store_field: Option<String>,
+    email_field: Option<String>,
+    search_field: Option<String>,
+    http_field: Option<String>,
     /// A handler body can call more than one statement-shaped db verb
     /// within the same block scope (e.g. two `db.insert`s inside one
     /// `transaction {}` — live-caught: two `const __row = ..;`
@@ -189,6 +203,12 @@ impl TsSyntax<'_> {
                 .as_deref()
                 .expect("a cache verb requires a bound cache instance")
         )
+    }
+
+    fn object_store_state_field(&self) -> &str {
+        self.object_store_field
+            .as_deref()
+            .expect("an object_store verb requires a bound object_store instance")
     }
 
     /// A field's write-side bind expression: SQLite's driver rejects a
@@ -953,46 +973,62 @@ impl HostSyntax for TsSyntax<'_> {
         let cache = self.cache_handle();
         format!("(await {cache}.del({key}))")
     }
-    // --- object store / email / search / http: `Component::ObjectStore`/
-    // `Email`/`Search`/`ExternalHttp` stay `CIAC0011`-refused until M7
-    // (23UpdatePlan.md's capability-parity checklist places the actual
-    // wrapper clients there — see `TsBackend::supports`'s own doc), so
-    // no currently-buildable example reaches these leaves. Implemented
-    // to the trait's letter (must compile) rather than left
-    // `unimplemented!()`, using the `extras`-style `this.state.<param>`
-    // access the M7 wrapper wiring is expected to land under.
+    // --- object store / email / search / http (v0.23 M7): each leaf
+    // reaches the handler's bound instance through `this.state.
+    // <state_field>`, resolved once in `render()` exactly like
+    // `db_field`/`cache_field` — see `object_store_field`'s own doc.
     fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
+        let field = self.object_store_state_field();
         let payload = if matches!(value_ty, HirType::Record(_)) {
             format!("JSON.stringify({value})")
         } else {
             format!("String({value})")
         };
-        format!("(await this.state.objectStore.put({key}, {payload}))")
+        format!("(await this.state.{field}.put({key}, {payload}))")
     }
     fn object_store_get(&self, key: &str) -> String {
-        format!("JSON.parse(await this.state.objectStore.get({key}))")
+        let field = self.object_store_state_field();
+        format!("JSON.parse(await this.state.{field}.get({key}))")
     }
     fn object_store_delete(&self, key: &str) -> String {
-        format!("(await this.state.objectStore.delete({key}))")
+        let field = self.object_store_state_field();
+        format!("(await this.state.{field}.delete({key}))")
     }
     fn object_store_list(&self, prefix: &str) -> String {
-        format!("(await this.state.objectStore.list({prefix}))")
+        let field = self.object_store_state_field();
+        format!("(await this.state.{field}.list({prefix}))")
     }
     fn email_send(&self, to: &str, subject: &str, body: &str) -> String {
-        format!("(await this.state.email.send({to}, {subject}, {body}))")
+        let field = self
+            .email_field
+            .as_deref()
+            .expect("an email verb requires a bound email instance");
+        format!("(await this.state.{field}.send({to}, {subject}, {body}))")
     }
     fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String {
+        let field = self
+            .search_field
+            .as_deref()
+            .expect("a search verb requires a bound search instance");
         let document = self.json_body(document, document_ty);
-        format!("(await this.state.search.index({SEARCH_INDEX_NAME:?}, {doc_id}, {document}))")
+        format!("(await this.state.{field}.index({SEARCH_INDEX_NAME:?}, {doc_id}, {document}))")
     }
     fn search_query(&self, query: &str) -> String {
+        let field = self
+            .search_field
+            .as_deref()
+            .expect("a search verb requires a bound search instance");
         format!(
-            "(await this.state.search.search({SEARCH_INDEX_NAME:?}, {{ query: {{ query_string: {{ query: {query} }} }} }}))"
+            "(await this.state.{field}.search({SEARCH_INDEX_NAME:?}, {{ query: {{ query_string: {{ query: {query} }} }} }}))"
         )
     }
     fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String {
+        let field = self
+            .http_field
+            .as_deref()
+            .expect("an external_http verb requires a bound external_http instance");
         let json_arg = self.json_body(json_body, body_ty);
-        format!("(await this.state.http.post({url}, {json_arg}))")
+        format!("(await this.state.{field}.post({url}, {json_arg}))")
     }
 }
 
@@ -1043,6 +1079,17 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
     let needs = lower::scan(ir, hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
+    let extras = context::extras_of(&bindings);
+    let extra_field = |kind: &str| {
+        extras
+            .iter()
+            .find(|e| e.kind == kind)
+            .map(|e| e.rust_state_field.clone())
+    };
+    let object_store_field = extra_field("object_store");
+    let email_field = extra_field("email");
+    let search_field = extra_field("search");
+    let http_field = extra_field("external_http");
 
     let mut schema_imports: Vec<SchemaImportCtx> = needs
         .records
@@ -1073,6 +1120,10 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
                 db_engine,
                 db_field: access.rust_db_field.clone(),
                 cache_field: access.rust_cache_field.clone(),
+                object_store_field: object_store_field.clone(),
+                email_field: email_field.clone(),
+                search_field: search_field.clone(),
+                http_field: http_field.clone(),
                 tmp: std::cell::Cell::new(0),
                 branching_locals: locals.iter().cloned().collect(),
             };

@@ -4,6 +4,25 @@ import type { FastifyServerOptions } from "fastify";
 {%- if c.workers or c.jobs or c.consumers %}
 import pino from "pino";
 {%- endif %}
+{%- if c.has_metrics %}
+import { collectDefaultMetrics, Registry } from "prom-client";
+{%- endif %}
+{%- if c.has_tracing %}
+import { context, propagation, trace } from "@opentelemetry/api";
+import { credentials } from "@grpc/grpc-js";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
+{%- if c.has_postgres_db %}
+import { PgInstrumentation } from "@opentelemetry/instrumentation-pg";
+{%- endif %}
+import { UndiciInstrumentation } from "@opentelemetry/instrumentation-undici";
+import { resourceFromAttributes } from "@opentelemetry/resources";
+import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { FastifyOtelInstrumentation } from "@fastify/otel";
+{%- endif %}
 
 export function loggerOptions(): FastifyServerOptions["logger"] {
 {%- if c.has_logging %}
@@ -17,5 +36,76 @@ export function loggerOptions(): FastifyServerOptions["logger"] {
 /** Standalone logger for the workers entrypoint (`dist/workers.js`), which never touches Fastify. */
 export function logger() {
   return pino({ level: process.env.LOG_LEVEL ?? "info" });
+}
+{%- endif %}
+{%- if c.has_metrics %}
+
+/** Mounted at `/metrics` by `main.ts`. */
+export const metricsRegistry = new Registry();
+collectDefaultMetrics({ register: metricsRegistry });
+{%- endif %}
+{%- if c.has_tracing %}
+
+/** The Fastify plugin `main.ts` registers -- server-side request spans. */
+export const fastifyOtelInstrumentation = new FastifyOtelInstrumentation();
+
+/**
+ * OTLP export to the otel-collector (+ Jaeger in dev compose), plus
+ * auto-instrumentation for inbound Fastify requests and outbound
+ * calls: typed `call` clients and `external_http` instances both use
+ * the Node-global `fetch` (backed by undici), so `UndiciInstrumentation`
+ * gets them client spans with `traceparent` propagated to the callee
+ * for free -- the same "for free" outbound propagation Python's
+ * `HTTPXClientInstrumentor`/Rust's `opentelemetry_http` give their own
+ * outgoing clients.
+ */
+export function configureTracing(): void {
+  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "http://localhost:4317";
+  const provider = new NodeTracerProvider({
+    resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: "{{ c.service_name }}" }),
+    spanProcessors: [
+      new BatchSpanProcessor(
+        new OTLPTraceExporter({ url: endpoint, credentials: credentials.createInsecure() }),
+      ),
+    ],
+  });
+  provider.register();
+  registerInstrumentations({
+    instrumentations: [
+      fastifyOtelInstrumentation,
+      new HttpInstrumentation(),
+{%- if c.has_postgres_db %}
+      new PgInstrumentation(),
+{%- endif %}
+      new UndiciInstrumentation(),
+    ],
+  });
+}
+
+export const tracer = trace.getTracer("{{ c.service_name }}");
+
+/**
+ * Runs `fn` under the span context carried by `headers` (a plain
+ * string-keyed record, the same shape both broker engines' publish
+ * sites inject into and consume sites extract from -- see
+ * `queue.ts`), wrapped in a fresh child span named `name`. The
+ * broker-hop half of the W3C trace-context propagation Pillar 5
+ * describes; `main.ts`'s `fastifyOtelInstrumentation` plugin and
+ * `UndiciInstrumentation` above cover the HTTP hops for free.
+ */
+export async function traced<T>(
+  name: string,
+  headers: Record<string, string> | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const parent = headers ? propagation.extract(context.active(), headers) : context.active();
+  return context.with(parent, async () => {
+    const span = tracer.startSpan(name);
+    try {
+      return await context.with(trace.setSpan(context.active(), span), fn);
+    } finally {
+      span.end();
+    }
+  });
 }
 {%- endif %}

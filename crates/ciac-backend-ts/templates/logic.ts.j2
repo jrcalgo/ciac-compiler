@@ -26,6 +26,11 @@ export class {{ handler.class_name }} {
   constructor(private readonly state: AppState) {}
 
   async handle({% for p in handler.params %}{{ p.name }}: {{ p.ts_type }}{% if not loop.last %}, {% endif %}{% endfor %}): Promise<{{ handler.return_type }}> {
+{%- if handler.is_extern %}
+{%- for p in handler.params %}
+    void {{ p.name }};
+{%- endfor %}
+{%- endif %}
 {%- if handler.locals %}
     let {{ handler.locals | join(", ") }};
 {%- endif %}

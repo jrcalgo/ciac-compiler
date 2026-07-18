@@ -178,8 +178,10 @@ jobs:
           run_system examples/audited-crud.ciac python
           run_system examples/inventory-system.ciac python
           run_system examples/inventory-system.ciac rust
+          run_system examples/inventory-system.ciac typescript
           run_system examples/mysql-notes.ciac python
           run_system examples/mysql-notes.ciac rust
+          run_system examples/mysql-notes.ciac typescript
           run_system examples/kafka-pipeline.ciac python
           # v0.17 M11's fidelity ratchet: the same broker-publish effect
           # sim_runner (no Docker) exercises against SimWorld's fake
@@ -191,3 +193,12 @@ jobs:
           # exactly the fake/adapter bug this ratchet exists to catch.
           run_system examples/sim-vertical-slice.ciac python
           run_system examples/sim-vertical-slice.ciac rust
+          # v0.23 M7: the three TS `--system` rows the milestone's exit
+          # criteria names (inventory-system, mysql-notes, sim-vertical-
+          # slice) -- execution is Docker-delegated to this CI runner
+          # (no local Docker daemon in the dev sandbox this milestone
+          # was built in), the same disclosure the python/rust rows
+          # above already carry.
+          run_system examples/inventory-system.ciac typescript
+          run_system examples/mysql-notes.ciac typescript
+          run_system examples/sim-vertical-slice.ciac typescript

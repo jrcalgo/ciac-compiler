@@ -1325,6 +1325,112 @@ documented in the generated README's requirements line.
    22's deliverables before Go/Java consume them; "pause and amend
    the factory" is a valid, planned outcome, and this checkpoint
    existing is the reason TS goes first.
+
+   **Shipped (v0.23 M5) — the measured cost table**, against
+   `docs/backends.md`'s own "What a backend costs today" baseline
+   (Python's/Rust's post-factory numbers) and this plan's own Pillar 8
+   template estimate (~33 templates, ~2,700–3,000 lines):
+
+   | | Rust (post-factory) | Python (post-factory) | TypeScript (measured, M1–M4) |
+   | --- | --- | --- | --- |
+   | `lower.rs` (leaves + `render`) | 577 | 869 (incl. ~320-line `render_test` family) | **1,098** |
+   | `lib.rs` (emission wiring) | ~509 | ~374 | **501** |
+   | `filters.rs` (neutral-field mapping) | n/a (folded into `lower.rs`) | n/a | **206** |
+   | templates | ~2,800 (audit baseline) | ~2,800 (audit baseline) | **5,608** across 28 files (Pillar 8 estimated ~33 files / ~2,700–3,000 lines for the *full* arc, M1–M9) |
+   | edits outside the crate | 1 (registry line) | 1 (registry line) | **1** (`crates/ciac/src/commands.rs:25`, held by the same grep-fence test) |
+
+   **The `lower.rs` overrun, measured and explained, not hand-waved:**
+   159 of TS's 1,098 lines are doc comments (vs. 67 Python / 71 Rust —
+   this session's disclosure-heavy commenting style, consistent with
+   every prior milestone's notes, accounts for a real but partial
+   share); net of comments and blank lines, TS's leaf code is still
+   ~909 lines against Python's ~802 and Rust's ~506. The remaining gap
+   has one concrete, structural cause rather than a design mistake:
+   Rust's `sqlx` gives every engine (`Postgres`/`MySQL`/`SQLite`) the
+   *same* call shape (`sqlx::query(..).bind(..).execute(self.db)
+   .await?`) and only the SQL *text* varies (`sqlph`'s placeholder
+   rewrite); the Node ecosystem has no `sqlx`-equivalent unifying
+   driver, so `pg`/`mysql2`/`better-sqlite3` each have genuinely
+   different call shapes at every verb site (sync `.prepare().run()`
+   vs. async `.query()`, `[rows]` array destructuring vs. `.rows`,
+   `.changes` vs. `.rowCount` vs. `affectedRows`) — a real 3-way branch
+   Pillar 4's own text anticipated ("adds zero new placeholder logic")
+   but that undersold the call-shape divergence specifically. On top
+   of that, TS's raw-driver reads/writes need explicit per-field
+   type coercion for SQLite (`boolean`↔`0/1`, `Date`↔`TEXT`,
+   `object`↔`TEXT`-as-JSON — live-verified necessary: better-sqlite3
+   rejects a bare JS `boolean` bind param outright) that neither
+   Python's ORM (SQLAlchemy maps types itself) nor Rust's `sqlx`
+   (compile-time-checked `FromRow`/bind traits) need hand-written.
+   Both are genuine, disclosed, ecosystem-shaped costs — not scope
+   creep, and not something a future milestone should try to "fix"
+   away, since the alternative (a bespoke query-builder abstraction
+   unifying the three drivers) would be strictly more code and more
+   risk than the current straightforward-if-verbose per-engine
+   branching.
+
+   **The templates overrun, measured and explained:** 5,608 lines
+   across 28 files already exceeds Pillar 8's ~2,700–3,000-line
+   estimate for the *entire* arc (M1–M9, ~33 files) at only 28/33
+   files landed. Comments/blank lines account for a small share (130
+   comment lines + 116 blank lines, ~4.4% of the total) — this is a
+   real, measured estimate miss, not a comment-padding artifact. Read
+   against `docs/backends.md`'s own established baseline (~2,800
+   lines/backend for Python's/Rust's *complete*, mature template sets)
+   rather than Pillar 8's own pre-registered guess, TS's 5,608 lines
+   for 28 files is proportionally still ahead of pace (Python/Rust
+   land their full provider surface — auth, all five ontology
+   capabilities, sim — in ~2,800 lines total; TS is at double that
+   with auth/ontology/sim still unbuilt) — a genuine cost-model miss
+   worth flagging plainly rather than reconciled away with a
+   different denominator.
+
+   **Conformance harness, run for real across all three targets:**
+   `cargo test --workspace` (including `tests/tests/conformance.rs`'s
+   `c3_openapi_is_byte_identical_across_targets`,
+   `c4a_migration_sql_is_byte_identical_across_targets`, and
+   `c4b_declared_topology_appears_in_every_target`) is green with
+   TypeScript registered — the moment M1 added the registry line, C3/
+   C4 began checking TS's OpenAPI/migration-SQL/topology output
+   against Python's and Rust's for every example all three support,
+   catching two real bugs this same milestone (the `models.ts.j2`
+   table-naming gap C4b caught, and the transitively-exercised handler
+   import paths C3's byte-identity would have caught downstream had
+   `tsc`/`eslint` not already caught it first). C1/C2/C5 (this plan's
+   own numbering, inherited from 22UpdatePlan.md's prose) have no
+   dedicated named test functions the way C3/C4a/C4b do — they're
+   satisfied by the pre-existing golden/gating/blueprint/determinism/
+   modules suites, all green with TS included since M1's `full_parity_
+   backends()` split (documented in M1's own shipped notes) correctly
+   scopes the Python/Rust-only assertions away from TS-inclusive ones.
+   `ciac targets --json` lists `typescript` with `capabilities: {}`
+   (unchanged from M1 — still correctly empty, since `vocab::PROVIDERS`
+   lists only python/rust per 22 M4's own disclosed disposition, not
+   yet extended this arc).
+
+   **Go/no-go verdict: GO.** Nothing measured here is a capability gap,
+   a correctness gap, or a structural blocker — every miss is a line-
+   count overrun with a concrete, disclosed, ecosystem-shaped cause
+   (no `sqlx`-equivalent unifying driver in Node; more explicit
+   per-engine branching than either existing backend needs). The
+   factory's *structural* promise — `TargetInfo`, the backend-owned-
+   filter pattern, the shared scanner, the shared `HostSyntax`
+   dispatcher, the conformance harness, `Emit`/skeleton — held exactly
+   as `docs/backends.md`'s handoff section described: a third backend
+   really did consume all of it unchanged, and the map's brevity (one
+   registry line) really did stay the acceptance test. What the
+   factory's *line-count* promise underestimated is real and should be
+   carried forward as a corrected budget for 24/25UpdatePlan.md (Go/
+   Java), not discovered again the hard way: expect a `lower.rs`
+   noticeably larger than Rust's 577-line figure whenever the target
+   language's database ecosystem lacks a `sqlx`-equivalent unifying
+   driver (true for Go's `database/sql` + per-engine driver split too
+   — worth Go's own author checking this before, not after, writing
+   its `lower.rs`), and expect the full template set to land closer to
+   ~5,500–6,000 lines than the ~2,800-line Python/Rust baseline once
+   auth/ontology/sim are in. 24UpdatePlan.md may proceed; its own cost
+   table should cite these corrected figures, not Pillar 8's original
+   estimate, as its starting budget.
 6. **M6 — Auth, scopes, scope tests.** jose HS/RS + JWKS,
    requireScope hooks, generated `tests/scope.test.ts` via
    fastify.inject (JWT-only, standing OAuth2 exclusion comment).

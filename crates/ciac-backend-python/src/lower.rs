@@ -1,32 +1,36 @@
 //! Direct lowering of the typed HIR (`ciac_ir::hir`) into Python source.
 //!
-//! These are pure string-producing functions with no template
-//! involvement, per 07UpdatePlan.md's own direction: templates stay
-//! presentational, and the HIR→target mapping lives in Rust code where
-//! it can be matched exhaustively against the HIR's closed shape.
+//! The walker (block/tail shaping, precedence, enum-literal use-site
+//! recovery, float-literal fidelity, divergence truncation) lives in
+//! `ciac_codegen::lower` (`22UpdatePlan.md` Pillar 3, Parts 2-3);
+//! [`PySyntax`] supplies only the leaf constructors genuinely specific
+//! to this target — ORM calls (not raw SQL), and the `Sink`-shaped
+//! statement decomposition Python needs because Python statements
+//! aren't expressions (control flow and `db.insert`/`update`/`delete`/
+//! `query`/`count`/`delete_where` don't fit a single Python
+//! expression; they're lowered as a statement sequence applied to a
+//! `Dest` — see [`ciac_codegen::lower::Dest`]/[`ciac_codegen::lower::lower_tail`]).
 //!
-//! Control-flow expressions (`if`/`match`) and `db.insert` don't fit a
-//! single Python expression (they need statements: an `if`/`elif` chain,
-//! or an `add`+`commit`+value sequence), so they're lowered wherever they
-//! appear as a block's tail value — a `let` value, a `return` operand, or
-//! a bare statement — via [`lower_tail`]. Everywhere else, [`py_expr`]
-//! produces a single Python expression string; it panics if handed one of
-//! those three shapes directly, which would mean they occurred nested
-//! inside another expression — not a shape the language actually
-//! produces (control flow is always block-shaped, never a sub-expression
-//! of a binary operator or a call argument).
+//! [`render_test`] (the generated behavioral test) and its
+//! `dummy_value`/`assert_result`/`collect_record_ids` helpers are
+//! untouched by this split: they depend only on the shared `Needs`
+//! scanner (Part 1), never on `HostSyntax`, since they build
+//! mock-assertion scaffolding from booleans and counts rather than
+//! rendering lowered code text.
 
 use ciac_codegen::lower::scan;
-use ciac_codegen::model as context;
-use ciac_ir::{
-    BinOp, Builtin, HandlerBody, HirExpr, HirStmt, HirType, NodeId, NormalizedIr, RecordId,
-    TableId, UnOp, Verb,
+use ciac_codegen::lower::{
+    self, Dest, HostSyntax, IndexKey, LoweredPredicate, Orientation, PredValue,
 };
+use ciac_codegen::model as context;
+use ciac_ir::{BinOp, HandlerBody, HirType, NormalizedIr, PredOp, RecordId, TableId, UnOp, Verb};
 use heck::ToSnakeCase;
 use serde::Serialize;
 
-/// Python type annotation for a HIR type. Record types need
-/// `from app.schemas import <name>` at the call site — see [`Needs`].
+/// Python type annotation for a HIR type — a handler *signature*
+/// concern (param/return types), not part of the `HostSyntax` body
+/// contract. Record types need `from app.schemas import <name>` at the
+/// call site — see [`ciac_codegen::lower::Needs`].
 pub fn py_type(ir: &NormalizedIr, ty: &HirType) -> String {
     match ty {
         HirType::Str | HirType::Uuid => "str".to_owned(),
@@ -50,15 +54,6 @@ pub fn py_type(ir: &NormalizedIr, ty: &HirType) -> String {
     }
 }
 
-fn slot_name(body: &HandlerBody, slot: u32) -> String {
-    let slot = slot as usize;
-    if slot < body.params.len() {
-        body.params[slot].0.clone()
-    } else {
-        format!("v{slot}")
-    }
-}
-
 fn model_class_name(ir: &NormalizedIr, table: TableId) -> String {
     ir.table(table).name.clone()
 }
@@ -67,575 +62,451 @@ fn record_class_name(ir: &NormalizedIr, record: RecordId) -> String {
     ir.record(record).name.clone()
 }
 
-fn stream_subject(ir: &NormalizedIr, stream: NodeId) -> String {
-    match &ir.node(stream).component {
-        ciac_ir::Component::Stream { subject, .. } => subject.clone(),
-        other => unreachable!("publish target is a stream, found {other:?}"),
-    }
-}
-
-/// A single Python expression for `value`, JSON-encoded (records use
-/// their compact Pydantic serializer; everything else round-trips
-/// through `json.dumps`).
-fn json_encode(ir: &NormalizedIr, body: &HandlerBody, value: &HirExpr) -> String {
-    if matches!(value.ty(), HirType::Record(_)) {
-        format!("{}.model_dump_json()", py_expr(ir, body, value))
-    } else {
-        format!("json.dumps({})", py_expr(ir, body, value))
-    }
-}
-
 /// OpenSearch has no per-document collection concept in the language
 /// yet (v0.14 M3/M4) — every `search.index`/`search.query` call on a
 /// given instance shares this one index name.
 const SEARCH_INDEX_NAME: &str = "documents";
 
-/// A Python *value* (not a JSON string — for `search.index`'s
-/// `document` and `external_http.request`'s `json=` body, both of
-/// which take a real dict) for `value`, which `search.index`/
-/// `external_http.request` accept as any type per their closed verb
-/// signature (mirroring `cache.set`/`object_store.put`'s untyped
-/// payload): records become their field dict, `Json` values pass
-/// through as-is, and anything else (a bare string/number/bool) is
-/// wrapped so the body is always a JSON object.
-fn json_body(ir: &NormalizedIr, body: &HandlerBody, value: &HirExpr) -> String {
-    match value.ty() {
-        HirType::Record(_) => format!("{}.model_dump(mode=\"json\")", py_expr(ir, body, value)),
-        HirType::Json => py_expr(ir, body, value),
-        _ => format!("{{\"value\": {}}}", py_expr(ir, body, value)),
+/// The `Orientation::Statement` `HostSyntax` implementation for this
+/// target: Python statements aren't expressions, so control flow and
+/// the statement-shaped db verbs decompose into a line sequence
+/// applied to a [`Dest`] — the shared dispatcher's `lower_tail`, not
+/// this type, owns that decomposition; this type supplies only the
+/// ORM-call spelling.
+struct PySyntax<'a> {
+    ir: &'a NormalizedIr,
+}
+
+impl PySyntax<'_> {
+    /// A Python *value* (not a JSON string — for `search.index`'s
+    /// `document` and `external_http.request`'s `json=` body, both of
+    /// which take a real dict) for `value`, which `search.index`/
+    /// `external_http.request` accept as any type per their closed
+    /// verb signature (mirroring `cache.set`/`object_store.put`'s
+    /// untyped payload): records become their field dict, `Json`
+    /// values pass through as-is, and anything else (a bare
+    /// string/number/bool) is wrapped so the body is always a JSON
+    /// object.
+    fn json_body(&self, value: &str, value_ty: &HirType) -> String {
+        match value_ty {
+            HirType::Record(_) => format!("{value}.model_dump(mode=\"json\")"),
+            HirType::Json => value.to_owned(),
+            _ => format!("{{\"value\": {value}}}"),
+        }
+    }
+
+    /// Renders the `.where(..)` chain for a `db.query`/`count`/
+    /// `delete_where` predicate (v0.14 M2) — one
+    /// `.where(Model.field <op> value)` per term, SQLAlchemy ANDs
+    /// chained `.where()` calls together. Empty string (no filtering)
+    /// when there's no `where` clause.
+    fn where_chain(&self, model: &str, predicate: Option<&LoweredPredicate>) -> String {
+        let Some(predicate) = predicate else {
+            return String::new();
+        };
+        predicate
+            .terms
+            .iter()
+            .map(|term| {
+                let field = &term.field;
+                // `field == True`/`field == False` is `ruff`'s E712: a
+                // bare (or negated) column already reads as a boolean
+                // filter in SQLAlchemy, same as Python's own
+                // preference for `if x:` over `if x == True:`.
+                match (term.op, &term.value) {
+                    (PredOp::Eq, PredValue::BoolLit(true))
+                    | (PredOp::NotEq, PredValue::BoolLit(false)) => {
+                        format!(".where({model}.{field})")
+                    }
+                    (PredOp::Eq, PredValue::BoolLit(false))
+                    | (PredOp::NotEq, PredValue::BoolLit(true)) => {
+                        format!(".where(~{model}.{field})")
+                    }
+                    (op, value) => {
+                        let value_s = match value {
+                            PredValue::EnumVariant(v) => format!("{v:?}"),
+                            PredValue::BoolLit(b) => if *b { "True" } else { "False" }.to_owned(),
+                            PredValue::Rendered(s) => s.clone(),
+                        };
+                        match op {
+                            PredOp::Eq => format!(".where({model}.{field} == {value_s})"),
+                            PredOp::NotEq => format!(".where({model}.{field} != {value_s})"),
+                            PredOp::Lt => format!(".where({model}.{field} < {value_s})"),
+                            PredOp::LtEq => format!(".where({model}.{field} <= {value_s})"),
+                            PredOp::Gt => format!(".where({model}.{field} > {value_s})"),
+                            PredOp::GtEq => format!(".where({model}.{field} >= {value_s})"),
+                            PredOp::Contains => {
+                                format!(".where({model}.{field}.contains({value_s}))")
+                            }
+                        }
+                    }
+                }
+            })
+            .collect()
     }
 }
 
-/// Lowers a single expression to a Python expression string. Panics on
-/// `If`/`Match`/`db.insert` — see the module doc comment.
-pub fn py_expr(ir: &NormalizedIr, body: &HandlerBody, expr: &HirExpr) -> String {
-    match expr {
-        HirExpr::If { .. } | HirExpr::Match { .. } => {
-            unreachable!("control flow must be lowered via lower_tail, not nested in an expression")
-        }
-        HirExpr::VerbCall {
-            verb: Verb::DbInsert(_) | Verb::DbUpdate(_) | Verb::DbDelete(_),
-            ..
-        } => unreachable!(
-            "db.insert/update/delete must be lowered via lower_tail, not nested in an expression"
-        ),
-        HirExpr::Query { .. } => {
-            unreachable!("db.query/count/delete_where must be lowered via lower_tail, not nested in an expression")
-        }
-        HirExpr::Local { slot, .. } => slot_name(body, *slot),
-        HirExpr::IntLit(n) => n.to_string(),
-        HirExpr::FloatLit(f) => format!("{f}"),
-        HirExpr::StrLit(s) => format!("{s:?}"),
-        HirExpr::BoolLit(b) => if *b { "True" } else { "False" }.to_owned(),
-        HirExpr::BuiltinCall(Builtin::UuidNew) => "str(uuid4())".to_owned(),
-        HirExpr::BuiltinCall(Builtin::TimestampNow) => "datetime.now(timezone.utc)".to_owned(),
-        HirExpr::EnumLit { variant, .. } => format!("{variant:?}"),
-        HirExpr::FieldAccess { base, field, .. } => {
-            format!("{}.{field}", py_expr(ir, body, base))
-        }
-        HirExpr::Index { base, index } => {
-            format!("{}[{}]", py_expr(ir, body, base), py_expr(ir, body, index))
-        }
-        HirExpr::RecordCons {
-            record,
-            base_value,
-            fields,
-        } => match base_value {
+impl HostSyntax for PySyntax<'_> {
+    const ORIENTATION: Orientation = Orientation::Statement;
+
+    fn int_lit(&self, n: i64) -> String {
+        n.to_string()
+    }
+    fn float_lit(&self, f: f64) -> String {
+        format!("{f}")
+    }
+    fn str_lit(&self, s: &str) -> String {
+        format!("{s:?}")
+    }
+    fn bool_lit(&self, b: bool) -> String {
+        if b { "True" } else { "False" }.to_owned()
+    }
+    fn field_access(&self, base: &str, field: &str) -> String {
+        format!("{base}.{field}")
+    }
+    fn index(&self, base: &str, key: IndexKey<'_>) -> String {
+        let k = match key {
+            IndexKey::StrKey(s) => format!("{s:?}"),
+            IndexKey::Expr(e) => e,
+        };
+        format!("{base}[{k}]")
+    }
+    fn uuid_new(&self) -> String {
+        "str(uuid4())".to_owned()
+    }
+    fn timestamp_now(&self) -> String {
+        "datetime.now(timezone.utc)".to_owned()
+    }
+    fn enum_literal(&self, _enum_name: Option<&str>, variant: &str) -> String {
+        format!("{variant:?}")
+    }
+    fn record_cons(
+        &self,
+        record_name: &str,
+        fields: &[(String, String)],
+        base: Option<&str>,
+    ) -> String {
+        match base {
             None => {
                 let args = fields
                     .iter()
-                    .map(|(name, value)| format!("{name}={}", py_expr(ir, body, value)))
+                    .map(|(name, value)| format!("{name}={value}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{}({args})", record_class_name(ir, *record))
+                format!("{record_name}({args})")
             }
             Some(base) => {
                 let updates = fields
                     .iter()
-                    .map(|(name, value)| format!("{name:?}: {}", py_expr(ir, body, value)))
+                    .map(|(name, value)| format!("{name:?}: {value}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!(
-                    "{}.model_copy(update={{{updates}}})",
-                    py_expr(ir, body, base)
-                )
-            }
-        },
-        HirExpr::Binary { op, lhs, rhs, .. } => py_binary(ir, body, *op, lhs, rhs),
-        HirExpr::Unary { op, expr, .. } => {
-            let inner = py_expr(ir, body, expr);
-            match op {
-                UnOp::Neg => format!("(-{inner})"),
-                UnOp::Not => format!("(not {inner})"),
+                format!("{base}.model_copy(update={{{updates}}})")
             }
         }
-        HirExpr::VerbCall { verb, args, .. } => py_verb_expr(ir, body, *verb, args),
     }
-}
-
-fn py_binary(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    op: BinOp,
-    lhs: &HirExpr,
-    rhs: &HirExpr,
-) -> String {
-    let lhs_ty = lhs.ty();
-    let rhs_ty = rhs.ty();
-    let lhs_s = py_expr(ir, body, lhs);
-    let rhs_s = py_expr(ir, body, rhs);
-    if op == BinOp::Add {
-        return if lhs_ty == HirType::Str && rhs_ty != HirType::Str {
-            format!("({lhs_s} + str({rhs_s}))")
-        } else if rhs_ty == HirType::Str && lhs_ty != HirType::Str {
-            format!("(str({lhs_s}) + {rhs_s})")
-        } else {
-            format!("({lhs_s} + {rhs_s})")
+    fn binary(
+        &self,
+        op: BinOp,
+        lhs: &str,
+        rhs: &str,
+        lhs_ty: &HirType,
+        rhs_ty: &HirType,
+    ) -> String {
+        if op == BinOp::Add {
+            return if *lhs_ty == HirType::Str && *rhs_ty != HirType::Str {
+                format!("({lhs} + str({rhs}))")
+            } else if *rhs_ty == HirType::Str && *lhs_ty != HirType::Str {
+                format!("(str({lhs}) + {rhs})")
+            } else {
+                format!("({lhs} + {rhs})")
+            };
+        }
+        let op_s = match op {
+            BinOp::Add => unreachable!("handled above"),
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Eq => "==",
+            BinOp::NotEq => "!=",
+            BinOp::Lt => "<",
+            BinOp::LtEq => "<=",
+            BinOp::Gt => ">",
+            BinOp::GtEq => ">=",
+            BinOp::And => "and",
+            BinOp::Or => "or",
         };
+        format!("({lhs} {op_s} {rhs})")
     }
-    let py_op = match op {
-        BinOp::Add => unreachable!("handled above"),
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Eq => "==",
-        BinOp::NotEq => "!=",
-        BinOp::Lt => "<",
-        BinOp::LtEq => "<=",
-        BinOp::Gt => ">",
-        BinOp::GtEq => ">=",
-        BinOp::And => "and",
-        BinOp::Or => "or",
-    };
-    format!("({lhs_s} {py_op} {rhs_s})")
-}
+    fn unary(&self, op: UnOp, operand: &str) -> String {
+        match op {
+            UnOp::Neg => format!("(-{operand})"),
+            UnOp::Not => format!("(not {operand})"),
+        }
+    }
 
-/// Lowers every verb call that fits a single Python expression —
-/// everything except `db.insert` (statement-shaped; see [`lower_tail`]).
-fn py_verb_expr(ir: &NormalizedIr, body: &HandlerBody, verb: Verb, args: &[HirExpr]) -> String {
-    match verb {
-        Verb::DbInsert(_) | Verb::DbUpdate(_) | Verb::DbDelete(_) => {
-            unreachable!("db.insert/update/delete must be lowered via lower_tail")
-        }
-        Verb::DbGet(table) => {
-            let model = model_class_name(ir, table);
-            let record = record_class_name(ir, ir.table(table).record);
-            let key = py_expr(ir, body, &args[0]);
-            format!(
-                "({record}.model_validate(_row, from_attributes=True) \
-                 if (_row := await self.session.get({model}, str({key}))) is not None else None)"
-            )
-        }
-        Verb::CacheGet => {
-            let key = py_expr(ir, body, &args[0]);
-            format!(
-                "(json.loads(_cv) if (_cv := await self.cache.get({key})) is not None else None)"
-            )
-        }
-        Verb::CacheSet => {
-            let key = py_expr(ir, body, &args[0]);
-            let value = json_encode(ir, body, &args[1]);
-            format!("(await self.cache.set({key}, {value}))")
-        }
-        Verb::ObjectStorePut => {
-            let key = py_expr(ir, body, &args[0]);
-            let payload = if matches!(args[1].ty(), HirType::Record(_)) {
-                format!("{}.model_dump_json().encode()", py_expr(ir, body, &args[1]))
-            } else {
-                format!("str({}).encode()", py_expr(ir, body, &args[1]))
+    fn if_tail(
+        &self,
+        cond: &str,
+        then_lines: Vec<String>,
+        else_lines: Vec<String>,
+        indent: &str,
+    ) -> Vec<String> {
+        let mut out = vec![format!("{indent}if {cond}:")];
+        out.extend(then_lines);
+        out.push(format!("{indent}else:"));
+        out.extend(else_lines);
+        out
+    }
+    fn match_tail(
+        &self,
+        scrutinee: &str,
+        arms: &[(Option<String>, Vec<String>)],
+        indent: &str,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, (variant, lines)) in arms.iter().enumerate() {
+            let cond = match variant {
+                Some(v) => format!("{scrutinee} == {v:?}"),
+                None => "True".to_owned(),
             };
-            format!("(await self.object_store.put({key}, {payload}))")
+            let kw = if i == 0 { "if" } else { "elif" };
+            out.push(format!("{indent}{kw} {cond}:"));
+            out.extend(lines.iter().cloned());
         }
-        Verb::ObjectStoreGet => {
-            let key = py_expr(ir, body, &args[0]);
-            format!("json.loads(await self.object_store.get({key}))")
-        }
-        Verb::CacheDelete => {
-            let key = py_expr(ir, body, &args[0]);
-            format!("(await self.cache.delete({key}))")
-        }
-        Verb::ObjectStoreDelete => {
-            let key = py_expr(ir, body, &args[0]);
-            format!("(await self.object_store.delete({key}))")
-        }
-        Verb::ObjectStoreList => {
-            let prefix = py_expr(ir, body, &args[0]);
-            format!("(await self.object_store.list({prefix}))")
-        }
-        Verb::EmailSend => {
-            let to = py_expr(ir, body, &args[0]);
-            let subject = py_expr(ir, body, &args[1]);
-            let body_arg = py_expr(ir, body, &args[2]);
-            format!("(await self.email.send({to}, {subject}, {body_arg}))")
-        }
-        Verb::SearchIndex => {
-            let doc_id = py_expr(ir, body, &args[0]);
-            let document = json_body(ir, body, &args[1]);
-            format!("(await self.search.index({SEARCH_INDEX_NAME:?}, {doc_id}, {document}))")
-        }
-        Verb::SearchQuery => {
-            let query = py_expr(ir, body, &args[0]);
-            format!(
-                "(await self.search.search({SEARCH_INDEX_NAME:?}, {{\"query\": {{\"query_string\": {{\"query\": {query}}}}}}}))"
-            )
-        }
-        Verb::HttpCall => {
-            let url = py_expr(ir, body, &args[0]);
-            let json_arg = json_body(ir, body, &args[1]);
-            format!("(await self.http.post({url}, json={json_arg})).json()")
-        }
-        Verb::DbQuery(_) | Verb::DbCount(_) | Verb::DbDeleteWhere(_) => {
-            unreachable!("typeck only ever constructs these via HirExpr::Query")
-        }
+        out
     }
-}
-
-/// Where a block's tail value goes: assigned to a `let`-bound name,
-/// `return`ed, or discarded (a bare statement-position `if`/`match`).
-enum Sink {
-    Assign(String),
-    Return,
-    Discard,
-}
-
-fn apply_sink(sink: &Sink, value: &str, indent: &str, out: &mut Vec<String>) {
-    match sink {
-        Sink::Assign(name) => out.push(format!("{indent}{name} = {value}")),
-        Sink::Return => out.push(format!("{indent}return {value}")),
-        Sink::Discard => out.push(format!("{indent}{value}")),
+    fn db_insert_tail(
+        &self,
+        table: TableId,
+        value: &str,
+        dest: &Dest,
+        indent: &str,
+        in_tx: bool,
+    ) -> Vec<String> {
+        let model = model_class_name(self.ir, table);
+        let mut out = vec![format!(
+            "{indent}self.session.add({model}(**{value}.model_dump()))"
+        )];
+        if !in_tx {
+            out.push(format!("{indent}await self.session.commit()"));
+        }
+        match dest {
+            Dest::Assign(name) => out.push(format!("{indent}{name} = {value}")),
+            Dest::Return => out.push(format!("{indent}return {value}")),
+            Dest::Discard => {}
+        }
+        out
     }
-}
-
-/// Renders the `.where(..)` chain for a `db.query`/`count`/`delete_where`
-/// predicate (v0.14 M2) — one `.where(Model.field <op> value)` per term,
-/// SQLAlchemy ANDs chained `.where()` calls together. Empty string (no
-/// filtering) when there's no `where` clause.
-fn py_where_chain(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    model: &str,
-    predicate: &Option<ciac_ir::HirPredicate>,
-) -> String {
-    let Some(predicate) = predicate else {
-        return String::new();
-    };
-    predicate
-        .terms
-        .iter()
-        .map(|term| {
-            let field = &term.field;
-            // `field == True`/`field == False` is `ruff`'s E712: a bare
-            // (or negated) column already reads as a boolean filter in
-            // SQLAlchemy, same as Python's own preference for `if x:`
-            // over `if x == True:`.
-            match (term.op, &term.value) {
-                (ciac_ir::PredOp::Eq, HirExpr::BoolLit(true))
-                | (ciac_ir::PredOp::NotEq, HirExpr::BoolLit(false)) => {
-                    format!(".where({model}.{field})")
-                }
-                (ciac_ir::PredOp::Eq, HirExpr::BoolLit(false))
-                | (ciac_ir::PredOp::NotEq, HirExpr::BoolLit(true)) => {
-                    format!(".where(~{model}.{field})")
-                }
-                (op, value) => {
-                    let value = py_expr(ir, body, value);
-                    match op {
-                        ciac_ir::PredOp::Eq => format!(".where({model}.{field} == {value})"),
-                        ciac_ir::PredOp::NotEq => format!(".where({model}.{field} != {value})"),
-                        ciac_ir::PredOp::Lt => format!(".where({model}.{field} < {value})"),
-                        ciac_ir::PredOp::LtEq => format!(".where({model}.{field} <= {value})"),
-                        ciac_ir::PredOp::Gt => format!(".where({model}.{field} > {value})"),
-                        ciac_ir::PredOp::GtEq => format!(".where({model}.{field} >= {value})"),
-                        ciac_ir::PredOp::Contains => {
-                            format!(".where({model}.{field}.contains({value}))")
-                        }
-                    }
-                }
-            }
-        })
-        .collect()
-}
-
-/// Lowers a full handler body into indented Python source lines, each
-/// already prefixed with `indent` plus whatever extra nesting its own
-/// control flow needs.
-pub fn lower_body(ir: &NormalizedIr, body: &HandlerBody, indent: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let stmts = body.body.as_deref().unwrap_or(&[]);
-    lower_block(ir, body, stmts, indent, &Sink::Discard, false, &mut out);
-    if out.is_empty() {
-        out.push(format!("{indent}pass"));
-    }
-    out
-}
-
-/// `tx`: true for a block lexically inside a `transaction { .. }`
-/// (v0.16 M5) — every `db.*` verb lowered underneath skips its own
-/// `session.commit()` (see `lower_tail`'s db-verb arms), since the
-/// enclosing `async with self.session.begin():` (see `HirStmt::Transaction`
-/// below) commits once for the whole block on success and rolls back on
-/// any exception.
-fn lower_block(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    stmts: &[HirStmt],
-    indent: &str,
-    sink: &Sink,
-    tx: bool,
-    out: &mut Vec<String>,
-) {
-    if stmts.is_empty() {
-        out.push(format!("{indent}pass"));
-        return;
-    }
-    for (i, stmt) in stmts.iter().enumerate() {
-        let is_last = i + 1 == stmts.len();
-        if is_last {
-            if let HirStmt::Expr(e) = stmt {
-                if e.ty() != HirType::Never {
-                    lower_tail(ir, body, e, indent, sink, tx, out);
-                    continue;
-                }
-            }
-        }
-        lower_stmt(ir, body, stmt, indent, tx, out);
-        // The type checker still type-checks (and the HIR still
-        // contains) statements after one that diverges — e.g. a
-        // `return described;` following a `let described = match { ..
-        // every arm returns/fails .. };` — since it never actually
-        // assigns `described`, lowering it would reference a name that
-        // was never bound. Those statements are unreachable at runtime
-        // either way, so stop emitting once a statement diverges.
-        if stmt_diverges(stmt) {
-            return;
-        }
-    }
-}
-
-fn stmt_diverges(stmt: &HirStmt) -> bool {
-    match stmt {
-        HirStmt::Return(_) | HirStmt::Fail { .. } => true,
-        HirStmt::Let { value, .. } | HirStmt::Expr(value) => value.ty() == HirType::Never,
-        HirStmt::Publish { .. } | HirStmt::Transaction { .. } => false,
-    }
-}
-
-/// Lowers an expression that's the tail value of a block — the value of
-/// a `let`, the operand of a `return`, or a bare statement-position
-/// expression — into `sink`. Recurses through `if`/`match` so a
-/// diverging branch's own tail lands in the same `sink`.
-fn lower_tail(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    expr: &HirExpr,
-    indent: &str,
-    sink: &Sink,
-    tx: bool,
-    out: &mut Vec<String>,
-) {
-    match expr {
-        HirExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            out.push(format!("{indent}if {}:", py_expr(ir, body, cond)));
-            let inner = format!("{indent}    ");
-            lower_block(ir, body, then_branch, &inner, sink, tx, out);
-            out.push(format!("{indent}else:"));
-            lower_block(ir, body, else_branch, &inner, sink, tx, out);
-        }
-        HirExpr::Match {
-            scrutinee, arms, ..
-        } => {
-            let scrut = py_expr(ir, body, scrutinee);
-            let inner = format!("{indent}    ");
-            for (i, arm) in arms.iter().enumerate() {
-                let cond = match &arm.variant {
-                    Some(v) => format!("{scrut} == {v:?}"),
-                    None => "True".to_owned(),
-                };
-                let kw = if i == 0 { "if" } else { "elif" };
-                out.push(format!("{indent}{kw} {cond}:"));
-                lower_block(ir, body, &arm.body, &inner, sink, tx, out);
-            }
-        }
-        HirExpr::VerbCall {
-            verb: Verb::DbInsert(table),
-            args,
-            ..
-        } => {
-            let model = model_class_name(ir, *table);
-            let value = py_expr(ir, body, &args[0]);
-            out.push(format!(
-                "{indent}self.session.add({model}(**{value}.model_dump()))"
-            ));
-            if !tx {
-                out.push(format!("{indent}await self.session.commit()"));
-            }
-            match sink {
-                Sink::Assign(name) => out.push(format!("{indent}{name} = {value}")),
-                Sink::Return => out.push(format!("{indent}return {value}")),
-                Sink::Discard => {}
-            }
-        }
-        HirExpr::VerbCall {
-            verb: Verb::DbUpdate(table),
-            args,
-            ..
-        } => {
-            let model = model_class_name(ir, *table);
-            let record = record_class_name(ir, ir.table(*table).record);
-            let key = py_expr(ir, body, &args[0]);
-            let value = py_expr(ir, body, &args[1]);
-            out.push(format!(
-                "{indent}_row = await self.session.get({model}, str({key}))"
-            ));
-            out.push(format!("{indent}if _row is not None:"));
-            out.push(format!(
-                "{indent}    for _k, _v in {value}.model_dump().items():"
-            ));
-            out.push(format!("{indent}        setattr(_row, _k, _v)"));
-            if !tx {
-                out.push(format!("{indent}    await self.session.commit()"));
-            }
-            apply_sink(
-                sink,
-                &format!("{record}.model_validate(_row, from_attributes=True)"),
-                &format!("{indent}    "),
-                out,
-            );
-            out.push(format!("{indent}else:"));
-            apply_sink(sink, "None", &format!("{indent}    "), out);
-        }
-        HirExpr::VerbCall {
-            verb: Verb::DbDelete(table),
-            args,
-            ..
-        } => {
-            let model = model_class_name(ir, *table);
-            let key = py_expr(ir, body, &args[0]);
-            out.push(format!(
-                "{indent}_row = await self.session.get({model}, str({key}))"
-            ));
-            out.push(format!("{indent}if _row is not None:"));
-            out.push(format!("{indent}    await self.session.delete(_row)"));
-            if !tx {
-                out.push(format!("{indent}    await self.session.commit()"));
-            }
-            apply_sink(sink, "True", &format!("{indent}    "), out);
-            out.push(format!("{indent}else:"));
-            apply_sink(sink, "False", &format!("{indent}    "), out);
-        }
-        HirExpr::Query {
-            verb: Verb::DbQuery(table),
-            predicate,
-            ..
-        } => {
-            let model = model_class_name(ir, *table);
-            let record = record_class_name(ir, ir.table(*table).record);
-            let where_chain = py_where_chain(ir, body, &model, predicate);
-            out.push(format!("{indent}_stmt = select({model}){where_chain}"));
-            out.push(format!(
-                "{indent}_rows = (await self.session.execute(_stmt)).scalars().all()"
-            ));
-            apply_sink(
-                sink,
-                &format!("[{record}.model_validate(_r, from_attributes=True) for _r in _rows]"),
-                indent,
-                out,
-            );
-        }
-        HirExpr::Query {
-            verb: Verb::DbCount(table),
-            predicate,
-            ..
-        } => {
-            let model = model_class_name(ir, *table);
-            let where_chain = py_where_chain(ir, body, &model, predicate);
-            out.push(format!(
-                "{indent}_stmt = select(func.count()).select_from({model}){where_chain}"
-            ));
-            apply_sink(
-                sink,
-                "(await self.session.execute(_stmt)).scalar_one()",
-                indent,
-                out,
-            );
-        }
-        HirExpr::Query {
-            verb: Verb::DbDeleteWhere(table),
-            predicate,
-            ..
-        } => {
-            let model = model_class_name(ir, *table);
-            let where_chain = py_where_chain(ir, body, &model, predicate);
-            out.push(format!("{indent}_stmt = sql_delete({model}){where_chain}"));
-            out.push(format!(
-                "{indent}_result = await self.session.execute(_stmt)"
-            ));
-            if !tx {
-                out.push(format!("{indent}await self.session.commit()"));
-            }
-            apply_sink(sink, "_result.rowcount", indent, out);
-        }
-        HirExpr::Query { verb, .. } => {
-            unreachable!("HirExpr::Query only ever carries a db query verb, found {verb:?}")
-        }
-        _ => {
-            let e = py_expr(ir, body, expr);
-            apply_sink(sink, &e, indent, out);
-        }
-    }
-}
-
-fn lower_stmt(
-    ir: &NormalizedIr,
-    body: &HandlerBody,
-    stmt: &HirStmt,
-    indent: &str,
-    tx: bool,
-    out: &mut Vec<String>,
-) {
-    match stmt {
-        HirStmt::Let { slot, value } => {
-            let name = slot_name(body, *slot);
-            lower_tail(ir, body, value, indent, &Sink::Assign(name), tx, out);
-        }
-        HirStmt::Expr(e) => lower_tail(ir, body, e, indent, &Sink::Discard, tx, out),
-        HirStmt::Return(None) => out.push(format!("{indent}return")),
-        HirStmt::Return(Some(e)) => lower_tail(ir, body, e, indent, &Sink::Return, tx, out),
-        HirStmt::Fail { error, args } => {
-            let exc = record_class_name(ir, *error);
-            let arg_strs: Vec<String> = args.iter().map(|a| py_expr(ir, body, a)).collect();
-            out.push(format!("{indent}raise {exc}({})", arg_strs.join(", ")));
-        }
-        HirStmt::Publish { stream, value } => {
-            let subject = stream_subject(ir, *stream);
-            let payload = if matches!(value.ty(), HirType::Record(_)) {
-                format!("{}.model_dump(mode=\"json\")", py_expr(ir, body, value))
-            } else {
-                py_expr(ir, body, value)
-            };
-            out.push(format!("{indent}await publish({subject:?}, {payload})"));
-        }
-        // v0.16 M5: every `db.*` verb underneath (see `lower_tail`'s
-        // db-verb arms) skips its own commit when `tx` is set; `try`/
-        // `except` — not a nested `session.begin()` — commits once on
-        // success and rolls back on any exception (a `fail`'s `raise`
-        // included), because `AsyncSession` autobegins its own
-        // transaction on first use, and an *explicit* `begin()` on a
-        // session that already has one active raises `InvalidRequestError`.
-        HirStmt::Transaction { body: inner } => {
-            out.push(format!("{indent}try:"));
-            let block_indent = format!("{indent}    ");
-            lower_block(ir, body, inner, &block_indent, &Sink::Discard, true, out);
+    fn db_update_tail(
+        &self,
+        table: TableId,
+        key: &str,
+        value: &str,
+        dest: &Dest,
+        indent: &str,
+        in_tx: bool,
+    ) -> Vec<String> {
+        let model = model_class_name(self.ir, table);
+        let record = record_class_name(self.ir, self.ir.table(table).record);
+        let mut out = vec![
+            format!("{indent}_row = await self.session.get({model}, str({key}))"),
+            format!("{indent}if _row is not None:"),
+            format!("{indent}    for _k, _v in {value}.model_dump().items():"),
+            format!("{indent}        setattr(_row, _k, _v)"),
+        ];
+        if !in_tx {
             out.push(format!("{indent}    await self.session.commit()"));
-            out.push(format!("{indent}except Exception:"));
-            out.push(format!("{indent}    await self.session.rollback()"));
-            out.push(format!("{indent}    raise"));
         }
+        lower::apply_dest(
+            self,
+            dest,
+            &format!("{record}.model_validate(_row, from_attributes=True)"),
+            &format!("{indent}    "),
+            &mut out,
+        );
+        out.push(format!("{indent}else:"));
+        lower::apply_dest(self, dest, "None", &format!("{indent}    "), &mut out);
+        out
+    }
+    fn db_delete_tail(
+        &self,
+        table: TableId,
+        key: &str,
+        dest: &Dest,
+        indent: &str,
+        in_tx: bool,
+    ) -> Vec<String> {
+        let model = model_class_name(self.ir, table);
+        let mut out = vec![
+            format!("{indent}_row = await self.session.get({model}, str({key}))"),
+            format!("{indent}if _row is not None:"),
+            format!("{indent}    await self.session.delete(_row)"),
+        ];
+        if !in_tx {
+            out.push(format!("{indent}    await self.session.commit()"));
+        }
+        lower::apply_dest(self, dest, "True", &format!("{indent}    "), &mut out);
+        out.push(format!("{indent}else:"));
+        lower::apply_dest(self, dest, "False", &format!("{indent}    "), &mut out);
+        out
+    }
+    fn query_tail(
+        &self,
+        verb: Verb,
+        predicate: Option<&LoweredPredicate>,
+        dest: &Dest,
+        indent: &str,
+        in_tx: bool,
+    ) -> Vec<String> {
+        match verb {
+            Verb::DbQuery(table) => {
+                let model = model_class_name(self.ir, table);
+                let record = record_class_name(self.ir, self.ir.table(table).record);
+                let where_chain = self.where_chain(&model, predicate);
+                let mut out = vec![
+                    format!("{indent}_stmt = select({model}){where_chain}"),
+                    format!("{indent}_rows = (await self.session.execute(_stmt)).scalars().all()"),
+                ];
+                lower::apply_dest(
+                    self,
+                    dest,
+                    &format!("[{record}.model_validate(_r, from_attributes=True) for _r in _rows]"),
+                    indent,
+                    &mut out,
+                );
+                out
+            }
+            Verb::DbCount(table) => {
+                let model = model_class_name(self.ir, table);
+                let where_chain = self.where_chain(&model, predicate);
+                let mut out = vec![format!(
+                    "{indent}_stmt = select(func.count()).select_from({model}){where_chain}"
+                )];
+                lower::apply_dest(
+                    self,
+                    dest,
+                    "(await self.session.execute(_stmt)).scalar_one()",
+                    indent,
+                    &mut out,
+                );
+                out
+            }
+            Verb::DbDeleteWhere(table) => {
+                let model = model_class_name(self.ir, table);
+                let where_chain = self.where_chain(&model, predicate);
+                let mut out = vec![
+                    format!("{indent}_stmt = sql_delete({model}){where_chain}"),
+                    format!("{indent}_result = await self.session.execute(_stmt)"),
+                ];
+                if !in_tx {
+                    out.push(format!("{indent}await self.session.commit()"));
+                }
+                lower::apply_dest(self, dest, "_result.rowcount", indent, &mut out);
+                out
+            }
+            _ => unreachable!("HirExpr::Query only ever carries a db query verb, found {verb:?}"),
+        }
+    }
+    fn assign(&self, name: &str, value: &str, indent: &str) -> String {
+        format!("{indent}{name} = {value}")
+    }
+    fn discard_stmt(&self, value: &str, indent: &str) -> String {
+        format!("{indent}{value}")
+    }
+    fn empty_block_stmt(&self, indent: &str) -> Vec<String> {
+        vec![format!("{indent}pass")]
+    }
+    // v0.16 M5: every `db.*` verb underneath (see the `db_*_tail`/
+    // `query_tail` leaves above) skips its own commit when `in_tx` is
+    // set; `try`/`except` — not a nested `session.begin()` — commits
+    // once on success and rolls back on any exception (a `fail`'s
+    // `raise` included), because `AsyncSession` autobegins its own
+    // transaction on first use, and an *explicit* `begin()` on a
+    // session that already has one active raises
+    // `InvalidRequestError`.
+    fn transaction_stmt(&self, inner_lines: Vec<String>, indent: &str) -> Vec<String> {
+        let mut out = vec![format!("{indent}try:")];
+        out.extend(inner_lines);
+        out.push(format!("{indent}    await self.session.commit()"));
+        out.push(format!("{indent}except Exception:"));
+        out.push(format!("{indent}    await self.session.rollback()"));
+        out.push(format!("{indent}    raise"));
+        out
+    }
+
+    fn return_stmt(&self, value: Option<&str>, indent: &str) -> String {
+        match value {
+            Some(v) => format!("{indent}return {v}"),
+            None => format!("{indent}return"),
+        }
+    }
+    fn fail(&self, error: RecordId, args: &[String], indent: &str) -> String {
+        let exc = record_class_name(self.ir, error);
+        format!("{indent}raise {exc}({})", args.join(", "))
+    }
+    fn publish(&self, subject: &str, value: &str, value_ty: &HirType, indent: &str) -> String {
+        let payload = if matches!(value_ty, HirType::Record(_)) {
+            format!("{value}.model_dump(mode=\"json\")")
+        } else {
+            value.to_owned()
+        };
+        format!("{indent}await publish({subject:?}, {payload})")
+    }
+    fn db_get(&self, table: TableId, key: &str) -> String {
+        let model = model_class_name(self.ir, table);
+        let record = record_class_name(self.ir, self.ir.table(table).record);
+        format!(
+            "({record}.model_validate(_row, from_attributes=True) \
+             if (_row := await self.session.get({model}, str({key}))) is not None else None)"
+        )
+    }
+    fn cache_get(&self, key: &str) -> String {
+        format!("(json.loads(_cv) if (_cv := await self.cache.get({key})) is not None else None)")
+    }
+    fn cache_set(&self, key: &str, value: &str, value_ty: &HirType) -> String {
+        let encoded = if matches!(value_ty, HirType::Record(_)) {
+            format!("{value}.model_dump_json()")
+        } else {
+            format!("json.dumps({value})")
+        };
+        format!("(await self.cache.set({key}, {encoded}))")
+    }
+    fn cache_delete(&self, key: &str) -> String {
+        format!("(await self.cache.delete({key}))")
+    }
+    fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
+        let payload = if matches!(value_ty, HirType::Record(_)) {
+            format!("{value}.model_dump_json().encode()")
+        } else {
+            format!("str({value}).encode()")
+        };
+        format!("(await self.object_store.put({key}, {payload}))")
+    }
+    fn object_store_get(&self, key: &str) -> String {
+        format!("json.loads(await self.object_store.get({key}))")
+    }
+    fn object_store_delete(&self, key: &str) -> String {
+        format!("(await self.object_store.delete({key}))")
+    }
+    fn object_store_list(&self, prefix: &str) -> String {
+        format!("(await self.object_store.list({prefix}))")
+    }
+    fn email_send(&self, to: &str, subject: &str, body: &str) -> String {
+        format!("(await self.email.send({to}, {subject}, {body}))")
+    }
+    fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String {
+        let document = self.json_body(document, document_ty);
+        format!("(await self.search.index({SEARCH_INDEX_NAME:?}, {doc_id}, {document}))")
+    }
+    fn search_query(&self, query: &str) -> String {
+        format!(
+            "(await self.search.search({SEARCH_INDEX_NAME:?}, {{\"query\": {{\"query_string\": {{\"query\": {query}}}}}}}))"
+        )
+    }
+    fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String {
+        let json_arg = self.json_body(json_body, body_ty);
+        format!("(await self.http.post({url}, json={json_arg})).json()")
     }
 }
 
@@ -702,7 +573,10 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         .collect();
 
     let body = match &hir.body {
-        Some(_) => lower_body(ir, hir, "        "),
+        Some(_) => {
+            let syntax = PySyntax { ir };
+            lower::lower_body_stmt(&syntax, ir, hir, "        ")
+        }
         None => vec!["        raise NotImplementedError".to_owned()],
     };
 

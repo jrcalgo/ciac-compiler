@@ -167,7 +167,7 @@
     },
     {
       "id": "go",
-      "description": "Go 1.23+ project using net/http, database/sql, go-redis, and nats.go",
+      "description": "Go 1.24+ project using net/http, database/sql, go-redis, and nats.go",
       "kind": "internal",
       "project_marker": "go.mod",
       "validate": [

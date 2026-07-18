@@ -48,6 +48,18 @@ pub fn go_zero(field: ViaDeserialize<HasTypeKind>) -> String {
     }
 }
 
+/// Go type as stored in the database (enums are TEXT -> `string`);
+/// mirrors Rust's `db_rust_type`. A `table`/`crud` row is scanned into
+/// this shape, then converted to the wire type at the record boundary
+/// (see `models.go.j2`'s `TryFrom`-equivalent conversion).
+pub fn go_db_type(field: ViaDeserialize<HasTypeKind>) -> String {
+    if matches!(field.0.type_kind, FieldTypeKind::Enum { .. }) {
+        "string".to_owned()
+    } else {
+        go_type_of(field.0.type_kind.clone())
+    }
+}
+
 fn go_type_of(kind: FieldTypeKind) -> String {
     match kind {
         FieldTypeKind::Str | FieldTypeKind::Uuid | FieldTypeKind::Reference { .. } => {

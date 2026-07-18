@@ -6,8 +6,14 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+{%- if c.tables %}
+	"os"
+{%- endif %}
 
 	"{{ c.package }}/internal/config"
+{%- if c.resources or c.tables %}
+	"{{ c.package }}/internal/db"
+{%- endif %}
 	"{{ c.package }}/internal/observability"
 	"{{ c.package }}/internal/routes"
 	"{{ c.package }}/internal/state"
@@ -27,6 +33,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("state.New: %v", err)
 	}
+{%- for target in c.schema_state_fields %}
+	if err := db.EnsureSchema{{ target.engine | go_pascal }}(st.{{ target.field | go_pascal }}); err != nil {
+		log.Fatalf("ensure schema ({{ target.engine }}): %v", err)
+	}
+{%- endfor %}
+{%- if c.tables %}
+	if err := db.Migrate(st.{{ c.table_db_field | go_pascal }}, "{{ c.table_db_engine }}", os.DirFS("migrations")); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+{%- endif %}
 
 	mux := routes.Router(st)
 	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, r *http.Request) {

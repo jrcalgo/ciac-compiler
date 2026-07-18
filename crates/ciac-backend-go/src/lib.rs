@@ -69,7 +69,7 @@ const COMPOSE_OPTS: ciac_codegen::compose::BackendComposeOpts =
 /// build/vet/gofmt/test sequence `validate` runs locally, plus
 /// `staticcheck` — CI's own extra layer beyond what `ciac verify`
 /// asks a developer's machine to install.
-const CI_TEST_STEPS: &str = "      - uses: actions/setup-go@v5\n        with:\n          go-version: \"1.23\"\n          cache-dependency-path: go.sum\n      - run: go build ./...\n      - run: go vet ./...\n      - run: test -z \"$(gofmt -l .)\"\n      - run: go test ./...\n      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...\n";
+const CI_TEST_STEPS: &str = "      - uses: actions/setup-go@v5\n        with:\n          go-version: \"1.24\"\n          cache-dependency-path: go.sum\n      - run: go build ./...\n      - run: go vet ./...\n      - run: test -z \"$(gofmt -l .)\"\n      - run: go test ./...\n      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...\n";
 
 /// This target's whole CLI/CI/compose/dev-loop/sim integration surface
 /// (`22UpdatePlan.md` Pillar 1's factory contract, consumed here
@@ -127,24 +127,45 @@ impl Backend for GoBackend {
     }
 
     fn description(&self) -> &'static str {
-        "Go 1.23+ project using net/http, database/sql, go-redis, and nats.go"
+        "Go 1.24+ project using net/http, database/sql, go-redis, and nats.go"
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // M1: apis/records only (ping-parity: one record, one api,
-        // pipeline `Return` with no handler binding — so no `Service`
-        // node is even in play yet). `Service` (classic implicit
-        // handlers *and* typed inline/extern handlers share this
-        // component kind) stays gated until the milestone that
-        // actually implements handler dispatch in `route_api.go.j2`
-        // — claiming support here before then would pass gating and
-        // then fail loudly on an undefined template variable instead
-        // of a clean `CIAC0011`, exactly the crash the `supports()`
-        // gate exists to prevent. Every other component kind (Worker/
-        // Job/Channel/Resource/Table/...) stays gated the same way,
-        // advancing row by row as each milestone lands rather than
-        // starting from zero.
-        matches!(component, Component::Api { .. })
+        // M2 adds `Database` for every engine at once: unlike Node's
+        // per-driver call-shape divergence (TS's own M2 cost, disclosed
+        // at 23UpdatePlan.md M5), Go's `database/sql` interface is
+        // engine-agnostic -- `db.go`'s `Open` picks the driver by name,
+        // everything downstream (`*sql.DB`, `ExecContext`,
+        // `QueryRowContext`) is identical code regardless of engine, so
+        // there is no per-engine gating to stage here the way Rust/TS
+        // needed for MySQL/Kafka.
+        //
+        // `crud <Name>[: <Record>];` does NOT expand into Api+Database
+        // alone -- `ciac_sema::build::crud` also synthesizes a
+        // `Component::Service { name: "<Name>Store", signature: None }`
+        // marker node (found empirically: `examples/sqlite-notes.ciac`
+        // refused on it once `Database` alone was un-gated). `signature:
+        // None` is the documented "classic binding-only handler"
+        // discriminant (pre-v0.7, no typed body) -- exactly the shape
+        // `resource_store.go.j2`/`resource_api.go.j2` already render
+        // unconditionally from `ctx.resources`, with no handler *body*
+        // to lower. A typed handler (`signature: Some(_)`) is a
+        // different, much bigger feature (HostSyntax leaf lowering)
+        // that stays gated until M4. Bare classic handlers *not* tied
+        // to a `crud` (seeded-stub `ctx.services` entries) are also not
+        // yet implemented and stay gated by this same narrow condition
+        // -- confirmed by generating every example with this gate: only
+        // `crud`-synthesized Store nodes are ever `signature: None`
+        // among currently Api+Database-reachable programs.
+        matches!(
+            component,
+            Component::Api { .. }
+                | Component::Database { .. }
+                | Component::Service {
+                    signature: None,
+                    ..
+                }
+        )
     }
 
     fn target_info(&self) -> &'static TargetInfo {
@@ -164,6 +185,7 @@ impl Backend for GoBackend {
             )
         }))?;
         env.add_filter("go_type", filters::go_type);
+        env.add_filter("go_db_type", filters::go_db_type);
         env.add_filter("go_zero", filters::go_zero);
         env.add_filter("go_validate_tag", filters::go_validate_tag);
         env.add_filter("go_pascal", filters::go_pascal);
@@ -310,7 +332,40 @@ fn emit_service(
         );
     }
 
-    if !ctx.apis.is_empty() {
+    if ctx.has_db {
+        project.add_file(at("internal/db/db.go"), render_go("db.go.j2", empty())?);
+    }
+    if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
+        let resource_needs_decode = ctx.resources.iter().any(|r| r.record.is_some());
+        // Every generic (no-record) resource's `Data` field is a raw
+        // JSON blob; every `table` row struct needs no extra import.
+        // json.RawMessage itself needs `encoding/json` whenever it's
+        // used *or* whenever the presence-check decoder needs it.
+        let needs_json = ctx.resources.iter().any(|r| r.record.is_none()) || resource_needs_decode;
+        project.add_file(
+            at("internal/models/models.go"),
+            render_go(
+                "models.go.j2",
+                context! { needs_json => needs_json, resource_needs_decode => resource_needs_decode },
+            )?,
+        );
+    }
+    for resource in &ctx.resources {
+        project.add_file(
+            at(&format!("internal/services/{}.go", resource.store_module)),
+            render_go("resource_store.go.j2", context! { resource => resource })?,
+        );
+        project.add_file(
+            at(&format!("internal/routes/{}_api.go", resource.plural)),
+            render_go("resource_api.go.j2", context! { resource => resource })?,
+        );
+    }
+
+    // `crud <Name>;` expands into `Api`/`Database` components only
+    // (verified empirically against `examples/sqlite-notes.ciac` — no
+    // `Service` node), so a resource-only program still needs a
+    // router even when `ctx.apis` itself is empty.
+    if !ctx.apis.is_empty() || !ctx.resources.is_empty() {
         project.add_file(
             at("internal/routes/router.go"),
             render_go("router.go.j2", empty())?,

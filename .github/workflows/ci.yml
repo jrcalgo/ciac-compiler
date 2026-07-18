@@ -43,7 +43,7 @@ jobs:
       # only for the dedicated `generated-go` job below.
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.24"
       - run: cargo test --workspace
 
   generated-python:
@@ -161,7 +161,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.24"
       - name: Build the compiler
         run: cargo build -p ciac
       - name: Verify every example

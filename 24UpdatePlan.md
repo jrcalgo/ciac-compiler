@@ -885,6 +885,105 @@ planning pass finds them named.
    discipline. sqlite-notes fully local with zero Docker (pure-Go
    sqlite — the strongest local proof of any target); crud/mysql
    static-local, round-trips CI-delegated.
+
+   **Shipped (v0.24 M2):** `supports()` gained `Component::Database`
+   (all three engines at once — `database/sql`'s interface is
+   engine-agnostic, so unlike TS's own per-driver M2 cost there is no
+   per-engine gating to stage) and, once un-gated, one real
+   discovery: `crud <Name>[: <Record>];` does **not** expand into
+   `Api`+`Database` alone. `ciac_sema::build::crud` also synthesizes a
+   `Component::Service { name: "<Name>Store", signature: None }`
+   marker node — found empirically (`examples/sqlite-notes.ciac`
+   refused on it the moment `Database` alone passed), not from reading
+   the sema source first. `signature: None` is the documented
+   "classic binding-only handler" discriminant, exactly the shape
+   `resource_store.go.j2`/`resource_api.go.j2` already render
+   unconditionally from `ctx.resources` with no handler body to lower
+   — so the fix was widening the gate to `signature: None` specifically
+   (never `Some(_)`, which is M4's typed-handler feature), then
+   confirming by generating **every** checked-in example against the
+   new gate that only `crud`-synthesized Store nodes are ever
+   `signature: None` among newly Api+Database-reachable programs (a
+   bare classic handler not tied to `crud` would need a `ctx.services`
+   seeded-stub feature this milestone doesn't build, and none exists
+   among reachable examples to expose the gap).
+
+   Shipped: `internal/db` (engine-keyed `Open` — one function, since
+   `database/sql` needs no per-engine call-shape branching at all,
+   the sharpest contrast yet with TS's own M2 cost; `EnsureSchema<Engine>`
+   for CRUD resources; a ledger-based `Migrate` for `table` declarations,
+   generic and unexercised by any currently-reachable example, reading
+   `migrations/*.sql` from disk at runtime rather than `go:embed` — the
+   same directory-crossing constraint M1's `openapi.json` hit, resolved
+   the same way M1 resolved it for Python: read from disk, not embed,
+   with the Dockerfile copying `migrations/` into the runtime image);
+   `internal/models` (row structs in Scan order + `<Name>In` payloads +
+   `Decode<Name>In` presence-checked decoders for typed resources);
+   per-resource `internal/services/<resource>.go` stores and
+   `internal/routes/<resource>_api.go` REST handlers (create/list/get/
+   update/delete); `db_pascal`-cased `AppState` db-pool fields, lazily
+   opened by `database/sql.Open` itself (never dials).
+
+   **Three real bugs found by live-proving against `sqlite-notes.ciac`
+   end to end, not just golden-generating it:**
+   1. `sql.Open` is lazy about *dialing* but not about *goroutines* —
+      it unconditionally starts one supervisory `connectionOpener`
+      goroutine per pool (stdlib behavior, does no I/O, only wakes on
+      an actual query). The M1 goleak-backed no-infra test failed on
+      exactly this the first time a db instance existed; fixed with
+      `goleak.IgnoreTopFunction("database/sql.(*DB).connectionOpener")`,
+      conditioned on `c.has_db` so the claim stays precise rather than
+      blanket-permissive.
+   2. sqlite's data file couldn't be created (`unable to open database
+      file: out of memory (14)` from modernc.org/sqlite) because
+      `data/` didn't exist yet — `db.Open` now `os.MkdirAll("data",
+      0o755)`s for the sqlite engine specifically, mirroring the other
+      backends' own `create_dir_all("data")` before their lazy pool
+      construction.
+   3. The CRUD row struct (`models.Note`) had no `json` tags at all,
+      so create/get/list/update responses serialized as
+      `{"ID":...,"Title":...}` instead of the wire-contract
+      `{"id":...,"title":...}` every other target uses — caught by
+      actually reading a live response, not by any static check (Go
+      happily compiles and `gofmt`-formats a tagless struct). Fixed by
+      tagging every field on both the row struct and the `table`-decl
+      row struct.
+
+   **The zero-value/null boundary triple (Pillar 2's "centerpiece"),
+   live-verified against real CRUD requests, not just unit-tested:**
+   the first working version silently accepted a `POST /notes` with no
+   `title` at all, since `resource_api.go.j2`'s handlers decoded
+   `<Name>In` payloads with plain `encoding/json.Decode` — schemas.go's
+   own presence-check discipline (M1) was never wired into the CRUD
+   path. Fixed by giving `internal/models` its own `Decode<Name>In`
+   (a `requireKeys` + typed-unmarshal pair, structurally identical to
+   `schemas.Decode<Record>` but scoped to the create/update field set,
+   i.e. excluding `id`) and routing `create`/`update` through it for
+   typed resources. Live-verified all three cases against the running
+   binary: a missing `title` → 400 `missing required field "title"`;
+   an explicit `"title":null` → 400 `field "title" must not be null`;
+   `"title":""` (a legitimate zero value) → 201/200, proving the
+   generic (no-record) resource path's `Data json.RawMessage` stays
+   correctly optional (`#[serde(default)]`'s Go analog: absent simply
+   decodes to `nil`, matching Rust's own choice) while typed fields do
+   not.
+
+   **Live-verified**, full CRUD lifecycle against a real SQLite file
+   (not just `go build`): create → 201 with the row echoed back with
+   a server-generated UUID; get/list → 200 with the row(s); update →
+   200 with the new value persisted; delete → 204 then a subsequent
+   get → 404. `gofmt -l`/`go vet`/`go test` (goleak included) all
+   clean throughout. mysql-notes/crud-notes stay `CIAC0011`-gated on
+   `auth`/`cache`, exactly as before — Database's own un-gating didn't
+   silently widen anything beyond the one example that needed it.
+
+   Full verification: fmt/clippy/test workspace green (63 suites, zero
+   failures), two new golden snapshots (`gen__go__ping` regenerated for
+   the M1→M2 template churn, `gen__go__sqlite-notes` new) reviewed and
+   accepted. `docs/targets.json` regenerated (Go's description text
+   changed to "1.24+", matching the corrected floor M1 already
+   recorded).
+
 3. **M3 — Broker, workers, jobs, channels.** nats.go + franz-go,
    retry/`HandleMessageOnce` seam, robfig jobs (untranslated
    schedules, unit-tested against the same cron-equivalence cases

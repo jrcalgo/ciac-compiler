@@ -5798,8 +5798,16 @@ import { uploadRoute } from "./routes/upload.js";
 const openapiPath = fileURLToPath(new URL("../openapi.json", import.meta.url));
 const openapiDocument: unknown = JSON.parse(readFileSync(openapiPath, "utf8"));
 
-export function buildApp(state: AppState) {
-  const app = Fastify({ logger: loggerOptions() });
+// `opts.logger` (v0.23 M9) lets `sim_runner.ts` build a silent app:
+// pino's structured request logs otherwise share stdout with the
+// runner's own one-line `SimScenarioOutcome` JSON protocol, and pino's
+// writer flushes asynchronously, so a log line can still land *after*
+// that final line -- exactly the "last line on stdout" contract
+// `ciac sim`'s parent process depends on. Every other caller
+// (production startup, `scope.test.ts`) omits `opts` and keeps today's
+// logging behavior unchanged.
+export function buildApp(state: AppState, opts?: { logger?: boolean }) {
+  const app = Fastify({ logger: opts?.logger === false ? false : loggerOptions() });
 
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/openapi.json", async () => openapiDocument);

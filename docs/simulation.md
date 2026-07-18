@@ -24,13 +24,13 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python (full) and Rust (narrow) (v0.17 M11)
+## Status: Python (full), Rust and TypeScript (narrow) (v0.17 M11, TypeScript v0.23 M9)
 
-| Surface | Python | Rust |
-| --- | --- | --- |
-| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else |
-| `verify --sim` | done | same |
-| MCP `verify_sim` | done | same |
+| Surface | Python | Rust | TypeScript |
+| --- | --- | --- | --- |
+| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Rust |
+| `verify --sim` | done | same | same |
+| MCP `verify_sim` | done | same | same |
 
 Rust's ports/adapters seam, fake adapters, and a generated per-program
 simulation runner (v0.17 M11) exist now, but they cover a deliberately
@@ -49,14 +49,33 @@ the lazy-init work (broker client, OAuth2 JWKS) that made constructing
 `AppState` infrastructure-free in the first place, a precondition for
 `AppState::simulation` existing at all.
 
-Single-service projects only, both targets: `ciac sim` refuses cleanly
+TypeScript's own gated bet (v0.23 M9) reaches the exact same scope,
+via a hand-written restatement instead of vendored Rust source: `src/
+world.ts`'s `SimWorld` class (`FakeDatabase`/`FakeQueue`/`FailureEngine`,
+occupying the same position Python's own `sim/pyrunner/world.py`
+restatement does, since TypeScript can no more `include_str!` Rust
+source than Python can) fakes the identical `db.insert` + broker
+publish/consume pair, gated on the identical `db`/`queue` declaration
+check, refused with the identical per-verb/per-capability reasons
+`unsupportedSimCapabilities` computes over the same shared HIR scanner
+Rust's own `unsupported_sim_capabilities` uses. One real, disclosed
+target-specific wrinkle: TypeScript's `transaction {}` blocks are
+*really* atomic in production (unlike Rust's own disclosed non-atomic
+gap), but degrade to the same non-atomic, unwrapped-statement behavior
+Rust already has *only* under simulation — there is no live database
+for a real `BEGIN`/`COMMIT` to run against a `SimWorld`, and every
+db-verb inside a transaction this checkpoint's own gate allows is
+`db.insert`, already world-guarded per statement.
+
+Single-service projects only, every target: `ciac sim` refuses cleanly
 (not a crash, not a silent partial run) when it finds more than one
-project descriptor (`pyproject.toml`/`Cargo.toml`) under `--out`.
-Multi-service simulation — one driver process per service, coordinated
-through one shared virtual clock — is real future work, not attempted
-here for either target. `--record`/`--replay` remain Python-only: the
-Rust runner has no plan/replay-tape support (a plain scenario
-interpreter, not the bounded child protocol below).
+project descriptor (`pyproject.toml`/`Cargo.toml`/`package.json`) under
+`--out`. Multi-service simulation — one driver process per service,
+coordinated through one shared virtual clock — is real future work, not
+attempted here for any target. `--record`/`--replay` remain
+Python-only: neither generated-runner target (Rust's, TypeScript's) has
+plan/replay-tape support (a plain scenario interpreter, not the bounded
+child protocol below).
 
 ## The bounded child protocol
 
@@ -103,6 +122,35 @@ does — it's generated with the program's own api/worker/job names
 already baked into `match`/`if` arms), and no `--record`/`--replay`.
 Both are real, disclosed gaps, not silently narrower behavior.
 
+### TypeScript's protocol mirrors Rust's own, line-for-line
+
+Same reasoning as Rust's, same shape: `ciac build`/`verify --target
+typescript` emits `src/sim_runner.ts` whenever the program declares
+`db` or `queue`, dispatching on the closed `request`/`publish`/
+`advance`/`drain`/`expect` step vocabulary exactly like `sim_runner.rs`
+does — a generic scenario interpreter generated per program (unlike
+Python's hand-written per-scenario drivers), because TypeScript also
+needs concrete per-program route/worker/job names baked in at codegen
+time, not resolved dynamically. `ciac sim --target typescript` installs
+dependencies and compiles it once (`npm ci && npm run build`), then
+runs the compiled entry point once per `--scenario`:
+
+```text
+node dist/sim_runner.js scenario.json
+```
+
+One deliberate implementation difference from Rust's runner, not a
+scope difference: `app.inject()` (Fastify's real request-handling path
+with no live listener, the same "real code, no Docker" property
+`tower::ServiceExt::oneshot` gives Rust) is built with `{ logger:
+false }` specifically for the simulation runner — pino's structured
+request logs would otherwise share stdout with the runner's own
+one-line `SimScenarioOutcome` JSON reply, and pino's writer flushes
+asynchronously, so a stray log line could land *after* that final line
+and break the "last line on stdout" contract `ciac sim`'s parent
+process depends on. Production `buildApp` calls keep full logging;
+only the simulation runner passes the override.
+
 ## CLI
 
 ```sh
@@ -118,6 +166,9 @@ ciac sim service.ciac -t python -o build/ --scenario sim/checkout.ciac-sim.json 
 # Rust: same shape, no --record/--replay; refused per-program if the
 # capability-coverage check finds something SimWorld doesn't fake.
 ciac sim service.ciac -t rust -o build/ --scenario sim/checkout.ciac-sim.json
+
+# TypeScript: identical shape and identical refusal behavior to Rust's.
+ciac sim service.ciac -t typescript -o build/ --scenario sim/checkout.ciac-sim.json
 ```
 
 `--record`/`--replay` accept exactly one `--scenario` at a time.
@@ -163,6 +214,6 @@ database lock/MVCC/deadlock/query-planner modeling; no Kafka
 partition/rebalance/retention model; no claim of durable Core NATS
 delivery; no complete OpenSearch/Redis/S3/Keycloak emulation; no
 production cron persistence; no process OOM/disk/chaos or
-probabilistic failure injection; no mixed-target (Python+Rust)
-simulation in one run; no simulation of an external (non-Rust)
+probabilistic failure injection; no mixed-target (e.g. Python+Rust)
+simulation in one run; no simulation of an external (non-built-in)
 backend's output; no `ciac dev --sim`; no interactive simulation REPL.

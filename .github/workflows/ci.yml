@@ -220,22 +220,25 @@ jobs:
           run_system examples/mysql-notes.ciac rust
           run_system examples/mysql-notes.ciac typescript
           run_system examples/kafka-pipeline.ciac python
-          # v0.17 M11's fidelity ratchet: the same broker-publish effect
-          # sim_runner (no Docker) exercises against SimWorld's fake
-          # queue is exercised here against a real NATS broker + real
-          # Postgres, via the generated tests/system/test_delivery.py
-          # capability round-trip (v0.9 M2) -- both targets, since
-          # neither had ever been system-verified before. A disagreement
-          # between this and `ciac sim --target rust`'s own green run is
-          # exactly the fake/adapter bug this ratchet exists to catch.
+          # v0.17 M11's fidelity ratchet, all three narrow/full sim
+          # targets as of v0.23 M9: the same broker-publish effect each
+          # target's own sim_runner (no Docker) exercises against its
+          # SimWorld fake queue is exercised here against a real NATS
+          # broker + real Postgres, via the generated tests/system/
+          # test_delivery.py capability round-trip (v0.9 M2) -- none of
+          # the three had ever been system-verified before their own
+          # milestone added this row. A disagreement between this and
+          # `ciac sim --target <x>`'s own green run is exactly the
+          # fake/adapter bug this ratchet exists to catch.
           run_system examples/sim-vertical-slice.ciac python
           run_system examples/sim-vertical-slice.ciac rust
-          # v0.23 M7: the three TS `--system` rows the milestone's exit
-          # criteria names (inventory-system, mysql-notes, sim-vertical-
-          # slice) -- execution is Docker-delegated to this CI runner
-          # (no local Docker daemon in the dev sandbox this milestone
-          # was built in), the same disclosure the python/rust rows
-          # above already carry.
+          run_system examples/sim-vertical-slice.ciac typescript
+          # v0.23 M7: the remaining two TS `--system` rows the
+          # milestone's exit criteria names (inventory-system,
+          # mysql-notes; sim-vertical-slice moved into the fidelity-
+          # ratchet block above in M9) -- execution is Docker-delegated
+          # to this CI runner (no local Docker daemon in the dev
+          # sandbox this milestone was built in), the same disclosure
+          # the python/rust rows above already carry.
           run_system examples/inventory-system.ciac typescript
           run_system examples/mysql-notes.ciac typescript
-          run_system examples/sim-vertical-slice.ciac typescript

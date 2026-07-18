@@ -1812,6 +1812,219 @@ documented in the generated README's requirements line.
    whole-arc analysis including the factory-cost verdict that gates
    24UpdatePlan.md.
 
+   **Shipped (v0.23 M9):** `world.ts` (new template): a hand-written
+   `SimWorld` class (`FailureEngine`/`FakeDatabase`/`FakeQueue`),
+   occupying the exact position Python's `sim/pyrunner/world.py`
+   restatement already does, since TypeScript can no more
+   `include_str!` Rust's `crates/ciac-sim/src/world.rs` than Python
+   can — emitted only when `c.has_db or c.queue_engine`, mirroring
+   Rust's own `world.rs`/`sim_runner.rs` emission gate exactly.
+   `state.ts.j2` gained an `AppState.world?: SimWorld` field and
+   `createSimulationState(config, world)`; `queue.ts.j2`'s shared
+   `publish()` free function gained the world-guard (checked first,
+   skips the real broker client and — deliberately — the tracing
+   header injection, since there is no real collector round-trip to
+   propagate through a fake broker).
+
+   `db.insert`'s `HostSyntax` leaf (`db_insert_tail` in
+   `ciac-backend-ts/src/lower.rs`) gained the identical world-guard
+   Rust's own `db_insert_expr` has, including the fact the failure
+   effect it checks is named `"db.commit"`, not `"db.insert"` — the
+   shared `FailureRule` vocabulary both backends' scenarios use.
+   `transaction_stmt` needed a real design decision the plan's own
+   sketch didn't spell out: TypeScript's `transaction {}` blocks are
+   *really* atomic in production (checked-out connection,
+   `BEGIN`/`COMMIT`/`ROLLBACK` by hand — a real gap Rust's own
+   production backend still discloses as non-atomic generally), so
+   simply reusing `db_insert_tail`'s per-statement world-check
+   wasn't enough on its own — the transaction wrapper itself would
+   still try to open a real, live database connection under
+   simulation. Resolved by guarding only the connect/`BEGIN`/`COMMIT`/
+   `ROLLBACK`/release calls with `if (!this.state.world)`, leaving the
+   transaction body (`inner_lines`) emitted exactly once either way:
+   under simulation the real connection is never opened at all (no
+   live-database dependency survives), and the body's own per-
+   statement world-check does the actual routing. This is a narrower,
+   *disclosed* simplification that applies only under simulation —
+   production TypeScript's real atomicity is unchanged — matching the
+   same "transaction atomicity does not extend into `ciac sim`" gap
+   Rust's own backend already has in production generally, not a new
+   divergence invented for this milestone.
+
+   Two live-caught `tsc` bugs the design above didn't anticipate,
+   both fixed and disclosed rather than worked around: (1) `Awaited<
+   ReturnType<typeof this.state.field.$client.connect>>` resolved to
+   `void` — `pg.Pool.connect`/`mysql2`'s pool connect are *overloaded*
+   (a zero-arg promise form and a callback form), and a bare `typeof
+   method` reference has no call-site argument count for `tsc` to
+   resolve the overload against, so it picked the callback form's
+   `void` return. Fixed by routing through a zero-arg wrapper closure
+   (`const __connect = () => ...connect();`) — a real call expression
+   gives `tsc` the argument count it needs. (2) `app.inject()`'s
+   return type collapsed to a bogus `void & Promise<Response> &
+   Chain` intersection once `sim_runner.ts`'s own hand-rolled
+   `HTTPMethods` import (from `fastify`, structurally similar to but
+   nominally distinct from `light-my-request`'s own `InjectOptions
+   ["method"]`) failed to satisfy `InjectOptions`, breaking Fastify's
+   own overload resolution for `inject()` as a downstream consequence.
+   Fixed by importing `InjectOptions` itself (also re-exported from
+   `fastify`) and typing the route table's `method` field as
+   `InjectOptions["method"]` directly, instead of naming an equivalent
+   type by hand.
+
+   A third bug, not a type error but a protocol violation caught by
+   the live scenario run itself: pino's structured "request completed"
+   log lines share stdout with `sim_runner`'s own one-line
+   `SimScenarioOutcome` JSON reply, and pino's writer flushes
+   asynchronously — under `virtual-week`'s 100-request scenario, a
+   stray log line landed *after* the runner's own final `console.log`,
+   so `ciac sim`'s "last line on stdout" parser picked up a pino log
+   instead of the outcome JSON and failed to parse it. Fixed at the
+   source rather than papered over in the parser: `main.ts.j2`'s
+   `buildApp(state, opts?: { logger?: boolean })` gained an optional
+   override (every other caller — production startup, `scope.test.ts`
+   — omits it and keeps today's logging unchanged); `sim_runner.ts.j2`
+   passes `{ logger: false }`.
+
+   `sim_runner.ts.j2` (new template, generated only alongside
+   `world.ts`): a generic scenario interpreter — unlike Python's
+   hand-written per-scenario drivers, TypeScript (like Rust) needs
+   concrete per-program route/worker/job names baked in at codegen
+   time, so it is generated code, not a scratch-directory runner
+   written out at CLI-invocation time. Structural scenario parsing
+   only (`simulation_version`/non-empty `steps`, matching Rust's own
+   `Scenario::validate` scope) via hand-written TypeScript interfaces
+   restating `ciac_sim::scenario`'s shape, the same restatement
+   position `world.ts` occupies for the same vendoring-impossibility
+   reason. `request` steps drive `app.inject()` (Fastify's real
+   request-handling path, no live listener — the same "real code, no
+   Docker" property `tower::ServiceExt::oneshot` gives Rust); `drain`
+   dispatches by `if`/`else if` on subject string against each
+   worker's own `handleMessageOnce` with its own retry budget,
+   identical single-global-buffer scope to Rust's (no independent
+   per-`(subject, group)` cursors); `advance` computes cron-due
+   instants via `croner`'s own `Cron(schedule, { paused: true
+   }).nextRun(cursor)`, looped until exceeding the target instant —
+   no seconds-field/weekday translation needed (the same "schedule
+   translation: none needed (croner)" divergence-ledger row this
+   arc's earlier milestones already established); `expect` covers all
+   five variants (`response`/`row`/`worker_attempts`/`job_runs`/
+   `quiescence`), `response.json` compared via a canonical
+   (key-sorted) JSON string rather than raw `JSON.stringify` so
+   response-key ordering can't produce a false mismatch; `publish`
+   steps refuse with the same "disclosed scope" message Rust's own
+   runner gives. One JSON line on stdout
+   (`{scenario, passed, error, worker_attempts, job_runs}`), matching
+   `SimScenarioOutcome` field-for-field.
+
+   `unsupported_sim_capabilities` (new, `ciac-backend-ts::lib.rs`):
+   near-verbatim port of Rust's own function of the same name, over
+   the identical shared `ciac_codegen::lower::scan` both backends'
+   `render()` already call — required re-exporting `scan` from this
+   backend's own `lower` module (`pub(crate) use
+   ciac_codegen::lower::scan;`, matching a line Rust's own `lower.rs`
+   already had that TS's `lower.rs` was missing, since TS's `render()`
+   only ever called it via the `self`-imported module alias
+   internally, never needing a bare re-export until `lib.rs` needed
+   one too). `TARGET_INFO.sim` is now `SimSupport::Narrow {
+   unsupported: unsupported_sim_capabilities }`, replacing the M1-era
+   `SimSupport::None { reason: "... lands in M9 (gated bet)" }`
+   placeholder this whole arc carried until now.
+
+   `ciac sim --target typescript` wired into `crates/ciac/src/
+   commands.rs`: a new `sim_drive_typescript` (same shape as
+   `sim_drive_rust` — find the single `package.json` project,
+   confirm `src/sim_runner.ts` exists, `npm ci && npm run build`
+   once, then `node dist/sim_runner.js <scenario>` once per
+   `--scenario`, parsing the last stdout line as `SimScenarioOutcome`)
+   and a three-way dispatch on `sim_support`/`target` replacing the
+   old binary `Narrow`-means-Rust `if`. Two real, pre-existing bugs
+   this dispatch change surfaced and fixed, not introduced: both of
+   `sim_inner`'s refusal messages ("cannot simulate this program",
+   "does not yet support --record/--replay") hardcoded the literal
+   string `"rust"` and `"v0.17 M11"` regardless of which target was
+   actually being refused — harmless while Rust was the only `Narrow`
+   target, actively misleading once TypeScript became the second one
+   (live-caught: refusing `order-system.ciac --target typescript`
+   printed "`ciac sim --target rust` cannot simulate..."). Fixed by
+   making both messages target-generic, interpolating the real
+   `target` variable and dropping the milestone-number attribution
+   that no longer identified a single owner. The "unknown target"
+   refusal's own stale "only drives the python/rust targets in v0.17"
+   text (already wrong since M1 registered TypeScript as a full
+   backend) was corrected alongside it. `target ==
+   "rust"`/`"typescript"` in the new match arms are genuine, disclosed
+   `target-literal-ok` survivors of the v0.22 M1 grep fence
+   (`target_literal_fence.rs`) — driving a compiled Rust binary vs. a
+   compiled JS entry point are two different `std::process::Command`
+   recipes with no shared `TargetInfo`-describable shape to factor the
+   difference through, unlike the scattered per-target `match` sites
+   that fence exists to prevent from regrowing.
+
+   Live proof, not just golden generation: `ciac sim --target
+   typescript` against both checked-in scenarios reproduces the exact
+   canonical outcomes —
+   `{"worker_attempts":{"ProcessOrder":3},"job_runs":{"Reconcile":1}}`
+   for `vertical-slice` and
+   `{"worker_attempts":{"ProcessOrder":100},"job_runs":{"Reconcile":7}}`
+   for `virtual-week`, byte-for-byte via `--json`. The refusal case
+   (`order-system.ciac --target typescript`) names its reasons
+   exactly: `declares \`auth\`` plus `calls verb(s) the simulation
+   world does not fake: cache.delete, cache.set, db.count,
+   db.update` — matching the exit checklist's "auth + each unguarded
+   verb" bar precisely. A regression check confirmed Rust's own `ciac
+   sim --target rust` path is unaffected by the shared dispatch/
+   message changes (same vertical-slice scenario, same outcome, run
+   after the refactor).
+
+   Docs: `docs/simulation.md`'s status table and prose gained a
+   TypeScript column/paragraph paralleling Rust's own (including the
+   `transaction {}` simplification and the `{ logger: false }`
+   wrinkle); a new "TypeScript's protocol mirrors Rust's own,
+   line-for-line" subsection paralleling "Rust's protocol is
+   different, not the same runner ported"; the CLI example section
+   gained a `-t typescript` row; "single-service, both targets"
+   became "every target," and the mixed-target/non-Rust-backend
+   phrasing in "Explicit non-goals" was generalized rather than left
+   naming only the two targets that existed when it was written.
+   `docs/backends.md`'s Simulation section gained a paragraph
+   describing TypeScript's identical two-part shape (lazy-init
+   precondition already met since M1/M2; `SimWorld`/`sim_runner.ts`/
+   `unsupported_sim_capabilities` this milestone). CI:
+   `sim-vertical-slice × typescript` — already present as a
+   `--system` row since M7 — moved into the same ratchet comment
+   block as the python/rust rows it belongs beside (the M7-era
+   comment above it never mentioned this row was *also* the fidelity
+   ratchet the plan's own M9 exit criteria names; this milestone
+   corrects that, rather than adding a duplicate row).
+
+   `docs/targets.json` regenerated (`typescript`'s `sim.level` field:
+   `"none"` → `"narrow"`) — caught live by
+   `targets_cli.rs::checked_in_targets_json_matches_the_derived_one`,
+   the drift test doing exactly its job rather than being bypassed.
+   Golden churn across all 26 TypeScript examples (`state.ts`/
+   `queue.ts` changed universally; `world.ts`/`sim_runner.ts` new for
+   the `db`/`queue`-bearing subset) reviewed before accepting, not
+   blind — every diff traced to one of the changes named above, no
+   unexplained deltas.
+
+   Workspace version bumped `0.20.0` → `0.21.0` (root `Cargo.toml`'s
+   `[workspace.package]` version plus its nine internal path-
+   dependency version pins; `docs/language.md`'s title; `editors/
+   vscode/package.json`'s extension version), following the "number
+   assigned at execution" convention v0.22 M6 established — the
+   workspace version tracks sequential shipped arcs, not the
+   `NNUpdatePlan.md` filename's own number (which drifted from the
+   version number several arcs before this one; v0.22's own arc
+   bumped `0.19.0` → `0.20.0`, not `0.22.0`).
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green (61 test binaries, zero
+   failures) including `cargo insta test --accept`'s reviewed golden
+   churn and the `target_literal_fence` re-check after the
+   `target-literal-ok` annotations landed.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** the registry entry is the crate's only external
@@ -1956,3 +2169,116 @@ contract notes TS forced (none are expected from TS; Go pre-declares
 its error-idiom amendment) — Go begins by reconciling against those
 actuals, exactly as v0.17 M1 reconciled against real v0.16 output
 rather than its own plan's prose.
+
+## Whole-arc retrospective (v0.23, M1–M9 complete)
+
+**What shipped, in one pass, plain terms:** a third bundled backend —
+TypeScript on Fastify/Drizzle/Zod/croner — reached full provider
+parity with Python and Rust (all 20 `Component` variants, all 26
+examples, `TsBackend::supports()` now the same unconditional `true`
+Rust's own carries) across nine milestones: skeleton-to-ping (M1),
+db/cache/keyed-store/migrations (M2), broker/workers/jobs/channels
+(M3), typed handlers and the full `HostSyntax` leaf set (M4), a
+checkpoint that graded the factory's real cost against 22UpdatePlan.md's
+predictions and issued a go/no-go (M5), auth/scopes (M6), the ontology
+remainder plus observability (M7), whole-repo integration — dev/MCP/
+evolution/CI (M8), and finally the gated-bet simulation slice this
+milestone closes (M9). Every milestone's own shipped-notes section
+above is the detailed record; this section is the arc-level summary
+22UpdatePlan.md's own M6 asked for.
+
+**The factory-cost verdict, measured (extends M5's own table, does not
+repeat it):** M5's checkpoint already found the 22UpdatePlan.md
+factory's real cost for a `sqlx`-equivalent-free target running
+noticeably higher than Rust's own baseline — TypeScript needed a
+hand-rolled Drizzle `$client` raw-SQL escape hatch and its own bind-
+order discipline, not a free ride on `ciac_codegen::template::sqlph`
+alone. M9 adds one more data point in the same direction, from a
+different corner of the factory: **the shared `HostSyntax` trait
+needed zero contract changes for the sim slice** (`db_insert_tail`/
+`transaction_stmt`/`handle` are all TS-local leaf implementations;
+`ciac_codegen::lower`'s trait definition and walker are untouched by
+this milestone), confirming 22UpdatePlan.md's own M3 finding that the
+scanner half of the ontology seam (`unguarded_verbs`, `scan()`) is
+genuinely target-neutral — but the sim slice's *design effort* still
+landed almost entirely in TS-specific territory anyway, for a reason
+the plan's own sketch didn't anticipate: TypeScript's `transaction {}`
+is *really* atomic in production, a strictly stronger guarantee than
+Rust's own disclosed-non-atomic implementation, and reconciling that
+stronger guarantee with a simulation world that has no live database
+to be atomic *against* required a genuine new invention (guard the
+connection lifecycle, not the statement) that Rust's own simpler
+design never had to make. The lesson for 24UpdatePlan.md (Go): a
+target's *production* correctness choices that exceed Rust's own
+disclosed gaps are exactly where a gated-bet sim slice's design cost
+concentrates — not in the shared scanner/gate machinery, which ports
+close to verbatim (this milestone's `unsupported_sim_capabilities` is
+close to a line-for-line copy of Rust's own, module-path re-export
+included).
+
+One narrow, disclosed observation from building `unsupported_sim_
+capabilities` that predates this milestone and isn't this milestone's
+to fix: the capability-coverage gate (both Rust's own, v0.17 M11, and
+this arc's TypeScript port) only scans typed-handler (`Component::
+Service { signature: Some(_) }`) verb calls for `unguarded_verbs` —
+classic/seeded `resource` routes (keyed-document CRUD, a different,
+older codegen path) are not scanned at all. No example in this repo
+combines `resource` with a `db`/`queue` instance in a way that would
+expose the gap today (verified by inspection, not by trying to break
+it live), so it is recorded here as a known, narrow blind spot in the
+*shared* gate design inherited unchanged from Rust's own v0.17 M11
+work — not a TypeScript-specific gap, and not attempted here, since
+fixing it would mean auditing Rust's own already-shipped sim slice
+too, out of this milestone's scope.
+
+**What was deliberately not shipped, and why that was the right
+call:** multi-service simulation (one driver process per service,
+coordinated through a shared virtual clock) — real future work for
+every target, not attempted here, matching Rust's own still-open gap
+from v0.17 M11 rather than a new TypeScript-specific deferral.
+`--record`/`--replay` for the TypeScript runner — the same disclosed
+gap Rust's own generated-runner protocol has (a plain scenario
+interpreter, not the bounded child protocol Python's embedded runner
+implements); extending either target's generated runner with a
+replay-tape format is real, scoped, future work, not guessed at here.
+`publish` scenario steps (publishing directly to a stream, bypassing
+an API) remain refused with a named "disclosed scope" error on both
+generated-runner targets — no example in the checked-in scenario set
+needs one, so inventing the semantics now would be speculative rather
+than evidenced.
+
+**Deviations from this plan's original text, all disclosed in
+place:** M9's own sketch (Pillar 9) showed `driveWithRetries` as an
+implied shared helper function; the shipped `sim_runner.ts.j2`
+instead inlines the retry loop per worker inside `drain()` (functionally
+identical — same retry-budget semantics, same attempt counting — just
+not factored into a named helper), since the per-worker code needed
+direct access to that worker's own `MAX_RETRIES`/`handleMessageOnce`
+export names, which the generated dispatch already threads through
+template loop variables rather than a runtime parameter. Two literal
+`target == "rust"`/`target == "typescript"` survivors were added to
+`crates/ciac/src/commands.rs`'s `sim_inner` dispatch, each marked
+`target-literal-ok` per the v0.22 M1 grep fence's own escape hatch —
+a real, disclosed, small cost of the registry-driven design meeting a
+case (two `Narrow` targets needing two genuinely different
+`std::process::Command` toolchains) the fence's own precedent
+(`sim_drive_python`'s `"python"` interpreter-name literal) already
+anticipated could happen, not a regrowth of the scattered-`match`
+pattern the fence exists to prevent. Two pre-existing bugs (not
+introduced by this milestone, but only reachable once a second
+`Narrow` target existed to expose them) were found and fixed rather
+than worked around: `sim_inner`'s two refusal messages hardcoded
+`"rust"`/`"v0.17 M11"` unconditionally; both are now target-generic.
+
+**Handoff to 24UpdatePlan.md (Go):** this arc's own M5 checkpoint
+already delivered the measured cost table 22UpdatePlan.md's handoff
+sentence asked for; this milestone adds the sim-slice data point
+above to it. No `HostSyntax` contract changes landed this arc (the
+trait and shared walker are exactly as 22UpdatePlan.md/23UpdatePlan.md
+M1 left them) — Go inherits a stable, twice-proven leaf-implementation
+contract, not a moving target. Go's own gated-bet sim slice (if and
+when it lands) should expect its design cost to concentrate wherever
+Go's own production semantics diverge from Rust's disclosed baseline,
+exactly as this milestone's `transaction {}` finding predicts —
+worth checking Go's own transaction/atomicity story against Rust's
+disclosed-non-atomic one early, not late, given what it cost here.

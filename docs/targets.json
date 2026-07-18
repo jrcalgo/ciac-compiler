@@ -161,8 +161,7 @@
         }
       ],
       "sim": {
-        "level": "none",
-        "reason": "TypeScript simulation support lands in 23UpdatePlan.md M9 (gated bet)"
+        "level": "narrow"
       },
       "capabilities": {}
     }

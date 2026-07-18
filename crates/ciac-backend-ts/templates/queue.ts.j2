@@ -9,6 +9,7 @@
 {%- if c.has_tracing %}
 import { context, propagation } from "@opentelemetry/api";
 {%- endif %}
+import type { SimWorld } from "./world.js";
 {%- if c.queue_engine == "kafka" %}
 import { Kafka, logLevel, type Consumer, type Producer } from "kafkajs";
 
@@ -102,21 +103,28 @@ export class Queue {
 /**
  * The publish path every generated call site (`api`/`worker`/`job`
  * pipeline `publish` steps) goes through, mirroring Rust's centralized
- * `AppState::publish` — a single seam a future simulation runner (M9)
- * can intercept without touching every call site.
+ * `AppState::publish` — a single seam the simulation runner (v0.23 M9)
+ * intercepts without touching every call site: when `state.world` is
+ * set, this never touches the real broker client.
 {%- if c.has_tracing %}
  * Also where the current span's W3C `traceparent` gets injected into
  * a fresh header carrier -- the publish half of the broker-hop
  * propagation `observability.ts`'s `traced` helper extracts on the
  * consume side (byte-for-byte the same header contract v0.15 M3/M4
- * established).
+ * established). Skipped under simulation, same as Rust's own
+ * world-guarded `AppState::publish`: there is no real span/collector
+ * round-trip to propagate through a fake broker.
 {%- endif %}
  */
 export async function publish(
-  state: { queue: Queue },
+  state: { queue: Queue; world?: SimWorld },
   subject: string,
   payload: Buffer,
 ): Promise<void> {
+  if (state.world) {
+    state.world.publishChecked(subject, payload);
+    return;
+  }
 {%- if c.has_tracing %}
   const carrier: Record<string, string> = {};
   propagation.inject(context.active(), carrier);

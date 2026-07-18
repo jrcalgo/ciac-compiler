@@ -22,7 +22,7 @@ use ciac_codegen::{
     Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
     TargetInfo, ValidateStep,
 };
-use ciac_ir::{Component, NormalizedIr};
+use ciac_ir::{Component, NodeKind, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 
@@ -99,10 +99,53 @@ static TARGET_INFO: TargetInfo = TargetInfo {
         restart: RestartStyle::Restart,
     },
     source_extension: "ts",
-    sim: SimSupport::None {
-        reason: "TypeScript simulation support lands in 23UpdatePlan.md M9 (gated bet)",
+    sim: SimSupport::Narrow {
+        unsupported: unsupported_sim_capabilities,
     },
 };
+
+/// Human-readable, closed list of reasons `ciac sim --target typescript`
+/// (v0.23 M9) cannot yet simulate `ir`, empty when it can — the same
+/// gate Rust's own `unsupported_sim_capabilities` (v0.17 M11) computes,
+/// over the same shared `lower::scan` this backend already reuses
+/// elsewhere: `world.ts` only fakes `db.insert` and broker publish/
+/// consume; every other verb a typed handler calls falls straight
+/// through the world-guard to real infrastructure (`db_update_tail`
+/// and friends never check `this.state.world`, matching `handle`'s own
+/// doc comment).
+pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
+        reasons.push(
+            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
+             cryptography against a real issuer, which this milestone's simulation world does \
+             not fake"
+                .to_owned(),
+        );
+    }
+    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
+    for node in ir.nodes() {
+        if let Component::Service {
+            signature: Some(hir),
+            ..
+        } = &node.component
+        {
+            for verb in lower::scan(ir, hir).unguarded_verbs {
+                if !unguarded_verbs.contains(&verb) {
+                    unguarded_verbs.push(verb);
+                }
+            }
+        }
+    }
+    if !unguarded_verbs.is_empty() {
+        unguarded_verbs.sort_unstable();
+        reasons.push(format!(
+            "calls verb(s) the simulation world does not fake: {}",
+            unguarded_verbs.join(", ")
+        ));
+    }
+    reasons
+}
 
 #[derive(Debug, Default)]
 pub struct TsBackend;
@@ -257,6 +300,22 @@ fn emit_service(
     );
     if ctx.queue_engine.is_some() {
         project.add_file(at("src/queue.ts"), render("queue.ts.j2", empty())?);
+    }
+    // v0.23 M9: the simulation world -- only for programs with
+    // something it can actually fake (`db.insert`, broker `publish`),
+    // the same gate Rust's own `world.rs`/`sim_runner.rs` emission
+    // (v0.17 M11) uses. `has_drain_workers` tells the template whether
+    // any worker match arm exists at all, so it can name the drained
+    // payload binding `_raw` instead of `raw` when none do (an empty
+    // chain has nothing to deserialize `raw` into) -- mirroring the
+    // Rust backend's own template context exactly.
+    if ctx.has_db || ctx.queue_engine.is_some() {
+        project.add_file(at("src/world.ts"), render("world.ts.j2", empty())?);
+        let has_drain_workers = ctx.workers.iter().any(|w| !w.steps.is_empty());
+        project.add_file(
+            at("src/sim_runner.ts"),
+            render("sim_runner.ts.j2", context! { has_drain_workers })?,
+        );
     }
     if ctx.has_auth {
         project.add_file(at("src/auth.ts"), render("auth.ts.j2", empty())?);
@@ -500,7 +559,9 @@ mod tests {
         let info = backend.target_info();
         assert_eq!(info.project_marker, "package.json");
         assert_eq!(info.source_extension, "ts");
-        assert!(matches!(info.sim, SimSupport::None { .. }));
+        // v0.23 M9: TypeScript's own gated-bet simulation slice, same
+        // scope shape as Rust's (v0.17 M11) -- narrow, not absent.
+        assert!(matches!(info.sim, SimSupport::Narrow { .. }));
         let programs: Vec<&str> = info.validate.iter().map(|s| s.program).collect();
         assert_eq!(programs, vec!["npm", "npx", "npx", "npx"]);
     }

@@ -38,6 +38,9 @@ import { ExternalHttp } from "./http_clients.js";
 {%- if c.queue_engine %}
 import { Queue } from "./queue.js";
 {%- endif %}
+{%- if c.has_db or c.queue_engine %}
+import type { SimWorld } from "./world.js";
+{%- endif %}
 import type { Config } from "./config.js";
 
 // Each field spells out the exact client type passed to `drizzle()`
@@ -78,6 +81,16 @@ export interface AppState {
 {%- endfor %}
 {%- if c.queue_engine %}
   queue: Queue;
+{%- endif %}
+{%- if c.has_db or c.queue_engine %}
+  /** `undefined` in production; set only by [`createSimulationState`]
+   * (v0.23 M9) -- every world-guarded call site (`db.insert`, broker
+   * `publish`) checks this first, reading/writing the in-memory
+   * `SimWorld` instead of the real pool/broker client fields above,
+   * which still exist (so this interface's shape doesn't fork between
+   * production and simulation) but are never touched while `world` is
+   * set. */
+  world?: SimWorld;
 {%- endif %}
 }
 
@@ -131,5 +144,26 @@ export function createState(config: Config): AppState {
 {%- elif c.queue_engine == "nats" %}
     queue: new Queue(config.natsUrl),
 {%- endif %}
+{%- if c.has_db or c.queue_engine %}
+    world: undefined,
+{%- endif %}
   };
 }
+{%- if c.has_db or c.queue_engine %}
+
+/**
+ * Constructs `AppState` against an in-memory [`SimWorld`] instead of
+ * real infrastructure (v0.23 M9). Delegates to [`createState`] for
+ * every other field -- safe because every one of them is already lazy
+ * (`connect_lazy`-equivalent pools, `ioredis`'s `lazyConnect`, the
+ * broker client's lazy connection promise): constructing them never
+ * touches the network, and the world-guarded call sites never fall
+ * through to them once `world` is set. `config` is still required,
+ * not defaulted: a still-unguarded field (e.g. an OAuth2 issuer) may
+ * be read even under simulation, a gap this constructor discloses by
+ * requiring real config rather than inventing placeholder values.
+ */
+export function createSimulationState(config: Config, world: SimWorld): AppState {
+  return { ...createState(config), world };
+}
+{%- endif %}

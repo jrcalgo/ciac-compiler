@@ -273,3 +273,29 @@ so it cannot drift from what's actually scanned. See 17UpdatePlan.md's
 M11 entry for the full account, including a real pre-existing Rust
 codegen bug (E0382, unrelated to either pass) the first pass's live
 sweep surfaced and fixed.
+
+TypeScript reached the identical narrow slice in 23UpdatePlan.md M9,
+via the same two-part shape with one necessary substitution: since
+TypeScript cannot `include_str!` Rust source, `src/world.ts`'s
+`SimWorld` is a hand-written restatement (occupying the position
+Python's own `sim/pyrunner/world.py` restatement already does) instead
+of a vendored copy, but fakes the identical `db.insert`/broker
+publish-consume pair, checked by `AppState.world`/
+`createSimulationState()`/`queue.ts`'s world-guarded `publish()` free
+function, and refused by `ciac_backend_ts::unsupported_sim_capabilities`
+— computed from the exact same shared `ciac_codegen::lower::scan`
+Rust's own gate uses, `pub(crate) use`-re-exported into this backend's
+own `lower` module the same way Rust's already was. A generated `src/
+sim_runner.ts` (a generic scenario interpreter, since — like Rust —
+TypeScript needs concrete per-program route/worker/job names baked in
+at codegen time) drives `app.inject()` for requests, matching Rust's
+own `tower::ServiceExt::oneshot` no-live-listener approach; built with
+`{ logger: false }` specifically, since Fastify's real logger would
+otherwise interleave with the runner's own one-line JSON reply on
+stdout, a wrinkle Rust's own `tracing` setup never had to solve because
+it writes to stderr by default. One genuine target-specific
+simplification, disclosed in [simulation.md](simulation.md): TypeScript
+production code gives `transaction {}` real atomicity (a real gap Rust's
+own production code still discloses), but degrades to non-atomic,
+unwrapped-statement behavior *only* under simulation, since there is no
+live database for a real `BEGIN`/`COMMIT` to run against a `SimWorld`.

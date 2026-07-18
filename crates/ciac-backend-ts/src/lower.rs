@@ -27,6 +27,7 @@
 //!   site (mirroring Python's own keyword-free `assign()` spelling)
 //!   sidesteps that regardless of nesting depth.
 
+pub(crate) use ciac_codegen::lower::scan;
 use ciac_codegen::lower::{
     self, fidelity_checked_float, strip_outer_parens, Dest, HostSyntax, IndexKey, LoweredPredicate,
     Orientation, PredValue,
@@ -182,10 +183,17 @@ impl TsSyntax<'_> {
     /// `__tx` branch (its `.transaction()` wrapper runs its callback
     /// against the same handle synchronously; only Postgres/MySQL's
     /// pool-of-connections model needs a dedicated checkout for real
-    /// cross-statement atomicity).
+    /// cross-statement atomicity). The `!` on `__tx` (v0.23 M9) is safe
+    /// even though `transaction_stmt` only assigns `__tx` when
+    /// `!this.state.world`: this handle is reached by an unguarded db
+    /// verb (`db.update`/`db.get`/...) that `unsupportedSimCapabilities`
+    /// already refuses `ciac sim` from ever driving, so the assertion's
+    /// one lie (referencing `__tx` while it's `undefined`) is provably
+    /// unreachable, matching Rust's own "falls straight through to
+    /// real infrastructure" disclosure for the same unguarded verbs.
     fn handle(&self, in_tx: bool) -> String {
         if in_tx && self.db_engine != "sqlite" {
-            "__tx".to_owned()
+            "__tx!".to_owned()
         } else {
             format!(
                 "this.state.{}.$client",
@@ -543,17 +551,30 @@ impl HostSyntax for TsSyntax<'_> {
             self.db_engine,
         );
         let mut out = vec![format!("{indent}const {row} = {value};")];
+        // v0.23 M9's world guard: the one HostSyntax leaf `ciac sim`
+        // needs to fake, mirroring Rust's `SimWorld::db_insert_checked`
+        // exactly (including the fact the failure effect it checks is
+        // named `"db.commit"`, not `"db.insert"` — the FailureEngine
+        // rule vocabulary both backends share). Reached regardless of
+        // `in_tx`: a standalone `db.insert` and one inside
+        // `transaction { .. }` are both simulated the same way.
+        out.push(format!("{indent}if (this.state.world) {{"));
+        out.push(format!(
+            "{indent}  this.state.world.dbInsertChecked({table_snake:?}, {row});"
+        ));
+        out.push(format!("{indent}}} else {{"));
         if self.db_engine == "sqlite" {
             out.push(format!(
-                "{indent}{handle}.prepare({sql:?}).run({});",
+                "{indent}  {handle}.prepare({sql:?}).run({});",
                 binds.join(", ")
             ));
         } else {
             out.push(format!(
-                "{indent}await {handle}.query({sql:?}, [{}]);",
+                "{indent}  await {handle}.query({sql:?}, [{}]);",
                 binds.join(", ")
             ));
         }
+        out.push(format!("{indent}}}"));
         lower::apply_dest(self, dest, &row, indent, &mut out);
         out
     }
@@ -871,6 +892,24 @@ impl HostSyntax for TsSyntax<'_> {
     /// and already runs its callback against the single open
     /// connection, so no separate handle is needed there — see
     /// `handle`'s own doc.
+    ///
+    /// Under simulation (v0.23 M9, `this.state.world` set), the real
+    /// checkout/`BEGIN`/`COMMIT`/`ROLLBACK`/release calls are skipped
+    /// entirely — there is no live database to open a connection
+    /// against, and every db verb this checkpoint's sim gate allows
+    /// inside a transaction (`db.insert` only; any other db verb is
+    /// on `unsupportedSimCapabilities`'s unguarded list and already
+    /// refuses `ciac sim` before this code path is reached) already
+    /// redirects to `SimWorld` itself in `inner_lines`. This is a
+    /// narrower, disclosed simplification *only* under simulation —
+    /// production TypeScript keeps its real atomicity unchanged, the
+    /// same "transaction atomicity does not apply the same way inside
+    /// `ciac sim`" gap Rust's own production backend has generally.
+    /// SQLite's wrapper needs no such guard: its `.transaction()` call
+    /// only ever touches a local file already opened by `createState`
+    /// (never the network), so running it under simulation is a real
+    /// but harmless no-op once `inner_lines`' own world guard skips
+    /// every actual `.prepare(..).run(..)` inside it.
     fn transaction_stmt(&self, inner_lines: Vec<String>, indent: &str) -> Vec<String> {
         let field = self
             .db_field
@@ -887,17 +926,40 @@ impl HostSyntax for TsSyntax<'_> {
             }
             _ => {
                 let mut out = vec![
-                    format!("{indent}const __tx = await this.state.{field}.$client.connect();"),
-                    format!("{indent}try {{"),
+                    // `$client.connect` is an *overloaded* signature
+                    // (a zero-arg promise form and a callback form) --
+                    // `ReturnType<typeof this.state.{field}.$client.connect>`
+                    // has no call-site argument count to resolve
+                    // against, so `tsc` picks the callback overload's
+                    // `void` return, not the promise one this code
+                    // actually calls. Routing through a zero-arg
+                    // wrapper closure gives `tsc` a real call
+                    // expression to resolve overloads against, so
+                    // `Awaited<ReturnType<typeof __connect>>` lands on
+                    // the correct `PoolClient`/`PoolConnection` type.
+                    format!(
+                        "{indent}const __connect = () => this.state.{field}.$client.connect();"
+                    ),
+                    format!("{indent}let __tx: Awaited<ReturnType<typeof __connect>> | undefined;"),
+                    format!("{indent}if (!this.state.world) {{"),
+                    format!("{indent}    __tx = await __connect();"),
                     format!("{indent}    await __tx.query(\"BEGIN\");"),
+                    format!("{indent}}}"),
+                    format!("{indent}try {{"),
                 ];
                 out.extend(inner_lines);
-                out.push(format!("{indent}    await __tx.query(\"COMMIT\");"));
+                out.push(format!("{indent}    if (!this.state.world) {{"));
+                out.push(format!("{indent}        await __tx!.query(\"COMMIT\");"));
+                out.push(format!("{indent}    }}"));
                 out.push(format!("{indent}}} catch (__e) {{"));
-                out.push(format!("{indent}    await __tx.query(\"ROLLBACK\");"));
+                out.push(format!("{indent}    if (!this.state.world) {{"));
+                out.push(format!("{indent}        await __tx!.query(\"ROLLBACK\");"));
+                out.push(format!("{indent}    }}"));
                 out.push(format!("{indent}    throw __e;"));
                 out.push(format!("{indent}}} finally {{"));
-                out.push(format!("{indent}    __tx.release();"));
+                out.push(format!("{indent}    if (!this.state.world) {{"));
+                out.push(format!("{indent}        __tx!.release();"));
+                out.push(format!("{indent}    }}"));
                 out.push(format!("{indent}}}"));
                 out
             }

@@ -1130,16 +1130,17 @@ fn sim_inner(
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<crate::json_out::SimResult> {
     // v0.22 M1: resolved through the *built-in* registry only (not the
-    // external-protocol fallback `generate()` uses) — the refusal below
-    // is unchanged from pre-registry `target != "python" && target !=
-    // "rust"`, since only `python`/`rust` are registered today.
+    // external-protocol fallback `generate()` uses) -- `backends()`
+    // (v0.23 M9: python/rust/typescript) is the actual source of
+    // truth for which targets exist at all; whether one of them can
+    // simulate is a separate question this function checks next via
+    // `SimSupport`, not this lookup.
     let sim_backend = backends()
         .into_iter()
         .find(|b| b.id() == target)
         .ok_or_else(|| {
             anyhow!(
-                "`ciac sim` only drives the python/rust targets in v0.17 (got `{target}`); \
-             see docs/simulation.md for the disclosed scope"
+                "`ciac sim`: unknown target `{target}`; see `ciac targets` for the registered set"
             )
         })?;
     let sim_support = sim_backend.target_info().sim;
@@ -1153,12 +1154,14 @@ fn sim_inner(
         bail!("--record/--replay require exactly one --scenario");
     }
     if matches!(sim_support, SimSupport::Narrow { .. }) && (record.is_some() || replay.is_some()) {
-        // v0.17 M11's runner is a plain scenario interpreter (no plan/
-        // source-hash arguments, no replay tape) -- disclosed, not
-        // silently ignored.
+        // Every `Narrow` target's generated runner (Rust's, v0.17 M11;
+        // TypeScript's, v0.23 M9) is a plain scenario interpreter (no
+        // plan/source-hash arguments, no replay tape) -- disclosed,
+        // not silently ignored. Target-generic message for the same
+        // reason the `unsupported` refusal above is (v0.23 M9).
         bail!(
-            "`ciac sim --target rust` does not yet support --record/--replay (v0.17 M11 \
-             disclosed scope); see docs/simulation.md"
+            "`ciac sim --target {target}` does not yet support --record/--replay (disclosed \
+             scope); see docs/simulation.md"
         );
     }
 
@@ -1215,9 +1218,15 @@ fn sim_inner(
     if let SimSupport::Narrow { unsupported } = sim_support {
         let unsupported = unsupported(&ir);
         if !unsupported.is_empty() {
+            // Target-generic on purpose (v0.23 M9): this refusal fires
+            // for every `Narrow` target, not just Rust's own v0.17 M11
+            // one this message used to name unconditionally -- a real
+            // bug caught live when TypeScript became the second
+            // `Narrow` target and this message kept saying "rust" and
+            // "v0.17 M11" while actually refusing a `--target
+            // typescript` run.
             bail!(
-                "`ciac sim --target rust` cannot simulate this program (v0.17 M11 disclosed \
-                 scope):\n{}",
+                "`ciac sim --target {target}` cannot simulate this program (disclosed scope):\n{}",
                 unsupported
                     .iter()
                     .map(|reason| format!("  - {reason}"))
@@ -1229,15 +1238,37 @@ fn sim_inner(
     let plan = ciac_sim::SimPlan::from_ir(&ir, source_hash.clone());
     let plan_hash = plan.plan_hash();
 
-    // v0.22 M1: `Narrow` runs the generated-runner drive v0.17 M11
-    // built (today: Rust's); `Full` keeps the bounded-child-protocol
-    // drive (today: Python's). Behavior identical to the pre-registry
-    // `target == "rust"` dispatch since Rust is still the only `Narrow`
-    // target.
-    let scenario_outcomes = if matches!(sim_support, SimSupport::Narrow { .. }) {
-        sim_drive_rust(out, scenarios, wall_timeout)?
-    } else {
-        sim_drive_python(
+    // v0.22 M1: `Narrow` runs a generated-runner drive (Rust's own,
+    // v0.17 M11; TypeScript's, v0.23 M9); `Full` keeps the
+    // bounded-child-protocol drive (today: Python's). Two `Narrow`
+    // targets share the same *shape* of driver (compile/build the
+    // project's own generated runner, then execute it once per
+    // scenario and parse its one-line JSON reply) but need different
+    // toolchains to do it, so this dispatches on `target` itself
+    // rather than trying to make one function branch internally.
+    let scenario_outcomes = match sim_support {
+        // target-literal-ok: `sim_drive_rust`/`sim_drive_typescript` are
+        // genuinely different toolchains (cargo/npm), not a
+        // `TargetInfo`-describable difference like `db_url_scheme` or a
+        // `ValidateStep` list -- unlike the seam v0.22 M1's registry
+        // closed (per-target string matches that *could* have been one
+        // shared, data-driven code path), driving "the project's own
+        // compiled runner binary" vs "the project's own compiled JS
+        // entry point" are two different `std::process::Command`
+        // recipes with no shared shape to factor `TargetInfo` around.
+        SimSupport::Narrow { .. } if target == "rust" => {
+            sim_drive_rust(out, scenarios, wall_timeout)?
+        }
+        // target-literal-ok: see the sibling arm above.
+        SimSupport::Narrow { .. } if target == "typescript" => {
+            sim_drive_typescript(out, scenarios, wall_timeout)?
+        }
+        SimSupport::Narrow { .. } => bail!(
+            "`ciac sim` has no generated-runner driver wired for target `{target}` (its \
+             `TargetInfo::sim` claims `Narrow` support, but `sim_inner` doesn't know how to \
+             drive it -- this is a real gap in the CLI, not a disclosed scope limit)"
+        ),
+        SimSupport::Full => sim_drive_python(
             out,
             scenarios,
             record,
@@ -1246,7 +1277,8 @@ fn sim_inner(
             &plan,
             &plan_hash,
             wall_timeout,
-        )?
+        )?,
+        SimSupport::None { .. } => unreachable!("refused above by the `SimSupport::None` check"),
     };
 
     Ok(crate::json_out::SimResult {
@@ -1414,6 +1446,84 @@ fn sim_drive_rust(
             .arg("--bin")
             .arg("sim_runner")
             .arg("--")
+            .arg(&scenario_abs)
+            .current_dir(&project_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run sim_runner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "sim_runner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// Drives every `--scenario` against a generated TypeScript project's
+/// own `src/sim_runner.ts` (v0.23 M9) -- same generated-runner shape as
+/// [`sim_drive_rust`] (the runner is generated code baked into the
+/// project itself, compiled and run once per scenario, one-line JSON
+/// reply on stdout), different toolchain: `npm ci` then `npm run
+/// build` (tsc) instead of `cargo build`, `node dist/sim_runner.js --`
+/// instead of `cargo run --bin sim_runner --`. Unlike Rust's `ciac
+/// verify`, `sim_inner` never runs a target's full `validate` sequence
+/// before driving the runner, so this installs dependencies itself
+/// rather than assuming a prior `npm ci` already happened.
+fn sim_drive_typescript(
+    out: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let projects = find_project_dirs(out, "package.json")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!(
+            "no generated typescript project found under {}",
+            out.display()
+        ),
+        [one] => one.clone(),
+        many => bail!(
+            "`ciac sim` only supports a single-service TypeScript project in v0.23 (found {} \
+             under {}); see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+    if !project_dir.join("src/sim_runner.ts").exists() {
+        bail!(
+            "no `src/sim_runner.ts` in {} -- this program declares nothing v0.23 M9's \
+             simulation world can fake (no `db`/`queue` use); see docs/simulation.md",
+            project_dir.display()
+        );
+    }
+    run_in(&project_dir, "npm", &["ci"])?;
+    run_in(&project_dir, "npm", &["run", "build"])?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("node");
+        cmd.arg("dist/sim_runner.js")
             .arg(&scenario_abs)
             .current_dir(&project_dir);
 

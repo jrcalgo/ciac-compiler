@@ -1,0 +1,30 @@
+package state
+
+import (
+	"testing"
+
+	"go.uber.org/goleak"
+
+	"{{ c.package }}/internal/config"
+)
+
+// TestNewLeaksNoGoroutines is the "no infrastructure running" quality
+// bar (docs/backends.md) as a tested property from day one, not a
+// review-time convention: constructing AppState against config that
+// points at nothing reachable must not open a connection, spawn a
+// background goroutine, or otherwise leave anything for goleak to
+// catch. Trivial today (State has nothing lazy yet); the milestone
+// that adds the first lazy pool/client is the one this test starts
+// actually exercising.
+func TestNewLeaksNoGoroutines(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cfg := config.FromEnv()
+	st, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if st == nil {
+		t.Fatal("New returned a nil state")
+	}
+}

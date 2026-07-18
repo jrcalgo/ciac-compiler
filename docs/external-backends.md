@@ -3,9 +3,10 @@
 A CIaC backend doesn't have to be a Rust crate linked into the
 compiler. `ciac build --target <name>` falls back to running an
 executable called **`ciac-backend-<name>`** found on `$PATH` when
-`<name>` isn't a built-in target (`python`, `rust`) — the same seam
-protobuf's `protoc-gen-<lang>` plugins use. The backend can be written
-in any language; the only contract is JSON over stdin/stdout.
+`<name>` isn't a built-in target (`python`, `rust`, `typescript`,
+`go`) — the same seam protobuf's `protoc-gen-<lang>` plugins use. The
+backend can be written in any language; the only contract is JSON over
+stdin/stdout.
 
 ## The wire contract
 
@@ -62,14 +63,33 @@ full third backend:
 
 ```sh
 # from the repo root
-go build -C backends/go -o /tmp/bin/ciac-backend-go .
-PATH="/tmp/bin:$PATH" ciac build --target go -o ./out examples/ping.ciac
+go build -C backends/go -o /tmp/bin/ciac-backend-go-external-demo .
+PATH="/tmp/bin:$PATH" ciac build --target go-external-demo -o ./out examples/ping.ciac
 ```
 
 Its `main.go` shows the whole authoring pattern in ~350 lines: declare
 Go structs mirroring only the request fields you consume
 (`encoding/json` ignores the rest), read stdin, refuse what you don't
 support with a clear stderr message, generate, write the response.
+
+**Two Go code generators, reconciled (`24UpdatePlan.md` M1).** This
+repo now contains two: the module above (id `go-external-demo`,
+renamed from its original `go` at this milestone) and
+`crates/ciac-backend-go`, an internal crate exactly like
+`ciac-backend-python`/`-rust`/`-ts`, which took the `go` id instead.
+They are not competing implementations — they demonstrate different
+things. `backends/go/` stays exactly what it always was: the wire
+protocol's living documentation and test fixture, at the protocol's
+own honest capability level (no typed handlers, no validators, no
+simulation), updated only when the protocol itself changes.
+`crates/ciac-backend-go` is the product: full capability parity with
+the other bundled targets as `24UpdatePlan.md`'s milestones land. The
+rename is the one user-visible change this split makes — anyone
+scripting `--target go` against the old external demo now reaches the
+bundled backend instead, and `ciac targets` never listed the external
+demo in the first place (external backends are discovered only when
+explicitly named, per the scope notes below), so there is no listing
+to update.
 
 ## Testing a backend without `$PATH` games
 

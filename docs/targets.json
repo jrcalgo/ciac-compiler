@@ -164,6 +164,35 @@
         "level": "narrow"
       },
       "capabilities": {}
+    },
+    {
+      "id": "go",
+      "description": "Go 1.23+ project using net/http, database/sql, go-redis, and nats.go",
+      "kind": "internal",
+      "project_marker": "go.mod",
+      "validate": [
+        {
+          "program": "go",
+          "purpose": "compiles to a static binary"
+        },
+        {
+          "program": "go",
+          "purpose": "lints"
+        },
+        {
+          "program": "gofmt",
+          "purpose": "formatting is golden bytes, not a post-pass (empty output required)"
+        },
+        {
+          "program": "go",
+          "purpose": "unit tests pass"
+        }
+      ],
+      "sim": {
+        "level": "none",
+        "reason": "Go simulation support lands at 24UpdatePlan.md M9"
+      },
+      "capabilities": {}
     }
   ]
 }

@@ -35,6 +35,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # 24UpdatePlan.md M1: `ciac-backend-go::generate()` shells out to
+      # the real `gofmt` binary so generated `.go` bytes are canonical
+      # by construction rather than a template-layer approximation
+      # (see that crate's own `render_go` doc comment) -- `cargo test
+      # --workspace` now needs Go on `PATH` for that reason alone, not
+      # only for the dedicated `generated-go` job below.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
       - run: cargo test --workspace
 
   generated-python:
@@ -134,6 +143,45 @@ jobs:
             # the installed copy after each example still leaves
             # subsequent installs fast.
             rm -rf "$out/node_modules" "$out"/*/node_modules
+          done
+
+  # 24UpdatePlan.md M1: Go's `supports()` is narrow (apis only) this
+  # milestone, so most examples are a disclosed CIAC0011 skip -- the
+  # same pattern `generated-rust` above already carries for its own
+  # still-gated capabilities, not a Go-specific workaround. Widens
+  # example by example as later milestones un-gate more of
+  # `supports()`, same as every other target's own history here.
+  generated-go:
+    name: Validate generated Go projects (all examples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build the compiler
+        run: cargo build -p ciac
+      - name: Verify every example
+        run: |
+          set -euo pipefail
+          for src in examples/*.ciac; do
+            name="$(basename "$src" .ciac)"
+            out="/tmp/gen-go-$name"
+            echo "::group::$name"
+            if ! output="$(cargo run -q -p ciac -- verify "$src" --target go --out "$out" 2>&1)"; then
+              if grep -q "CIAC0011" <<<"$output"; then
+                echo "skipped: gated on this target"
+              else
+                echo "$output"
+                exit 1
+              fi
+            else
+              echo "$output"
+            fi
+            echo "::endgroup::"
           done
 
   # v0.17 M12: `ciac verify --sim` runs the checked-in scenarios against

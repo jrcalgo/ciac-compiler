@@ -770,6 +770,113 @@ planning pass finds them named.
    ping verifies fully locally (Go toolchain present): build, vet,
    gofmt, test. Goldens begin; docs/external-backends.md
    clarification lands; cold/warm build times recorded.
+
+   **Shipped (v0.24 M1):** `crates/ciac-backend-go` — `GoBackend` with
+   `TargetInfo` (`project_marker: "go.mod"`, `validate`: `go build
+   ./...` → `go vet ./...` → `gofmt -l .` → `go test ./...`, all with
+   `CGO_ENABLED=0`; `ci_test_steps` via `actions/setup-go@v5` +
+   staticcheck; `dev.rebuild` empty/`RestartStyle::Restart`; `sim:
+   None` until M9). `supports()` is gated to exactly `Component::Api`
+   — narrower than TS's own M1 (`Api` alone, no `Service`): ping's
+   `pipeline Echo: Return` binds no handler, so no `Service` node is
+   even in play, and claiming that kind now (before `route_api.go.j2`
+   implements any handler dispatch) would pass gating and then fail on
+   an undefined template variable instead of a clean `CIAC0011` — the
+   exact crash class `supports()` exists to prevent. `AGENTS.md`
+   needed **zero** code in this crate: `backends/skeleton-internal`'s
+   own doc comment claims "a real backend's `AGENTS.md` (see
+   `ciac-backend-python`/`-rust`'s)" but neither actually emits one —
+   `crates/ciac/src/commands.rs::agents_md()` adds it centrally, for
+   every registered target, target-neutrally, after `generate()`
+   returns. A real, stale claim in checked-in reference code, found by
+   grepping for the precedent this milestone's own doc comment cited
+   rather than trusting it — corrected here, not fixed in the
+   skeleton (out of this milestone's scope).
+
+   **Routing, decided** (Pillar 1's own pre-registered open question
+   #3): dropped `chi` for plain stdlib `net/http` 1.22+ `ServeMux`.
+   Every route shape this compiler's model can emit (static paths,
+   single `{id}` params, method-first dispatch) is covered by pattern
+   matching alone; `chi` would add a dependency and an indirection
+   (`chi.URLParam` vs. `r.PathValue`) for route-grouping/middleware
+   this backend's own `httpx` helpers already give by plain function
+   wrapping. Recorded in `lib.rs`'s own doc comment since Pillar 1's
+   table named `chi` as the pick.
+
+   **`gofmt`, decided as a real generation-time dependency, not a
+   post-pass approximation.** The plan's own words — "generated code
+   is emitted gofmt-canonical... formatting is golden bytes, not a
+   post-pass" — ruled out committing bytes that merely happen to
+   already look right and hoping `ciac verify`'s own `gofmt -l` check
+   agrees. `gofmt` owns two things no Jinja template can reproduce
+   without re-implementing the formatter: struct-field column
+   alignment (depends on every *sibling* field's rendered width, not
+   any one template's local context) and empty-composite-literal
+   collapse (`T{\n}` -> `T{}`, hit immediately by `ping`'s own
+   zero-capability `Config{}`). `emit_service`'s `render_go` shells
+   out to the real `gofmt` binary on every `.go` file's rendered
+   content before it ever reaches `project.add_file` — a disclosed,
+   narrow new dependency: `gofmt` must be on `PATH` to *generate*
+   `--target go` output, not only to validate it. `cargo test
+   --workspace` now needs Go on `PATH` too (both `ciac-backend-go`'s
+   own tests and the registry-driven golden/conformance suites call
+   `generate()`), so CI's `test` job gained `actions/setup-go@v5`
+   alongside the new dedicated `generated-go` job.
+
+   **A real C3 conformance collision, found and fixed.** `go:embed`
+   cannot reach outside its own file's directory (no `..` in embed
+   patterns, unlike Rust's `include_str!("../../openapi.json")`), so
+   `cmd/api/main.go` needs its own colocated copy of the project-root
+   `openapi.json` to embed at build time. The first attempt named it
+   `cmd/api/openapi.json`, then `embedded_openapi.json` — both still
+   match `tests/tests/conformance.rs`'s C3 check, which finds every
+   `openapi.json` file by `path.ends_with("openapi.json")`, a plain
+   string suffix check with no path-segment awareness. Landed as
+   `cmd/api/apidoc.json` instead — the fix lives entirely in this
+   crate (a naming choice), asking C3 to learn a Go-specific exception
+   was never necessary once the actual matching rule was read
+   correctly.
+
+   **Live-verified**, not just golden-generated: `ciac build
+   examples/ping.ciac --target go` end to end against the real
+   toolchain (Go 1.24.7 locally; `go.mod` pins `go 1.23` +
+   `github.com/go-playground/validator/v10 v10.27.0` +
+   `go.uber.org/goleak v1.3.0`, both chosen for a go-version floor at
+   or below 1.23 rather than each library's own `@latest`, which
+   would have forced a `toolchain go1.25.0` directive and a
+   network-dependent auto-download this sandbox happened to have but
+   a locked-down CI runner might not) — `go build`/`go vet`/`gofmt
+   -l`/`go test` all clean, `CGO_ENABLED=0` throughout. The built
+   binary answers real HTTP: `/health` -> `{"status":"ok"}`, `POST
+   /echo` with a valid body -> `{"status":"accepted","data":{...}}`,
+   and Pillar 2's own zero-value/null boundary triple exercised for
+   real against `internal/schemas`'s `requireKeys` + presence/null
+   check + `validator.Struct`: a missing `text` key -> 400 `missing
+   required field "text"`; an explicit `"text":null` -> 400 `field
+   "text" must not be null`; `"text":""` (a legitimate zero value) ->
+   200, proving the `validate` struct tags deliberately carry format
+   constraints only (`uuid4`), never `required` — re-asserting
+   "required" through `validator` would have rejected that last case,
+   exactly the trap Pillar 2 named. An invalid `id` -> 400 naming the
+   failed `uuid4` tag. `go build` timing (this sandbox, not
+   representative of CI hardware): ~10.9s cold (`go clean -cache`
+   first), ~0.5s warm (build cache hit, no source changes) — the
+   plan's own "Go's compose builds are measured in seconds-to-low-
+   minutes" claim already reads true at the single-binary scale M1
+   proves.
+
+   **The external Go artifact, reconciled.** `backends/go/` (the v0.10
+   external-protocol demo) is renamed to `ciac-backend-go-external-demo`
+   / `--target go-external-demo`, live-verified still reachable and
+   generating correctly under the new name — the one user-visible
+   external-protocol change this plan makes, exactly as disclosed in
+   the preamble. `docs/external-backends.md` gained the two-Go-
+   artifacts reconciliation paragraph and corrected build/invoke
+   commands; `backends/go/README.md` and `main.go`'s own self-
+   referential strings (error prefix, generated-by note) updated to
+   match — a real backend author copying that worked example verbatim
+   today gets the right name, not a stale one.
+
 2. **M2 — Records, schemas, models, CRUD, keyed store, migrations.**
    Structs/enums/error types/decode helpers (the presence-check
    discipline lands here with its boundary tests); models with

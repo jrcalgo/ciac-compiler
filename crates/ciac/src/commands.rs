@@ -23,6 +23,7 @@ pub(crate) fn backends() -> Vec<Box<dyn Backend>> {
         Box::new(ciac_backend_python::PythonBackend),
         Box::new(ciac_backend_rust::RustBackend),
         Box::new(ciac_backend_ts::TsBackend),
+        Box::new(ciac_backend_go::GoBackend),
     ]
 }
 

@@ -177,6 +177,7 @@ name = "ciac"
 version = "0.21.0"
 dependencies = [
  "anyhow",
+ "ciac-backend-go",
  "ciac-backend-python",
  "ciac-backend-rust",
  "ciac-backend-ts",
@@ -195,6 +196,22 @@ dependencies = [
  "serde_json",
  "sha2",
  "similar",
+]
+
+[[package]]
+name = "ciac-backend-go"
+version = "0.21.0"
+dependencies = [
+ "ciac-codegen",
+ "ciac-diagnostics",
+ "ciac-ir",
+ "ciac-sema",
+ "ciac-syntax",
+ "heck",
+ "include_dir",
+ "minijinja",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -287,6 +304,7 @@ dependencies = [
 name = "ciac-integration-tests"
 version = "0.21.0"
 dependencies = [
+ "ciac-backend-go",
  "ciac-backend-python",
  "ciac-backend-rust",
  "ciac-backend-ts",

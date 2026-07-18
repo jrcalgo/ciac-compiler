@@ -19,6 +19,7 @@ path = "bin/stub-backend.rs"
 ciac-backend-python.workspace = true
 ciac-backend-rust.workspace = true
 ciac-backend-ts.workspace = true
+ciac-backend-go.workspace = true
 ciac-codegen.workspace = true
 ciac-diagnostics.workspace = true
 ciac-ir.workspace = true

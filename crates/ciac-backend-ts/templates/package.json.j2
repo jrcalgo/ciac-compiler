@@ -8,13 +8,18 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "start:workers": "node dist/workers.js"
   },
   "dependencies": {
+    "@fastify/websocket": "11.3.0",
+    "@nats-io/transport-node": "3.4.0",
     "better-sqlite3": "12.11.1",
+    "croner": "10.0.1",
     "drizzle-orm": "0.45.2",
     "fastify": "5.10.0",
     "ioredis": "5.11.1",
+    "kafkajs": "2.2.4",
     "mysql2": "3.23.0",
     "pg": "8.22.0",
     "pino": "10.3.1",

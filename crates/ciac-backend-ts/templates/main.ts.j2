@@ -15,6 +15,9 @@ import { {{ api.snake }}Route } from "./routes/{{ api.snake }}.js";
 {%- for resource in c.resources %}
 import { {{ resource.snake }}Route } from "./routes/{{ resource.snake }}.js";
 {%- endfor %}
+{%- for channel in c.channels %}
+import { {{ channel.snake }}Route } from "./routes/channel_{{ channel.snake }}.js";
+{%- endfor %}
 
 // Emitted by `ciac build` alongside this file (openapi.json, derived
 // straight from the IR) — the single source of truth for the API
@@ -23,6 +26,12 @@ const openapiPath = fileURLToPath(new URL("../openapi.json", import.meta.url));
 const openapiDocument: unknown = JSON.parse(readFileSync(openapiPath, "utf8"));
 
 export function buildApp(state: AppState) {
+{%- if not c.apis and not c.resources and not c.channels %}
+  // Unused when this service exposes no HTTP routes at all (e.g. a
+  // pure worker/job service); kept in the signature so callers don't
+  // change shape once one is added.
+  void state;
+{%- endif %}
   const app = Fastify({ logger: loggerOptions() });
 
   app.get("/health", async () => ({ status: "ok" }));
@@ -32,6 +41,9 @@ export function buildApp(state: AppState) {
 {%- endfor %}
 {%- for resource in c.resources %}
   app.register({{ resource.snake }}Route, { state });
+{%- endfor %}
+{%- for channel in c.channels %}
+  app.register({{ channel.snake }}Route, { state });
 {%- endfor %}
 
   return app;

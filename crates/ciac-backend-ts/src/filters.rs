@@ -5,7 +5,7 @@
 //! `FieldCtx` each filter needs, so templates write `{{ field |
 //! ts_type }}` instead of `{{ field.type_kind | ts_type }}`.
 
-use ciac_codegen::model::FieldTypeKind;
+use ciac_codegen::model::{FieldTypeKind, StepCtx};
 use minijinja::value::ViaDeserialize;
 use serde::Deserialize;
 
@@ -164,6 +164,25 @@ pub fn id_ddl_type(engine: &str) -> &'static str {
     } else {
         "TEXT"
     }
+}
+
+/// Whether any step in `steps` (recursing into `match` arms) is a
+/// `handler` or `call` step — the only two kinds `_steps.ts.j2`'s
+/// `emit_step` macro reassigns `result` for. Lets `route_api.ts.j2`/
+/// `worker.ts.j2`/`job.ts.j2` declare `result` as `const` instead of
+/// `let` when a pipeline (e.g. `publish X -> Return`) never reassigns
+/// it — `let` there would be genuinely dead mutability, tripping
+/// eslint's `prefer-const`.
+pub fn reassigns_result(steps: ViaDeserialize<Vec<StepCtx>>) -> bool {
+    steps_reassign(&steps.0)
+}
+
+fn steps_reassign(steps: &[StepCtx]) -> bool {
+    steps.iter().any(|step| {
+        step.kind == "handler"
+            || step.kind == "call"
+            || step.arms.iter().any(|arm| steps_reassign(&arm.steps))
+    })
 }
 
 fn zod_schema_of(kind: &FieldTypeKind) -> String {

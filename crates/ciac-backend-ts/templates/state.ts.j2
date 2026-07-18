@@ -23,6 +23,9 @@ import { mkdirSync } from "node:fs";
 {%- if c.has_cache %}
 import { Redis } from "ioredis";
 {%- endif %}
+{%- if c.queue_engine %}
+import { Queue } from "./queue.js";
+{%- endif %}
 import type { Config } from "./config.js";
 
 // Each field spells out the exact client type passed to `drizzle()`
@@ -49,6 +52,9 @@ export interface AppState {
 {%- for inst in c.cache_instances %}
   {{ inst.state_field }}: Redis;
 {%- endfor %}
+{%- if c.queue_engine %}
+  queue: Queue;
+{%- endif %}
 }
 
 export function createState(config: Config): AppState {
@@ -71,5 +77,10 @@ export function createState(config: Config): AppState {
 {%- for inst in c.cache_instances %}
     {{ inst.state_field }}: new Redis(config.{{ inst.url_field }}, { lazyConnect: true }),
 {%- endfor %}
+{%- if c.queue_engine == "kafka" %}
+    queue: new Queue(config.kafkaUrl),
+{%- elif c.queue_engine == "nats" %}
+    queue: new Queue(config.natsUrl),
+{%- endif %}
   };
 }

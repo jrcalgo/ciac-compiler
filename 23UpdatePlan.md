@@ -983,6 +983,122 @@ documented in the generated README's requirements line.
    kafka-pipeline, scheduled-cleanup, realtime-progress verify
    (static local; broker delivery CI-delegated per the standing
    v0.11 M3 disclosure).
+
+   **Shipped (v0.23 M3):** `queue.ts` (a `Queue` class per broker —
+   kafkajs `Kafka`/`Producer`/`Consumer` or `@nats-io/transport-node`'s
+   `NatsConnection`, both genuinely lazy — plus the shared
+   `publish(state, subject, payload)` free function every generated
+   call site goes through, the seam a future simulation runner (M9)
+   can intercept), `service.ts.j2` (seeded, classic binding-style
+   `handle()` methods pipeline steps invoke — `crates/
+   ciac-backend-python`/`-rust`'s own `service.py.j2`/`service.rs.j2`
+   shape), `client.ts.j2` (typed HTTP clients for `call` steps, using
+   the Node-global `fetch` rather than pulling in a dependency,
+   unwrapping the `{status, data}` envelope and validating the
+   response through the same Zod schema `schemas.ts` already
+   generates), `worker.ts.j2`/`consumer.ts.j2` (NATS queue-group vs.
+   Kafka consumer-group branching, the exported `handleMessageOnce`
+   seam, a retry loop with no backoff — matching Python's/Rust's own
+   choice exactly), `job.ts.j2` (croner, which — like Python's
+   croniter and unlike Rust's `cron` crate — accepts the source
+   5-field expression verbatim and owns its own scheduling loop, so
+   `handleTickOnce` needs no hand-rolled sleep-until-next code at
+   all), and `channel.ts.j2` (`@fastify/websocket` or a hand-rolled
+   SSE stream; fan-out is broker-native — a plain NATS subscription
+   naturally delivers a copy of every message to every subscriber, and
+   Kafka gets a fresh per-connection consumer group instead of the
+   shared queue-group workers use). `TsBackend::supports()` widened to
+   `Queue`, `Stream`, `Worker` (both pipeline-bearing workers and bare
+   `events X;` consumers — the same `Component::Worker` shape,
+   distinguished only downstream in `ciac-codegen::model`), `Job` +
+   `Scheduler`, and `Channel` + `Realtime`.
+
+   Pipeline-step codegen (`_steps.ts.j2`, a shared minijinja macro
+   `{% import %}`-ed by `route_api.ts.j2`/`worker.ts.j2`/`job.ts.j2` —
+   a deliberate difference from Python's/Rust's own per-file
+   duplication of the same macro, made possible and simple by
+   minijinja's `import`) is real M3 work, not carried over from M1/M2:
+   M1's `route_api.ts.j2` only ever emitted a hardcoded `{status:
+   "accepted", data: result}` echo, correct only because `ping.ciac`'s
+   pipeline is the trivial one-step `Return`. Auditing the actually-
+   exercised surface before calling M3 done surfaced a real gap this
+   pass had to close, not defer: `examples/inventory-system.ciac` (in
+   the registry-agnostic golden suite since M2, since `crud`/`db`/
+   `cache` alone were already enough to generate it) has a real `call
+   Catalog.Price` pipeline step that M1/M2's stub silently ignored —
+   accepted `Component::Api` unconditionally but never implemented
+   `call`. Fixed by implementing the shared step macro's full
+   vocabulary (`handler`/`publish`/`call`/`match`, with `return`
+   deliberately a no-op — matching Python's own `emit_steps`, which
+   has no arm for it either, since the envelope wrap-and-return
+   happens once, unconditionally, after the whole step list) and
+   `client.ts.j2`, rather than leaving `call` silently wrong now that
+   `Api`/`Worker`/`Job` are gated broadly by component kind, not by
+   which step kinds a given pipeline happens to use.
+
+   Two real, live-caught bugs, both disclosed rather than smoothed
+   over: (1) `client.ts.j2` imported a record's Zod schema
+   (`ItemSchema`) but not the inferred TypeScript *type* (`Item`) the
+   method's own return signature needed — `tsc --noEmit` on the
+   generated `gateway` service failed with `Cannot find name 'Item'`;
+   fixed by importing both under one line
+   (`import { ItemSchema, type Item } from "../schemas.js"`). (2) Five
+   real `eslint` findings across the four new examples on first run,
+   not zero: `@typescript-eslint/no-explicit-any` on the `result as
+   any` cast `_steps.ts.j2` needs at each step's untyped input
+   boundary (a real, load-bearing rule in this project's
+   `tseslint.configs.recommended`, not assumed absent — fixed with a
+   documented `eslint-disable-next-line`); `no-useless-assignment` +
+   `@typescript-eslint/no-unused-vars` on a worker's/job's final
+   `result` reassignment, since unlike an api route a worker has no
+   envelope to return it into (fixed with a trailing `void result;`);
+   `prefer-const` on pipelines whose steps never reassign `result`
+   (e.g. `publish X -> Return` alone) — fixed with a new Rust filter,
+   `reassigns_result`, recursing into `match` arms to decide `let` vs.
+   `const` per pipeline rather than always guessing `let`; and an
+   unused `state` parameter in `buildApp` for `scheduled-cleanup`
+   (which declares no `api`/`crud`/`channel` at all) — fixed with the
+   same conditional `void state;` pattern M1 already established.
+   `nats`, the plan's own illustrative NATS package name, turned out
+   to be deprecated as of a recent registry check ("Package moved.
+   Use @nats-io/transport-node") — pinned the real current successor
+   instead of the stale name, the same real-current-versions
+   discipline M1's vitest-CVE avoidance already established.
+
+   Live proof, real toolchain: all four new examples (`event-pipeline`,
+   `kafka-pipeline`, `scheduled-cleanup`, `realtime-progress`) plus
+   `inventory-system` and `audited-crud` (both now exercising real
+   `db`/`cache`/`service`/`call` content for the first time) pass
+   `npm ci` (0 vulnerabilities), `npx tsc --noEmit`, and `npx eslint .`
+   clean on the generated output. Two genuinely live, zero-mocking
+   proofs beyond static verification, using the sandbox's real local
+   Postgres/Redis servers (started directly, no Docker) rather than
+   stopping at "it type-checks": `scheduled-cleanup`'s built
+   `dist/workers/cleanup.js` — `handleTickOnce` executes the real
+   seeded `PruneExpired` service through the classic-binding call path
+   without throwing, and `run()` constructs a real `croner` `Cron`
+   reporting the correct next 03:00 fire time; and
+   `inventory-system`'s `call` step — with a real `catalog` server
+   running against live Postgres/Redis, `gateway`'s compiled
+   `CatalogClient.price()` made a genuine HTTP round trip, unwrapped
+   the `{status, data}` envelope, and validated the response through
+   `ItemSchema.parse()`. Broker delivery itself (an actual NATS/Kafka
+   server publishing and being consumed) stays CI-delegated as
+   disclosed — this sandbox has no local broker binary, matching the
+   standing v0.11 M3 precedent exactly (Postgres/Redis do have local
+   binaries here, so those *are* live-proofed rather than
+   CI-deferred). Traceparent propagation is genuinely deferred, not
+   silently skipped: none of the four new examples declare
+   `tracing OpenTelemetry`, and Pillar 8/M7 is where TS tracing lands
+   for the first time (mirroring Python's/Rust's own asymmetry —
+   worker pipelines and the publish path propagate it, `channel`/bare
+   `events` consumers never have). Full verification green: `cargo fmt
+   --check`, `cargo clippy -D warnings`, `cargo test --workspace` (61
+   suites, zero failures); 9 new/updated goldens accepted (4 new M3
+   examples, `inventory-system` and `audited-crud` now generating real
+   content for the first time, plus trivial `ping`/`sqlite-notes`/
+   `mysql-notes` diffs from the `main.ts.j2` `buildApp` signature
+   change).
 4. **M4 — Typed handlers: `HostSyntax` for TypeScript.** Implement
    the ~30 leaves per Pillar 2's specs and Pillar 4's verb table;
    real transactions; builtins (`crypto.randomUUID()`, `new Date()`);

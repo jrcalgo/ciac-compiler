@@ -124,10 +124,19 @@ impl Backend for TsBackend {
         // resources and keyed-document stores compile to exactly this
         // component shape (`Database`, `Api`, `Service { signature:
         // None }`; see `23UpdatePlan.md` M2's own investigation note).
-        // A *typed* `service` (`signature: Some(..)`) still stays
-        // refused until M4's HostSyntax leaves land. Every other
-        // component kind (queue/worker/job/channel/auth/...) stays
-        // refused (`CIAC0011`) until its own milestone un-gates it.
+        // v0.23 M3 adds: `queue` on either broker (NATS/Kafka), `stream`
+        // (the named subject a worker/channel relays), `worker` (both a
+        // full pipeline-bearing worker and the bare `events X;`
+        // consumer shape — both lower to `Component::Worker`, only
+        // distinguished downstream in `ciac-codegen::model`), `job`
+        // (cron) plus the `scheduler jobs Cron` capability declaration
+        // that gates it, and `channel` (WebSocket/SSE realtime relay)
+        // plus the `realtime live WebSocket`/`Sse` capability
+        // declaration that gates it. A *typed* `service`
+        // (`signature: Some(..)`) still stays refused until M4's
+        // HostSyntax leaves land. Every other component kind (auth/...)
+        // stays refused (`CIAC0011`) until its own milestone un-gates
+        // it.
         matches!(
             component,
             Component::Api { .. }
@@ -137,6 +146,13 @@ impl Backend for TsBackend {
                     signature: None,
                     ..
                 }
+                | Component::Queue { .. }
+                | Component::Stream { .. }
+                | Component::Worker { .. }
+                | Component::Job { .. }
+                | Component::Scheduler { .. }
+                | Component::Channel { .. }
+                | Component::Realtime { .. }
         )
     }
 
@@ -161,6 +177,7 @@ impl Backend for TsBackend {
         env.add_filter("drizzle_column", filters::drizzle_column);
         env.add_filter("sql_ddl_type", filters::sql_ddl_type);
         env.add_function("id_ddl_type", filters::id_ddl_type);
+        env.add_filter("reassigns_result", filters::reassigns_result);
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -259,10 +276,19 @@ fn emit_service(
         at("src/observability.ts"),
         render("observability.ts.j2", empty())?,
     );
+    if ctx.queue_engine.is_some() {
+        project.add_file(at("src/queue.ts"), render("queue.ts.j2", empty())?);
+    }
     for api in &ctx.apis {
         project.add_file(
             at(&format!("src/routes/{}.ts", api.snake)),
             render("route_api.ts.j2", context! { api => api })?,
+        );
+    }
+    for channel in &ctx.channels {
+        project.add_file(
+            at(&format!("src/routes/channel_{}.ts", channel.snake)),
+            render("channel.ts.j2", context! { channel => channel })?,
         );
     }
     if !ctx.records.is_empty() {
@@ -280,6 +306,39 @@ fn emit_service(
         project.add_file(
             at(&format!("src/routes/{}.ts", resource.snake)),
             render("route_resource.ts.j2", context! { resource => resource })?,
+        );
+    }
+    for service in &ctx.services {
+        project.add_seeded_file(
+            at(&format!("src/services/{}.ts", service.module)),
+            render("service.ts.j2", context! { service => service })?,
+        );
+    }
+    for target in &ctx.call_targets {
+        project.add_file(
+            at(&format!("src/clients/{}.ts", target.module)),
+            render("client.ts.j2", context! { t => target })?,
+        );
+    }
+    if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {
+        project.add_file(at("src/workers.ts"), render("workers_main.ts.j2", empty())?);
+    }
+    for worker in &ctx.workers {
+        project.add_file(
+            at(&format!("src/workers/{}.ts", worker.snake)),
+            render("worker.ts.j2", context! { worker => worker })?,
+        );
+    }
+    for job in &ctx.jobs {
+        project.add_file(
+            at(&format!("src/workers/{}.ts", job.snake)),
+            render("job.ts.j2", context! { job => job })?,
+        );
+    }
+    for consumer in &ctx.consumers {
+        project.add_file(
+            at(&format!("src/workers/{}.ts", consumer.snake)),
+            render("consumer.ts.j2", context! { consumer => consumer })?,
         );
     }
     project.add_file(
@@ -306,7 +365,7 @@ mod tests {
     const PING_SRC: &str = "service Ping;\n\nrecord Message {\n    id: Uuid;\n    text: String;\n}\n\napi Echo: Message {\n    method: POST;\n    path: \"/echo\";\n}\n\npipeline Echo: Return;\n";
 
     #[test]
-    fn supports_v0_23_m2_scope() {
+    fn supports_v0_23_m3_scope() {
         let backend = TsBackend;
         assert!(backend.supports(&Component::Api {
             name: "X".to_owned(),
@@ -335,10 +394,35 @@ mod tests {
             name: "svc".to_owned(),
             signature: None,
         }));
-        // A worker (broker consumer) still stays refused until M3 lands.
-        assert!(!backend.supports(&Component::Worker {
+        for engine in [ciac_ir::QueueEngine::Nats, ciac_ir::QueueEngine::Kafka] {
+            assert!(backend.supports(&Component::Queue {
+                name: "queue".to_owned(),
+                engine,
+            }));
+        }
+        assert!(backend.supports(&Component::Worker {
             name: "w".to_owned(),
             config: ciac_ir::WorkerConfig::default(),
+        }));
+        assert!(backend.supports(&Component::Job {
+            name: "j".to_owned(),
+            config: ciac_ir::JobConfig {
+                schedule: "0 3 * * *".to_owned(),
+                catch_up: false,
+            },
+        }));
+        assert!(backend.supports(&Component::Channel {
+            name: "ch".to_owned(),
+            config: ciac_ir::ChannelConfig {
+                path: "/ch".to_owned(),
+            },
+        }));
+        // Auth still stays refused until M6.
+        assert!(!backend.supports(&Component::Auth {
+            name: "auth".to_owned(),
+            scheme: ciac_ir::AuthScheme::Jwt,
+            issuer: None,
+            audience: None,
         }));
     }
 

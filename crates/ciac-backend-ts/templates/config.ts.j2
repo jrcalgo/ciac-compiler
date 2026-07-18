@@ -11,7 +11,15 @@ export interface Config {
 {%- for inst in c.cache_instances %}
   {{ inst.url_field }}: string;
 {%- endfor %}
-{%- if not c.db_instances and not c.cache_instances %}
+{%- if c.queue_engine == "kafka" %}
+  kafkaUrl: string;
+{%- elif c.queue_engine == "nats" %}
+  natsUrl: string;
+{%- endif %}
+{%- for t in c.call_targets %}
+  {{ t.url_field }}: string;
+{%- endfor %}
+{%- if not c.db_instances and not c.cache_instances and not c.queue_engine and not c.call_targets %}
   placeholder?: never;
 {%- endif %}
 }
@@ -27,13 +35,21 @@ export function loadConfig(): Config {
 {%- for inst in c.cache_instances %}
     {{ inst.url_field }}: envOr("{{ inst.env_var }}", "redis://localhost:6379/{{ inst.redis_db }}"),
 {%- endfor %}
+{%- if c.queue_engine == "kafka" %}
+    kafkaUrl: envOr("KAFKA_URL", "localhost:9092"),
+{%- elif c.queue_engine == "nats" %}
+    natsUrl: envOr("NATS_URL", "nats://localhost:4222"),
+{%- endif %}
+{%- for t in c.call_targets %}
+    {{ t.url_field }}: envOr("{{ t.env_var }}", "{{ t.default_url }}"),
+{%- endfor %}
   };
 }
 
 function envOr(key: string, fallback: string): string {
   return process.env[key] ?? fallback;
 }
-{%- if not c.db_instances and not c.cache_instances %}
+{%- if not c.db_instances and not c.cache_instances and not c.queue_engine and not c.call_targets %}
 
 // `envOr` is unused until a capability instance needs an
 // environment-driven field — kept here, not deleted-then-reintroduced,

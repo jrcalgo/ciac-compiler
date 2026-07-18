@@ -1,0 +1,48 @@
+{#- Shared pipeline-step emission, `{% import %}`-ed by route_api.ts.j2,
+    worker.ts.j2, and job.ts.j2 (Python/Rust duplicate this per file
+    instead — a real, deliberate difference in this backend, not an
+    accidental one: minijinja's `{% import %}` makes one shared macro
+    both possible and simple).
+
+    `result` flows through the pipeline as `unknown`: CIaC's pipeline
+    steps genuinely change the payload's shape step to step (a `call`
+    or `handler` step's output type has no static relationship to its
+    input beyond "whatever the target's `handle`/method declares"),
+    so `unknown` plus an `as any` at each step's *input* boundary
+    (never at its *output* — every step's return value flows back into
+    `result: unknown` with no cast needed, since anything is
+    assignable to `unknown`) is the honest typing: the alternative,
+    threading a precise type through every step, would need a real
+    type per intermediate value that doesn't exist in the IR today.
+
+    A `return` step deliberately renders nothing (matching Python's
+    own `emit_steps`, which has no `elif` arm for it either): the
+    envelope wrap-and-return happens once, unconditionally, after the
+    whole step list in whichever file calls this macro — not per
+    `Return` step. -#}
+{% macro emit_step(step, indent) %}
+{%- if step.kind == "handler" %}
+{{ indent }}// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see _steps.ts.j2's own doc comment on why `result` stays `unknown`
+{{ indent }}result = await new {{ step.handler.class_name }}(state).handle(result as any);
+{%- elif step.kind == "publish" %}
+{{ indent }}await publish(state, "{{ step.subject }}", Buffer.from(JSON.stringify(result)));
+{%- elif step.kind == "call" %}
+{{ indent }}result = await new {{ step.call.class_name }}(state.config).{{ step.call.method }}(result);
+{%- elif step.kind == "match" %}
+{{ indent }}// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see _steps.ts.j2's own doc comment on why `result` stays `unknown`
+{{ indent }}switch ((result as any).{{ step.field }}) {
+{%- for arm in step.arms %}
+{%- if arm.label %}
+{{ indent }}  case "{{ arm.label }}": {
+{%- else %}
+{{ indent }}  default: {
+{%- endif %}
+{%- for inner in arm.steps %}
+{{ emit_step(inner, indent ~ "    ") }}
+{%- endfor %}
+{{ indent }}    break;
+{{ indent }}  }
+{%- endfor %}
+{{ indent }}}
+{%- endif %}
+{%- endmacro %}

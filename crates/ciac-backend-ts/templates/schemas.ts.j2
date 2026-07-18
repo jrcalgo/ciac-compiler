@@ -19,7 +19,7 @@ export class {{ record.name }} extends Error {
     super(
       `{{ record.name }}(` +
 {%- for field in record.fields %}
-        `{{ field.name }}=${ {{- "" -}} JSON.stringify({{ field.name }})}` {%- if not loop.last %} + ", " +{% endif %}
+        `{{ field.name }}=${ {{- "" -}} JSON.stringify({{ field.name }})}{% if not loop.last %}, {% endif %}` +
 {%- endfor %}
         `)`,
     );

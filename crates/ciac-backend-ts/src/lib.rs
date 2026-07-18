@@ -27,6 +27,7 @@ use include_dir::{include_dir, Dir};
 use minijinja::context;
 
 mod filters;
+mod lower;
 
 static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
@@ -132,20 +133,33 @@ impl Backend for TsBackend {
         // (cron) plus the `scheduler jobs Cron` capability declaration
         // that gates it, and `channel` (WebSocket/SSE realtime relay)
         // plus the `realtime live WebSocket`/`Sse` capability
-        // declaration that gates it. A *typed* `service`
-        // (`signature: Some(..)`) still stays refused until M4's
-        // HostSyntax leaves land. Every other component kind (auth/...)
-        // stays refused (`CIAC0011`) until its own milestone un-gates
-        // it.
+        // declaration that gates it. v0.23 M4 adds: a *typed* `service`
+        // (`signature: Some(..)`) — `crates/ciac-backend-ts/src/lower.rs`
+        // implements every `HostSyntax` leaf Pillar 4's verb table
+        // names, including `object_store`/`email`/`search`/
+        // `external_http` (so the trait compiles completely, no
+        // `unimplemented!()` leaves reachable), but the *component*
+        // kinds that actually request those capabilities
+        // (`Component::ObjectStore`/`Email`/`Search`/`ExternalHttp`)
+        // stay refused here: 23UpdatePlan.md's own capability-parity
+        // checklist places their wrapper clients at M7, not M4 (`db`/
+        // `cache` already un-gated since M2 are the only capabilities
+        // a typed handler can actually reach this milestone). Likewise
+        // `Component::Auth` stays refused until M6. This is a disclosed
+        // scope boundary, not an oversight: `typed-handlers.ciac`
+        // (needs `object_store`), `typed-video.ciac` (needs `auth`),
+        // and `extras-verbs.ciac` (needs the M7 ontology wrappers) stay
+        // `CIAC0011`-refused this milestone, matching the exact
+        // disclosed-deviation pattern M2 used for `crud-notes.ciac` and
+        // M3 used for traceparent — `domain-orders.ciac`/
+        // `query-verbs.ciac` (db-only) are this milestone's proving
+        // examples instead.
         matches!(
             component,
             Component::Api { .. }
                 | Component::Database { .. }
                 | Component::Cache { .. }
-                | Component::Service {
-                    signature: None,
-                    ..
-                }
+                | Component::Service { .. }
                 | Component::Queue { .. }
                 | Component::Stream { .. }
                 | Component::Worker { .. }
@@ -186,7 +200,7 @@ impl Backend for TsBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
 
         if model.multi {
@@ -217,6 +231,7 @@ impl Backend for TsBackend {
 
 fn emit_service(
     env: &minijinja::Environment<'_>,
+    ir: &NormalizedIr,
     ctx: &context::Ctx,
     multi: bool,
     prefix: &str,
@@ -313,6 +328,35 @@ fn emit_service(
             at(&format!("src/services/{}.ts", service.module)),
             render("service.ts.j2", context! { service => service })?,
         );
+    }
+    // v0.23 M4: typed handlers (`Component::Service { signature: Some(hir), .. }`).
+    // Mirrors `ciac-backend-python`'s own `typed_handlers` dispatch:
+    // inline bodies lower straight from the HIR and are compiler-owned
+    // (`src/logic/`); `extern` gets a typed stub in `src/services/`
+    // like classic handlers, since it's the same "implement this
+    // yourself" contract.
+    let typed_handlers: Vec<(String, &ciac_ir::HandlerBody)> = ctx
+        .typed_handlers
+        .iter()
+        .filter_map(|id| match &ir.node(*id).component {
+            Component::Service {
+                name,
+                signature: Some(hir),
+            } => Some((name.clone(), hir)),
+            _ => None,
+        })
+        .collect();
+    for (name, hir) in &typed_handlers {
+        let handler = lower::render(ir, name, hir);
+        let content = render(
+            "logic.ts.j2",
+            context! { handler => minijinja::Value::from_serialize(&handler) },
+        )?;
+        if hir.body.is_some() {
+            project.add_file(at(&format!("src/logic/{}.ts", handler.module)), content);
+        } else {
+            project.add_seeded_file(at(&format!("src/services/{}.ts", handler.module)), content);
+        }
     }
     for target in &ctx.call_targets {
         project.add_file(

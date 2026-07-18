@@ -10,9 +10,20 @@
 //! counts. A real behavioral-output equivalence suite (running
 //! generated fakes against both hosts) is future work once a
 //! mock/trait seam exists for the Rust runtime wrappers.
+//!
+//! `23UpdatePlan.md` M4 extends this structural-parity style (not the
+//! full JSON-fixture/three-runner-mechanism "specified" design that
+//! plan's own text sketches — a disclosed, pragmatic scope reduction:
+//! that fuller system doesn't exist yet even for the two established
+//! targets, so growing today's real, working mechanism to a third
+//! target is the concrete step, not blocking on a rewrite) to a third
+//! target, TypeScript, via a second canonical example
+//! ([`DIVISION_EXAMPLE`]) scoped to capabilities TS actually supports
+//! this milestone.
 
 use ciac_backend_python::PythonBackend;
 use ciac_backend_rust::RustBackend;
+use ciac_backend_ts::TsBackend;
 use ciac_codegen::{Backend, GenOptions};
 use ciac_integration_tests::compile;
 
@@ -147,4 +158,141 @@ fn python_and_rust_lower_the_same_handler_body_to_equivalent_shape() {
     assert!(rust_schemas.contains("thiserror::Error"));
     assert!(py_schemas.contains("id: str"));
     assert!(rust_schemas.contains("pub id: String,"));
+}
+
+/// A second canonical example, deliberately scoped to `db`-only
+/// capabilities (no `object_store`) so it can include a third target:
+/// `23UpdatePlan.md` M4 pulls `HostSyntax` leaves forward for
+/// TypeScript, but `Component::ObjectStore` itself stays
+/// `CIAC0011`-refused there until M7 (the wrapper client, not the leaf,
+/// is M7's job — see `TsBackend::supports`'s own doc), so the
+/// `CANONICAL_EXAMPLE` above can't add TS without changing what it's
+/// actually testing. This example instead targets the two named,
+/// *documented* divergence cases Pillar 2 flags for the equivalence
+/// suite: `Int / Int` (Python stays true division; Rust's native `/`
+/// and TS's `Math.trunc(a / b)` both truncate toward zero, matching
+/// `i64`) and `Json` indexing (Python's bare `base[key]`, relying on
+/// the language's own `KeyError`; TS's optional-chained access plus an
+/// explicit thrown `KeyError`-shaped error, since JS has no equivalent
+/// built-in).
+const DIVISION_EXAMPLE: &str = r#"
+service DivisionExample;
+
+use {
+    db Postgres;
+}
+
+record Payload {
+    id: Uuid;
+    total: Int;
+    count: Int;
+    extra: Json;
+}
+
+table Payloads: Payload;
+
+handler ComputeAverage(p: Payload) -> Payload {
+    let avg = p.total / p.count;
+    p.extra["label"];
+    let updated = p { total: avg };
+    let inserted = db.insert(Payloads, updated);
+    return inserted;
+}
+
+api Compute: Payload {
+    method: POST;
+    path: "/compute";
+}
+
+pipeline Compute:
+    ComputeAverage
+    -> Return;
+"#;
+
+#[test]
+fn python_rust_and_typescript_lower_the_same_handler_body_to_equivalent_shape() {
+    let (ir, diags) = compile(DIVISION_EXAMPLE);
+    assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
+    let ir = ir.expect("well-typed program produces IR");
+
+    let py_project = PythonBackend
+        .generate(&ir, &GenOptions::default())
+        .expect("python must build the typed inline handler");
+    let rust_project = RustBackend
+        .generate(&ir, &GenOptions::default())
+        .expect("rust must build the typed inline handler");
+    let ts_project = TsBackend
+        .generate(&ir, &GenOptions::default())
+        .expect("typescript must build the typed inline handler");
+
+    let py_logic = py_project
+        .get("app/logic/compute_average.py")
+        .expect("python emits the compiler-owned logic file");
+    let rust_logic = rust_project
+        .get("src/logic/compute_average.rs")
+        .expect("rust emits the compiler-owned logic file");
+    let ts_logic = ts_project
+        .get("src/logic/compute_average.ts")
+        .expect("typescript emits the compiler-owned logic file");
+
+    // The `Int / Int` divergence, named and pinned rather than
+    // discovered: Python's `/` is true division (never truncates);
+    // Rust's native `/` and TS's `Math.trunc(a / b)` both truncate
+    // toward zero, matching `i64` — an intentional, documented
+    // cross-target difference, not a bug in either lowering.
+    assert!(
+        py_logic.contains("(p.total / p.count)") && !py_logic.contains("Math.trunc"),
+        "python: Int/Int division must stay true division, found: {py_logic}"
+    );
+    assert!(
+        rust_logic.contains("(p.total / p.count)"),
+        "rust: Int/Int division truncates natively via `/`, found: {rust_logic}"
+    );
+    assert!(
+        ts_logic.contains("Math.trunc(p.total / p.count)"),
+        "typescript: Int/Int division must lower to Math.trunc for i64-truncation parity \
+         with Rust, found: {ts_logic}"
+    );
+
+    // The `Json` indexing divergence: Python relies on the language's
+    // own `KeyError` for a missing key; TS has no equivalent built-in,
+    // so the leaf must synthesize an equivalent thrown error rather
+    // than silently propagating `undefined`.
+    assert!(py_logic.contains(r#"p.extra["label"]"#));
+    assert!(
+        ts_logic.contains("KeyError: 'label'") && ts_logic.contains("throw new Error"),
+        "typescript: Json indexing must throw a KeyError-shaped error on a missing key, \
+         found: {ts_logic}"
+    );
+
+    // Same table, same columns, all three hosts: Python's ORM splat
+    // never names fields individually, so only Rust's and TS's raw SQL
+    // assert the full column list.
+    assert!(py_logic.contains("Payloads(**v2.model_dump())"));
+    assert!(rust_logic.contains("sqlx::query(\"INSERT INTO payloads (id, total, count, extra)"));
+    assert!(ts_logic.contains(r#""INSERT INTO payloads (id, total, count, extra)"#));
+
+    // Same verb call counts across all three: one db.insert (commit/
+    // execute/query — each host's own spelling of "run the query").
+    assert_eq!(
+        count(py_logic, "await self.session.commit()"),
+        1,
+        "python: expected exactly one db.insert commit"
+    );
+    assert_eq!(
+        count(rust_logic, ".execute(self.db)"),
+        1,
+        "rust: expected exactly one db.insert execute"
+    );
+    assert_eq!(
+        count(ts_logic, "INSERT INTO payloads"),
+        1,
+        "typescript: expected exactly one db.insert query"
+    );
+
+    // Same real, typed signature on every host — no generic payload/
+    // dict fallback anywhere.
+    assert!(py_logic.contains("def handle(self, p: Payload) -> Payload:"));
+    assert!(rust_logic.contains("fn handle(&self, p: Payload) -> anyhow::Result<Payload>"));
+    assert!(ts_logic.contains("async handle(p: Payload): Promise<Payload>"));
 }

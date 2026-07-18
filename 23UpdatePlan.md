@@ -1107,6 +1107,215 @@ documented in the generated README's requirements line.
    verify; the cross-backend behavioral equivalence test extends to
    three targets (including the Int-division and Json-indexing cases
    Pillar 2 flags).
+
+   **Shipped (v0.23 M4):** `crates/ciac-backend-ts/src/lower.rs` — a
+   full `TsSyntax` (`Orientation::Statement`, the same mode Python
+   exercises, since a `{}` block isn't an expression in TS the way it
+   is in Rust) implementing every `HostSyntax` leaf: scalar/literal
+   leaves near-verbatim from Python's shapes; `if_tail` a plain
+   `if {} else {}`; `match_tail` a real `switch` statement (Pillar 2's
+   decision, not Python's if/elif-chain transcription); the four
+   statement-shaped `db.*` verbs (`db.insert/update/delete`,
+   `db.query`/`count`/`delete_where`) as raw parameterized SQL reached
+   through Drizzle's `$client` escape hatch — following the *Rust*
+   backend's bind-order/`sqlph` discipline, not Python's ORM-chain
+   shape, per Pillar 4's explicit "adds zero new placeholder logic";
+   `transaction_stmt` with **real atomicity**, exceeding Rust's
+   disclosed non-atomic gap — Postgres/MySQL check out a dedicated
+   connection and run `BEGIN`/`COMMIT`/`ROLLBACK` by hand (a pool's
+   `.query()` alone is not transactional), SQLite uses better-sqlite3's
+   native synchronous `.transaction()` wrapper. `crates/
+   ciac-backend-ts/templates/logic.ts.j2` (compiler-owned
+   `src/logic/<h>.ts` / seeded `src/services/<h>.ts`, mirroring
+   `service.ts.j2`'s single-`state`-constructor-parameter shape rather
+   than Python's/Rust's per-dependency constructor injection — already
+   established since M2/M3, not a new decision). `TsBackend::supports()`
+   widened `Component::Service` to accept `signature: Some(..)`
+   (dropping the M1–M3 `signature: None` restriction) — `db`/`cache`
+   (already open since M2) are the only capabilities a typed handler
+   can actually reach this milestone.
+
+   **Scope boundary, disclosed rather than silently narrowed:**
+   `Component::ObjectStore`/`Email`/`Search`/`ExternalHttp`/`Auth` stay
+   `CIAC0011`-refused. This is not an oversight — 23UpdatePlan.md's own
+   capability-parity checklist (line ~759) places the S3/email/search/
+   external_http *wrapper clients* at M7 and auth at M6; M4's job per
+   Pillar 4's verb table is the `HostSyntax` *leaf* lowering for every
+   verb (so `object_store.put`/`email.send`/`search.index`/`http.call`
+   compile correctly — implemented to the trait's letter, verified by
+   `cargo build`/`clippy`, using a forward-compatible `this.state.
+   <camelCase>` access pattern the M7 wrapper wiring is expected to
+   land under), not standing up the wrapper modules themselves. Verified
+   live, not by inspection: `ciac build --target typescript` against
+   `typed-handlers.ciac` (needs `object_store`), `typed-video.ciac`
+   (needs `auth`), and `extras-verbs.ciac` (needs `object_store`) each
+   fail with exactly `CIAC0011` and the correct capability name — the
+   same disclosed-deviation pattern M2 used for `crud-notes.ciac` and
+   M3 used for traceparent. `domain-orders.ciac` and `query-verbs.ciac`
+   (both db-only) are this milestone's real proving examples instead,
+   plus three more examples that turned out to be in-scope once typed
+   handlers un-gated (`modular-video.ciac`, `sim-vertical-slice.ciac`,
+   `sim-broker-slice.ciac` — none declare `object_store`/`auth`/etc.,
+   discovered by running the golden suite, not hand-picked).
+
+   Five real, live-caught bugs, all disclosed and fixed rather than
+   patched around:
+
+   1. **Duplicate `const` declarations in one block scope.** The first
+      generated `domain-orders.ciac` output failed with a real
+      `SyntaxError`: `PlaceOrder`'s `transaction {}` block calls
+      `db.insert` twice (`Orders` then `OrderAudits`), and the initial
+      `db_insert_tail` leaf declared `const __row = ..;` at the same
+      scope both times. Fixed with a per-handler `Cell<u32>` fresh-name
+      counter (`__row0`, `__row1`, ...) for every temp a leaf declares
+      directly into the caller's block (not inside its own IIFE, which
+      already has its own scope).
+   2. **`import type` erasing a value used at runtime.** `PlaceOrder`'s
+      `fail InvalidOrder(..)` lowers to `throw new InvalidOrder(..)` —
+      a real value construction — but every `schemas.ts` import was
+      blanket-emitted as `import type { X }`, which TypeScript erases
+      entirely at compile time; `tsc` stayed clean (structural typing
+      never needed the name) but the class reference would have been
+      `undefined` at runtime. Fixed by splitting `schema_imports` into
+      error records (plain `import { X }`, since `fail`/`throw new`
+      needs the value) versus everything else (`import type { X }`,
+      the common case).
+   3. **Hardcoded `../services/` import path for typed-handler call
+      sites.** `route_api.ts.j2`/`worker.ts.j2`/`job.ts.j2` imported
+      every pipeline handler from `../services/<module>.js`
+      unconditionally — correct for classic/`extern` handlers, wrong
+      for the new compiler-owned `src/logic/` package `db_insert_tail`
+      needs `checkout.ts` etc. to actually import
+      `PlaceOrder`/`CreateCustomer`/`AddLineItem` from — a real
+      `TS2307: Cannot find module` on the very first generated
+      project. Fixed by using the already-shared, target-neutral
+      `HandlerRef.handler_package` field (`"services"` vs `"logic"`,
+      the exact field Python's `app.<package>`/Rust's
+      `crate::<package>` already key off) instead of a literal.
+   4. **A pre-existing `schemas.ts.j2` bug, latent since M2, only now
+      exercised.** Every error record's `super(..)` call built its
+      message from adjacent template-literal fragments joined by `+`
+      — except the *last* field's fragment, which had no trailing `+`
+      before the closing `` `)` `` literal. Two adjacent template
+      literals with nothing between them is valid JS syntax with a
+      different meaning (a tagged template: the first literal used as
+      a *function* tagging the second) — `tsc` caught it as `Type
+      'String' has no call signatures`, not a syntax error. Latent
+      since M2 (`schemas.ts.j2` has generated `is_error` classes since
+      then) because no earlier TS-supported example had ever declared
+      an `error` record with fields until `domain-orders.ciac`'s
+      `InvalidOrder`. Fixed by joining every field fragment with `+`
+      unconditionally, including the last.
+   5. **Structural typing silently dropping an import.** `OrderAudit`
+      (a record-construction target inside `PlaceOrder`, never bound
+      to a typed local) triggered `@typescript-eslint/no-unused-vars`
+      even though `record_cons` genuinely constructs one: an
+      *unannotated* object literal never spells its record's name
+      anywhere, so the import genuinely went unused by TS's structural
+      typing. Fixed by wrapping every `record_cons` result in
+      `satisfies {record_name}` (not `as`, which would widen away the
+      literal field types) — a real correctness improvement (the
+      constructed shape is now checked against its declared record),
+      not just an eslint placation.
+
+   One more real design point, resolved rather than assumed: a HIR
+   `Let` bound to an `if`/`match` expression threads the same
+   `Dest::Assign(name)` into every branch, and unlike Python (whose
+   `if`/`else` share the enclosing scope), TS's `if {} else {}`
+   introduces a real block scope — a `let`/`const` declared *inside*
+   each branch would be invisible after the block. Resolved by having
+   `render()` scan the HIR once for exactly the `Let`s whose value is
+   an `if`/`match` (`collect_branching_lets`), hoisting only those into
+   one `let` declaration above the branch and using a bare `name =
+   value;` at each branch's own assignment site; every other `Let`
+   (the common case — a straight-line value with no branching) gets a
+   plain `const name = value;` at its one assignment site instead.
+   Getting this wrong either way is real, live-caught: an unconditional
+   hoist tripped `eslint`'s `prefer-const` on `query-verbs.ciac`'s
+   `Replace` (`let n = Note {...}` never branches), the naive
+   unconditional non-hoisted form would have shipped a real scoping bug
+   for the branching case (unexercised by any of this milestone's own
+   examples, but exercised for real once `typed-handlers.ciac`'s
+   `let ready = if inserted.status == Pending {...} else {...};`
+   un-gates at M7).
+
+   A sixth fix, one line, in the shared (not TS-only) `models.ts.j2`:
+   conformance's C4b (every declared topology fact — including a raw
+   `table` declaration's own name — must appear verbatim in every
+   supporting target's output) failed for `domain-orders.ciac` once TS
+   newly supported it, because `table` declarations were exported as
+   `{{ table.snake }}Table` (e.g. `customersTable`) rather than the
+   declared name itself. Fixed to export `{{ table.class_name }}`
+   (`Customers`), matching Python's `class Customers(Base):`/Rust's
+   `struct Customers` naming exactly — CRUD resources' own `<snake>
+   Table` convention is untouched (C4b only checks `table` decls, and
+   CRUD resource names were never part of this fact set).
+
+   Live proof, real toolchain and real local infrastructure, not
+   assumed: `domain-orders` (Postgres) and `query-verbs` (SQLite) both
+   pass `npm ci` (0 vulnerabilities), `npx tsc --noEmit`, `npx eslint .`,
+   `npx vitest run` clean; `modular-video`/`sim-vertical-slice`/
+   `sim-broker-slice` verify statically the same way. Two genuinely
+   live, zero-mocking proofs beyond static verification:
+
+   - **`domain-orders`' transaction rollback, against a real local
+     Postgres server.** `POST /orders` with a negative `total` returns
+     500 (`InvalidOrder`), and both the `Orders` write that happened
+     *before* the failing `if` and the never-reached `OrderAudits`
+     write are absent afterward (`SELECT count(*)` on both tables:
+     `0`) — the dedicated-connection `BEGIN`/`ROLLBACK` genuinely
+     undoes a write that already succeeded, exactly the "real
+     atomicity, exceeding Rust's disclosed gap" claim, not just parsed
+     syntax. A second `POST /orders` with a positive total commits
+     both writes (`1` row each); a direct `DELETE FROM customers`
+     against the referenced customer fails with a real Postgres FK
+     violation (`on_delete: restrict`), proving v0.16's relations
+     still enforce correctly through raw SQL.
+   - **`query-verbs`' full verb set, against a real local SQLite
+     file.** Two rows seeded directly into the file, then `db.query`/
+     `db.count` (both with a `Bool` predicate — the sqlite `0/1`↔
+     `boolean` coercion `bind_expr`/`map_row_field` add is what makes
+     `active: true`/`false` round-trip as real JS booleans, not raw
+     integers), `db.update` (renaming a row and flipping its `active`
+     flag), `db.delete_where` (bulk delete, returns the correct
+     affected-row count), and `db.delete` (single-key, `false` on a
+     nonexistent id) all round-trip correctly over real HTTP requests
+     against the real file.
+
+   Explicitly not attempted this pass, disclosed rather than silently
+   skipped: a generated per-handler behavioral unit test analogous to
+   Python's `render_test` (mocked-dependency assertions on call
+   counts) — real, substantial additional scope with its own mocking
+   machinery; the live HTTP round-trips above cover the same ground at
+   the system level instead. `MySQL`-engine typed handlers compile
+   (every `db_engine` branch is written and type-checked) but aren't
+   live-proofed this pass — no locally-tested example binds a typed
+   handler to a MySQL instance; matches the standing MySQL
+   live-proof-deferred-to-CI precedent from M2/M3.
+
+   The cross-backend equivalence test (`tests/tests/
+   typed_handler_equivalence.rs`) extends to three targets via a
+   second canonical example (`DIVISION_EXAMPLE`, `db`-only — the
+   original `CANONICAL_EXAMPLE` needs `object_store`, which TS can't
+   join this milestone without changing what it tests) asserting the
+   two named divergence cases directly: `Int / Int` (Python's `/`
+   stays true division; Rust's native `/` and TS's `Math.trunc(a / b)`
+   both truncate toward zero) and `Json` indexing (Python's bare
+   `base[key]`; TS's optional-chained access plus an explicit thrown
+   `KeyError`-shaped error, since JS has no equivalent built-in) — a
+   disclosed, pragmatic scope reduction from the "specified" section's
+   full JSON-fixture/three-runner-mechanism design, which doesn't
+   exist yet even for the two established targets; growing today's
+   real, working structural-parity mechanism to a third target is the
+   concrete step available now.
+
+   Full verification green: `cargo fmt --check`, `cargo clippy -D
+   warnings`, `cargo test --workspace` (all suites, zero failures,
+   including conformance's C3/C4a/C4b now checking TS alongside
+   Python/Rust for every example all three support); 5 new/updated
+   goldens accepted (`domain-orders`, `query-verbs` new; `modular-video`,
+   `sim-vertical-slice`, `sim-broker-slice` newly generating real TS
+   content now that typed handlers are open).
 5. **M5 — CHECKPOINT: factory acceptance + go/no-go.** Measure
    non-template LOC and template LOC against 22UpdatePlan.md M6's
    cost model and Pillar 8's template estimate; run the conformance

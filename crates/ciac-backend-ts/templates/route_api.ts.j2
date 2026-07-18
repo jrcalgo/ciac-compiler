@@ -6,7 +6,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { publish } from "../queue.js";
 {%- endif %}
 {%- for h in api.handlers %}
-import { {{ h.class_name }} } from "../services/{{ h.module }}.js";
+import { {{ h.class_name }} } from "../{{ h.handler_package }}/{{ h.module }}.js";
 {%- endfor %}
 {%- for t in api.call_imports %}
 import { {{ t.class_name }} } from "../clients/{{ t.module }}.js";

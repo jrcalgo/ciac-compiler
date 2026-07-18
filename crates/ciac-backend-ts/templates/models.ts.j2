@@ -68,7 +68,15 @@ export const {{ resource.snake }}Table = {{ table_fn(resource.db_engine) }}("{{ 
 });
 {% endfor %}
 {% for table in c.tables %}
-export const {{ table.snake }}Table = {{ table_fn(c.table_db_engine) }}("{{ table.snake }}", {
+{#- Named after the table's own declared name (matching Python's
+    `class {{ table.class_name }}(Base):`/Rust's `struct {{ table.class_name }}`)
+    rather than the `<snake>Table` convention CRUD resources use above:
+    conformance's C4b asserts every declared topology fact (a `table`
+    declaration's own name included) appears verbatim somewhere in
+    every supporting target's output, and raw SQL — this backend's
+    typed-handler `db.*` verb lowering, unlike CRUD's Drizzle-query-
+    builder path — never spells it anywhere else. #}
+export const {{ table.class_name }} = {{ table_fn(c.table_db_engine) }}("{{ table.snake }}", {
 {%- for field in table.record.fields %}
   {{ field.name }}: {% if field.name == "id" %}{{ id_column(c.table_db_engine) }}{% else %}{{ (field | drizzle_column(field.name, c.table_db_engine)) }}.notNull(){% endif %},
 {%- endfor %}

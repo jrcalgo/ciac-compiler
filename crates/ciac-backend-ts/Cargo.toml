@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 ciac-codegen.workspace = true
 ciac-ir.workspace = true
+heck.workspace = true
 include_dir.workspace = true
 minijinja.workspace = true
 serde.workspace = true

@@ -1,0 +1,8 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(assign v1 (record-cons Note (id (field-access payload id)) (title (field-access payload title)) (active (field-access payload active))))
+(db-update! Notes (field-access v1 id) v1)
+(discard v1)
+(return v1)

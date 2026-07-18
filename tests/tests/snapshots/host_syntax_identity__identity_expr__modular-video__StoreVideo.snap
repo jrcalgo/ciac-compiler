@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(let v1 (record-update Video v (status (enum VideoStatus Ready))))
+(return v1)

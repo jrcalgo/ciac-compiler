@@ -1,0 +1,9 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(transaction
+    (db-insert! ProcessedOrders (record-cons ProcessedOrder (id (uuid-new)) (order_id (field-access order id))))
+    (discard (record-cons ProcessedOrder (id (uuid-new)) (order_id (field-access order id))))
+)
+(return order)

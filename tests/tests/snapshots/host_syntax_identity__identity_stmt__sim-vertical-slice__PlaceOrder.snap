@@ -1,0 +1,9 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(transaction
+    (db-insert! Orders order)
+    (discard order)
+)
+(return order)

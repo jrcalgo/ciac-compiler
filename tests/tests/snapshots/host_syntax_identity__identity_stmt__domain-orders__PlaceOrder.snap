@@ -1,0 +1,16 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(transaction
+    (db-insert! Orders order)
+    (discard order)
+    (if (< (field-access order total) 0)
+        (fail InvalidOrder "order total must not be negative")
+     else
+        (empty-block)
+    )
+    (db-insert! OrderAudits (record-cons OrderAudit (id (uuid-new)) (note "order placed") (total (field-access order total))))
+    (discard (record-cons OrderAudit (id (uuid-new)) (note "order placed") (total (field-access order total))))
+)
+(return order)

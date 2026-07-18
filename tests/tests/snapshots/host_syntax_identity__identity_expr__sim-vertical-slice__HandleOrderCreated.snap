@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(transaction (expr-stmt (db-insert ProcessedOrders (record-cons ProcessedOrder (id (uuid-new)) (order_id (field-access order id))))))
+(return order)

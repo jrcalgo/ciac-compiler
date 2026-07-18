@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(expr-stmt (db-insert Customers c))
+(return c)

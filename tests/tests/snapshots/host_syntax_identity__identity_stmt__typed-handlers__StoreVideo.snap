@@ -1,0 +1,13 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(discard (object-store-put (+ "videos/" (field-access v id)) v))
+(db-insert! Videos v)
+(assign v1 v)
+(if (== (field-access v1 status) (enum VideoStatus Pending))
+    (assign v2 (record-update Video v1 (status (enum VideoStatus Ready))))
+ else
+    (assign v2 v1)
+)
+(return v2)

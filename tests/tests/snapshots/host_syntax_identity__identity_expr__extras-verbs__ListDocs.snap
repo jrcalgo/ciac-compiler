@@ -1,0 +1,5 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(return (object-store-list (field-access payload prefix)))

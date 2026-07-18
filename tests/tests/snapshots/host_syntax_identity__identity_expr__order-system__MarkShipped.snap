@@ -1,0 +1,8 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(let v1 (record-cons Order (id (field-access payload id)) (customer_id (field-access payload customer_id)) (status (enum OrderStatus Shipped)) (total (field-access payload total))))
+(expr-stmt (db-update Orders (field-access v1 id) v1))
+(expr-stmt (cache-delete "orders:shipped-count"))
+(return v1)

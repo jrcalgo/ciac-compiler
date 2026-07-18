@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(discard (object-store-delete (field-access payload key)))
+(return true)

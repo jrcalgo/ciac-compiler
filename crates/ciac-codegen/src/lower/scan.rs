@@ -19,6 +19,12 @@
 //! of bug structurally — a backend that doesn't read a given field
 //! just doesn't read it; the field can no longer silently fall out of
 //! sync with the walk, because there's only one walk.
+//!
+//! Moved verbatim into `lower/scan.rs` when the flat `lower.rs` became
+//! a directory to hold Pillar 3's Parts 2-3 (`dispatch.rs`/
+//! `host_syntax.rs`/`identity.rs`) alongside it — no logic here
+//! changed as part of that move; see `lower/mod.rs`'s own doc comment
+//! for the full picture.
 
 use ciac_ir::{
     FieldType, HandlerBody, HirExpr, HirStmt, HirType, NormalizedIr, RecordId, TableId, Verb,

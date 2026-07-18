@@ -1,0 +1,8 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(let v1 (db.count (no-predicate)))
+(expr-stmt (if (>= v1 1000) (then (fail TooManyRequestsOrder 1000)) (else (unit))))
+(expr-stmt (db-insert TicketsOrder (record-cons TicketOrder (id (uuid-new)))))
+(return payload)

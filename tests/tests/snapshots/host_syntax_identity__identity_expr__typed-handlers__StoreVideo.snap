@@ -1,0 +1,8 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(expr-stmt (object-store-put (+ "videos/" (field-access v id)) v))
+(let v1 (db-insert Videos v))
+(let v2 (if (== (field-access v1 status) (enum VideoStatus Pending)) (then (record-update Video v1 (status (enum VideoStatus Ready)))) (else v1)))
+(return v2)

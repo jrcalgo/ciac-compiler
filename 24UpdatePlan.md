@@ -1177,6 +1177,65 @@ planning pass finds them named.
    switches. typed-handlers/typed-video/domain-orders/query-verbs/
    extras-verbs verify; equivalence test → four targets (division,
    Json-indexing, Option-decode cases included).
+
+   **Shipped so far (v0.24 M4, part 1 — the amendment itself):**
+   confirmed, by reading `ciac-backend-ts/src/lower.rs`, that TS is
+   **not** already-generalized: TS is `Orientation::Statement` (like
+   Python) but propagates verb-call failure through JS exceptions,
+   exactly like Python does — neither target has ever needed an
+   explicit per-call error check, so the "or is confirmed already-
+   generalized from the TS arc" branch does not apply; the amendment
+   had to be designed and landed for real.
+   
+   The actual gap, found by tracing `lower_tail`'s own dispatch
+   table: `db.insert`/`update`/`delete`/`query`/`count`/`delete_where`
+   already have `Dest`+`indent`(+`in_tx`)-aware `_tail` leaf methods
+   for `Statement` orientation — but `db.get`, `cache.*`,
+   `object_store.*`, `email.send`, `search.*`, and `http.call` (the
+   "every one of these already fits a single expression" leaves) fall
+   through `lower_tail`'s generic `_ =>` arm: compute the plain scalar
+   value via the existing leaf, then `apply_dest` it in one line. That
+   one line is exactly what Python's exception model and TS's
+   exception model can get away with and Go cannot — a fallible
+   Go call needs its *own* `if err != nil { ... }` statement before
+   its result is usable at all, with no expression-position analog of
+   Rust's inline `?`.
+   
+   Added 12 new default-implemented `HostSyntax` methods
+   (`db_get_tail`, `cache_get_tail`/`cache_set_tail`/
+   `cache_delete_tail`, `object_store_put_tail`/`_get_tail`/
+   `_delete_tail`/`_list_tail`, `email_send_tail`, `search_index_tail`/
+   `search_query_tail`, `http_call_tail`) plus 12 new match arms in
+   `lower_tail` routing each verb kind to its new method instead of
+   the generic fallback. Each default implementation is defined to
+   perform the *exact same computation* the old fallback arm did
+   (call the existing scalar leaf, then `apply_dest`) — not a
+   `Statement`-only `unimplemented!()` default like `db_insert_tail`'s
+   sibling methods get, deliberately, so Python/TS need **zero** code
+   changes and produce **zero** output difference; only a host that
+   actually overrides one of the twelve (Go) changes shape. This
+   makes "byte-identical for existing targets" provable by
+   construction, not just by snapshot diff.
+   
+   **The identity-syntax golden update the plan calls for turned out
+   to be an *absence* of one, and that absence is itself the proof:**
+   `tests/tests/host_syntax_identity.rs` already runs
+   `IdentitySyntaxStatement` against every M4 target example
+   (`typed-handlers`, `domain-orders`, `query-verbs`, `extras-verbs`
+   all have their own `host_syntax_identity__identity_stmt__*`
+   snapshots checked in, `extras-verbs` alone covering all seven of
+   the newly-routed verb kinds across its seven handlers) — after
+   landing the amendment, `cargo test --workspace` (63 suites) passed
+   with **zero** `.snap.new` files and zero snapshot diffs anywhere,
+   Python/Rust/TS included. `apply_dest`'s own signature gained
+   `H: HostSyntax + ?Sized` (the one non-additive shared-crate edit,
+   needed so the new default methods can call it on `&self` inside
+   the trait itself without forcing `Self: Sized` onto every
+   `HostSyntax` implementor). Full verification: fmt/clippy/test
+   green with this change alone, committed and pushed *before* any Go
+   `lower.rs` leaf — the one intra-milestone ordering
+   `24UpdatePlan.md`'s own "Milestone dependencies and parallelism"
+   section hard-codes.
 5. **M5 — CHECKPOINT.** Measured cost vs the factory model with TS
    actuals as baseline; conformance harness green across four
    targets (OpenAPI byte-equality ×4, topology equality,

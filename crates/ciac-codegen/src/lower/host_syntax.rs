@@ -9,7 +9,7 @@
 //! [`ciac_ir::HirExpr`] trees, and never precompute a per-language
 //! "context struct" the shared crate would have to own).
 
-use super::dispatch::{Dest, Wrap};
+use super::dispatch::{apply_dest, Dest, Wrap};
 use ciac_ir::{BinOp, HirExpr, HirType, NodeId, PredOp, RecordId, TableId, UnOp, Verb};
 
 /// Whether a target's control flow and statement-shaped verbs
@@ -333,6 +333,143 @@ pub trait HostSyntax {
     fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String;
     fn search_query(&self, query: &str) -> String;
     fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String;
+
+    // --- the error-idiom amendment (`24UpdatePlan.md` M4) ---
+    //
+    // Every leaf above this point that reaches `Statement` orientation
+    // renders exactly one value, applied to its statement's `Dest` by
+    // the shared `apply_dest`/`lower_tail` fallback — correct for
+    // Python (exceptions) and TS (exceptions) alike, since neither
+    // needs any extra syntax at the call site to propagate a failure.
+    // Go has no such implicit propagation: a fallible call is a
+    // multiple-return `(T, error)`, and using its result at all
+    // requires its own `if err != nil { ... }` statement *before* the
+    // value is usable — there is no expression-position error
+    // operator the way Rust's `?` lets `db_insert_expr` stay a single
+    // expression string even in `Expression` orientation.
+    //
+    // Each `..._tail` pair below gives a `Statement`-oriented host a
+    // real decomposition point for one of the leaves above — `Dest`-
+    // and `indent`-aware, exactly like `db_insert_tail`/`db_update_tail`
+    // /`db_delete_tail`/`query_tail` already are. The **default**
+    // implementation is not `unimplemented!()`: it is defined to
+    // reproduce today's "compute the plain leaf value, then
+    // `apply_dest` it" behavior byte-for-byte (call the existing
+    // scalar leaf, then run the same three-way `Dest` dispatch
+    // `apply_dest` already performs) — so Python, TS, and
+    // `IdentitySyntaxStatement` need **zero** code changes and emit
+    // **zero** output difference from before this amendment; only a
+    // host that actually overrides one of these (Go) changes shape.
+    // This is the amendment's own byte-identical proof, provable by
+    // construction rather than only by snapshot diff — the snapshot
+    // diff (or its absence) is the executable confirmation.
+    fn db_get_tail(&self, table: TableId, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.db_get(table, key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn cache_get_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.cache_get(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn cache_set_tail(
+        &self,
+        key: &str,
+        value: &str,
+        value_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let rendered = self.cache_set(key, value, value_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &rendered, indent, &mut out);
+        out
+    }
+    fn cache_delete_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.cache_delete(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn object_store_put_tail(
+        &self,
+        key: &str,
+        value: &str,
+        value_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let rendered = self.object_store_put(key, value, value_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &rendered, indent, &mut out);
+        out
+    }
+    fn object_store_get_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.object_store_get(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn object_store_delete_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.object_store_delete(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn object_store_list_tail(&self, prefix: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.object_store_list(prefix);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn email_send_tail(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let value = self.email_send(to, subject, body);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn search_index_tail(
+        &self,
+        doc_id: &str,
+        document: &str,
+        document_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let rendered = self.search_index(doc_id, document, document_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &rendered, indent, &mut out);
+        out
+    }
+    fn search_query_tail(&self, query: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.search_query(query);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn http_call_tail(
+        &self,
+        url: &str,
+        json_body: &str,
+        body_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let value = self.http_call(url, json_body, body_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
 }
 
 /// Resolves a publish target's subject string — identical logic both

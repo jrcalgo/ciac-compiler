@@ -105,8 +105,11 @@ pub enum Dest {
 /// Applies `dest` to an already-lowered scalar `value`, pushing
 /// exactly one line — the generalized `apply_sink`. Exposed so a
 /// host's own statement-shaped leaves (`db_update_tail`, `query_tail`,
-/// ...) can reuse it instead of re-deriving the three-way dispatch.
-pub fn apply_dest<H: HostSyntax>(
+/// ...) can reuse it instead of re-deriving the three-way dispatch —
+/// `?Sized` so `HostSyntax`'s own default `..._tail` methods (M4's
+/// error-idiom amendment) can call it on `&self` without adding a
+/// `Self: Sized` bound to the trait itself.
+pub fn apply_dest<H: HostSyntax + ?Sized>(
     host: &H,
     dest: &Dest,
     value: &str,
@@ -677,6 +680,119 @@ pub fn lower_tail<H: HostSyntax>(
         } => {
             let lowered = lower_predicate(host, ir, body, predicate);
             host.query_tail(*verb, lowered.as_ref(), dest, indent, in_tx)
+        }
+        // The error-idiom amendment (`24UpdatePlan.md` M4): every
+        // "simple verb" gets its own tail-dispatch arm here instead of
+        // falling to the generic `_ =>` scalar-then-apply_dest path
+        // below, mirroring how `DbInsert`/`DbUpdate`/`DbDelete`/`Query`
+        // already do. `HostSyntax`'s own default for each new
+        // `..._tail` method reproduces the old fallback computation
+        // exactly (see that trait's doc comment), so this is a pure
+        // routing change for every host that doesn't override one —
+        // in_tx is not threaded here: none of these are database-
+        // transactional operations, matching `db_get`'s own existing
+        // no-`in_tx` signature above.
+        HirExpr::VerbCall {
+            verb: Verb::DbGet(table),
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.db_get_tail(*table, &key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::CacheGet,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.cache_get_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::CacheSet,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            let value_s = lower_scalar(host, ir, body, &args[1]);
+            host.cache_set_tail(&key_s, &value_s, &args[1].ty(), dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::CacheDelete,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.cache_delete_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStorePut,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            let value_s = lower_scalar(host, ir, body, &args[1]);
+            host.object_store_put_tail(&key_s, &value_s, &args[1].ty(), dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStoreGet,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.object_store_get_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStoreDelete,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.object_store_delete_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStoreList,
+            args,
+            ..
+        } => {
+            let prefix_s = lower_scalar(host, ir, body, &args[0]);
+            host.object_store_list_tail(&prefix_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::EmailSend,
+            args,
+            ..
+        } => {
+            let to_s = lower_scalar(host, ir, body, &args[0]);
+            let subject_s = lower_scalar(host, ir, body, &args[1]);
+            let body_s = lower_scalar(host, ir, body, &args[2]);
+            host.email_send_tail(&to_s, &subject_s, &body_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::SearchIndex,
+            args,
+            ..
+        } => {
+            let doc_id_s = lower_scalar(host, ir, body, &args[0]);
+            let document_s = lower_scalar(host, ir, body, &args[1]);
+            host.search_index_tail(&doc_id_s, &document_s, &args[1].ty(), dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::SearchQuery,
+            args,
+            ..
+        } => {
+            let query_s = lower_scalar(host, ir, body, &args[0]);
+            host.search_query_tail(&query_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::HttpCall,
+            args,
+            ..
+        } => {
+            let url_s = lower_scalar(host, ir, body, &args[0]);
+            let json_s = lower_scalar(host, ir, body, &args[1]);
+            host.http_call_tail(&url_s, &json_s, &args[1].ty(), dest, indent)
         }
         _ => {
             let e = lower_scalar(host, ir, body, expr);

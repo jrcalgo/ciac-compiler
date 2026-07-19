@@ -10,6 +10,9 @@ import (
 {%- if c.has_db %}
 	"{{ c.package }}/internal/db"
 {%- endif %}
+{%- if c.has_queue %}
+	"{{ c.package }}/internal/queue"
+{%- endif %}
 )
 
 // AppState is every provider client this service's generated code can
@@ -25,6 +28,9 @@ type AppState struct {
 {%- for inst in c.db_instances %}
 	{{ inst.state_field | go_pascal }} *sql.DB
 {%- endfor %}
+{%- if c.has_queue %}
+	Queue *queue.Queue
+{%- endif %}
 }
 
 // New builds AppState. Construction is infrastructure-free by
@@ -39,5 +45,12 @@ func New(cfg config.Config) (*AppState, error) {
 	}
 	st.{{ inst.state_field | go_pascal }} = {{ inst.state_field }}
 {%- endfor %}
+{%- if c.has_queue %}
+{%- if c.queue_engine == "kafka" %}
+	st.Queue = queue.New(cfg.KafkaURL)
+{%- else %}
+	st.Queue = queue.New(cfg.NatsURL)
+{%- endif %}
+{%- endif %}
 	return st, nil
 }

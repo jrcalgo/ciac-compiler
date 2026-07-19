@@ -1,0 +1,67 @@
+{#- Shared pipeline-step emission, {% import %}-ed by route_api.go.j2,
+    worker.go.j2, and job.go.j2 (mirrors ciac-backend-ts's own
+    "one shared macro" choice -- Python/Rust duplicate this per file
+    instead; minijinja's {% import %} makes sharing simple here too).
+
+    `result` flows through the pipeline as `any`: a `handler`/`call`
+    step's output type has no static relationship to its input beyond
+    "whatever the target's Handle/method declares", so `any` is the
+    honest typing -- the alternative, threading a precise type through
+    every step, would need a real type per intermediate value that
+    doesn't exist in the IR today.
+
+    Go has no `?`/exception propagation, and a naive shared `err`
+    variable reassigned by every step runs into two dead-end shapes:
+    `result, err := f()` needs `:=` for `err`'s first declaration but
+    `=` for every later step (which step is "first" depends on which
+    kinds are present), and pre-declaring `var err error` up front
+    makes it a compile error ("declared and not used") on any pipeline
+    whose only step is `publish` (nothing ever reads it) -- both
+    reachable by 24UpdatePlan.md M3 examples (`kafka-pipeline.ciac`,
+    `realtime-progress.ciac`). The fix: every step gets its own
+    block-scoped `if v, err := ...; err != nil { <on_err> } else {
+    result = v }` (or, for `publish`, a bare `if err := ...; err !=
+    nil`) -- fresh names in a fresh scope every time, so step order/
+    composition never matters and no shared mutable error variable is
+    ever declared. `on_err` is a caller-supplied Go statement (or
+    semicolon-joined statements) naming `err`, rendered as-is and
+    reformatted by the real `gofmt` binary at the render_go call site.
+
+    `call`/`match` steps render plausible code (mirroring Rust/TS's
+    own M3-era templates, which did the same before their `call`
+    infrastructure -- clients/scope arms -- actually existed) but are
+    unreachable by every 24UpdatePlan.md M3 example: no example
+    populates `call_imports` or a `match` step yet, so this is inert
+    until 24UpdatePlan.md M6/M7 exercise it for real. -#}
+{% macro emit_step(step, indent, on_err) %}
+{%- if step.kind == "handler" %}
+{{ indent }}if v, err := services.New{{ step.handler.class_name }}(st).Handle(ctx, result); err != nil {
+{{ indent }}	{{ on_err }}
+{{ indent }}} else {
+{{ indent }}	result = v
+{{ indent }}}
+{%- elif step.kind == "publish" %}
+{{ indent }}if err := queue.PublishJSON(st.Queue, "{{ step.subject }}", result); err != nil {
+{{ indent }}	{{ on_err }}
+{{ indent }}}
+{%- elif step.kind == "call" %}
+{{ indent }}if v, err := clients.New{{ step.call.class_name }}(st).{{ step.call.method | go_pascal }}(ctx, result); err != nil {
+{{ indent }}	{{ on_err }}
+{{ indent }}} else {
+{{ indent }}	result = v
+{{ indent }}}
+{%- elif step.kind == "match" %}
+{{ indent }}switch v, _ := result.(map[string]any)["{{ step.field }}"].(string); v {
+{%- for arm in step.arms %}
+{%- if arm.label %}
+{{ indent }}case "{{ arm.label }}":
+{%- else %}
+{{ indent }}default:
+{%- endif %}
+{%- for inner in arm.steps %}
+{{ emit_step(inner, indent ~ "\t", on_err) }}
+{%- endfor %}
+{%- endfor %}
+{{ indent }}}
+{%- endif %}
+{%- endmacro %}

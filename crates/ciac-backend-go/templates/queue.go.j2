@@ -1,0 +1,173 @@
+// Package queue provides broker access ({{ c.queue_engine }}). Generated
+// by CIaC.
+//
+// Publish/subscribe go through a client connected lazily on first use
+// for both engines. That is NATS's usual shape (`nats.Connect` dials
+// synchronously), but it is a deliberate, live-verified choice for
+// Kafka too: unlike Rust's rdkafka producer (whose `create()` neither
+// dials nor spawns background goroutines), franz-go's `kgo.NewClient`
+// starts two supervisory goroutines
+// (`updateMetadataLoop`/`reapConnectionsLoop`) immediately on
+// construction, confirmed with `goleak` against a real, unreachable
+// broker address -- so a Kafka `Queue` needs the same connect-on-
+// first-use guard NATS needs to keep `state.New` infrastructure-free
+// (the M1 no-infra construction test).
+package queue
+
+import (
+	"encoding/json"
+	"fmt"
+	"sync"
+
+{%- if c.queue_engine == "kafka" %}
+	"context"
+	"strings"
+	"time"
+
+	"github.com/twmb/franz-go/pkg/kgo"
+{%- else %}
+	"github.com/nats-io/nats.go"
+{%- endif %}
+)
+
+{%- if c.queue_engine == "kafka" %}
+
+// Queue wraps a lazily-connected Kafka producer client. Topics reuse
+// the `<service>.<stream>` subject names NATS programs use.
+type Queue struct {
+	url      string
+	mu       sync.Mutex
+	producer *kgo.Client
+}
+
+// New builds a Queue. Construction never touches the network -- the
+// underlying client connects on first publish.
+func New(url string) *Queue {
+	return &Queue{url: url}
+}
+
+func (q *Queue) client() (*kgo.Client, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.producer == nil {
+		cl, err := kgo.NewClient(kgo.SeedBrokers(strings.Split(q.url, ",")...))
+		if err != nil {
+			return nil, fmt.Errorf("connecting to kafka at %s: %w", q.url, err)
+		}
+		q.producer = cl
+	}
+	return q.producer, nil
+}
+
+// Publish sends payload to subject (a Kafka topic). Bounded to 5s --
+// found live: against an unreachable broker, `ProduceSync` with a
+// bare `context.Background()` retries internally forever (matching
+// Rust's own rdkafka `message.timeout.ms=5000`, the reason this is a
+// bounded context rather than a background one).
+func (q *Queue) Publish(subject string, payload []byte) error {
+	cl, err := q.client()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return cl.ProduceSync(ctx, &kgo.Record{Topic: subject, Value: payload}).FirstErr()
+}
+
+// Consumer builds a fresh client in consumer group group, subscribed
+// to subject -- a new client per call, matching Rust's rdkafka
+// `Queue::consumer`: a Kafka consumer group is bound at client
+// construction, so it cannot be layered onto the shared producer
+// client the way a NATS subscription can. `auto.offset.reset` isn't
+// set here; franz-go defaults new groups to the earliest offset,
+// matching NATS-programs' effective semantics for the generated
+// system tests.
+func (q *Queue) Consumer(subject, group string) (*kgo.Client, error) {
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(strings.Split(q.url, ",")...),
+		kgo.ConsumerGroup(group),
+		kgo.ConsumeTopics(subject),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to kafka at %s: %w", q.url, err)
+	}
+	return cl, nil
+}
+{%- else %}
+
+// Queue wraps a lazily-connected NATS client.
+type Queue struct {
+	url  string
+	mu   sync.Mutex
+	conn *nats.Conn
+}
+
+// New builds a Queue. Construction never touches the network -- the
+// underlying client connects on first publish/subscribe.
+func New(url string) *Queue {
+	return &Queue{url: url}
+}
+
+func (q *Queue) client() (*nats.Conn, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.conn == nil {
+		nc, err := nats.Connect(q.url)
+		if err != nil {
+			return nil, fmt.Errorf("connecting to NATS at %s: %w", q.url, err)
+		}
+		q.conn = nc
+	}
+	return q.conn, nil
+}
+
+// Publish sends payload to subject.
+func (q *Queue) Publish(subject string, payload []byte) error {
+	nc, err := q.client()
+	if err != nil {
+		return err
+	}
+	return nc.Publish(subject, payload)
+}
+
+// QueueSubscribe delivers subject's messages onto a fresh channel,
+// load-balanced across every subscriber sharing group.
+func (q *Queue) QueueSubscribe(subject, group string) (chan *nats.Msg, error) {
+	nc, err := q.client()
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan *nats.Msg, 64)
+	if _, err := nc.ChanQueueSubscribe(subject, group, ch); err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+// Subscribe delivers a copy of every message on subject onto a fresh
+// channel -- NATS's own fan-out semantics are this backend's whole
+// broadcast mechanism (no app-level bookkeeping needed), the same
+// design Rust/TS's own NATS branches rely on.
+func (q *Queue) Subscribe(subject string) (chan *nats.Msg, error) {
+	nc, err := q.client()
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan *nats.Msg, 64)
+	if _, err := nc.ChanSubscribe(subject, ch); err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+{%- endif %}
+
+// PublishJSON marshals v and publishes it -- the shared call site
+// every generated pipeline `publish` step goes through, mirroring
+// Rust's centralized `AppState::publish`.
+func PublishJSON(q *Queue, subject string, v any) error {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return q.Publish(subject, payload)
+}

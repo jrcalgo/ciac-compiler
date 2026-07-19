@@ -147,16 +147,25 @@ impl Backend for GoBackend {
         // refused on it once `Database` alone was un-gated). `signature:
         // None` is the documented "classic binding-only handler"
         // discriminant (pre-v0.7, no typed body) -- exactly the shape
-        // `resource_store.go.j2`/`resource_api.go.j2` already render
-        // unconditionally from `ctx.resources`, with no handler *body*
-        // to lower. A typed handler (`signature: Some(_)`) is a
-        // different, much bigger feature (HostSyntax leaf lowering)
-        // that stays gated until M4. Bare classic handlers *not* tied
-        // to a `crud` (seeded-stub `ctx.services` entries) are also not
-        // yet implemented and stay gated by this same narrow condition
-        // -- confirmed by generating every example with this gate: only
-        // `crud`-synthesized Store nodes are ever `signature: None`
-        // among currently Api+Database-reachable programs.
+        // `resource_store.go.j2`/`resource_api.go.j2`/`service.go.j2`
+        // already render unconditionally, with no handler *body* to
+        // lower. A typed handler (`signature: Some(_)`) is a different,
+        // much bigger feature (HostSyntax leaf lowering) that stays
+        // gated until M4.
+        //
+        // M3 (this milestone) adds broker/workers/jobs/channels for
+        // both queue engines at once, the same "engine-agnostic
+        // component gate, per-engine branch stays inside the template"
+        // shape M2 already established for `Database`: `Queue` gates
+        // the capability instance declaration itself
+        // (`use { queue NATS/Kafka; }`), `Stream` gates `stream <Name>:
+        // <Record>;`, `Worker`/`Job`/`Channel` gate the pipeline units
+        // (`worker`/`events`/`job`/`channel` declarations -- `events`
+        // lowers to a `Component::Worker` node too, split into
+        // `ConsumerCtx` only at the codegen model layer), and
+        // `Scheduler`/`Realtime` gate the `use { scheduler jobs Cron;
+        // realtime live WebSocket/SSE; }` capability instances a
+        // `job`/`channel` declaration needs present.
         matches!(
             component,
             Component::Api { .. }
@@ -165,6 +174,13 @@ impl Backend for GoBackend {
                     signature: None,
                     ..
                 }
+                | Component::Queue { .. }
+                | Component::Stream { .. }
+                | Component::Worker { .. }
+                | Component::Job { .. }
+                | Component::Channel { .. }
+                | Component::Scheduler { .. }
+                | Component::Realtime { .. }
         )
     }
 
@@ -201,15 +217,17 @@ impl Backend for GoBackend {
         }
 
         if model.multi {
-            let m = minijinja::Value::from_serialize(&model);
+            // No system-level README template -- found live: M3's own
+            // wider `supports()` gate is what first makes a
+            // multi-service system reachable for Go at all (M1/M2's
+            // narrower gate never had one in the conformance harness's
+            // supported set), and `ciac-backend-ts` already settled
+            // this exact question by not emitting one either; matching
+            // that precedent instead of writing a new template neither
+            // other target's own users asked for.
             project.add_file(
                 "docker-compose.yml",
                 ciac_codegen::compose::render_system_compose(&model, &COMPOSE_OPTS)?,
-            );
-            project.add_file(
-                "README.md",
-                env.get_template("system-README.md.j2")?
-                    .render(context! { m => m })?,
             );
             project.add_file(
                 "openapi.json",
@@ -297,11 +315,18 @@ fn emit_service(
     // Disclosed here rather than silently worked around with a runtime
     // `os.ReadFile`, which would reintroduce a working-directory
     // dependency the distroless runtime image doesn't have.
+    // Written unconditionally, multi-service included -- found live:
+    // every other target (confirmed against Rust's own `lib.rs`, which
+    // never gates this behind `!multi` either) emits a per-service
+    // `openapi.json` even inside a multi-service system, separate from
+    // the root-level *index* `generate()` writes across every service.
+    // Go's own `!multi` gate here was a latent M1 gap invisible until
+    // M3's wider `supports()` first made a multi-service example
+    // (`audited-crud.ciac`) reachable at all -- caught by C3's
+    // byte-identical-path-set conformance check, not by inspection.
     let openapi_doc = serde_json::to_string_pretty(&ciac_codegen::openapi::build_document(ctx))
         .map_err(|e| BackendError::Other(e.to_string()))?;
-    if !multi {
-        project.add_file(at("openapi.json"), openapi_doc.clone());
-    }
+    project.add_file(at("openapi.json"), openapi_doc.clone());
     project.add_file(at("cmd/api/apidoc.json"), openapi_doc);
 
     project.add_file(
@@ -335,6 +360,12 @@ fn emit_service(
     if ctx.has_db {
         project.add_file(at("internal/db/db.go"), render_go("db.go.j2", empty())?);
     }
+    if ctx.has_queue {
+        project.add_file(
+            at("internal/queue/queue.go"),
+            render_go("queue.go.j2", empty())?,
+        );
+    }
     if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
         let resource_needs_decode = ctx.resources.iter().any(|r| r.record.is_some());
         // Every generic (no-record) resource's `Data` field is a raw
@@ -364,8 +395,14 @@ fn emit_service(
     // `crud <Name>;` expands into `Api`/`Database` components only
     // (verified empirically against `examples/sqlite-notes.ciac` — no
     // `Service` node), so a resource-only program still needs a
-    // router even when `ctx.apis` itself is empty.
-    if !ctx.apis.is_empty() || !ctx.resources.is_empty() {
+    // router even when `ctx.apis` itself is empty. A jobs-only program
+    // (e.g. `scheduled-cleanup.ciac`, found live: M3's first example
+    // with zero apis/resources/channels) has none of these, so there
+    // is no `internal/routes` package at all -- `main.go.j2` branches
+    // on this same `has_routes` value to fall back to a bare
+    // `http.NewServeMux()` with just `/health`.
+    let has_routes = !ctx.apis.is_empty() || !ctx.resources.is_empty() || !ctx.channels.is_empty();
+    if has_routes {
         project.add_file(
             at("internal/routes/router.go"),
             render_go("router.go.j2", empty())?,
@@ -377,8 +414,55 @@ fn emit_service(
             render_go("route_api.go.j2", context! { api => api })?,
         );
     }
+    for channel in &ctx.channels {
+        project.add_file(
+            at(&format!("internal/routes/channel_{}.go", channel.snake)),
+            render_go("channel.go.j2", context! { channel => channel })?,
+        );
+    }
 
-    project.add_file(at("cmd/api/main.go"), render_go("main.go.j2", empty())?);
+    // Classic (`signature: None`) handler seeded stubs -- one struct
+    // per `ctx.services` entry, business logic left to the user
+    // (`Handle` starts as a TODO). Distinct from `ctx.resources`'
+    // `resource_store.go.j2` files, which also live under
+    // `internal/services/` but are compiler-owned CRUD persistence,
+    // not user business logic.
+    for service in &ctx.services {
+        project.add_seeded_file(
+            at(&format!("internal/services/{}.go", service.module)),
+            render_go("service.go.j2", context! { service => service })?,
+        );
+    }
+
+    for worker in &ctx.workers {
+        project.add_file(
+            at(&format!("internal/workers/{}.go", worker.snake)),
+            render_go("worker.go.j2", context! { worker => worker })?,
+        );
+    }
+    for job in &ctx.jobs {
+        project.add_file(
+            at(&format!("internal/workers/{}.go", job.snake)),
+            render_go("job.go.j2", context! { job => job })?,
+        );
+    }
+    for consumer in &ctx.consumers {
+        project.add_file(
+            at(&format!("internal/workers/{}.go", consumer.snake)),
+            render_go("consumer.go.j2", context! { consumer => consumer })?,
+        );
+    }
+    if !ctx.workers.is_empty() || !ctx.jobs.is_empty() || !ctx.consumers.is_empty() {
+        project.add_file(
+            at("cmd/workers/main.go"),
+            render_go("workers_main.go.j2", empty())?,
+        );
+    }
+
+    project.add_file(
+        at("cmd/api/main.go"),
+        render_go("main.go.j2", context! { has_routes => has_routes })?,
+    );
     Ok(())
 }
 
@@ -479,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn supports_apis_only_at_m1() {
+    fn supports_apis() {
         let backend = GoBackend;
         assert!(backend.supports(&Component::Api {
             name: "X".to_owned(),
@@ -490,6 +574,68 @@ mod tests {
                 scope: None,
             },
         }));
+    }
+
+    #[test]
+    fn supports_broker_workers_jobs_channels_at_m3() {
+        let backend = GoBackend;
+        assert!(backend.supports(&Component::Queue {
+            name: "Q".to_owned(),
+            engine: ciac_ir::QueueEngine::Nats,
+        }));
+        assert!(backend.supports(&Component::Worker {
+            name: "W".to_owned(),
+            config: Default::default(),
+        }));
+        assert!(backend.supports(&Component::Job {
+            name: "J".to_owned(),
+            config: ciac_ir::JobConfig {
+                schedule: "0 3 * * *".to_owned(),
+                catch_up: false,
+            },
+        }));
+        assert!(backend.supports(&Component::Channel {
+            name: "C".to_owned(),
+            config: ciac_ir::ChannelConfig {
+                path: "/channels/c".to_owned(),
+            },
+        }));
+        assert!(backend.supports(&Component::Scheduler {
+            name: "S".to_owned(),
+            provider: ciac_ir::SchedulerProvider::Cron,
+        }));
+        assert!(backend.supports(&Component::Realtime {
+            name: "R".to_owned(),
+            provider: ciac_ir::RealtimeProvider::WebSocket,
+        }));
+    }
+
+    fn kafka_pipeline_ir() -> NormalizedIr {
+        let src = "service Clickstream;\n\nuse {\n    queue Kafka;\n}\n\nrecord Click {\n    id: Uuid;\n    page: String;\n}\n\nstream Clicks: Click;\n\napi Ingest: Click {\n    method: POST;\n    path: \"/clicks\";\n}\npipeline Ingest: publish Clicks -> Return;\n\nworker Enrich on Clicks;\npipeline Enrich: EnrichClick;\n";
+        let mut sources = ciac_diagnostics::SourceMap::new();
+        let file = sources.add_file("test.ciac", src);
+        let mut diags = ciac_diagnostics::Diagnostics::new();
+        let program = ciac_syntax::parse(src, file, &mut diags);
+        ciac_sema::analyze(&program, &mut diags)
+            .unwrap_or_else(|| panic!("compiles: {:?}", diags.codes()))
+    }
+
+    #[test]
+    fn generates_worker_pipeline_file_set() {
+        let ir = kafka_pipeline_ir();
+        let backend = GoBackend;
+        let project = backend
+            .generate(&ir, &GenOptions::default())
+            .expect("go generates");
+        let paths: Vec<&str> = project.files().map(|(p, _)| p).collect();
+        for expect in [
+            "internal/queue/queue.go",
+            "internal/services/enrich_click.go",
+            "internal/workers/enrich.go",
+            "cmd/workers/main.go",
+        ] {
+            assert!(paths.contains(&expect), "missing {expect} in {paths:?}");
+        }
     }
 
     #[test]

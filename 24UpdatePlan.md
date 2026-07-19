@@ -989,6 +989,185 @@ planning pass finds them named.
    schedules, unit-tested against the same cron-equivalence cases
    the Rust translation carries), WS/SSE channels, publish
    traceparent headers. The four broker/schedule examples verify.
+
+   **Shipped (v0.24 M3):** `supports()` gained `Component::Queue`,
+   `Component::Stream`, `Component::Worker`, `Component::Job`,
+   `Component::Channel`, `Component::Scheduler`, `Component::Realtime`
+   — one wide gate, same "engine-agnostic component, per-engine branch
+   stays inside the template" shape M2 already established for
+   `Database`. `events <Name>;` needed no separate gate: it lowers to
+   the same `Component::Worker` node a plain `worker` declaration
+   does, split into `ConsumerCtx` only at the codegen model layer.
+
+   New templates: `internal/queue/queue.go` (broker client),
+   `internal/services/<module>.go` seeded stubs for classic
+   (`signature: None`) handlers not tied to a `crud` (`ctx.services`
+   — genuinely new at M3; no earlier example had a bare handler with
+   capability bindings and no `crud`), `internal/workers/<name>.go`
+   (workers), `<jobs>.go` (robfig/cron jobs), `<consumer>.go` (events
+   consumers), `internal/routes/channel_<name>.go` (WS/SSE),
+   `cmd/workers/main.go`, and a shared `_steps.go.j2` macro
+   ({% import %}-ed by `route_api.go.j2`/`worker.go.j2`/`job.go.j2`,
+   mirroring TS's own single-macro choice over Python/Rust's
+   per-file duplication).
+
+   **Traceparent headers are not shipped this milestone** — Go
+   doesn't support `Component::Tracing` yet (lands at M7, same as
+   TS), so no reachable example has anything to propagate; the plan
+   text's "publish traceparent headers" is deferred to M7 alongside
+   tracing itself, not silently dropped.
+
+   **A genuine per-engine divergence from Rust, found live, not
+   assumed:** Rust's `queue.rs.j2` constructs its Kafka producer
+   *eagerly* in `Queue::new` (rdkafka's `create()` neither dials nor
+   spawns background work) while keeping NATS lazy behind a
+   `OnceCell`. Go's franz-go looked like it should follow the same
+   split — until a `goleak`-backed scratch test against a real,
+   unreachable broker address showed `kgo.NewClient` starting two
+   supervisory goroutines (`updateMetadataLoop`, `reapConnectionsLoop`)
+   immediately on construction, with no error and no blocking dial.
+   That means an eager Kafka producer would fail Go's own M1 no-infra
+   construction test the moment a program declared `queue Kafka;` — so
+   Go's `Queue` connects *both* engines lazily (mutex-guarded,
+   connect-on-first-use), a real, disclosed difference from Rust's
+   design rather than the "same as Rust" default assumption would have
+   produced. `Queue.Consumer(subject, group)` (Kafka) still builds a
+   fresh client per call, matching Rust's own per-call `consumer()` —
+   a Kafka consumer group is bound at client construction, so it can't
+   reuse the shared lazy producer client the way a NATS subscription
+   reuses the shared connection.
+
+   **A second live find on the same seam:** the first version of
+   `Queue.Publish` (Kafka) called `cl.ProduceSync(context.Background(),
+   ...)` — against a real, unreachable broker this **hung the HTTP
+   request past 60 seconds** rather than failing, because franz-go
+   retries internally forever against a `context.Background()` with
+   no deadline. Fixed with a 5s `context.WithTimeout`, matching Rust's
+   own `message.timeout.ms=5000` — found by actually curling a running
+   binary with `--max-time`, not by reading the franz-go source.
+
+   **Pipeline step emission (`_steps.go.j2`) needed a real design
+   decision Rust/TS's own macros didn't have to make:** Go has no
+   `?`/exception propagation, and both obvious shapes for a shared
+   `result`/`err` pair across steps break — `result, err := f()` needs
+   `:=` for `err`'s first declaration but `=` for every later step
+   (which step is "first" depends on which kinds are present in which
+   order), and pre-declaring `var err error` up front is a compile
+   error ("declared and not used") on a publish-only pipeline (nothing
+   ever reads it) — both shapes are reachable by M3's own examples
+   (`kafka-pipeline.ciac`'s `api Ingest` and `realtime-progress.ciac`'s
+   `api Complete` are both single-`publish`-step pipelines). Resolved
+   by giving every step its own block-scoped `if v, err := ...; err !=
+   nil { <on_err> } else { result = v }` (fresh names, fresh scope,
+   every time) instead of a shared mutable pair — step order and
+   composition stop mattering entirely. `call`/`match` step kinds
+   render plausible code (mirroring Rust/TS's own M3-era templates,
+   which did the same before their `call` infrastructure existed) but
+   are inert until M6/M7 populate `call_imports`/match arms for real.
+
+   **Three more real bugs, all found only by live-generating and
+   building the four target examples, not by inspection:**
+   1. `schemas.go.j2` never emitted an enum *type* at all —
+      `go_type`/`go_zero` already returned `VideoStatus`/
+      `VideoStatus("")` for an enum field (wired at M1 for future use),
+      but nothing ever generated `type VideoStatus string` or its
+      constants, so `realtime-progress.ciac` (the first example with
+      an inline-enum record field) failed with `undefined: VideoStatus`
+      at `go build`. Fixed by emitting the named-string type + typed
+      constants + a `Valid()` membership method per `record.enums`,
+      and wiring a presence-checked `Decode<Record>` to call it after
+      unmarshal — Go's `encoding/json` accepts *any* string into a
+      named-string field with no error, so without this an invalid
+      enum value would have silently round-tripped instead of
+      rejecting with the 400 every other target gives. The first
+      version of `Valid()` also had a real logic bug (not just a
+      compile error): `case A: case B: return true` only returns true
+      for the *last* case in the list — Go's `switch` doesn't fall
+      through by default — caught by `go vet`'s "missing return"
+      diagnostic, fixed with one comma-joined case line.
+   2. `main.go.j2` unconditionally imported and called
+      `routes.Router(st)`, but `scheduled-cleanup.ciac` (M3's first
+      jobs-only example — zero apis, zero resources, zero channels)
+      has no `internal/routes` package at all, since `router.go.j2`
+      is gated on all three being non-empty. Fixed with a `has_routes`
+      boolean threaded from `lib.rs`, falling back to a bare
+      `http.NewServeMux()` with just `/health` when nothing else
+      declares a route — `/openapi.json` still always serves.
+      Separately, `cmd/workers/main.go.j2`'s `errgroup.Wait()` returns
+      immediately for a jobs-only program (nothing was ever added to
+      the group via `g.Go`), which would have exited the process right
+      after starting the cron scheduler; fixed with a trailing
+      `select {}` gated on `c.jobs` being non-empty.
+   3. `emit_service`'s per-service `openapi.json` write was gated
+      behind `!multi`, silently dropped for every service inside a
+      multi-service system. Invisible until M3's own wider `supports()`
+      gate first made a multi-service example (`audited-crud.ciac`)
+      reachable for Go at all — caught by the C3 conformance test's
+      byte-identical-path-set check (`python: [accounts/openapi.json,
+      catalog/openapi.json, openapi.json]` vs `go: [openapi.json]`),
+      confirmed against Rust's own `lib.rs` (which never gates this
+      write behind `!multi` either) before fixing. A second,
+      adjacent gap on the same path: `generate()` still called
+      `env.get_template("system-README.md.j2")` for multi-service
+      systems, a template this crate never created (a latent M1 gap,
+      also invisible until a multi-service example became reachable).
+      Fixed by *not* emitting a system-level README at all, matching
+      `ciac-backend-ts`'s own settled answer to this exact question
+      (`ciac-backend-ts/src/lib.rs` computes the model value and
+      discards it) rather than writing a template neither Python nor
+      Rust's own users specifically need duplicated for Go.
+
+   **Live-verified end to end, not just golden-generated,** all four
+   target examples (`gofmt -l`/`CGO_ENABLED=0 go build`/`go vet`/
+   `go test` clean throughout) plus the newly-reachable multi-service
+   `audited-crud.ciac`:
+   - `kafka-pipeline.ciac`: `POST /clicks` with a non-UUIDv4 `id` →
+     400 from the `validator` tag; a real UUIDv4 with no Kafka broker
+     running → 500 after the bounded 5s timeout (the fix above),
+     server stays alive and `/health` still responds afterward.
+   - `realtime-progress.ciac`: `POST /complete` with `"status":
+     "Bogus"` → 400 `field "status": invalid VideoStatus value
+     "Bogus"` (the enum fix above, live); a valid enum value with no
+     NATS broker running → fast 500, not a hang; `GET
+     /channels/progress` (the actual registered path — `/progress`
+     alone 404s, confirming `channel.path`'s real shape) with
+     WebSocket upgrade headers → 101 Switching Protocols via
+     gorilla/websocket; without them → 400, matching the SSE/WS
+     boundary every other target's channel gives.
+   - `scheduled-cleanup.ciac` (jobs-only): `cmd/workers` starts, logs
+     no schedule-parse error (`robfig/cron`'s standard 5-field parser
+     accepts CIaC's `"0 3 * * *"` directly — no leading-seconds-field
+     or 0-7-weekday translation needed at all, a genuinely simpler
+     answer than Rust's own `cron` crate needed), and stays running
+     (`select {}` fix above) rather than exiting immediately; a
+     throwaway test calling `HandleTickCleanupOnce` directly against a
+     real local Postgres passes clean — the same "seam a future
+     simulation runner drives directly" contract Pillar 5 specifies.
+   - `event-pipeline.ciac`: **full live broker round-trip**, not just
+     construction — `go install`ed a real `nats-server` binary from
+     the module proxy (no Docker needed, mirroring how MariaDB/Postgres
+     get apt-installed for other milestones' live proofs) and ran it
+     locally; `POST /submit` → `Validate` handler → publish to
+     `ingest.events` over the real NATS connection → `worker Processor`
+     consumes it → `Enrich` handler observably receives the payload
+     (confirmed via a temporary log line in the generated, not
+     template, file) — the actual HTTP→publish→consume chain working
+     end to end, the strongest proof this milestone has for the
+     broker plumbing being real rather than merely compiling.
+   - `audited-crud.ciac` (multi-service, newly reachable): both
+     `accounts/` and `catalog/` build/vet/test clean independently;
+     `docker-compose.yml` and the root `openapi.json` index plus each
+     service's own `openapi.json` all present and correctly shaped.
+
+   Full verification: `cargo fmt`/`clippy -D warnings`/`cargo test
+   --workspace` all green (63 suites, zero failures) after every fix
+   above; five unit tests in `ciac-backend-go`'s own `tests` module
+   (two new: `supports_broker_workers_jobs_channels_at_m3`,
+   `generates_worker_pipeline_file_set`); seven golden snapshots
+   updated/added (`ping`/`sqlite-notes` regenerated for the go.mod/
+   go.sum dependency-set expansion; `kafka-pipeline`/`realtime-
+   progress`/`scheduled-cleanup`/`event-pipeline`/`audited-crud` new),
+   each reviewed before accepting, not blanket-accepted.
 4. **M4 — Typed handlers: `HostSyntax` for Go.** FIRST the
    error-idiom contract amendment lands against existing targets'
    goldens (byte-identical proof + identity-syntax golden update) —

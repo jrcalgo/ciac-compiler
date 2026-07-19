@@ -14,8 +14,13 @@ import (
 {%- if c.resources or c.tables %}
 	"{{ c.package }}/internal/db"
 {%- endif %}
+{%- if not has_routes %}
+	"{{ c.package }}/internal/httpx"
+{%- endif %}
 	"{{ c.package }}/internal/observability"
+{%- if has_routes %}
 	"{{ c.package }}/internal/routes"
+{%- endif %}
 	"{{ c.package }}/internal/state"
 )
 
@@ -44,7 +49,21 @@ func main() {
 	}
 {%- endif %}
 
+{%- if has_routes %}
 	mux := routes.Router(st)
+{%- else %}
+	// No api/resource/channel declares an HTTP route -- e.g. a
+	// jobs-only program like scheduled-cleanup.ciac -- so there is no
+	// internal/routes package to import; /health and /openapi.json
+	// are still served, the same "always-present" bar every other
+	// target's own health/openapi route keeps regardless of what else
+	// the program declares.
+	_ = st
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+{%- endif %}
 	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(openapiJSON)

@@ -41,6 +41,30 @@ func requireKeys(raw map[string]json.RawMessage, required ...string) error {
 	return nil
 }
 {% for record in c.records %}
+{%- for enum in record.enums %}
+// {{ enum.name }} is the wire/storage form of a {{ record.name }} enum field: a
+// named string so encoding/json marshals/unmarshals it as a plain
+// JSON string with no custom (Un)MarshalJSON needed, while Valid
+// still gives decode sites a real membership check -- validator tags
+// carry format constraints only (Pillar 2), not enum membership.
+type {{ enum.name }} string
+
+const (
+{%- for variant in enum.variants %}
+	{{ enum.name }}{{ variant }} {{ enum.name }} = "{{ variant }}"
+{%- endfor %}
+)
+
+// Valid reports whether v is one of {{ enum.name }}'s declared variants.
+func (v {{ enum.name }}) Valid() bool {
+	switch v {
+	case {% for variant in enum.variants %}{{ enum.name }}{{ variant }}{% if not loop.last %}, {% endif %}{% endfor %}:
+		return true
+	default:
+		return false
+	}
+}
+{% endfor -%}
 type {{ record.name }} struct {
 {%- for f in record.fields %}
 	{{ f.name | go_pascal }} {{ f | go_type }} `json:"{{ f.name }}"{% set tag = f | go_validate_tag %}{% if tag %} validate:"{{ tag }}"{% endif %}`
@@ -64,6 +88,13 @@ func Decode{{ record.name }}(r io.Reader) ({{ record.name }}, error) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		return {{ record.name }}{}, fmt.Errorf("malformed body: %w", err)
 	}
+{%- for f in record.fields %}
+{%- if f.is_enum %}
+	if !out.{{ f.name | go_pascal }}.Valid() {
+		return {{ record.name }}{}, fmt.Errorf("field %q: invalid {{ f | go_type }} value %q", "{{ f.name }}", out.{{ f.name | go_pascal }})
+	}
+{%- endif %}
+{%- endfor %}
 	if err := validate.Struct(out); err != nil {
 		return {{ record.name }}{}, err
 	}

@@ -24,6 +24,9 @@ func Router(st *state.AppState) *http.ServeMux {
 {%- for resource in c.resources %}
 	Register{{ resource.name }}Routes(mux, st)
 {%- endfor %}
+{%- for channel in c.channels %}
+	mux.Handle("GET {{ channel.path }}", {{ channel.snake | go_pascal }}Handler(st))
+{%- endfor %}
 	return mux
 }
 

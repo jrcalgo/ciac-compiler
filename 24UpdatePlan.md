@@ -1917,6 +1917,82 @@ planning pass finds them named.
    docs tables regenerate; `ciac dev` session test; MCP exercised;
    evolution/rename-replay against a Go tree; `generated-go` CI job
    (module-cached).
+
+   **Shipped (v0.24 M8):** zero gates confirmed — `supports()`
+   collapsed to unconditional `true` at M7 already, but this milestone
+   verified it exhaustively rather than trusting the milestone
+   narrative: a real sweep (`cargo run -p ciac -- build examples/*.ciac
+   --target go`) over all 26 examples shows every one generates with
+   no `CIAC0011`, then a second real sweep — `gofmt -l .`/`go vet ./...`
+   /`go build ./...`/`go test ./...` against *every* `go.mod` directory
+   this produces, not just the top-level project (33 directories once
+   every multi-service system's per-service subdirectory is counted,
+   matching TS's own M8 sweep shape exactly) — comes back completely
+   clean, zero goroutine leaks anywhere. Golden suite: already complete
+   as of M7 (all 26 examples have a Go golden; the 12 new trees M7's
+   own un-gating produced cover every example that wasn't already
+   golden); no template changes landed this milestone, so no golden
+   churn either.
+
+   Docs: `docs/language.md`'s provider table gained a Go column (all
+   14 capability rows), matching v0.23 M8's own TypeScript-column
+   precedent; `README.md`'s CIaC-concept table gained the same column,
+   and its four `--target python\|rust\|typescript` CLI usage lines
+   (which, found live, had never once been updated for Go despite Go
+   reaching ping-parity all the way back at M1) became `python\|rust\|
+   typescript\|go`.
+
+   `ciac dev`: `dev_survives_compile_errors_and_regenerates_on_fix_go`
+   added to `dev_cli.rs`, the same watch/break/fix session as the
+   existing Python/TypeScript tests, against `-t go`. Confirms
+   `--no-docker`'s early return never shells out to the Go toolchain
+   either — the target-neutral watch/rebuild loop itself (unchanged
+   since v0.13 M4) needed zero Go-specific code, the same factory
+   promise TS's own M8 confirmed for its own target.
+
+   MCP: `mcp_cli.rs`'s existing round-trip test gained real `build`
+   and `verify` `tools/call` invocations against `target: go`
+   (previously only reachable via the CLI, never exercised through
+   the MCP surface) — `verify` runs the genuine `gofmt`/`go vet`/
+   `go build`/`go test` sequence through MCP, confirming the same
+   envelope shape `ciac verify --target go` prints on the command
+   line. No `node_modules`-equivalent cleanup needed afterward: the Go
+   module cache lives in `GOMODCACHE`, outside the generated project
+   directory, unlike `node_modules`.
+
+   Evolution/rename-replay: `rename_cli.rs` gained
+   `out_replay_resolves_the_go_target_migrations_dir` — a
+   `table`-bearing program built with `-t go`, confirming
+   `backfill::migrations_dir` resolves through `GoBackend::
+   target_info().migrations_dir` to `"migrations"` (matching Rust's/
+   TS's own value, not Python's `"app/migrations"`) — the same real,
+   not hypothetical, divergence-in-the-wild check TS's own M8 already
+   established for its own target. The `--out` rename replay then
+   confirms the migration file survives at its correctly-resolved
+   path across the replayed regeneration, reading back
+   `internal/schemas/schemas.go` (Go's own schema file, distinct from
+   TS's `src/schemas.ts`) to confirm the rename itself landed.
+
+   `generated-go` CI job: already existed since v0.24 M1 (with its own
+   `CIAC0011`-skip branch, kept for the same reason Rust's own
+   equivalent job keeps its skip branch — a future capability could
+   reintroduce a real gate — not because anything is expected to hit
+   it today, since zero gates remain as of M7). Gained
+   `cache-dependency-path: crates/ciac-backend-go/templates/go.sum.pin`
+   on its `actions/setup-go` step — previously uncached (`setup-go`
+   needs an explicit dependency path to compute a cache key when the
+   repo root itself has no `go.mod`/`go.sum`), now keyed on the single
+   checked-in pin file every generated project across every example
+   this job iterates shares verbatim, so one cache entry covers all of
+   them, satisfying this milestone's own "(module-cached)" exit
+   criterion.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` clean,
+   `cargo test --workspace` green (including the three new `dev_cli`/
+   `mcp_cli`/`rename_cli` cases, each run individually against the
+   real `ciac` binary before the full-suite pass) with zero golden
+   churn.
 9. **M9 — Simulation slice (gated) + version + retrospective.**
    Pillar 7's slice with exact-outcome acceptance and the refusal
    case; ratchet row; docs/simulation.md + backends.md; workspace

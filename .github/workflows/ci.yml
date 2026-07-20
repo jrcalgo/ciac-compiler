@@ -159,11 +159,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # v0.24 M8: keyed on the single checked-in go.sum.pin every
+      # generated project copies verbatim (`ciac-backend-go::lib.rs`'s
+      # own `GO_SUM` constant) rather than a repo-root go.sum (this
+      # repo has none) -- every generated project across every example
+      # this job iterates shares the exact same dependency set, so one
+      # cache entry keyed on that one file covers all of them.
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+          cache-dependency-path: crates/ciac-backend-go/templates/go.sum.pin
       - name: Build the compiler
         run: cargo build -p ciac
+      # v0.24 M8: every example now reaches Go (`supports()` is
+      # unconditional `true` as of M7) -- the CIAC0011 skip branch
+      # below is kept for the same reason Rust's/TS's own equivalent
+      # jobs keep theirs (a future capability could reintroduce a real
+      # gate), not because anything is expected to hit it today.
       - name: Verify every example
         run: |
           set -euo pipefail

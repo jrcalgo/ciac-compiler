@@ -277,6 +277,58 @@ fn out_replay_resolves_the_typescript_target_migrations_dir() {
     );
 }
 
+/// v0.24 M8: the same `--out` replay, against the Go backend —
+/// proves `backfill::migrations_dir` resolves through
+/// `GoBackend::target_info().migrations_dir` ("migrations", matching
+/// Rust's/TS's own value) and that the replayed regeneration survives
+/// a fourth target's own directory convention.
+#[test]
+fn out_replay_resolves_the_go_target_migrations_dir() {
+    let tmp = TempDir::new("out-replay-go-migrations");
+    let entry = tmp.0.join("main.ciac");
+    let out = tmp.0.join("out");
+    std::fs::write(&entry, TABLE_SRC).expect("write entry");
+
+    let build = ciac()
+        .args([
+            "build",
+            entry.to_str().unwrap(),
+            "-t",
+            "go",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(build.status.success(), "{build:?}");
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "Go target's migrations_dir must resolve to migrations/, not app/migrations/ (Python's value)"
+    );
+
+    let result = ciac()
+        .args([
+            "rename",
+            entry.to_str().unwrap(),
+            "Video",
+            "Clip",
+            "--apply",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(result.status.success(), "{result:?}");
+
+    let schemas = std::fs::read_to_string(out.join("internal/schemas/schemas.go")).unwrap();
+    assert!(schemas.contains("Clip"));
+    assert!(!schemas.contains("Video"));
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "the replayed regeneration must not lose the migration at its resolved path"
+    );
+}
+
 #[test]
 fn out_with_a_legacy_manifest_refuses_and_leaves_source_untouched() {
     let tmp = TempDir::new("out-legacy");

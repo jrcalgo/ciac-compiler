@@ -80,6 +80,7 @@ pub fn backends() -> Vec<Box<dyn ciac_codegen::Backend>> {
         Box::new(ciac_backend_rust::RustBackend),
         Box::new(ciac_backend_ts::TsBackend),
         Box::new(ciac_backend_go::GoBackend),
+        Box::new(ciac_backend_java::JavaBackend),
     ]
 }
 

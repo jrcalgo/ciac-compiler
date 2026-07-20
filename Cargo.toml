@@ -11,6 +11,7 @@ members = [
     "crates/ciac-backend-rust",
     "crates/ciac-backend-ts",
     "crates/ciac-backend-go",
+    "crates/ciac-backend-java",
     "crates/ciac-sim",
     "backends/skeleton-internal",
     "tests",
@@ -34,6 +35,7 @@ ciac-backend-python = { path = "crates/ciac-backend-python", version = "0.22.0" 
 ciac-backend-rust = { path = "crates/ciac-backend-rust", version = "0.22.0" }
 ciac-backend-ts = { path = "crates/ciac-backend-ts", version = "0.22.0" }
 ciac-backend-go = { path = "crates/ciac-backend-go", version = "0.22.0" }
+ciac-backend-java = { path = "crates/ciac-backend-java", version = "0.22.0" }
 ciac-sim = { path = "crates/ciac-sim", version = "0.22.0" }
 
 # external

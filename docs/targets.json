@@ -192,6 +192,23 @@
         "level": "narrow"
       },
       "capabilities": {}
+    },
+    {
+      "id": "java",
+      "description": "Java 21 project using Spring Boot 3.x (Spring MVC, virtual threads)",
+      "kind": "internal",
+      "project_marker": "pom.xml",
+      "validate": [
+        {
+          "program": "./mvnw",
+          "purpose": "compiles, formats (Spotless), and tests in one invocation (Pillar 8)"
+        }
+      ],
+      "sim": {
+        "level": "none",
+        "reason": "Java simulation support lands at 25UpdatePlan.md M9"
+      },
+      "capabilities": {}
     }
   ]
 }

@@ -150,6 +150,9 @@ impl Backend for JavaBackend {
         // `domain-orders.ciac`/`query-verbs.ciac` (db-only) are this
         // milestone's actual proving examples, mirroring Go's/TS's own
         // M4 precedent exactly (read directly, not assumed).
+        // M6: `Auth` (both JWT and OAuth2, one resource-server-starter
+        // mechanism per Pillar 7's own table) widens in alongside
+        // everything M1-M5 already support.
         matches!(
             component,
             Component::Api { .. }
@@ -162,6 +165,7 @@ impl Backend for JavaBackend {
                 | Component::Scheduler { .. }
                 | Component::Realtime { .. }
                 | Component::Service { .. }
+                | Component::Auth { .. }
         )
     }
 
@@ -333,6 +337,35 @@ fn emit_service(
         at(&format!("{java_root}/routes/NotFoundException.java")),
         render_java("NotFoundException.java.j2", empty())?,
     );
+    if ctx.has_auth {
+        project.add_file(
+            at(&format!("{java_root}/routes/UnauthorizedException.java")),
+            render_java("UnauthorizedException.java.j2", empty())?,
+        );
+        project.add_file(
+            at(&format!("{java_root}/routes/ForbiddenException.java")),
+            render_java("ForbiddenException.java.j2", empty())?,
+        );
+        project.add_file(
+            at(&format!("{java_root}/routes/Auth.java")),
+            render_java("Auth.java.j2", empty())?,
+        );
+        project.add_file(
+            at(&format!("{java_root}/state/SecurityConfig.java")),
+            render_java("SecurityConfig.java.j2", empty())?,
+        );
+    }
+    // MockMvc `ScopeTests` (M6): JWT-only, matching Rust's/Go's own
+    // disclosed exclusion -- a true no-infrastructure OAuth2 scope
+    // proof needs a fake auth adapter (real RS256 verification needs a
+    // real issuer's JWKS regardless of how lazily it's fetched), future
+    // work this milestone doesn't attempt.
+    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at(&format!("{test_root}/routes/ScopeTests.java")),
+            render_java("ScopeTests.java.j2", empty())?,
+        );
+    }
 
     // A CRUD resource (typed or keyed) also needs `Schemas` — the
     // keyed variant especially, since it has no backing `RecordCtx` of

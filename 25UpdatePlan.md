@@ -1598,6 +1598,147 @@ surface.
 6. **M6 — Auth, scopes, scope tests.** Resource-server both modes,
    requireScope, MockMvc `ScopeTests` green under zero
    infrastructure; order-system and oauth-echo verify.
+
+   **Shipped (v0.25 M6):** `supports()` widened once more —
+   `Component::Auth { .. }` (both JWT and OAuth2 through the same
+   `spring-boot-starter-oauth2-resource-server` mechanism, per Pillar
+   7's own table). New `SecurityConfig.java.j2` (`@Configuration`,
+   emitted only when `c.has_auth`): a deliberately *permissive*
+   `SecurityFilterChain` bean (`anyRequest().permitAll()`) plus a
+   `JwtDecoder` bean (`NimbusJwtDecoder.withSecretKey` for JWT,
+   `withJwkSetUri` for OAuth2). The permissive filter chain is load-
+   bearing, not incidental: merely adding the resource-server starter
+   as a Maven dependency triggers Spring Boot's own autoconfiguration
+   of a *default* security filter chain that authenticates every
+   request — exactly the framework-magic-versus-compiler-ownership
+   tension this whole target's own design note opens with. Neutralizing
+   it explicitly, then calling `Auth.verifyToken`/`requireScope`
+   (new `Auth.java.j2`, a plain static-method class in `routes`)
+   inline at the top of each generated route body, restores the
+   identical "no middleware chain, every check is an explicit call
+   the generated code makes" discipline every other target's own
+   `auth.go`/`auth.py`/`auth.rs`/`auth.ts` already has —
+   `NimbusJwtDecoder.withJwkSetUri`'s own JWKS fetch is lazy (first
+   `decode()` call only), so constructing it never blocks boot, the
+   same laziness bar every other provider client already clears.
+   `ApiController.java.j2`/`ResourceController.java.j2` both gained a
+   conditional `HttpServletRequest request` parameter and `JwtDecoder`
+   constructor field, gated on `api.has_auth_step`/`resource.has_auth`
+   respectively — a typed handler's own `Auth` pipeline step needed no
+   change at all (it was already a silent no-op in `_steps.java.j2`'s
+   `if`/`elif` chain, the identical shape Go's own `_steps.go.j2` has,
+   confirmed by reading it before assuming). Two new exception types,
+   `UnauthorizedException`(401)/`ForbiddenException`(403), matching
+   the existing `BadRequestException`/`NotFoundException` pattern
+   exactly — `ErrorAdvice.java.j2`'s own doc comment had already
+   named "scoped-auth rejections (M6)" as a foreseen extension point
+   before this milestone touched it.
+
+   **A real, RFC-level finding, confirmed live before writing a
+   single line of template code around it:** every other target's own
+   `JWT_SECRET` default is the shared `"change-me"` (9 bytes). Nimbus
+   JOSE — the resource-server starter's own JWT engine, wrapped by
+   both `NimbusJwtDecoder` and the `ScopeTests`' own token-minting
+   code — enforces RFC 7518 §3.2's HS256 minimum key length (256
+   bits/32 bytes) at sign *and* verify time. A standalone Nimbus
+   `MACSigner` test against the literal 9-byte `"change-me"` string
+   confirmed this directly: `KeyLengthException: The secret length
+   must be at least 256 bits` — a failure every other target's own
+   JWT library (golang-jwt, PyJWT, jsonwebtoken, the `jsonwebtoken`
+   Rust crate) silently accepts despite being equally insecure by the
+   same spec, since none of them enforce it client-side. Fixed by
+   giving Java's own `JWT_SECRET` a longer default
+   (`"change-me-please-use-a-real-32-byte-secret-key"`, 46 bytes,
+   confirmed signing successfully against the same standalone
+   harness) — a real, disclosed, Java-specific deviation from the
+   cross-target convention, not a stylistic choice, and found before
+   it could silently break every JWT-scheme project's own boot.
+
+   **A real bug, found only by the golden-snapshot suite's own
+   cross-example diff, not by inspection or by either live-tested
+   example:** `ErrorAdvice.java.j2`'s two new `@ExceptionHandler`s
+   referenced `UnauthorizedException`/`ForbiddenException`
+   unconditionally, but those two exception *source files* are only
+   emitted when `ctx.has_auth` (mirroring every other conditional
+   file in `lib.rs`) — meaning every non-auth Java project (the large
+   majority: `domain-orders.ciac`, `query-verbs.ciac`, and eleven of
+   the twelve Java goldens) would have failed to compile with "cannot
+   find symbol: class UnauthorizedException" the moment this landed.
+   Neither `oauth-echo.ciac` nor the `jwt-scope` scratch example
+   caught this — both declare `auth`, so both `.java` files always
+   existed for them. Caught instead by `cargo test --workspace`'s own
+   golden-snapshot diff against `audited-crud.ciac` (auth-free),
+   which showed the two new handlers appearing in a project that
+   should never reference those classes at all. Fixed by wrapping
+   both handlers in `{% if c.has_auth %}` inside `ErrorAdvice.java.j2`
+   — `c` (the full `Ctx`) is always in scope for every `render`/
+   `render_java` call regardless of the `extra` context passed at the
+   call site, confirmed by reading the closure's own definition rather
+   than assumed. Re-verified live after the fix: `domain-orders.ciac`/
+   `query-verbs.ciac`/`oauth-echo.ciac`/`jwt-scope` all `./mvnw -q -B
+   verify` clean; the `audited-crud` golden's own diff after the fix
+   showed only the doc-comment rewording, no handler code — direct
+   confirmation the gate now works.
+
+   **Disclosed scope gap vs. the plan's literal text, the identical
+   shape Go's own M6 already hit:** `order-system.ciac`, this
+   milestone's own named verification target, also declares `cache
+   Redis` (`Component::Cache`), which stays refused for Java until M7
+   — unlike TS, where Cache landed at TS's own M2. `order-system`
+   therefore still returns `CIAC0011` for Java this milestone
+   (confirmed live, same reason: `backend java does not support cache
+   default Redis`); it will verify for real once M7 lands Cache, as
+   M7's own milestone text already names it. In its place:
+   `oauth-echo.ciac` (cache-free, OAuth2-only, the plan's other named
+   example) verifies for real — newly Java-reachable this milestone,
+   its own golden is new, not modified — and a throwaway scratch
+   example (not committed — `jwt-scope.ciac`: `db Postgres; auth
+   JWT;` plus a scope-gated `crud Note` and a scope-gated `api
+   PingApi`) supplied the live JWT+scope proof `order-system` would
+   otherwise have provided.
+
+   **Live-verified end to end, not just golden-generated or
+   MockMvc-asserted:**
+   - `oauth-echo.ciac`: `./mvnw -q -B verify` green (`NoInfraBootTest`
+     boots cleanly with zero JWKS server reachable — the lazy
+     `NimbusJwtDecoder.withJwkSetUri` bean never touches the network
+     at construction, confirmed live, not merely by reading the
+     javadoc). A live `spring-boot:run` round-trip: `/health` returns
+     200 (the permissive `SecurityFilterChain` genuinely doesn't gate
+     it); `POST /echo` with no `Authorization` header returns 401
+     `{"data":"missing bearer token"}`; with a syntactically-invalid
+     bearer token returns 401 `{"data":"invalid or expired
+     token"}` — both via the real `JwtDecoder.decode` call attempting
+     (and failing) against the configured, unreachable issuer, caught
+     by `Auth.verifyToken`'s own `catch (JwtException e)`.
+   - `jwt-scope` (scratch, not committed): `./mvnw -q -B verify` green
+     against real local Postgres, including all six generated
+     `ScopeTests` (three scope-gated routes × missing/present pairs)
+     passing against the real Spring context via MockMvc. A live
+     `spring-boot:run` round-trip with HS256 tokens minted externally
+     (plain HMAC-SHA256, no library, against the same 46-byte secret)
+     confirmed the full mechanism: `POST /notes` with the wrong scope
+     → 403 `{"data":"missing required scope: notes:write"}`; with the
+     correct scope → 201 and the created row; `GET /notes` with no
+     token → 401; with the correct read scope → 200 with the list
+     (including the row created moments earlier, still in the same
+     database — direct confirmation the store itself works
+     end-to-end, not just the auth gate).
+   - `domain-orders.ciac`/`query-verbs.ciac` (both auth-free,
+     M4's/M5's own examples): re-verified live after the
+     `ErrorAdvice` fix specifically to confirm the conditional gate
+     didn't regress anything M4/M5 already proved — both `./mvnw -q
+     -B verify` clean.
+
+   Full workspace verification: `cargo fmt`/`clippy -D warnings`
+   clean; `cargo test --workspace` green (first pass caught the
+   `ErrorAdvice` bug via the golden suite; second pass, after the
+   fix, fully green). Twelve Java goldens reviewed and accepted —
+   eleven updated (the conditional `ErrorAdvice` handlers touch every
+   Java golden, auth or not, since the doc-comment rewording is
+   unconditional even when the two handlers themselves are gated
+   out) plus one genuinely new: `oauth-echo`.
+
 7. **M7 — Ontology remainder + call clients + observability
    completion.** S3/mail/search wrappers, RestClient call clients,
    OTel end-to-end (five-target trace test), metrics endpoint.

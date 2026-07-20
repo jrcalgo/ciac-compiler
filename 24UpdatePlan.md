@@ -1398,6 +1398,132 @@ planning pass finds them named.
    boundary-case decode suite). Go/no-go for the remainder and for
    25UpdatePlan.md's start; "pause and amend the factory" remains a
    valid outcome.
+
+   **Shipped (v0.24 M5) — the measured cost table**, against
+   `23UpdatePlan.md` M5's own TS actuals (M1–M4, the same milestone
+   marker Go has just reached) as the primary baseline, plus Rust's/
+   Python's mature full-arc figures for extra context exactly as TS's
+   own table did:
+
+   | | Rust (mature, full arc) | Python (mature, full arc) | TypeScript (M1–M4 actuals) | Go (M1–M4 actuals) |
+   | --- | --- | --- | --- | --- |
+   | `lower.rs` (leaves + `render`) | 607 | 932 | 1,098 | **1,296** |
+   | `lib.rs` (emission wiring) | 559 | 429 | 501 | **710** |
+   | `filters.rs` (neutral-field mapping) | n/a (folded into `lower.rs`) | n/a | 206 | **139** |
+   | templates | ~2,800 (Python/Rust full-arc baseline) | ~2,800 | 5,608 across 28 files | **2,176 across 25 files** |
+   | edits outside the crate | 1 (registry line) | 1 (registry line) | 1 (`commands.rs`) | **1** (`commands.rs`, identical single-line registration — verified via `git show 5ec685f --stat`) plus **2 disclosed, narrow shared-crate amendments (below)** |
+
+   **`lower.rs`/`lib.rs`: a real but modest overrun, not TS's pattern.**
+   Go's `lower.rs` is 18% over TS's M1–M4 figure (1,296 vs 1,098) and
+   `lib.rs` is 42% over (710 vs 501) — both driven by the same
+   concrete, disclosed cause: M4's error-idiom amendment itself (every
+   fallible verb needs its own `if err != nil` block plus, for
+   `db.update`, a full closure-wrapped `fallible_tail` call — no other
+   target's `lower.rs` carries this shape, since Python/TS propagate
+   failure through exceptions and Rust through `?`) and `lib.rs`'s
+   typed-handler emission split (inline `internal/logic/` vs. seeded
+   `internal/services/`, mirroring Rust/TS's own split, plus the
+   `is_typed_handler`-aware payload-type threading `_steps.go.j2`
+   needed once M4 widened `supports()`). `filters.rs` is smaller than
+   TS's own (139 vs 206) since Go's `go_pascal`/`go_type_of`/
+   `go_validate_tag` filter set is genuinely narrower than TS's own
+   Zod/Drizzle-adjacent filter surface.
+
+   **Templates: the clearest confirmation of TS's own M5 retro.** TS's
+   M5 checkpoint (`23UpdatePlan.md`) explicitly flagged, as its own
+   corrected-budget warning for Go: *"expect a `lower.rs` noticeably
+   larger than Rust's 577-line figure whenever the target language's
+   database ecosystem lacks a `sqlx`-equivalent unifying driver (true
+   for Go's `database/sql` + per-engine driver split too — worth Go's
+   own author checking this before, not after, writing its own
+   `lower.rs`)."* Measured evidence says that specific worry doesn't
+   transfer: Go's `database/sql` interface (`*sql.DB`/`*sql.Rows`/
+   `sql.Result`, identical method sets across the `pgx`/`go-sql-
+   driver/mysql`/`modernc.org/sqlite` drivers, only the connection
+   string and placeholder style varying — v0.13 M1's own established
+   `sqlph` discipline, reused unchanged since) genuinely *is* Go's own
+   `sqlx`-equivalent unifying layer, unlike Node's three structurally
+   different driver APIs (`pg`'s `[rows]` destructuring vs. `better-
+   sqlite3`'s sync `.run()`/`.changes` vs. `mysql2`'s `affectedRows`)
+   that drove TS's own per-engine template branching. The result: Go's
+   templates land at 2,176 lines across 25 files (M1–M4 scope) against
+   TS's 5,608 across 28 files at the *same* milestone marker — a real,
+   measured confirmation that the unifying-driver factor TS's retro
+   named is exactly the right lens, and that Go sits on the favorable
+   side of it. (`route_api.go.j2`'s own single `net/http` `ServeMux`
+   routing shape, with no framework-specific request/response wrapper
+   the way Fastify's schema-validation plugin machinery needed on TS's
+   side, is a second, smaller contributor to the same gap.)
+
+   **Two disclosed, narrow shared-crate amendments — the honest
+   accounting of "edits outside the crate" beyond the registry line,**
+   both already fully documented in their own milestones' shipped
+   notes and re-cited here for the checkpoint's own record: M4 part 1's
+   error-idiom amendment (`ciac-codegen/src/lower/{dispatch,
+   host_syntax}.rs`, 12 new default-implemented `HostSyntax` methods +
+   12 new dispatch arms, proven byte-identical for Python/Rust/TS by
+   the full `cargo test --workspace` snapshot suite passing with zero
+   `.snap.new` files the moment it landed) and M4 part 2's
+   `HandlerRef::is_typed_handler` field (`ciac-codegen/src/model.rs`,
+   17 lines, additive, `docs/protocol-schema.json` regenerated to
+   match). Both are the kind of "pause and amend the factory" this
+   checkpoint's own text names as a valid outcome — exercised for
+   real, narrowly, and disclosed, not silently absorbed. M2 and M3
+   needed **zero** shared-crate edits (verified via `git show
+   b40711f/eaf7432 --stat`), confirming the factory held without
+   amendment for the large majority of the arc so far. The remaining
+   files this arc has touched outside the crate — `Cargo.toml`/
+   `Cargo.lock`/`tests/Cargo.toml` (workspace member registration),
+   `tests/src/lib.rs` (the `backends()` list, TS's own equivalent
+   registration point), `.github/workflows/ci.yml` (the per-target CI
+   row, exactly what M1 added for every prior target), and `docs/
+   protocol-schema.json`/`docs/targets.json` (mechanical, test-
+   enforced regeneration, not hand-authored) — are routine scaffolding
+   every target needs, not additional factory amendments.
+
+   **Conformance harness, run for real across all four targets:**
+   `cargo test --workspace` (65 suites) is green with Go included;
+   `tests/tests/conformance.rs`'s `c3_openapi_is_byte_identical_across_
+   targets`, `c4a_migration_sql_is_byte_identical_across_targets`, and
+   `c4b_declared_topology_appears_in_every_target` all pass — Go's
+   OpenAPI/migration-SQL/topology output is byte-identical to Python's/
+   Rust's/TS's for every example all four targets support, catching
+   real bugs this same arc (M4's five live-found-and-fixed bugs,
+   documented in M4 part 2's own shipped notes, were largely surfaced
+   by this exact suite once `supports()` widened). `tests/tests/
+   golden.rs`'s three snapshot suites are green (25 `.go.j2` templates,
+   5 example projects goldened this arc). The boundary-case decode
+   suite this checkpoint's own text names is M2's own live-verified
+   absent/explicit-null/legitimate-zero triple (`24UpdatePlan.md` M2's
+   shipped notes: a missing field → 400, an explicit `null` → 400, a
+   real empty-string zero value → 200/201) — already passing, not new
+   work this milestone. `ciac targets --json` lists `"id": "go"` with
+   its own `TargetInfo` (validate steps, `go.mod` marker, CI test
+   steps) alongside python/rust/typescript, unchanged in shape since
+   M1.
+
+   **Go/no-go verdict: GO.** Every measured gap has a concrete,
+   disclosed, ecosystem-shaped cause (the error-idiom amendment's own
+   line cost, already justified in M4's own notes) or is a *favorable*
+   surprise relative to TS's own corrected-budget warning (templates
+   at 39% of TS's line count for the same milestone marker, `database/
+   sql` genuinely delivering the unifying-driver benefit TS's retro
+   hoped for but couldn't measure directly). Nothing measured here is
+   a capability gap, a correctness gap, or a structural blocker: the
+   factory's structural promise (`TargetInfo`, the backend-owned-filter
+   pattern, the shared scanner, the shared `HostSyntax` dispatcher —
+   *including* its own M4 amendment, itself proven additive — the
+   conformance harness, `Emit`/skeleton) held for a fourth backend,
+   and the one amendment it did need was narrow, justified, and
+   provably non-breaking rather than a silent scope-creep. 24UpdatePlan
+   .md's remaining milestones (M6–M9) may proceed without pausing to
+   amend the factory further; 25UpdatePlan.md's own start should cite
+   this table (not 22UpdatePlan.md Pillar 8's original estimate, nor
+   TS's own M1–M4 actuals alone) as its starting budget, and should
+   specifically expect a `lower.rs` premium of roughly TS's own
+   percentage (Python/Rust/TS/Go's own error-propagation-idiom cost)
+   whenever a fifth target's own idiom also lacks an expression-
+   position propagation operator.
 6. **M6 — Auth, scopes, scope tests.** golang-jwt + keyfunc,
    middleware, generated httptest suite green under zero
    infrastructure; order-system and oauth-echo verify.

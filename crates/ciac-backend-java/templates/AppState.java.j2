@@ -9,7 +9,74 @@
 // this for real on every `mvnw verify`, not just here in a comment.
 package com.ciac.{{ java_package }}.state;
 
+{% if c.has_db -%}
+import java.sql.Connection;
+import java.sql.Statement;
+import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.simple.JdbcClient;
+{% else -%}
 import org.springframework.stereotype.Component;
+{% endif %}
+{% if c.has_db %}
+@Configuration
+public class AppState {
+{%- for inst in c.db_instances %}
 
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}")
+    public DataSource {{ inst.state_field | java_camel }}(
+            @Value("${{ '{' }}{{ inst.env_var }}:{% if inst.db_engine == "sqlite" %}jdbc:sqlite:data/{{ inst.db_name }}.db{% elif inst.db_engine == "mysql" %}jdbc:mysql://{{ inst.db_user }}:{{ inst.db_user }}@localhost:3306/{{ inst.db_name }}{% else %}jdbc:postgresql://{{ inst.db_user }}:{{ inst.db_user }}@localhost:5432/{{ inst.db_name }}{% endif %}{{ '}' }}")
+            String rawUrl)
+            throws Exception {
+        return DataSources.open(rawUrl);
+    }
+
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}Jdbc")
+    public JdbcClient {{ inst.state_field | java_camel }}Jdbc(
+            @Qualifier("{{ inst.state_field | java_camel }}") DataSource dataSource) {
+        return JdbcClient.create(dataSource);
+    }
+{%- endfor %}
+
+    // "Applies on boot" (Pillar 5): every `table`-declaration migration
+    // Flyway would otherwise auto-run via `FlywayAutoConfiguration` is
+    // instead run from here, explicitly, against the same `@Lazy`
+    // `DataSource` beans above (`spring.flyway.enabled: false` in
+    // `application.yml` stops Spring's own auto-wiring from resolving
+    // them first) -- Pillar 4's "compiler owns the wiring" rule applied
+    // to Flyway itself, not only to the connection pool.
+    @Bean
+    public CommandLineRunner migrateOnBoot(
+            {%- for inst in c.db_instances %}
+            @Qualifier("{{ inst.state_field | java_camel }}") DataSource {{ inst.state_field | java_camel }}{% if not loop.last %},{% endif %}
+            {%- endfor %}) {
+        return args -> {
+        {%- for inst in c.db_instances %}
+            DataSources.migrate({{ inst.state_field | java_camel }});
+        {%- endfor %}
+        {%- for resource in c.resources %}
+            try (Connection conn = {{ resource.rust_db_field | java_camel }}.getConnection();
+                    Statement stmt = conn.createStatement()) {
+        {%- if resource.record %}
+                stmt.execute(
+                        "CREATE TABLE IF NOT EXISTS {{ resource.plural }} (id VARCHAR(36) PRIMARY KEY{% for f in resource.record.fields %}{% if f.name != "id" %}, {{ f.name }} {{ f.sql_type | java_ddl_type(resource.db_engine) }} NOT NULL{% endif %}{% endfor %})");
+        {%- else %}
+                stmt.execute(
+                        "CREATE TABLE IF NOT EXISTS {{ resource.plural }} (id VARCHAR(36) PRIMARY KEY, data {{ "JSONB" | java_ddl_type(resource.db_engine) }} NOT NULL)");
+        {%- endif %}
+            }
+        {%- endfor %}
+        };
+    }
+}
+{% else %}
 @Component
 public class AppState {}
+{% endif %}

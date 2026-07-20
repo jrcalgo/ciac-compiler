@@ -121,13 +121,23 @@ impl Backend for JavaBackend {
     }
 
     fn supports(&self, component: &Component) -> bool {
-        // M1: only `Api` — `ping.ciac`'s `pipeline Echo: Return` binds
-        // no handler, so no `Service` node is even in play (Go's own
-        // M1 finding, true here for the identical reason: claiming a
-        // kind before any template implements it would pass gating
-        // and then fail on an undefined template variable instead of
-        // a clean `CIAC0011`).
-        matches!(component, Component::Api { .. })
+        // M2: `Database` (all three engines uniformly — JDBC needs no
+        // per-engine gating any more than `database/sql` did for Go)
+        // plus `Service { signature: None }`, the crud-synthesized
+        // store marker `ciac_sema::build::crud` also emits alongside
+        // `Api`+`Database` (Go's own M2 finding, found the identical
+        // way — a real example refused on `Database` alone). `Some(_)`
+        // (typed handlers) stays refused until M4.
+        matches!(
+            component,
+            Component::Api { .. } | Component::Database { .. }
+        ) || matches!(
+            component,
+            Component::Service {
+                signature: None,
+                ..
+            }
+        )
     }
 
     fn target_info(&self) -> &'static TargetInfo {
@@ -152,6 +162,7 @@ impl Backend for JavaBackend {
         env.add_filter("java_camel", filters::java_camel);
         env.add_filter("java_pascal", filters::java_pascal);
         env.add_filter("java_is_uuid", filters::java_is_uuid);
+        env.add_filter("java_ddl_type", filters::java_ddl_type);
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -265,8 +276,15 @@ fn emit_service(
         at(&format!("{java_root}/routes/BadRequestException.java")),
         render_java("BadRequestException.java.j2", empty())?,
     );
+    project.add_file(
+        at(&format!("{java_root}/routes/NotFoundException.java")),
+        render_java("NotFoundException.java.j2", empty())?,
+    );
 
-    if !ctx.records.is_empty() {
+    // A CRUD resource (typed or keyed) also needs `Schemas` — the
+    // keyed variant especially, since it has no backing `RecordCtx` of
+    // its own in `ctx.records` to have already pulled this file in.
+    if !ctx.records.is_empty() || !ctx.resources.is_empty() {
         project.add_file(
             at(&format!("{java_root}/schemas/Schemas.java")),
             render_java("Schemas.java.j2", empty())?,
@@ -277,6 +295,66 @@ fn emit_service(
                 render_java("record.java.j2", context! { record => record })?,
             );
         }
+    }
+
+    if ctx.has_db {
+        project.add_file(
+            at(&format!("{java_root}/state/DataSources.java")),
+            render_java("DataSources.java.j2", empty())?,
+        );
+    }
+
+    if ctx.resources.iter().any(|r| r.record.is_some()) {
+        project.add_file(
+            at(&format!("{java_root}/schemas/RowMappers.java")),
+            render_java("RowMappers.java.j2", empty())?,
+        );
+    }
+    for resource in &ctx.resources {
+        let non_id_fields: Vec<&ciac_codegen::model::FieldCtx> = resource
+            .record
+            .as_ref()
+            .map(|r| r.fields.iter().filter(|f| f.name != "id").collect())
+            .unwrap_or_default();
+        project.add_file(
+            at(&format!(
+                "{java_root}/schemas/{}In.java",
+                resource.name.clone()
+            )),
+            render_java(
+                "ResourceIn.java.j2",
+                context! { resource => resource, fields => non_id_fields },
+            )?,
+        );
+        if resource.record.is_none() {
+            project.add_file(
+                at(&format!(
+                    "{java_root}/schemas/{}Entity.java",
+                    resource.name.clone()
+                )),
+                render_java("ResourceEntity.java.j2", context! { resource => resource })?,
+            );
+        }
+        project.add_file(
+            at(&format!(
+                "{java_root}/services/{}.java",
+                resource.store_class.clone()
+            )),
+            render_java(
+                "ResourceStore.java.j2",
+                context! { resource => resource, fields => non_id_fields },
+            )?,
+        );
+        project.add_file(
+            at(&format!(
+                "{java_root}/routes/{}Controller.java",
+                resource.name.clone()
+            )),
+            render_java(
+                "ResourceController.java.j2",
+                context! { resource => resource },
+            )?,
+        );
     }
 
     let openapi_doc = serde_json::to_string_pretty(&ciac_codegen::openapi::build_document(ctx))

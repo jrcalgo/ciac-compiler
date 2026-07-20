@@ -5,6 +5,17 @@ server:
 spring:
   main:
     banner-mode: "off"
+{%- if c.has_db %}
+  flyway:
+    # Disabled deliberately (Pillar 4): `FlywayAutoConfiguration`
+    # would otherwise resolve `AppState`'s own `@Lazy` `DataSource`
+    # beans eagerly at context startup the moment it sees one in the
+    # context, defeating the whole point of marking them lazy.
+    # `AppState`'s own `CommandLineRunner` runs migrations explicitly
+    # instead, against the same beans, once something actually needs
+    # them.
+    enabled: false
+{%- endif %}
   threads:
     virtual:
       # Loom virtual threads (standard since Java 21): generated

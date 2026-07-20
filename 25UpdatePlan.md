@@ -839,6 +839,169 @@ surface.
    of the factory hook). sqlite-notes fully local (xerial file
    engine, zero Docker); crud/mysql static-local, round-trips
    CI-delegated.
+
+   **Shipped (v0.25 M2):** `supports()` widened to
+   `Component::Database` (all three engines uniformly — JDBC needs no
+   per-engine gating, sharpening Go's own M2 finding further since
+   Java's placeholder story has no per-engine branch at all, not even
+   the `?`-vs-`$N` one) plus `Component::Service { signature: None }`
+   (the crud-synthesized store marker — Go's own M2 finding held here
+   too, found the identical way before reading the sema source).
+   `Some(_)` (typed handlers) stays refused until M4.
+
+   New per-resource templates (`ctx.resources`, entirely shared/
+   precomputed already — `ResourceCtx`/`RecordCtx`'s `select_cols`/
+   `insert_placeholders`/`update_assignments`/`update_where` needed
+   zero new Rust-side computation, only Java spellings): `<Name>In`
+   (create/update payload, presence-checked via `Schemas.requireKeys`
+   for typed resources, plain decode for the keyed variant matching
+   every other target's own `{"data": ..}`-wrapped-body contract);
+   `<Name>Entity` (the keyed variant's generic row shape, deliberately
+   *not* named `<Name>` so a keyed resource sharing a name with an
+   unrelated wire record can never collide in the `schemas` package);
+   `RowMappers` (one explicit, reflection-free `RowMapper<T>` constant
+   per typed resource — Pillar 5's own decision, not
+   `BeanPropertyRowMapper`/`DataClassRowMapper` reflection, matching
+   Go's/Rust's own explicit-Scan-order discipline); `<Name>Store`
+   (JdbcClient-backed CRUD, `?`-only SQL via the shared `sqlph`
+   filter); `<Name>Controller` (raw-entity JSON responses, no
+   `Envelope` wrapper — CRUD resources carry their own response
+   contract, matching every other target's own resource routes, not
+   the pipeline-`api` contract `ApiController` uses).
+   `NotFoundException` (404, mirrors `BadRequestException`'s 400) is
+   now emitted unconditionally alongside it, so `ping.ciac`'s own
+   golden picked up the addition too — disclosed, not a scope leak:
+   M4's own typed handlers will need it regardless, and duplicating
+   the emission per-milestone would just be busywork.
+
+   **The AppState/DataSource/Flyway design, arrived at only after
+   live-testing two real risks rather than assuming either:**
+   1. **Flyway does support SQLite in `flyway-core` directly** (no
+      separate community plugin needed, unlike some historical Flyway
+      versions) — verified live with a standalone `Flyway.configure()
+      .dataSource(url, null, null).load().migrate()` run against a
+      real sqlite file before writing a single line of the real
+      integration, specifically to avoid discovering a hard blocker
+      after building around it.
+   2. **The JDBC embedded-credential URL problem, found by reasoning
+      about the actual JDBC URL grammar, not by assumption:**
+      docker-compose's own `DATABASE_URL` value (`jdbc:postgresql://
+      user:pass@host:port/db`, the *userinfo* form every other
+      target's own native driver already accepts) is not one the
+      postgres/mysql JDBC drivers parse — userinfo credentials aren't
+      part of the JDBC URL grammar either driver implements. Fixed
+      with a new `DataSources.open(rawUrl)` (in `state/
+      DataSources.java`) that strips `jdbc:` , re-parses the remainder
+      as a real `java.net.URI` (hierarchical once the outer `jdbc:`
+      layer is gone), and re-attaches the extracted `user`/`password`
+      as discrete `HikariConfig` properties instead of guessing at a
+      URL shape the driver would accept. Verified live in isolation
+      against both the postgres- and mysql-shaped strings compose
+      would actually emit (`jdbc:postgresql://postgres:postgres@db:
+      5432/postgres`, `jdbc:mysql://root:root@db:3306/mysqlnotes`) —
+      not live-tested end-to-end against a running server, since
+      crud-notes/mysql-notes stay gated this milestone (below), but
+      the parsing itself is proven correct on the exact strings it
+      will see whenever M6/M7 unlock those examples.
+
+   `AppState` hand-rolls `@Lazy @Bean DataSource`/`JdbcClient` beans
+   per db instance (reading the raw URL via `@Value("${ENV_VAR:
+   <engine-appropriate localhost default>}")`, mirroring every other
+   target's own `envOr`-style fallback) rather than letting Spring's
+   own `DataSourceAutoConfiguration` build one from `spring.datasource.*`
+   properties — the same "compiler owns the wiring, no implicit
+   magic" rule Pillar 4 already applies to provider clients, now
+   applied to the connection pool itself. `spring.flyway.enabled:
+   false` in `application.yml` stops `FlywayAutoConfiguration` from
+   independently resolving those same `@Lazy` beans the moment it
+   sees flyway-core + a `DataSource` bean on the classpath — Flyway
+   instead runs from an explicit `CommandLineRunner` in `AppState`
+   (`DataSources.migrate(..)`, applying whatever the shared differ
+   wrote under `src/main/resources/db/migration` — Java needed zero
+   new Rust-side migration-generation code, since that machinery is
+   already target-neutral and `TargetInfo::migration_filename`/
+   `migrations_dir` were already wired at M1), immediately followed
+   by a `CREATE TABLE IF NOT EXISTS` bootstrap for every CRUD resource
+   (typed and keyed) bound to that instance — CRUD resources
+   synthesize no `Table` IR node (confirmed by reading
+   `ciac_sema::build::crud`, not assumed), so they were never going to
+   be covered by the shared differ; every other current target
+   already treats CRUD-resource schema this same way, separately from
+   the versioned-migration ledger, for the identical reason.
+
+   **A real, disclosed architectural finding, not a hedge:** this
+   `CommandLineRunner` runs unconditionally whenever `ctx.has_db`,
+   which means it forces the `@Lazy` `DataSource` to resolve during
+   every boot, `NoInfraBootTest` included — reasoned through carefully
+   *before* writing the code (HikariCP validates a connection eagerly
+   at pool construction, unlike Go's `sql.Open`/Rust's
+   `PgPool::connect_lazy`, which never dial until first use) and then
+   confirmed live: harmless for sqlite (a local file has no
+   "infrastructure" to be unreachable — `NoInfraBootTest` passed
+   clean against `sqlite-notes.ciac` with a real `HikariPool`
+   constructed, a real Flyway run, and a real `CREATE TABLE`, all
+   inside the boot-test's own context refresh), but a genuine forward
+   risk for postgres/mysql once M6/M7 unlock `crud-notes`/
+   `mysql-notes` — named here for that milestone to resolve with live
+   evidence rather than silently inherited as an unexamined gap.
+
+   **Live proof, sqlite-notes.ciac end to end (the only M2-reachable
+   example — `crud-notes.ciac` needs `auth JWT`/`cache Redis`,
+   `mysql-notes.ciac` needs `cache Redis`, neither of which Java
+   supports before M6/M7, so both stay `CIAC0011`-refused exactly as
+   before; the plan's own text anticipated "crud/mysql static-local"
+   generation, but the actual gate keeps them fully refused, matching
+   Go's own M2 precedent more strictly than the plan's optimistic
+   read — recorded as the deviation it is):** `./mvnw -q -B verify`
+   green (compile, Spotless, `NoInfraBootTest`); a full CRUD lifecycle
+   against a real sqlite file via `spring-boot:run` — create (201,
+   server-generated UUID echoed back), get (200), list (200), update
+   (200, persisted), delete (204), a subsequent get (404 via the new
+   `NotFoundException`); the zero-value/null boundary triple against
+   real requests (missing `title` -> 400 `missing required field
+   "title"`; explicit `"title":null` -> 400 `field "title" must not be
+   null"`; `"title":""` -> 201, the legitimate zero value correctly
+   accepted); data confirmed persisted on disk after the process
+   exited (`data/sqlite_notes.db`, zero Docker throughout).
+
+   **The rename-replay proof this milestone's own text calls the
+   "most load-bearing single test"** — a new
+   `out_replay_resolves_the_java_target_migrations_dir` in
+   `crates/ciac/tests/rename_cli.rs`, modeled on TS's/Go's own M8
+   replay tests but the first to exercise a genuinely *non-identity*
+   `migration_filename` transformation rather than an identity one:
+   builds a `table`-declaring program, confirms the migration lands
+   at `V0001__migration.sql` (not `0001_migration.sql`), replays a
+   field rename through `--out`, and confirms both the renamed
+   schema file and the Flyway-transformed migration path survive the
+   regeneration untouched. Passed on the first run.
+
+   Full workspace verification: fmt/clippy clean, `cargo test
+   --workspace` green (65 suites, zero failures) across three full
+   passes (the middle one surfaced the one real gap below); two new
+   golden snapshots (`gen__java__sqlite-notes`, and `gen__java__ping`
+   picking up `NotFoundException`'s now-unconditional emission).
+
+   **Real bug found live — the keyed CRUD path would have shipped
+   with a dangling `Schemas` reference.** `Schemas.java`'s own
+   emission was still gated on `!ctx.records.is_empty()` from M1 — a
+   keyed `crud <Name>;` (no backing `record`) needs `Schemas.MAPPER`/
+   `requireKeys` too but contributes nothing to `ctx.records`, so a
+   keyed-only program would have generated code referencing a file
+   that was never written. Fixed by widening the gate to `
+   !ctx.records.is_empty() || !ctx.resources.is_empty()`. Not caught
+   by any currently-reachable example (`sqlite-notes.ciac`/
+   `mysql-notes.ciac` are both typed; `crud-notes.ciac`, the one
+   keyed example, is auth/cache-gated) — found by reading the keyed
+   branch's own template against what M1 actually gated, not by a
+   failing build.
+
+   **Second real bug found live — the classpath-resource `openapi.json`
+   collision Go's own M1 already hit had a second latent form here:**
+   caught and fixed at M1 itself (renamed to `apidoc.json`); recorded
+   again here only because M2 was the first milestone to re-run C3
+   against a second Java example (`sqlite-notes.ciac`) and confirm the
+   fix generalizes, not because a new instance of the bug appeared.
 3. **M3 — Broker, workers, jobs, channels.** jnats + spring-kafka,
    retry + public `handleMessageOnce`, `@Scheduled` with the
    prefix-only `spring_cron` filter (equivalence-tested), WS/SSE.

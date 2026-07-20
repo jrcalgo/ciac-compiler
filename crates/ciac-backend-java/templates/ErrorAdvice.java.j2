@@ -24,6 +24,12 @@ public class ErrorAdvice {
                 .body(new Envelope("error", e.getMessage()));
     }
 
+    @ExceptionHandler(NotFoundException.class)
+    public ResponseEntity<Envelope> handleNotFound(NotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new Envelope("error", e.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Envelope> handleUnexpected(Exception e) {
         log.error("unhandled exception", e);

@@ -91,3 +91,20 @@ pub fn java_pascal(input: String) -> String {
 pub fn java_is_uuid(field: ViaDeserialize<HasTypeKind>) -> bool {
     matches!(field.0.type_kind, FieldTypeKind::Uuid)
 }
+
+/// Rewrites `RecordCtx::sql_type`'s Postgres-only spellings (`JSONB`,
+/// `TIMESTAMPTZ`) for `engine` — needed because the CRUD-resource
+/// baseline bootstrap (M2's own `CREATE TABLE IF NOT EXISTS`, run
+/// directly against `field.sql_type` rather than through the shared
+/// `table`-declaration differ, which is Postgres-only by construction)
+/// is the first Java call site to emit that string against MySQL/
+/// SQLite. Every other spelling (`TEXT`/`BIGINT`/`DOUBLE PRECISION`/
+/// `BOOLEAN`) is already valid on all three engines.
+pub fn java_ddl_type(sql_type: &str, engine: &str) -> String {
+    match (sql_type, engine) {
+        ("JSONB", "mysql") => "JSON".to_owned(),
+        ("JSONB", "sqlite") => "TEXT".to_owned(),
+        ("TIMESTAMPTZ", "mysql" | "sqlite") => "TIMESTAMP".to_owned(),
+        _ => sql_type.to_owned(),
+    }
+}

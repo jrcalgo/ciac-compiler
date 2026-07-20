@@ -153,6 +153,26 @@ impl Backend for JavaBackend {
         // M6: `Auth` (both JWT and OAuth2, one resource-server-starter
         // mechanism per Pillar 7's own table) widens in alongside
         // everything M1-M5 already support.
+        //
+        // M7: `Cache` (spring-data-redis `StringRedisTemplate`),
+        // `ObjectStore` (AWS SDK v2 S3, path-style for MinIO), `Email`
+        // (Spring's `JavaMailSenderImpl` against SMTP/Mailpit),
+        // `Search` (dependency-free `HttpClient` against OpenSearch's
+        // REST API, mirroring Go's own choice), `ExternalHttp`
+        // (Spring's `RestClient`) — every typed-handler leaf these
+        // widen in for was already implemented at M4 (`lower.rs`'s own
+        // `cache_field`/`object_store_field`/`email_field`/
+        // `search_field`/`http_field`), unexercised until this
+        // milestone's own `AppState` bean wiring exists for them to
+        // reference. `Metrics`/`Tracing` (Micrometer/OTel via
+        // `pom.xml`/`application.yml`) and `Users` (the dev-Keycloak-
+        // issuer-default computation Go's/TS's own M7 already found is
+        // fully target-neutral, needing zero backend-specific code)
+        // are distinct `Component`/`NodeKind` variants of their own —
+        // found live via `traced-checkout.ciac`'s own `CIAC0011`
+        // refusal before this widening — so each needs its own arm
+        // here even though none but `Tracing` changes what this
+        // backend actually emits.
         matches!(
             component,
             Component::Api { .. }
@@ -166,6 +186,14 @@ impl Backend for JavaBackend {
                 | Component::Realtime { .. }
                 | Component::Service { .. }
                 | Component::Auth { .. }
+                | Component::Cache { .. }
+                | Component::ObjectStore { .. }
+                | Component::Email { .. }
+                | Component::Search { .. }
+                | Component::ExternalHttp { .. }
+                | Component::Metrics { .. }
+                | Component::Tracing { .. }
+                | Component::Users { .. }
         )
     }
 
@@ -496,6 +524,49 @@ fn emit_service(
         project.add_file(
             at(&format!("{java_root}/state/Queue.java")),
             render_java("Queue.java.j2", empty())?,
+        );
+    }
+
+    // M7 ontology wrapper classes: one shared class per capability
+    // *kind*, reused across every named instance of that kind via a
+    // distinct `AppState` bean per instance (mirrors Go's own
+    // `objectstore.ObjectStore`/`email.Email`/`search.Search`/
+    // `httpclients.ExternalHttp` one-struct-many-beans shape).
+    if ctx.has_object_store {
+        project.add_file(
+            at(&format!("{java_root}/state/ObjectStore.java")),
+            render_java("ObjectStore.java.j2", empty())?,
+        );
+    }
+    if ctx.has_email {
+        project.add_file(
+            at(&format!("{java_root}/state/Email.java")),
+            render_java("Email.java.j2", empty())?,
+        );
+    }
+    if ctx.has_search {
+        project.add_file(
+            at(&format!("{java_root}/state/Search.java")),
+            render_java("Search.java.j2", empty())?,
+        );
+    }
+    if ctx.has_external_http {
+        project.add_file(
+            at(&format!("{java_root}/state/ExternalHttp.java")),
+            render_java("ExternalHttp.java.j2", empty())?,
+        );
+    }
+
+    // M7 typed HTTP call clients: one class per `call <Service>.<Api>`
+    // target, deduplicated in `ctx.call_targets` by the shared model
+    // layer already (mirrors Go's own `client.go.j2` emission loop).
+    for target in &ctx.call_targets {
+        project.add_file(
+            at(&format!(
+                "{java_root}/clients/{}.java",
+                target.class_name.clone()
+            )),
+            render_java("Client.java.j2", context! { t => target })?,
         );
     }
 

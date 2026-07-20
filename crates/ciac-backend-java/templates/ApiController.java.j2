@@ -14,6 +14,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 {%- for handler in api.handlers %}
 import com.ciac.{{ java_package }}.{{ handler.handler_package }}.{{ handler.class_name }};
 {%- endfor %}
+{%- for call in api.call_imports %}
+import com.ciac.{{ java_package }}.clients.{{ call.class_name }};
+{%- endfor %}
 {%- if api.has_auth_step %}
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -38,12 +41,16 @@ public class {{ api.snake | java_pascal }}Controller {
 {%- for handler in api.handlers %}
     private final {{ handler.class_name }} {{ handler.class_name | java_camel }};
 {%- endfor %}
+{%- for call in api.call_imports %}
+    private final {{ call.class_name }} {{ call.class_name | java_camel }};
+{%- endfor %}
 
     public {{ api.snake | java_pascal }}Controller(
             AppState state
             {%- if api.has_publish_step %}, Queue queue{% endif -%}
             {%- if api.has_auth_step %}, JwtDecoder jwtDecoder{% endif -%}
-            {%- for handler in api.handlers %}, {{ handler.class_name }} {{ handler.class_name | java_camel }}{% endfor %}) {
+            {%- for handler in api.handlers %}, {{ handler.class_name }} {{ handler.class_name | java_camel }}{% endfor -%}
+            {%- for call in api.call_imports %}, {{ call.class_name }} {{ call.class_name | java_camel }}{% endfor %}) {
         this.state = state;
 {%- if api.has_publish_step %}
         this.queue = queue;
@@ -53,6 +60,9 @@ public class {{ api.snake | java_pascal }}Controller {
 {%- endif %}
 {%- for handler in api.handlers %}
         this.{{ handler.class_name | java_camel }} = {{ handler.class_name | java_camel }};
+{%- endfor %}
+{%- for call in api.call_imports %}
+        this.{{ call.class_name | java_camel }} = {{ call.class_name | java_camel }};
 {%- endfor %}
     }
 

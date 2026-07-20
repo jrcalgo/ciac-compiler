@@ -1092,10 +1092,11 @@ src/main/java/com/ciac/clickstream/state/AppState.java
 // Every provider client bean this service holds lives here, growing
 // one field per declared capability as later milestones land. Every
 // field is `@Lazy` (or lazily constructed by the library itself, as
-// HikariCP/Lettuce are) -- constructing `AppState` never blocks on a
-// network call, the same bar every other target's own state holder
-// keeps (v0.17 M11's lazy-init discipline). `NoInfraBootTest` proves
-// this for real on every `mvnw verify`, not just here in a comment.
+// HikariCP/Lettuce/`RedisConnectionFactory` are) -- constructing
+// `AppState` never blocks on a network call, the same bar every other
+// target's own state holder keeps (v0.17 M11's lazy-init discipline).
+// `NoInfraBootTest` proves this for real on every `mvnw verify`, not
+// just here in a comment.
 package com.ciac.clickstream.state;
 
 import org.springframework.stereotype.Component;

@@ -31,6 +31,12 @@ import io.nats.client.impl.Headers;
 import io.nats.client.impl.NatsMessage;
 {%- endif %}
 import com.fasterxml.jackson.databind.ObjectMapper;
+{%- if c.has_tracing %}
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
+{%- endif %}
+import java.util.HashMap;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -49,9 +55,18 @@ public final class Queue {
 {%- else %}
     private volatile Connection connection;
 {%- endif %}
+{%- if c.has_tracing %}
+    private final Tracer tracer;
+    private final Propagator propagator;
+{%- endif %}
 
-    public Queue(@Value("${{ '{' }}{% if c.queue_engine == "kafka" %}KAFKA_URL:localhost:9092{% else %}NATS_URL:nats://localhost:4222{% endif %}{{ '}' }}") String url) {
+    public Queue(
+            @Value("${{ '{' }}{% if c.queue_engine == "kafka" %}KAFKA_URL:localhost:9092{% else %}NATS_URL:nats://localhost:4222{% endif %}{{ '}' }}") String url{% if c.has_tracing %}, Tracer tracer, Propagator propagator{% endif %}) {
         this.url = url;
+{%- if c.has_tracing %}
+        this.tracer = tracer;
+        this.propagator = propagator;
+{%- endif %}
     }
 
 {%- if c.queue_engine == "kafka" %}
@@ -108,12 +123,46 @@ public final class Queue {
 {%- endif %}
 
     /** Marshals v and publishes it -- the shared call site every
-     * generated pipeline `publish` step goes through. */
+     * generated pipeline `publish` step goes through.{% if c.has_tracing %} The
+     * current span's trace context (if any) is injected as headers
+     * (W3C `traceparent`, via Micrometer's own `Propagator`) so a
+     * consuming worker/consumer can continue the same trace -- the
+     * broker-hop half of propagation Pillar 6 requires, mirroring
+     * Go's own `InjectCarrier`/`otel.GetTextMapPropagator().Inject`.{% endif %} */
     public void publishJson(String subject, Object v) {
         try {
+{%- if c.has_tracing %}
+            Map<String, String> headers = new HashMap<>();
+            Span current = tracer.currentSpan();
+            if (current != null) {
+                propagator.inject(current.context(), headers, Map::put);
+            }
+            publish(subject, MAPPER.writeValueAsBytes(v), headers);
+{%- else %}
             publish(subject, MAPPER.writeValueAsBytes(v), null);
+{%- endif %}
         } catch (Exception e) {
             throw new RuntimeException("publishing to " + subject, e);
         }
     }
+{%- if c.has_tracing %}
+
+    /** Runs work inside a span extracted from headers (nil-safe: a
+     * message published before this service's own `tracing
+     * OpenTelemetry` landed, or from a non-participating system,
+     * starts a fresh root span instead of erroring) -- the consume-
+     * side half of broker propagation, called from every generated
+     * worker/consumer's own message-handling call site. Mirrors Go's
+     * own `observability.Traced`. */
+    public void traced(String name, Map<String, String> headers, Runnable work) {
+        Map<String, String> safeHeaders = headers == null ? Map.<String, String>of() : headers;
+        Span.Builder builder = propagator.extract(safeHeaders, (carrier, key) -> carrier.get(key));
+        Span span = builder.name(name).start();
+        try (Tracer.SpanInScope ignored = tracer.withSpan(span)) {
+            work.run();
+        } finally {
+            span.end();
+        }
+    }
+{%- endif %}
 }

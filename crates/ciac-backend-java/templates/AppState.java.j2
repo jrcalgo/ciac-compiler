@@ -3,29 +3,42 @@
 // Every provider client bean this service holds lives here, growing
 // one field per declared capability as later milestones land. Every
 // field is `@Lazy` (or lazily constructed by the library itself, as
-// HikariCP/Lettuce are) -- constructing `AppState` never blocks on a
-// network call, the same bar every other target's own state holder
-// keeps (v0.17 M11's lazy-init discipline). `NoInfraBootTest` proves
-// this for real on every `mvnw verify`, not just here in a comment.
+// HikariCP/Lettuce/`RedisConnectionFactory` are) -- constructing
+// `AppState` never blocks on a network call, the same bar every other
+// target's own state holder keeps (v0.17 M11's lazy-init discipline).
+// `NoInfraBootTest` proves this for real on every `mvnw verify`, not
+// just here in a comment.
 package com.ciac.{{ java_package }}.state;
 
-{% if c.has_db -%}
+{%- set has_beans = c.has_db or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http %}
+{% if has_beans -%}
+{%- if c.has_db %}
 import java.sql.Connection;
 import java.sql.Statement;
 import javax.sql.DataSource;
+{%- endif %}
+{%- if c.has_cache %}
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+{%- endif %}
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+{%- if c.has_db %}
 import org.springframework.boot.CommandLineRunner;
+{%- endif %}
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Configuration;
+{%- if c.has_db %}
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+{%- endif %}
 {% else -%}
 import org.springframework.stereotype.Component;
 {% endif %}
-{% if c.has_db %}
+{% if has_beans %}
 @Configuration
 public class AppState {
 {%- for inst in c.db_instances %}
@@ -60,6 +73,78 @@ public class AppState {
         return new TransactionTemplate(new DataSourceTransactionManager(dataSource));
     }
 {%- endfor %}
+{%- for inst in c.cache_instances %}
+
+    // `LettuceConnectionFactory.afterPropertiesSet()` builds the
+    // shared native connection lazily (Lettuce's own client only
+    // dials on first actual command, mirroring `redis.NewClient`'s
+    // own "parses the URL and returns immediately" contract Go's own
+    // `state.go.j2` documents) -- `@Lazy` here is belt-and-suspenders
+    // (a bean nothing injects is never constructed at all), verified
+    // live by `NoInfraBootTest` with no local Redis reachable.
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}")
+    public StringRedisTemplate {{ inst.state_field | java_camel }}(
+            @Value("${{ '{' }}{{ inst.env_var }}:redis://localhost:6379/{{ inst.redis_db }}{{ '}' }}") String rawUrl) {
+        java.net.URI uri = java.net.URI.create(rawUrl);
+        RedisStandaloneConfiguration config =
+                new RedisStandaloneConfiguration(uri.getHost(), uri.getPort() < 0 ? 6379 : uri.getPort());
+        if (uri.getPath() != null && uri.getPath().length() > 1) {
+            config.setDatabase(Integer.parseInt(uri.getPath().substring(1)));
+        }
+        LettuceConnectionFactory factory = new LettuceConnectionFactory(config);
+        factory.afterPropertiesSet();
+        StringRedisTemplate template = new StringRedisTemplate(factory);
+        template.afterPropertiesSet();
+        return template;
+    }
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}")
+    public ObjectStore {{ inst.state_field | java_camel }}(
+            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String endpoint,
+            @Value("${{ '{' }}{{ inst.cfg[1].env }}:{{ inst.cfg[1].rust_default }}{{ '}' }}") String accessKey,
+            @Value("${{ '{' }}{{ inst.cfg[2].env }}:{{ inst.cfg[2].rust_default }}{{ '}' }}") String secretKey,
+            @Value("${{ '{' }}{{ inst.cfg[3].env }}:{{ inst.cfg[3].rust_default }}{{ '}' }}") String bucket,
+            @Value("${{ '{' }}{{ inst.cfg[4].env }}:{{ inst.cfg[4].rust_default }}{{ '}' }}") String region) {
+        return new ObjectStore(endpoint, accessKey, secretKey, bucket, region);
+    }
+{%- endfor %}
+{%- for inst in c.email_instances %}
+
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}")
+    public Email {{ inst.state_field | java_camel }}(
+            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String host,
+            @Value("${{ '{' }}{{ inst.cfg[1].env }}:{{ inst.cfg[1].rust_default }}{{ '}' }}") int port,
+            @Value("${{ '{' }}{{ inst.cfg[2].env }}:{{ inst.cfg[2].rust_default }}{{ '}' }}") String username,
+            @Value("${{ '{' }}{{ inst.cfg[3].env }}:{{ inst.cfg[3].rust_default }}{{ '}' }}") String password,
+            @Value("${{ '{' }}{{ inst.cfg[4].env }}:{{ inst.cfg[4].rust_default }}{{ '}' }}") String from,
+            @Value("${{ '{' }}{{ inst.cfg[5].env }}:{{ inst.cfg[5].rust_default }}{{ '}' }}") boolean useTls) {
+        return new Email(host, port, username, password, from, useTls);
+    }
+{%- endfor %}
+{%- for inst in c.search_instances %}
+
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}")
+    public Search {{ inst.state_field | java_camel }}(
+            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String url) {
+        return new Search(url);
+    }
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}")
+    public ExternalHttp {{ inst.state_field | java_camel }}(
+            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String baseUrl) {
+        return new ExternalHttp(baseUrl);
+    }
+{%- endfor %}
+{%- if c.has_db %}
 
     // "Applies on boot" (Pillar 5): every `table`-declaration migration
     // Flyway would otherwise auto-run via `FlywayAutoConfiguration` is
@@ -91,6 +176,7 @@ public class AppState {
         {%- endfor %}
         };
     }
+{%- endif %}
 }
 {% else %}
 @Component

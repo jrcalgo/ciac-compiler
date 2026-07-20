@@ -26,6 +26,13 @@
          kafka-clients/spring-kafka below), so pinned explicitly here. -->
     <jnats.version>2.26.0</jnats.version>
 {%- endif %}
+{%- if c.has_object_store %}
+    <!-- Not managed by spring-boot-dependencies' own BOM (unlike
+         Micrometer/OpenTelemetry below, which spring-boot-dependencies
+         does pin via its own `opentelemetry.version` property), so
+         pinned explicitly here. -->
+    <aws-sdk.version>2.29.52</aws-sdk.version>
+{%- endif %}
   </properties>
 
   <dependencies>
@@ -118,6 +125,47 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+    </dependency>
+{%- endif %}
+{%- if c.has_cache %}
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+{%- endif %}
+{%- if c.has_object_store %}
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+      <version>${aws-sdk.version}</version>
+    </dependency>
+{%- endif %}
+{%- if c.has_email %}
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-mail</artifactId>
+    </dependency>
+{%- endif %}
+{%- if c.has_metrics or c.has_tracing %}
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+{%- endif %}
+{%- if c.has_metrics %}
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+{%- endif %}
+{%- if c.has_tracing %}
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-bridge-otel</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
     </dependency>
 {%- endif %}
   </dependencies>

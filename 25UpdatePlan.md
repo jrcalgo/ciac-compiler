@@ -1746,6 +1746,235 @@ surface.
    traced-checkout, dev-identity verify; `--system` CI rows
    (java × inventory-system, × mysql-notes, × sim-vertical-slice)
    with compose-build times recorded against the Pillar 8 ledger.
+
+   **Shipped (v0.25 M7):** `supports()` widened a final time —
+   `Component::Cache`/`ObjectStore`/`Email`/`Search`/`ExternalHttp`/
+   `Metrics`/`Tracing`/`Users` all join the OR-chain (`Logging` stays
+   out: unreachable by any checked-in example, the same "don't build
+   what nothing exercises" discipline this whole arc has kept).
+
+   **A real M4-era bug found before any new code was written:**
+   `lower.rs`'s own `cache_field`/`object_store_field`/`email_field`/
+   `search_field`/`http_field` (written at M4 as stand-ins, unexercised
+   until this milestone) stored the *raw* Rust-style field name
+   (`cache_media`, snake_case) and spelled it verbatim into the leaf
+   expression — but every other Java field this codegen emits is
+   `java_camel`-filtered at the template layer (`AppState.java.j2`'s
+   own `{{ inst.state_field | java_camel }}`). Reading `AppState.java.j2`
+   before writing a single wrapper class caught the mismatch: the
+   fields these M4 leaves would call had never actually been declared
+   under that name anywhere. Fixed by threading the pre-existing plain
+   `java_camel(&str) -> String` helper (already used for
+   `java_tx_field`) through all five leaf call sites in `lower.rs`,
+   matching Go's own identical precedent (`go_pascal` applied at each
+   use site in `GoSyntax`, not baked into the stored field once) —
+   confirmed by reading Go's own `lower.rs` side by side before fixing
+   Java's.
+
+   **Wrapper classes** (`crates/ciac-backend-java/templates/`,
+   package `com.ciac.<pkg>.state`, one shared class per capability
+   *kind*, one `@Lazy` `AppState` bean per named *instance* — the same
+   one-struct-many-beans shape Go's own `objectstore.ObjectStore`/
+   `email.Email`/`search.Search`/`httpclients.ExternalHttp` already
+   established):
+   - `Cache`: no wrapper needed at all — `StringRedisTemplate` (Spring
+     Data Redis) is a direct match for the M4 leaf's own
+     `.opsForValue().get/set()`/`.delete()` shape.
+     `LettuceConnectionFactory` is built from a hand-parsed `redis://`
+     URL (`java.net.URI`, mirroring `DataSources.open`'s own userinfo-
+     stripping for JDBC) since Spring Data Redis has no single-string-
+     URL constructor; confirmed live (see below) that
+     `LettuceConnectionFactory.afterPropertiesSet()` does not dial —
+     Lettuce's own client only connects on first command, the same
+     "parses the URL and returns immediately" contract `redis.NewClient`
+     already carries for Go.
+   - `ObjectStore.java.j2`: AWS SDK v2 `S3Client`, `forcePathStyle(true)`
+     for MinIO compatibility, built lazily inside a `synchronized`
+     getter (never at construction). `get()` catches `NoSuchKeyException`
+     and returns `null` rather than throwing — the M4 leaf's own
+     `field.get(key) == null ? null : ...` ternary already assumed this
+     miss contract, so the wrapper honors it instead of the leaf being
+     rewritten. `software.amazon.awssdk:s3` is the one dependency this
+     whole milestone needed an explicit `<version>` pin for (verified
+     live against a standalone scratch Maven project before writing the
+     real template: Spring Boot's own dependency management does *not*
+     cover the AWS SDK, unlike Micrometer/OpenTelemetry, which it does
+     — `opentelemetry-exporter-otlp` needed no version at all,
+     confirmed the same way).
+   - `Email.java.j2`: Spring's `JavaMailSenderImpl`, built fresh per
+     `send()` call (config-only fields held, matching every other
+     wrapper's own lazy discipline) — `spring-boot-starter-mail`
+     against Mailpit by default, per Pillar 7's own text.
+   - `Search.java.j2`: dependency-free `java.net.http.HttpClient`
+     against OpenSearch's REST API directly, **a deliberate deviation
+     from Pillar 7's literal "opensearch-java" text**, disclosed here:
+     mirrors Go's own settled choice (`search.go.j2`'s own doc comment:
+     "no official client is needed for three verbs") rather than
+     vendoring a client library for `index`/`search`/`delete`. A single
+     hardcoded `INDEX = "documents"` constant carries the index name
+     the `search.index`/`search.query` verb signatures don't themselves
+     carry — the identical `SEARCH_INDEX_NAME` shape Go's own `lower.rs`
+     already uses.
+   - `ExternalHttp.java.j2`/`Client.java.j2`: Spring's `RestClient`,
+     per Pillar 7's own text — `RestClient.create(baseUrl)` opens no
+     connection. Call clients (one `{Class}.java` per `CallTargetCtx`,
+     mirroring Go's own `client.go.j2`) unwrap the `{"data": ..}`
+     envelope and need **no manual OTel header injection** the way
+     Go's own client does (`otel.GetTextMapPropagator().Inject`) —
+     Micrometer Observation auto-instruments every `RestClient` request
+     the moment `micrometer-tracing-bridge-otel` is on the classpath, a
+     real simplification over Go's own explicit-injection shape,
+     disclosed rather than assumed (confirmed by the same live
+     `traced-checkout` verification below never needing to touch
+     `Client.java.j2` for tracing at all).
+
+   **Constructor injection was missing in two places, not one** —
+   found live via `inventory-system.ciac`'s own `ComputePrice` classic
+   handler, whose generated stub declared `// - cache: default` in its
+   own doc comment but never actually received a `StringRedisTemplate`
+   field: `logic.java.j2` (M4's own typed-handler template) already had
+   `needs_cache`/`extras` plumbed through from `LogicFileCtx`, but
+   `Service.java.j2` (the *classic*, seeded, pre-M4 handler stub) never
+   consumed the identical `needs_cache`/`rust_cache_field`/`extras`
+   fields `ServiceCtx` has carried since M2/M3 — a real, disclosed gap
+   predating this milestone, fixed by mirroring the exact same
+   `@Qualifier`-based constructor-injection shape into `Service.java.j2`
+   that `logic.java.j2` already had for typed handlers.
+
+   **Broker-hop trace propagation** (`Queue.java.j2`, Pillar 6): inject
+   on `publishJson` (Micrometer's `Tracer.currentSpan()` +
+   `Propagator.inject` into the same `Map<String,String> headers`
+   parameter `publish` already accepted, unused until now), extract-
+   and-span on consume (`Queue.traced(name, headers, Runnable)`, called
+   from both the NATS `Dispatcher` callback and the Kafka
+   `@KafkaListener` — the latter needed its own signature change,
+   `byte[] raw` → `ConsumerRecord<String, byte[]>`, to reach the
+   message's own headers at all). **A real generic-inference bug found
+   live, not caught by the standalone API-surface scratch test that
+   preceded it:** `propagator.extract(headers == null ? Map.of() :
+   headers, ..)` compiled fine in isolation (a concrete `Map<String,
+   String>` object passed directly) but failed exactly this shape once
+   generated for real (`cannot infer type-variable(s) C,K,V`) — the
+   ternary's own type inference produces an unrelated capture that
+   defeats `Propagator.extract`'s generic signature. Fixed by hoisting
+   the null-check to a separate statement
+   (`Map<String,String> safeHeaders = headers == null ? Map.<String,
+   String>of() : headers;`) before the call — the scratch test that
+   verified `Tracer`/`Propagator`'s own API surface (`Span.Builder`,
+   `Tracer.SpanInScope`, `Span.name(..)`) was real and load-bearing (it
+   caught the Micrometer API shape correctly), but a scratch test only
+   proves the API it actually exercises; the ternary shape needed the
+   real generated file to surface.
+
+   **Metrics/tracing config** (`pom.xml.j2`/`application.yml.j2`):
+   `spring-boot-starter-actuator` gated on `has_metrics or has_tracing`
+   (both autoconfiguration surfaces live in `spring-boot-actuator-
+   autoconfigure`, confirmed live against a scratch project before
+   committing to the template); `micrometer-registry-prometheus` +
+   `management.endpoints.web.exposure.include: [prometheus]` when
+   `has_metrics`; `micrometer-tracing-bridge-otel` +
+   `opentelemetry-exporter-otlp` + `management.tracing.sampling.
+   probability: 1.0` + `management.otlp.tracing.endpoint` when
+   `has_tracing`.
+
+   **`Component::Users` needed zero Java-specific code** — found live
+   exactly as Go's/TS's own M7 already recorded: `dev-identity.ciac`
+   generates and `mvn -q -B -DskipTests compile`s clean the moment
+   `Users` joins the `supports()` OR-chain, confirming
+   `ciac-codegen::model`'s own dev-Keycloak-issuer-default computation
+   is target-neutral, not something any backend's own `lower.rs`/
+   `lib.rs` has to implement.
+
+   **Live-verified end to end, not just golden-generated or
+   compile-checked:**
+   - `extras-verbs.ciac` (all five ontology capabilities at once,
+     cache/object_store/email/search/external_http, no db): `./mvnw -q
+     -B verify` green with **zero** of Redis/S3/Mailpit/OpenSearch
+     reachable — `NoInfraBootTest` genuinely proves the lazy-init
+     discipline holds for every new bean this milestone added, not
+     merely for the pre-existing db/queue ones. A live `spring-boot:run`
+     round-trip against a real local Redis: seeded `evict-me` key in
+     Redis directly, `POST /evict-cache-api {"key":"evict-me"}` →
+     `{"status":"accepted","data":true}`, then confirmed via `redis-cli
+     get evict-me` the key is genuinely gone — the `cache.delete` verb
+     reaches real Redis at runtime, not just at compile time. The other
+     three ontology routes (`index-doc-api`/`notify-user-api`/
+     `call-upstream-api`, hitting genuinely unreachable OpenSearch/
+     Mailpit/an external host) returned the expected 500 envelope with
+     real network-layer exceptions in the server log (`MailConnect
+     Exception: Couldn't connect to host, port: localhost, 1025`;
+     `ResourceAccessException`/sandbox-proxy tunnel rejection) — proof
+     each wrapper reaches the real client library correctly and fails
+     only at the network, not from a code bug.
+   - `inventory-system.ciac` (db + cache + a cross-service `call`):
+     both services' `./mvnw -q -B verify` green against real local
+     Postgres with Redis *unreachable* (the cache bean stays
+     unconstructed — nothing in this example's own typed handlers
+     calls a cache verb, only the classic `ComputePrice` stub's now-
+     injected field) and again with Redis reachable. `GatewayController`
+     `POST /quote` → `CatalogClient.price(..)` → unwraps the real HTTP
+     envelope, confirmed via generated-source inspection matching
+     `_steps.java.j2`'s own `call` arm exactly.
+   - `ontology-growth.ciac` (2 db instances + cache + object_store +
+     email + search + external_http + queue, the single densest
+     capability set in the whole example suite): `./mvnw -q -B verify`
+     green for the full trio (main/analytics Postgres reachable,
+     everything else unreachable) — two workers' own NATS connection
+     failures logged and caught exactly per the graceful-degradation
+     discipline `Worker.java.j2`'s own doc comment already describes,
+     never propagating out to fail the boot.
+   - `multi-service-media.ciac` (5 services, object_store + email + a
+     cross-service `call`): all five `mvn -q -B -DskipTests compile`
+     clean.
+   - `traced-checkout.ciac` (tracing + queue + `call`, the one example
+     that first found the `Component::Tracing` `supports()` gap and
+     the `Propagator.extract` ternary bug): both services' `./mvnw -q
+     -B verify` green after both fixes — no live OTel collector in
+     this sandbox (disclosed, the same "no Docker daemon" exclusion
+     every other target's own OTel milestone already carries); what
+     this milestone proves is structural: real `mvn` compilation of the
+     full wiring (inject on publish, extract-and-span on consume for
+     both NATS and Kafka), the actuator/Micrometer dependency graph
+     resolving and autoconfiguring without error, `management.tracing.*`
+     properties present in the generated `application.yml`.
+   - `dev-identity.ciac`: `mvn -q -B -DskipTests compile` clean, zero
+     Java-specific code needed (see above).
+   - `mysql-notes.ciac`/`sim-vertical-slice.ciac` (the two remaining
+     named `--system` CI targets): both `mvn -q -B -DskipTests compile`
+     clean.
+
+   **A large, disclosed side effect of finally widening `supports()`
+   past `Cache`:** every example this arc's own M2–M6 milestones had
+   left `CIAC0011`-refused for Java specifically because it declared
+   `cache Redis` newly un-gates this milestone — `order-system.ciac`
+   (the v0.14 flagship, refused since Java's own M6 exactly per that
+   milestone's own disclosed-gap note), `crud-notes`, `routed-media`,
+   `typed-video`, `video-platform`, `typed-handlers` (object_store/
+   email/search/external_http), `sim-broker-slice`. All eleven golden
+   trees are genuinely new (not modified), reviewed via `cargo insta
+   test --accept` and spot-checked, not blindly trusted: `order-system`
+   and `typed-handlers` specifically confirmed to compile via the same
+   live `mvn -q -B -DskipTests compile` pass covering every newly-
+   reachable example.
+
+   **CI:** `actions/setup-java@v4` (temurin 21, maven cache) added to
+   `generated-system`'s job (previously Rust/Python/Go/uv-only);
+   `java × inventory-system`, `java × mysql-notes`, `java ×
+   sim-vertical-slice` rows added to the `--system` matrix, mirroring
+   TS's/Go's own M7 additions — `sim-vertical-slice` here exercises the
+   real generated app against real Postgres/NATS via `--system` compose
+   (the fidelity-ratchet block's own established shape), not `ciac sim
+   --target java` (`SimSupport::None` until M9) — unaffected by
+   simulation support landing later, the same precedent Go's own M7
+   already established a milestone ahead of its own sim support.
+
+   Full workspace verification: `cargo fmt`/`clippy --all-targets -D
+   warnings` clean; `cargo test --workspace` green (21 suites, 0
+   failures) after `cargo insta test --accept` — twenty-six Java
+   goldens total, all regenerated (`AppState.java.j2`'s doc-comment
+   reflow alone touches every one; eleven are genuinely new trees per
+   the widened-`supports()` effect above).
+
 8. **M8 — Whole-repo integration.** Every example verifies or is
    reason-gated (target: zero gates); goldens complete; generated
    docs tables regenerate; `ciac dev` session test (jar rebuild

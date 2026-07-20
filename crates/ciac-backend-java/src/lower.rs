@@ -747,85 +747,96 @@ impl HostSyntax for JavaSyntax<'_> {
         )
     }
     fn cache_get(&self, key: &str) -> String {
-        let field = self
-            .cache_field
-            .as_deref()
-            .expect("cache.get requires a bound cache instance");
+        let field = java_camel(
+            self.cache_field
+                .as_deref()
+                .expect("cache.get requires a bound cache instance"),
+        );
         format!("Schemas.fromJsonOrNull({field}.opsForValue().get({key}))")
     }
     fn cache_set(&self, key: &str, value: &str, value_ty: &HirType) -> String {
-        let field = self
-            .cache_field
-            .as_deref()
-            .expect("cache.set requires a bound cache instance");
+        let field = java_camel(
+            self.cache_field
+                .as_deref()
+                .expect("cache.set requires a bound cache instance"),
+        );
         let payload = json_body(value, value_ty);
         format!("{field}.opsForValue().set({key}, {payload})")
     }
     fn cache_delete(&self, key: &str) -> String {
-        let field = self
-            .cache_field
-            .as_deref()
-            .expect("cache.delete requires a bound cache instance");
+        let field = java_camel(
+            self.cache_field
+                .as_deref()
+                .expect("cache.delete requires a bound cache instance"),
+        );
         format!("{field}.delete({key})")
     }
     fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
-        let field = self
-            .object_store_field
-            .as_deref()
-            .expect("object_store.put requires a bound object_store instance");
+        let field = java_camel(
+            self.object_store_field
+                .as_deref()
+                .expect("object_store.put requires a bound object_store instance"),
+        );
         let payload = json_body(value, value_ty);
         format!("{field}.put({key}, {payload}.getBytes(java.nio.charset.StandardCharsets.UTF_8))")
     }
     fn object_store_get(&self, key: &str) -> String {
-        let field = self
-            .object_store_field
-            .as_deref()
-            .expect("object_store.get requires a bound object_store instance");
+        let field = java_camel(
+            self.object_store_field
+                .as_deref()
+                .expect("object_store.get requires a bound object_store instance"),
+        );
         format!(
             "Schemas.fromJsonOrNull({field}.get({key}) == null ? null : new String({field}.get({key}), java.nio.charset.StandardCharsets.UTF_8))"
         )
     }
     fn object_store_delete(&self, key: &str) -> String {
-        let field = self
-            .object_store_field
-            .as_deref()
-            .expect("object_store.delete requires a bound object_store instance");
+        let field = java_camel(
+            self.object_store_field
+                .as_deref()
+                .expect("object_store.delete requires a bound object_store instance"),
+        );
         format!("{field}.delete({key})")
     }
     fn object_store_list(&self, prefix: &str) -> String {
-        let field = self
-            .object_store_field
-            .as_deref()
-            .expect("object_store.list requires a bound object_store instance");
+        let field = java_camel(
+            self.object_store_field
+                .as_deref()
+                .expect("object_store.list requires a bound object_store instance"),
+        );
         format!("{field}.list({prefix})")
     }
     fn email_send(&self, to: &str, subject: &str, body: &str) -> String {
-        let field = self
-            .email_field
-            .as_deref()
-            .expect("email.send requires a bound email instance");
+        let field = java_camel(
+            self.email_field
+                .as_deref()
+                .expect("email.send requires a bound email instance"),
+        );
         format!("{field}.send({to}, {subject}, {body})")
     }
     fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String {
-        let field = self
-            .search_field
-            .as_deref()
-            .expect("search.index requires a bound search instance");
+        let field = java_camel(
+            self.search_field
+                .as_deref()
+                .expect("search.index requires a bound search instance"),
+        );
         let payload = json_body(document, document_ty);
         format!("{field}.index({doc_id}, {payload})")
     }
     fn search_query(&self, query: &str) -> String {
-        let field = self
-            .search_field
-            .as_deref()
-            .expect("search.query requires a bound search instance");
+        let field = java_camel(
+            self.search_field
+                .as_deref()
+                .expect("search.query requires a bound search instance"),
+        );
         format!("{field}.search({query})")
     }
     fn http_call(&self, url: &str, json_body_expr: &str, body_ty: &HirType) -> String {
-        let field = self
-            .http_field
-            .as_deref()
-            .expect("external_http.request requires a bound external_http instance");
+        let field = java_camel(
+            self.http_field
+                .as_deref()
+                .expect("external_http.request requires a bound external_http instance"),
+        );
         let payload = json_body(json_body_expr, body_ty);
         format!("{field}.post({url}, {payload})")
     }

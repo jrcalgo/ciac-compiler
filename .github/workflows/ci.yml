@@ -256,6 +256,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
       - name: Build the compiler
         run: cargo build -p ciac
       # Python covers all three system-bearing examples; Rust covers
@@ -319,3 +324,18 @@ jobs:
           # the python/rust rows above already carry.
           run_system examples/inventory-system.ciac typescript
           run_system examples/mysql-notes.ciac typescript
+          # 25UpdatePlan.md M7: the three `--system` rows that milestone's
+          # own exit criteria names, mirroring TS's/Go's own M7 addition
+          # exactly -- Java's own compose build (a `mvn -q -B -DskipTests
+          # package` inside an uncached container) affords the full
+          # inventory-system/mysql-notes/sim-vertical-slice trio the same
+          # way Go's build speed did, unlike Rust's own crate-tree
+          # recompile cost. `sim-vertical-slice` here exercises the real
+          # generated app against real Postgres/NATS via `--system`
+          # compose, not `ciac sim --target java` (`SimSupport::None`
+          # until 25UpdatePlan.md M9) -- the same fidelity-ratchet
+          # precedent the python/rust/typescript/go rows above already
+          # established, unaffected by simulation support landing later.
+          run_system examples/inventory-system.ciac java
+          run_system examples/mysql-notes.ciac java
+          run_system examples/sim-vertical-slice.ciac java

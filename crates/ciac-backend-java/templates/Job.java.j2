@@ -8,6 +8,9 @@ import com.ciac.{{ java_package }}.state.Queue;
 {%- for handler in job.handlers %}
 import com.ciac.{{ java_package }}.{{ handler.handler_package }}.{{ handler.class_name }};
 {%- endfor %}
+{%- for call in job.call_imports %}
+import com.ciac.{{ java_package }}.clients.{{ call.class_name }};
+{%- endfor %}
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -42,15 +45,22 @@ public class {{ job.name }}Job {
 {%- for handler in job.handlers %}
     private final {{ handler.class_name }} {{ handler.class_name | java_camel }};
 {%- endfor %}
+{%- for call in job.call_imports %}
+    private final {{ call.class_name }} {{ call.class_name | java_camel }};
+{%- endfor %}
 
     public {{ job.name }}Job(
-            {%- if job.has_publish_step %}Queue queue{% if job.handlers %}, {% endif %}{% endif -%}
-            {%- for handler in job.handlers %}{{ handler.class_name }} {{ handler.class_name | java_camel }}{% if not loop.last %}, {% endif %}{% endfor %}) {
+            {%- if job.has_publish_step %}Queue queue{% if job.handlers or job.call_imports %}, {% endif %}{% endif -%}
+            {%- for handler in job.handlers %}{{ handler.class_name }} {{ handler.class_name | java_camel }}{% if not loop.last or job.call_imports %}, {% endif %}{% endfor -%}
+            {%- for call in job.call_imports %}{{ call.class_name }} {{ call.class_name | java_camel }}{% if not loop.last %}, {% endif %}{% endfor %}) {
 {%- if job.has_publish_step %}
         this.queue = queue;
 {%- endif %}
 {%- for handler in job.handlers %}
         this.{{ handler.class_name | java_camel }} = {{ handler.class_name | java_camel }};
+{%- endfor %}
+{%- for call in job.call_imports %}
+        this.{{ call.class_name | java_camel }} = {{ call.class_name | java_camel }};
 {%- endfor %}
     }
 

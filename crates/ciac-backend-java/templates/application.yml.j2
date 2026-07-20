@@ -39,7 +39,15 @@ management:
   endpoints:
     web:
       exposure:
-        include: []
+        include: [{% if c.has_metrics %}"prometheus"{% endif %}]
+{%- if c.has_tracing %}
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}
+{%- endif %}
 
 logging:
   level:

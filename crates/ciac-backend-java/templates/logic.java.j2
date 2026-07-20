@@ -15,6 +15,13 @@ package com.ciac.{{ java_package }}.services;
 package com.ciac.{{ java_package }}.logic;
 {%- endif %}
 
+{%- macro extra_type(kind) -%}
+{%- if kind == "object_store" -%}ObjectStore
+{%- elif kind == "email" -%}Email
+{%- elif kind == "search" -%}Search
+{%- elif kind == "external_http" -%}ExternalHttp
+{%- endif -%}
+{%- endmacro %}
 {%- if handler.needs_db %}
 import com.ciac.{{ java_package }}.schemas.RowMappers;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -25,6 +32,16 @@ import org.springframework.transaction.support.TransactionTemplate;
 {%- endif %}
 {%- if handler.needs_queue %}
 import com.ciac.{{ java_package }}.state.Queue;
+{%- endif %}
+{%- if handler.needs_cache %}
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.redis.core.StringRedisTemplate;
+{%- endif %}
+{%- if handler.extras %}
+import org.springframework.beans.factory.annotation.Qualifier;
+{%- for extra in handler.extras %}
+import com.ciac.{{ java_package }}.state.{{ extra_type(extra.kind) }};
+{%- endfor %}
 {%- endif %}
 import com.ciac.{{ java_package }}.schemas.Schemas;
 {%- for name in handler.schema_imports %}
@@ -43,11 +60,19 @@ public class {{ handler.class_name }} {
 {%- if handler.needs_queue %}
     private final Queue queue;
 {%- endif %}
+{%- if handler.needs_cache %}
+    private final StringRedisTemplate {{ handler.rust_cache_field | java_camel }};
+{%- endif %}
+{%- for extra in handler.extras %}
+    private final {{ extra_type(extra.kind) }} {{ extra.rust_state_field | java_camel }};
+{%- endfor %}
 
     public {{ handler.class_name }}(
 {%- if handler.needs_db %}@Qualifier("{{ handler.rust_db_field | java_camel }}Jdbc") JdbcClient jdbc{% endif -%}
 {%- if handler.needs_tx %}{% if handler.needs_db %}, {% endif %}@Qualifier("{{ handler.java_tx_field }}") TransactionTemplate {{ handler.java_tx_field }}{% endif -%}
 {%- if handler.needs_queue %}{% if handler.needs_db or handler.needs_tx %}, {% endif %}Queue queue{% endif -%}
+{%- if handler.needs_cache %}{% if handler.needs_db or handler.needs_tx or handler.needs_queue %}, {% endif %}@Qualifier("{{ handler.rust_cache_field | java_camel }}") StringRedisTemplate {{ handler.rust_cache_field | java_camel }}{% endif -%}
+{%- for extra in handler.extras %}{% if not loop.first or handler.needs_db or handler.needs_tx or handler.needs_queue or handler.needs_cache %}, {% endif %}@Qualifier("{{ extra.rust_state_field | java_camel }}") {{ extra_type(extra.kind) }} {{ extra.rust_state_field | java_camel }}{% endfor -%}
     ) {
 {%- if handler.needs_db %}
         this.jdbc = jdbc;
@@ -58,6 +83,12 @@ public class {{ handler.class_name }} {
 {%- if handler.needs_queue %}
         this.queue = queue;
 {%- endif %}
+{%- if handler.needs_cache %}
+        this.{{ handler.rust_cache_field | java_camel }} = {{ handler.rust_cache_field | java_camel }};
+{%- endif %}
+{%- for extra in handler.extras %}
+        this.{{ extra.rust_state_field | java_camel }} = {{ extra.rust_state_field | java_camel }};
+{%- endfor %}
     }
 
     public {{ handler.return_type }} handle(

@@ -12,7 +12,7 @@ import com.ciac.{{ java_package }}.schemas.{{ api.payload.class_name }};
 import com.fasterxml.jackson.databind.JsonNode;
 {%- endif %}
 {%- for handler in api.handlers %}
-import com.ciac.{{ java_package }}.services.{{ handler.class_name }};
+import com.ciac.{{ java_package }}.{{ handler.handler_package }}.{{ handler.class_name }};
 {%- endfor %}
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 {% import "_steps.java.j2" as steps %}
+{%- set payload_type = api.payload.class_name if api.payload else "" %}
 @RestController
 public class {{ api.snake | java_pascal }}Controller {
     private final AppState state;
@@ -52,7 +53,7 @@ public class {{ api.snake | java_pascal }}Controller {
         Object result = java.util.Map.of();
 {%- endif %}
 {%- for step in api.steps %}
-{{ steps.emit_step(step, "        ", "") }}
+{{ steps.emit_step(step, "        ", payload_type) }}
 {%- endfor %}
         return Envelope.accepted(result);
     }

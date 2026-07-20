@@ -1162,7 +1162,13 @@ accounts/src/main/java/com/ciac/accounts/schemas/RowMappers.java
 // Explicit, per-model `RowMapper` constants with explicit column order
 // (Pillar 5) -- deterministic, reflection-free, the `FromRow`/`Scan`
 // analog. Column order always matches `select_cols`'s own `id, ..`
-// ordering, so a mapper and the query it backs never drift.
+// ordering, so a mapper and the query it backs never drift. One entry
+// per distinct record backing either a CRUD resource or a `table`
+// declaration a typed handler's `db.get`/`db.query` reads (M4) --
+// `row_mapper_records` is already deduplicated by record name in
+// `lib.rs`, so a record backing both a `crud` resource and a plain
+// `table` (unreachable today, disclosed rather than assumed
+// impossible) still gets exactly one constant.
 package com.ciac.accounts.schemas;
 
 import org.springframework.jdbc.core.RowMapper;
@@ -1170,8 +1176,8 @@ import org.springframework.jdbc.core.RowMapper;
 public final class RowMappers {
   private RowMappers() {}
 
-  public static final RowMapper<ResourceUser> RESOURCE_USER =
-      (rs, rowNum) -> new ResourceUser(rs.getString("id"), rs.getString("title"));
+  public static final RowMapper<User> USER =
+      (rs, rowNum) -> new User(rs.getString("id"), rs.getString("title"));
 }
 ============================================================
 accounts/src/main/java/com/ciac/accounts/schemas/Schemas.java
@@ -1228,6 +1234,46 @@ public final class Schemas {
       UUID.fromString(value);
     } catch (IllegalArgumentException e) {
       throw new BadRequestException("field \"" + field + "\": invalid uuid4 value");
+    }
+  }
+
+  /**
+   * `JsonNode.path(..)` is null-safe by design (never throws, returns a `MissingNode` on a miss) --
+   * typed-handler `Json` indexing (M4) needs the KeyError/IndexError parity every other target's
+   * own decoder enforces, so this restores it explicitly instead of silently returning a
+   * missing-node sentinel.
+   */
+  public static JsonNode indexOrThrow(JsonNode base, String key) {
+    JsonNode v = base.path(key);
+    if (v.isMissingNode()) {
+      throw new BadRequestException("KeyError: '" + key + "'");
+    }
+    return v;
+  }
+
+  /**
+   * Marshals v to a JSON string -- the shared call site every typed handler's
+   * `cache.set`/`object_store.put`/`search.index`/ `http.call` payload goes through (M4). Wraps
+   * Jackson's checked `JsonProcessingException` as unchecked, matching Pillar 2's own "unchecked
+   * exceptions throughout" decision for handler bodies.
+   */
+  public static String toJson(Object v) {
+    try {
+      return MAPPER.writeValueAsString(v);
+    } catch (Exception e) {
+      throw new RuntimeException("serializing to JSON", e);
+    }
+  }
+
+  /** `null` in, `null` out; otherwise parses `s` as a `JsonNode`. */
+  public static JsonNode fromJsonOrNull(String s) {
+    if (s == null) {
+      return null;
+    }
+    try {
+      return MAPPER.readTree(s);
+    } catch (Exception e) {
+      throw new RuntimeException("parsing JSON", e);
     }
   }
 }
@@ -1293,7 +1339,7 @@ public class ResourceUserStore {
 
   public ResourceUser create(ResourceUserIn payload) {
     String id = UUID.randomUUID().toString();
-    jdbc.sql("INSERT INTO resource_users (id, title) VALUES ($1, $2)")
+    jdbc.sql("INSERT INTO resource_users (id, title) VALUES (?, ?)")
         .param(id)
         .param(payload.title())
         .update();
@@ -1301,14 +1347,14 @@ public class ResourceUserStore {
   }
 
   public Optional<ResourceUser> get(String id) {
-    return jdbc.sql("SELECT id, title FROM resource_users WHERE id = $1")
+    return jdbc.sql("SELECT id, title FROM resource_users WHERE id = ?")
         .param(id)
         .query(RowMappers.RESOURCE_USER)
         .optional();
   }
 
   public List<ResourceUser> list(int limit, int offset) {
-    return jdbc.sql("SELECT id, title FROM resource_users ORDER BY id LIMIT $1 OFFSET $2")
+    return jdbc.sql("SELECT id, title FROM resource_users ORDER BY id LIMIT ? OFFSET ?")
         .param(limit)
         .param(offset)
         .query(RowMappers.RESOURCE_USER)
@@ -1317,7 +1363,7 @@ public class ResourceUserStore {
 
   public Optional<ResourceUser> update(String id, ResourceUserIn payload) {
     int n =
-        jdbc.sql("UPDATE resource_users SET title = $1 WHERE id = $2")
+        jdbc.sql("UPDATE resource_users SET title = ? WHERE id = ?")
             .param(payload.title())
             .param(id)
             .update();
@@ -1328,7 +1374,7 @@ public class ResourceUserStore {
   }
 
   public boolean delete(String id) {
-    int n = jdbc.sql("DELETE FROM resource_users WHERE id = $1").param(id).update();
+    int n = jdbc.sql("DELETE FROM resource_users WHERE id = ?").param(id).update();
     return n > 0;
   }
 }
@@ -1356,6 +1402,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class AppState {
@@ -1374,6 +1422,19 @@ public class AppState {
   @Bean("dbMainJdbc")
   public JdbcClient dbMainJdbc(@Qualifier("dbMain") DataSource dataSource) {
     return JdbcClient.create(dataSource);
+  }
+
+  // Programmatic `TransactionTemplate`, not `@Transactional` (Pillar
+  // 4 -- a same-class annotated call would skip the proxy's aspect
+  // silently). A typed handler's `transaction {}` block executes its
+  // body inside `dbMainTx.executeWithoutResult(status
+  // -> {..})` (`lower.rs`'s `transaction_stmt`); every db verb inside
+  // still issues SQL through the same `JdbcClient` bean above, which
+  // transparently participates via Spring's own connection binding.
+  @Lazy
+  @Bean("dbMainTx")
+  public TransactionTemplate dbMainTx(@Qualifier("dbMain") DataSource dataSource) {
+    return new TransactionTemplate(new DataSourceTransactionManager(dataSource));
   }
 
   // "Applies on boot" (Pillar 5): every `table`-declaration migration
@@ -2960,7 +3021,13 @@ catalog/src/main/java/com/ciac/catalog/schemas/RowMappers.java
 // Explicit, per-model `RowMapper` constants with explicit column order
 // (Pillar 5) -- deterministic, reflection-free, the `FromRow`/`Scan`
 // analog. Column order always matches `select_cols`'s own `id, ..`
-// ordering, so a mapper and the query it backs never drift.
+// ordering, so a mapper and the query it backs never drift. One entry
+// per distinct record backing either a CRUD resource or a `table`
+// declaration a typed handler's `db.get`/`db.query` reads (M4) --
+// `row_mapper_records` is already deduplicated by record name in
+// `lib.rs`, so a record backing both a `crud` resource and a plain
+// `table` (unreachable today, disclosed rather than assumed
+// impossible) still gets exactly one constant.
 package com.ciac.catalog.schemas;
 
 import org.springframework.jdbc.core.RowMapper;
@@ -2968,8 +3035,8 @@ import org.springframework.jdbc.core.RowMapper;
 public final class RowMappers {
   private RowMappers() {}
 
-  public static final RowMapper<ResourceVideo> RESOURCE_VIDEO =
-      (rs, rowNum) -> new ResourceVideo(rs.getString("id"), rs.getString("title"));
+  public static final RowMapper<Video> VIDEO =
+      (rs, rowNum) -> new Video(rs.getString("id"), rs.getString("title"));
 }
 ============================================================
 catalog/src/main/java/com/ciac/catalog/schemas/Schemas.java
@@ -3026,6 +3093,46 @@ public final class Schemas {
       UUID.fromString(value);
     } catch (IllegalArgumentException e) {
       throw new BadRequestException("field \"" + field + "\": invalid uuid4 value");
+    }
+  }
+
+  /**
+   * `JsonNode.path(..)` is null-safe by design (never throws, returns a `MissingNode` on a miss) --
+   * typed-handler `Json` indexing (M4) needs the KeyError/IndexError parity every other target's
+   * own decoder enforces, so this restores it explicitly instead of silently returning a
+   * missing-node sentinel.
+   */
+  public static JsonNode indexOrThrow(JsonNode base, String key) {
+    JsonNode v = base.path(key);
+    if (v.isMissingNode()) {
+      throw new BadRequestException("KeyError: '" + key + "'");
+    }
+    return v;
+  }
+
+  /**
+   * Marshals v to a JSON string -- the shared call site every typed handler's
+   * `cache.set`/`object_store.put`/`search.index`/ `http.call` payload goes through (M4). Wraps
+   * Jackson's checked `JsonProcessingException` as unchecked, matching Pillar 2's own "unchecked
+   * exceptions throughout" decision for handler bodies.
+   */
+  public static String toJson(Object v) {
+    try {
+      return MAPPER.writeValueAsString(v);
+    } catch (Exception e) {
+      throw new RuntimeException("serializing to JSON", e);
+    }
+  }
+
+  /** `null` in, `null` out; otherwise parses `s` as a `JsonNode`. */
+  public static JsonNode fromJsonOrNull(String s) {
+    if (s == null) {
+      return null;
+    }
+    try {
+      return MAPPER.readTree(s);
+    } catch (Exception e) {
+      throw new RuntimeException("parsing JSON", e);
     }
   }
 }
@@ -3091,7 +3198,7 @@ public class ResourceVideoStore {
 
   public ResourceVideo create(ResourceVideoIn payload) {
     String id = UUID.randomUUID().toString();
-    jdbc.sql("INSERT INTO resource_videos (id, title) VALUES ($1, $2)")
+    jdbc.sql("INSERT INTO resource_videos (id, title) VALUES (?, ?)")
         .param(id)
         .param(payload.title())
         .update();
@@ -3099,14 +3206,14 @@ public class ResourceVideoStore {
   }
 
   public Optional<ResourceVideo> get(String id) {
-    return jdbc.sql("SELECT id, title FROM resource_videos WHERE id = $1")
+    return jdbc.sql("SELECT id, title FROM resource_videos WHERE id = ?")
         .param(id)
         .query(RowMappers.RESOURCE_VIDEO)
         .optional();
   }
 
   public List<ResourceVideo> list(int limit, int offset) {
-    return jdbc.sql("SELECT id, title FROM resource_videos ORDER BY id LIMIT $1 OFFSET $2")
+    return jdbc.sql("SELECT id, title FROM resource_videos ORDER BY id LIMIT ? OFFSET ?")
         .param(limit)
         .param(offset)
         .query(RowMappers.RESOURCE_VIDEO)
@@ -3115,7 +3222,7 @@ public class ResourceVideoStore {
 
   public Optional<ResourceVideo> update(String id, ResourceVideoIn payload) {
     int n =
-        jdbc.sql("UPDATE resource_videos SET title = $1 WHERE id = $2")
+        jdbc.sql("UPDATE resource_videos SET title = ? WHERE id = ?")
             .param(payload.title())
             .param(id)
             .update();
@@ -3126,7 +3233,7 @@ public class ResourceVideoStore {
   }
 
   public boolean delete(String id) {
-    int n = jdbc.sql("DELETE FROM resource_videos WHERE id = $1").param(id).update();
+    int n = jdbc.sql("DELETE FROM resource_videos WHERE id = ?").param(id).update();
     return n > 0;
   }
 }
@@ -3154,6 +3261,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class AppState {
@@ -3171,6 +3280,19 @@ public class AppState {
   @Bean("dbMainJdbc")
   public JdbcClient dbMainJdbc(@Qualifier("dbMain") DataSource dataSource) {
     return JdbcClient.create(dataSource);
+  }
+
+  // Programmatic `TransactionTemplate`, not `@Transactional` (Pillar
+  // 4 -- a same-class annotated call would skip the proxy's aspect
+  // silently). A typed handler's `transaction {}` block executes its
+  // body inside `dbMainTx.executeWithoutResult(status
+  // -> {..})` (`lower.rs`'s `transaction_stmt`); every db verb inside
+  // still issues SQL through the same `JdbcClient` bean above, which
+  // transparently participates via Spring's own connection binding.
+  @Lazy
+  @Bean("dbMainTx")
+  public TransactionTemplate dbMainTx(@Qualifier("dbMain") DataSource dataSource) {
+    return new TransactionTemplate(new DataSourceTransactionManager(dataSource));
   }
 
   // "Applies on boot" (Pillar 5): every `table`-declaration migration

@@ -19,12 +19,14 @@
     does -- the caller (ApiController/Worker/Job) injects one field
     per distinct handler in `ctx.handlers`/`worker.handlers`/
     `job.handlers`, and Spring resolves each `@Component`-annotated
-    `services.<Class>` bean by type. -#}
+    `services.<Class>`/`logic.<Class>` bean by type. Every handler
+    (classic or typed, M4) exposes the identical `handle` method name
+    -- a typed handler's own concrete parameter type means the call
+    needs an explicit cast back from the pipeline's `Object result`,
+    a classic handler's `Object handle(Object)` needs none. -#}
 {% macro emit_step(step, indent, payload_type) %}
-{%- if step.kind == "handler" and step.handler.is_typed_handler %}
-{{ indent }}result = {{ step.handler.handler_package }}.{{ step.handler.class_name }}(state, ({{ payload_type }}) result);
-{%- elif step.kind == "handler" %}
-{{ indent }}result = {{ step.handler.class_name | java_camel }}.handle(result);
+{%- if step.kind == "handler" %}
+{{ indent }}result = {{ step.handler.class_name | java_camel }}.handle({% if step.handler.is_typed_handler %}({{ payload_type }}) {% endif %}result);
 {%- elif step.kind == "publish" %}
 {{ indent }}queue.publishJson("{{ step.subject }}", result);
 {%- elif step.kind == "call" %}

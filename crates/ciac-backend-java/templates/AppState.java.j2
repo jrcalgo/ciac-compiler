@@ -20,6 +20,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 {% else -%}
 import org.springframework.stereotype.Component;
 {% endif %}
@@ -42,6 +44,20 @@ public class AppState {
     public JdbcClient {{ inst.state_field | java_camel }}Jdbc(
             @Qualifier("{{ inst.state_field | java_camel }}") DataSource dataSource) {
         return JdbcClient.create(dataSource);
+    }
+
+    // Programmatic `TransactionTemplate`, not `@Transactional` (Pillar
+    // 4 -- a same-class annotated call would skip the proxy's aspect
+    // silently). A typed handler's `transaction {}` block executes its
+    // body inside `{{ inst.state_field | java_camel }}Tx.executeWithoutResult(status
+    // -> {..})` (`lower.rs`'s `transaction_stmt`); every db verb inside
+    // still issues SQL through the same `JdbcClient` bean above, which
+    // transparently participates via Spring's own connection binding.
+    @Lazy
+    @Bean("{{ inst.state_field | java_camel }}Tx")
+    public TransactionTemplate {{ inst.state_field | java_camel }}Tx(
+            @Qualifier("{{ inst.state_field | java_camel }}") DataSource dataSource) {
+        return new TransactionTemplate(new DataSourceTransactionManager(dataSource));
     }
 {%- endfor %}
 

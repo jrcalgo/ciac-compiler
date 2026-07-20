@@ -33,6 +33,7 @@
 //! recorded here rather than pulled in speculatively.
 
 pub mod filters;
+pub mod lower;
 
 use ciac_codegen::model as context;
 use ciac_codegen::{
@@ -42,6 +43,7 @@ use ciac_codegen::{
 use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
+use serde::Serialize;
 
 static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 
@@ -126,8 +128,7 @@ impl Backend for JavaBackend {
         // plus `Service { signature: None }`, the crud-synthesized
         // store marker `ciac_sema::build::crud` also emits alongside
         // `Api`+`Database` (Go's own M2 finding, found the identical
-        // way — a real example refused on `Database` alone). `Some(_)`
-        // (typed handlers) stays refused until M4.
+        // way — a real example refused on `Database` alone).
         //
         // M3: `Queue`/`Stream`/`Worker`/`Job`/`Channel`/`Scheduler`/
         // `Realtime` — one wide gate, the same "engine-agnostic
@@ -137,6 +138,18 @@ impl Backend for JavaBackend {
         // lowers to the same `Component::Worker` node a plain
         // `worker` declaration does, split into a stub-vs-pipeline
         // shape only at the codegen model layer.
+        //
+        // M4: `Service { signature: Some(_) }` (typed handlers) widens
+        // in alongside `signature: None` — every `HostSyntax` leaf is
+        // implemented for trait completeness (`lower.rs`), but the
+        // *component* kinds a typed handler body can request
+        // (`ObjectStore`/`Email`/`Search`/`ExternalHttp`, plus
+        // `Cache`/`Auth`) stay refused below until M6/M7 add their own
+        // client wrappers — `typed-handlers.ciac`/`typed-video.ciac`/
+        // `extras-verbs.ciac` stay `CIAC0011`-refused this milestone;
+        // `domain-orders.ciac`/`query-verbs.ciac` (db-only) are this
+        // milestone's actual proving examples, mirroring Go's/TS's own
+        // M4 precedent exactly (read directly, not assumed).
         matches!(
             component,
             Component::Api { .. }
@@ -148,12 +161,7 @@ impl Backend for JavaBackend {
                 | Component::Channel { .. }
                 | Component::Scheduler { .. }
                 | Component::Realtime { .. }
-        ) || matches!(
-            component,
-            Component::Service {
-                signature: None,
-                ..
-            }
+                | Component::Service { .. }
         )
     }
 
@@ -181,6 +189,7 @@ impl Backend for JavaBackend {
         env.add_filter("java_is_uuid", filters::java_is_uuid);
         env.add_filter("java_ddl_type", filters::java_ddl_type);
         env.add_filter("spring_cron", filters::spring_cron);
+        env.add_filter("jdbcph", filters::jdbcph);
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -224,13 +233,24 @@ fn empty() -> minijinja::Value {
     minijinja::Value::from_serialize(())
 }
 
+/// One `RowMappers.java` entry — `table_name` is `Some` only for a
+/// record backing a `table` declaration (never a CRUD resource),
+/// carrying the table's own declared PascalCase name (e.g.
+/// `Customers` for `table Customers: Customer;`) so `RowMappers.java.j2`
+/// can surface it in a doc comment.
+#[derive(Serialize)]
+struct RowMapperEntry<'a> {
+    table_name: Option<String>,
+    record: &'a context::RecordCtx,
+}
+
 /// Emits one deployable Spring Boot module (today's single-service
 /// layout) under `prefix`. Multi-service systems get their compose
 /// file at the root instead of per service (mirrors every other
 /// backend's own `emit_service`).
 fn emit_service(
     env: &minijinja::Environment<'_>,
-    _ir: &NormalizedIr,
+    ir: &NormalizedIr,
     ctx: &context::Ctx,
     prefix: &str,
     project: &mut GeneratedProject,
@@ -343,10 +363,53 @@ fn emit_service(
         );
     }
 
-    if ctx.resources.iter().any(|r| r.record.is_some()) {
+    // One `RowMapper` per distinct record backing either a CRUD
+    // resource or a `table` declaration a typed handler's `db.get`/
+    // `db.query` reads (M4) — deduplicated by record name here, in
+    // Rust, rather than in the template (`RowMappers.java.j2` used to
+    // own this loop itself before M4 widened it to cover `ctx.tables`
+    // too; a `{% set %}`-accumulated dedupe list inside a Jinja `for`
+    // loop doesn't reliably mutate across iterations the way this
+    // plain `Vec`/`HashSet` does).
+    let mut row_mapper_records: Vec<RowMapperEntry> = Vec::new();
+    {
+        let mut seen = std::collections::HashSet::new();
+        for r in ctx.resources.iter().filter_map(|r| r.record.as_ref()) {
+            if seen.insert(r.name.clone()) {
+                row_mapper_records.push(RowMapperEntry {
+                    table_name: None,
+                    record: r,
+                });
+            }
+        }
+        // A table's own declared name (`table_name`, e.g. `Customers`
+        // for `table Customers: Customer;`) never otherwise appears
+        // anywhere in Java's own generated output the way it does in
+        // every other target's own row-struct/ORM-model class name
+        // (Go's `type Customers struct`, Python's `class
+        // Customers(Base)`) — Java names things after the singular
+        // *record*, not the table, everywhere else. Carrying it
+        // through into a doc comment here (`c4b_declared_topology_
+        // appears_in_every_target`'s own cross-target contract) is
+        // cosmetic, not behavioral: found live via that shared
+        // conformance test once `domain-orders.ciac` became
+        // Java-reachable this milestone.
+        for t in &ctx.tables {
+            if seen.insert(t.record.name.clone()) {
+                row_mapper_records.push(RowMapperEntry {
+                    table_name: Some(t.class_name.clone()),
+                    record: &t.record,
+                });
+            }
+        }
+    }
+    if !row_mapper_records.is_empty() {
         project.add_file(
             at(&format!("{java_root}/schemas/RowMappers.java")),
-            render_java("RowMappers.java.j2", empty())?,
+            render_java(
+                "RowMappers.java.j2",
+                context! { row_mapper_records => row_mapper_records },
+            )?,
         );
     }
     for resource in &ctx.resources {
@@ -414,6 +477,36 @@ fn emit_service(
             )),
             render_java("Service.java.j2", context! { service => service })?,
         );
+    }
+
+    // Typed handlers (M4, `HostSyntax` leaves — `crates/ciac-backend-
+    // java/src/lower.rs`): inline bodies are compiler-owned
+    // (`logic/<Name>.java`, regenerated every build); `extern`
+    // handlers are seeded (`services/<Name>.java`, same discipline as
+    // a classic handler's own stub), mirroring Go's/Python's own M4
+    // routing exactly.
+    let typed_handlers: Vec<(String, &ciac_ir::HandlerBody)> = ctx
+        .typed_handlers
+        .iter()
+        .filter_map(|id| match &ir.node(*id).component {
+            Component::Service {
+                name,
+                signature: Some(hir),
+            } => Some((name.clone(), hir)),
+            _ => None,
+        })
+        .collect();
+    for (name, hir) in &typed_handlers {
+        let handler = lower::render(ir, name, hir);
+        let content = render_java(
+            "logic.java.j2",
+            context! { handler => minijinja::Value::from_serialize(&handler) },
+        )?;
+        if hir.body.is_some() {
+            project.add_file(at(&format!("{java_root}/logic/{name}.java")), content);
+        } else {
+            project.add_seeded_file(at(&format!("{java_root}/services/{name}.java")), content);
+        }
     }
 
     for worker in &ctx.workers {
@@ -559,6 +652,9 @@ fn google_java_format(src: &str) -> Result<String, BackendError> {
         .wait_with_output()
         .map_err(|e| BackendError::Other(format!("running google-java-format: {e}")))?;
     if !output.status.success() {
+        if std::env::var("CIAC_DEBUG_JAVA_SRC").is_ok() {
+            eprintln!("=== rejected source ===\n{src}\n=== end ===");
+        }
         return Err(BackendError::Other(format!(
             "google-java-format rejected generated source (this is a codegen \
              bug, not a user error): {}",

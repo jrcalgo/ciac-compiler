@@ -10,7 +10,7 @@ import com.ciac.{{ java_package }}.state.Queue;
 import com.ciac.{{ java_package }}.schemas.{{ worker.payload.class_name }};
 {%- endif %}
 {%- for handler in worker.handlers %}
-import com.ciac.{{ java_package }}.services.{{ handler.class_name }};
+import com.ciac.{{ java_package }}.{{ handler.handler_package }}.{{ handler.class_name }};
 {%- endfor %}
 import com.fasterxml.jackson.databind.ObjectMapper;
 {%- if c.queue_engine == "kafka" %}
@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 {% import "_steps.java.j2" as steps %}
+{%- set payload_type = worker.payload.class_name if worker.payload else "" %}
 @Component
 public class {{ worker.name }}Worker {
     public static final String SUBJECT = "{{ worker.subject }}";
@@ -56,7 +57,7 @@ public class {{ worker.name }}Worker {
     public void handleMessageOnce(Object payload) throws Exception {
         Object result = payload;
 {%- for step in worker.steps %}
-{{ steps.emit_step(step, "        ", "") }}
+{{ steps.emit_step(step, "        ", payload_type) }}
 {%- endfor %}
         java.util.Objects.requireNonNull(result);
     }

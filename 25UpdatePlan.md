@@ -1214,6 +1214,217 @@ surface.
    exception decision); if falsified, goldens-first per the standing
    procedure. typed-handlers/typed-video/domain-orders/query-verbs/
    extras-verbs verify; equivalence test → five targets.
+
+   **Shipped (v0.25 M4):** `supports()` widened once more — the
+   `Component::Service{signature: None, ..}` arm folded into a bare
+   `Component::Service{..}`, so both classic and typed handlers now
+   build — and a new `crates/ciac-backend-java/src/lower.rs`
+   (~600 lines) implements every `HostSyntax` leaf for Java. Pillar 2's
+   own unchecked-exception decision held exactly as predicted: **no
+   error-idiom amendment override needed** — every "simple verb" leaf
+   (`db_get`/`cache_*`/`object_store_*`/`email_send`/`search_*`/
+   `http_call`) is a plain scalar expression, so `HostSyntax`'s own
+   default `..._tail` wrappers apply `Dest` unchanged, the same shape
+   Python already has (zero of Go's own `fallible_tail`/two-return-
+   value machinery). `TransactionTemplate.executeWithoutResult`, not
+   `@Transactional`, wraps a `transaction {}` block's body — chosen
+   specifically to dodge the proxy self-invocation trap a same-class
+   `@Transactional` call would hit silently; every db verb inside
+   ignores its own `in_tx` flag and issues SQL through the same
+   `JdbcClient` bean regardless, which participates in the ambient
+   transaction transparently via Spring's own `DataSourceUtils`
+   connection binding — a real, disclosed simplification over Go's
+   explicit dual `*sql.Tx`/pool-handle scheme, since JDBC has no
+   separate "transaction handle" type at all. `record_cons` zips the
+   raw HIR record's surface field names against `context::build_record`'s
+   own Java-facing (Reference-renamed) field list in lockstep by
+   position to resolve both the lookup key and the fallback accessor
+   name correctly. `RowMappers.java.j2` now takes a single, Rust-
+   deduplicated `row_mapper_records` list covering both CRUD resources
+   and `table` declarations (previously resource-only). Java 21
+   arrow-case `switch` on bare, unqualified enum constants lowers
+   `match` more simply than feared going in — no string-conversion of
+   the scrutinee needed at all, Go's own "no explicit break" simplicity
+   without even Go's string-keyed dispatch. Jackson's `Schemas.toJson`/
+   `Schemas.fromJsonOrNull` serialize a Record, a `JsonNode`, or a
+   boxed scalar uniformly through one call, eliminating the 3-way
+   Record/Json/scalar branch every other backend's own `json_body`
+   needs. All handler classes — classic and typed alike — expose one
+   `handle` method, matching both the pre-existing classic-handler
+   convention and the plan's own worked example, so `_steps.java.j2`
+   needed no second call-shape branch, only a `payload_type`-typed
+   cast for the typed case. `domain-orders.ciac`/`query-verbs.ciac`
+   (db-only) are this milestone's reachable proving examples, per M1–
+   M3's own `typed-handlers`/`typed-video`/`extras-verbs`-stay-refused
+   precedent (they need `object_store`/`cache`/`auth`, still gated to
+   M6/M7).
+
+   **Eight real bugs, every one found only by live-generating,
+   compiling, and running the actual examples against real
+   Postgres/SQLite — none by inspection:**
+   1. **A latent M2 bug, invisible until a Postgres-bound `table` was
+      first live-tested this milestone:** `ResourceStore.java.j2` was
+      converting placeholders via `sqlph(sql, resource.db_engine)`,
+      which leaves literal `$1`/`$2` in the SQL text for a
+      Postgres-bound resource — invalid for JDBC's `PreparedStatement`,
+      which always uses `?` regardless of engine (Postgres's own `$N`
+      is a libpq/psql-only convention, never part of the JDBC
+      placeholder grammar any driver implements). Never caught before
+      because M2's only live-tested example was SQLite (already
+      `?`-style by coincidence). Fixed by adding
+      `filters::jdbcph` (unconditional `?` conversion) and replacing
+      every `sqlph(sql, resource.db_engine)` call site.
+   2. **The `__row0;` invalid-statement bug, found via a
+      `google-java-format` rejection on `domain-orders.ciac`'s first
+      live generation:** `db_insert_tail`/`db_update_tail`/
+      `db_delete_tail`/`query_tail`'s three arms all called the
+      generic `apply_dest(self, dest, &value, ..)` unconditionally —
+      correct for `Dest::Assign`/`Dest::Return`, but for
+      `Dest::Discard` this emitted a bare local-variable-name
+      statement (`__row0;`), which Java's `ExpressionStatement`
+      grammar rejects outright (only Assignment/Increment/Decrement/
+      MethodInvocation/ClassInstanceCreation qualify — unlike Go's
+      `_ = x;` or Python's fully general expression-statement
+      grammar). Fixed by special-casing `Dest::Discard` at all 6 call
+      sites to emit no trailing line at all — safe because, unlike
+      Go, Java has no "declared and not used" hard compile error.
+   3. **A record.java.j2 whitespace bug, found via a `spotless:check`
+      failure on `InvalidOrder.java` (the first `error` record ever
+      live-verified for Java — no earlier milestone's examples had
+      one):** the unconditional `import
+      com.fasterxml.jackson.databind.JsonNode;` line, unused by the
+      `is_error` branch, was silently stripped by `google-java-format`
+      during generation but left a double blank line behind — `mvn
+      verify`'s own independent `spotless-maven-plugin` invocation of
+      google-java-format is stricter than the compiler and caught
+      what the generation-time formatter didn't. Fixed by moving the
+      import into the non-error `else` branch only, where it's
+      actually used.
+   4. **A `logic.java.j2` missing-import bug, found via a compile
+      failure once a handler outside the `schemas` package first
+      called a `Schemas.` static helper (`indexOrThrow`/`toJson`) —
+      unexercised by `domain-orders.ciac`/`query-verbs.ciac`, which
+      never index `Json` or serialize a payload:** every generated
+      `logic`/`services` class is in a different package from
+      `Schemas` itself, so a bare `Schemas.foo(..)` call needs an
+      explicit cross-package import the template never emitted.
+      Fixed by adding an unconditional `import ...schemas.Schemas;`
+      to `logic.java.j2` (stripped by `google-java-format` when
+      genuinely unused, so this is safe for every handler regardless
+      of whether it touches `Schemas`).
+   5. **A `RowMappers.java.j2` type-mismatch bug, found via a compile
+      failure the moment a `table`-backed record's own `Json` field
+      was first read back (`rs.getString(..)` returning `String`
+      where the record component's Java type is `JsonNode`):** the
+      template's own doc comment already disclosed this exact gap as
+      "isn't exercised by any reachable example yet." Fixed for real
+      (not merely left disclosed) by adding a `Schemas.
+      fromJsonOrNull(rs.getString(..))` branch, gated on the
+      pre-existing `FieldCtx.is_json` flag `ciac-codegen::model`
+      already tracks (reused directly — no parallel `java_is_json`
+      filter needed, an unnecessary duplication caught and reverted
+      mid-fix).
+   6. **A `bind_expr` bug, found live against a real Postgres
+      `jsonb` column:** binding a `Json` field's raw record accessor
+      (a `JsonNode`/`ObjectNode`) directly threw
+      `IllegalArgumentException: Invalid positional parameter value of
+      type Iterable (ObjectNode): Parameter expansion is only
+      supported with named parameters` — `JsonNode` implements
+      `Iterable<Map.Entry<String,JsonNode>>`, so `JdbcClient`'s own
+      `.param(..)` mistook it for an IN-clause expansion candidate
+      rather than a single scalar bind value. Fixed by serializing
+      every `Json` field's bind expression through `Schemas.toJson(..)`
+      first, binding a plain `String`.
+   7. **A Postgres `jsonb` column-type bug, found immediately after
+      fixing bug 6 — the very next live request:** even a correctly
+      bound `String` value is rejected outright by a `jsonb` column
+      (`column "extra" is of type jsonb but expression is of type
+      character varying") unless the placeholder itself carries an
+      explicit `::jsonb` cast — a JDBC-specific trap none of the
+      other four targets' own drivers have (each already knows the
+      bound value's JSON-ness from its own client-side type wrapper).
+      Fixed by threading a new `table_db_engine`/`field_placeholder`
+      pair through `db_insert_tail`/`db_update_tail`, replacing
+      reliance on the shared, engine-agnostic `RecordCtx::
+      insert_placeholders`/`update_assignments` strings with Java's
+      own per-field, engine-conditional placeholder text (`?::jsonb`
+      only for a `Json` field on `DbEngine::Postgres`; plain `?`
+      everywhere else, matching MySQL's/SQLite's own JSON-as-text
+      columns, which need no cast).
+   8. **A conformance-harness bug in the cross-target contract itself,
+      not in a template — found by `c4b_declared_topology_appears_in_
+      every_target` the moment `domain-orders.ciac` became Java-
+      reachable for the first time this milestone:** every other
+      target names some generated identifier or doc comment literally
+      after a table's own declared PascalCase name (Go's `type
+      Customers struct`, Python's `class Customers(Base)`) — Java
+      names everything after the singular *record* instead
+      (`RowMappers.CUSTOMER`, `record Customer(...)`), so the literal
+      string `"Customers"` never appeared anywhere in Java's own
+      output, failing the shared cross-target "every declared
+      topology fact appears somewhere" check. Fixed cosmetically, not
+      behaviorally: `lib.rs`'s `row_mapper_records` now carries each
+      table's own `class_name` alongside its `RecordCtx` (a new
+      `RowMapperEntry` struct, `table_name: Option<String>`), and
+      `RowMappers.java.j2` emits a one-line doc comment naming the
+      table declaration directly above its row-mapper constant.
+
+   **Live-verified end to end against real infrastructure, not just
+   golden-generated or structurally asserted:**
+   - `domain-orders.ciac` (Postgres, `transaction {}`): `./mvnw -q -B
+     verify` green against a real local Postgres (apt-installed, no
+     Docker) — Flyway migration, `NoInfraBootTest`, Spotless all
+     clean. A live `spring-boot:run` round-trip proved the rollback
+     contract for real: `POST /customers` then a valid `POST /orders`
+     committed both the `orders` and `order_audits` rows inside
+     `PlaceOrder`'s `transaction {}` block; a second `POST /orders`
+     with a negative total threw `InvalidOrder`, returned HTTP 500,
+     and left the database at exactly the same row counts as before
+     the failed call — the transaction genuinely rolled back both
+     inserts together, not just the one that failed.
+   - `query-verbs.ciac` (SQLite, zero Docker): `./mvnw -q -B verify`
+     green with no container at all. A live round-trip exercised the
+     full extended db verb set over real HTTP: `db.query`/`db.count`
+     with `where` predicates (`ListActive`/`CountActive` against
+     hand-seeded rows), `db.update` (`Replace`, confirmed via a
+     before/after `count active` delta), `db.delete` (`Remove`,
+     confirmed both the found-and-deleted `true` case and the
+     not-found `false` case), and `db.delete_where` (`DeleteByActive`,
+     confirmed the deleted-row count matched and a follow-up `list`
+     returned the correct remainder).
+   - A throwaway `division-example` fixture (not committed — the seed
+     for bugs 4/5/6/7 above, and now also the `DIVISION_EXAMPLE`
+     equivalence-test addition below) proved the `Json`-field
+     round-trip for real: `POST /compute` with `extra: {"label":
+     "widget", "qty": 3}` stored and read back the identical JSON via
+     a real `jsonb` column, and `Int / Int` truncated toward zero
+     exactly like Go's/Rust's own native `/` (`17 / 5 = 3`).
+
+   **Tests:** `tests/tests/typed_handler_equivalence.rs`'s
+   `DIVISION_EXAMPLE` test extends from four targets to five —
+   `python_rust_typescript_go_and_java_lower_the_same_handler_body_to_
+   equivalent_shape` — pinning Java's own two divergence points: `Int
+   / Int` needs no `Math.trunc`-style special case (Java's `long /
+   long` already truncates toward zero, the same simplification Go's
+   own leaf gets), and `Json` indexing throws via
+   `Schemas.indexOrThrow` with the identical `KeyError: '<key>'`
+   message text every other target's own leaf carries — plus a
+   Java-specific assertion pinning the `?::jsonb` cast bug 7 fixed,
+   the one placeholder wrinkle none of the other four targets need.
+
+   Full workspace verification: `cargo fmt`/`clippy -D warnings`
+   clean; `cargo test --workspace` green (including all five
+   `conformance.rs` cross-target checks, `c4b`'s own topology check
+   included after bug 8's fix). Golden snapshots regenerated and
+   individually reviewed for eleven Java trees (the RowMappers
+   rename/dedup fix, the `jdbcph` placeholder fix, and the new
+   `TransactionTemplate` bean all touch every Java golden, not just
+   this milestone's own new examples) — `audited-crud.ciac` picked up
+   the M3-era `RowMappers.RESOURCE_VIDEO` → `RowMappers.VIDEO` rename
+   as part of this same regeneration, confirming M3's own dedup-by-
+   record-name fix was already correct, just never re-snapshotted
+   until now.
+
 5. **M5 — CHECKPOINT.** The factory's final grade: measured cost vs
    the twice-updated model; conformance harness green across five
    targets (OpenAPI byte-equality ×5, topology, boundary decode);

@@ -35,8 +35,24 @@
 //! `[]byte`-backed type needing an explicit decode before a map-key
 //! lookup is possible, unlike TS's `unknown`/Python's `dict[str,
 //! Any]`, both already directly indexable).
+//!
+//! `25UpdatePlan.md` M4 extends the same [`DIVISION_EXAMPLE`] to a
+//! fifth target, Java. `Int / Int` needs no special case either —
+//! Java's `long / long` already truncates toward zero, the same as
+//! Go's/Rust's native `/`. `Json` indexing panics with a Java-idiomatic
+//! `Schemas.indexOrThrow(base, key)` call, throwing the shared
+//! `BadRequestException` with the same `KeyError: '<key>'` message
+//! text every other target's own leaf carries — found live while
+//! exercising this very example against JDBC generation: Postgres's
+//! `jsonb` column additionally needs the placeholder to carry an
+//! explicit `?::jsonb` cast (a bound `String` alone is rejected —
+//! "column .. is of type jsonb but expression is of type character
+//! varying"), a JDBC-specific trap none of the other four targets'
+//! own drivers have (each already knows the bound value's JSON-ness
+//! from its own client-side type wrapper).
 
 use ciac_backend_go::GoBackend;
+use ciac_backend_java::JavaBackend;
 use ciac_backend_python::PythonBackend;
 use ciac_backend_rust::RustBackend;
 use ciac_backend_ts::TsBackend;
@@ -226,7 +242,7 @@ pipeline Compute:
 "#;
 
 #[test]
-fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape() {
+fn python_rust_typescript_go_and_java_lower_the_same_handler_body_to_equivalent_shape() {
     let (ir, diags) = compile(DIVISION_EXAMPLE);
     assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
     let ir = ir.expect("well-typed program produces IR");
@@ -243,6 +259,9 @@ fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape
     let go_project = GoBackend
         .generate(&ir, &GenOptions::default())
         .expect("go must build the typed inline handler");
+    let java_project = JavaBackend
+        .generate(&ir, &GenOptions::default())
+        .expect("java must build the typed inline handler");
 
     let py_logic = py_project
         .get("app/logic/compute_average.py")
@@ -256,6 +275,9 @@ fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape
     let go_logic = go_project
         .get("internal/logic/compute_average.go")
         .expect("go emits the compiler-owned logic file");
+    let java_logic = java_project
+        .get("src/main/java/com/ciac/divisionexample/logic/ComputeAverage.java")
+        .expect("java emits the compiler-owned logic file");
 
     // The `Int / Int` divergence, named and pinned rather than
     // discovered: Python's `/` is true division (never truncates);
@@ -282,6 +304,13 @@ fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape
         go_logic.contains("(p.Total / p.Count)") && !go_logic.contains("trunc"),
         "go: Int/Int division truncates natively via `/`, found: {go_logic}"
     );
+    // Java's native `/` on `long` also already truncates toward zero —
+    // the same simplification Go's own leaf gets, no `Math.trunc`-style
+    // special case needed.
+    assert!(
+        java_logic.contains("(p.total() / p.count())") && !java_logic.contains("trunc"),
+        "java: Int/Int division truncates natively via `/`, found: {java_logic}"
+    );
 
     // The `Json` indexing divergence: Python relies on the language's
     // own `KeyError` for a missing key; TS has no equivalent built-in,
@@ -303,18 +332,37 @@ fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape
         "go: Json indexing must unmarshal into a map and panic with a KeyError-shaped \
          message on a missing key, found: {go_logic}"
     );
+    // Java's `Json` HIR type is `JsonNode` — already directly
+    // indexable (like TS's `unknown`/Python's `dict`), so no explicit
+    // decode step is needed; only the missing-key throw itself.
+    assert!(
+        java_logic.contains(r#"Schemas.indexOrThrow(p.extra(), "label")"#),
+        "java: Json indexing must throw a KeyError-shaped error on a missing key via \
+         Schemas.indexOrThrow, found: {java_logic}"
+    );
 
-    // Same table, same columns, all four hosts: Python's ORM splat
-    // never names fields individually, so only Rust's, TS's, and Go's
-    // raw SQL assert the full column list.
+    // Same table, same columns, all five hosts: Python's ORM splat
+    // never names fields individually, so only Rust's, TS's, Go's, and
+    // Java's raw SQL assert the full column list. Java's own Postgres
+    // `jsonb` column additionally needs the `extra` placeholder to
+    // carry an explicit `::jsonb` cast (found live: a bound `String`
+    // alone is rejected by Postgres's own type check) — none of the
+    // other four targets' drivers need this, each already knowing the
+    // bound value's JSON-ness from its own client-side type wrapper.
     assert!(py_logic.contains("Payloads(**v2.model_dump())"));
     assert!(rust_logic.contains("sqlx::query(\"INSERT INTO payloads (id, total, count, extra)"));
     assert!(ts_logic.contains(r#""INSERT INTO payloads (id, total, count, extra)"#));
     assert!(go_logic.contains("INSERT INTO payloads (id, total, count, extra)"));
+    assert!(
+        java_logic
+            .contains("INSERT INTO payloads (id, total, count, extra) VALUES (?, ?, ?, ?::jsonb)"),
+        "java: db.insert's Json column placeholder must carry an explicit ::jsonb cast, \
+         found: {java_logic}"
+    );
 
-    // Same verb call counts across all four: one db.insert (commit/
-    // execute/query/ExecContext — each host's own spelling of "run the
-    // query").
+    // Same verb call counts across all five: one db.insert (commit/
+    // execute/query/ExecContext/update — each host's own spelling of
+    // "run the query").
     assert_eq!(
         count(py_logic, "await self.session.commit()"),
         1,
@@ -335,6 +383,11 @@ fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape
         1,
         "go: expected exactly one db.insert ExecContext"
     );
+    assert_eq!(
+        count(java_logic, "INSERT INTO payloads"),
+        1,
+        "java: expected exactly one db.insert update"
+    );
 
     // Same real, typed signature on every host — no generic payload/
     // dict fallback anywhere.
@@ -342,6 +395,10 @@ fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape
     assert!(rust_logic.contains("fn handle(&self, p: Payload) -> anyhow::Result<Payload>"));
     assert!(ts_logic.contains("async handle(p: Payload): Promise<Payload>"));
     assert!(go_logic.contains("func ComputeAverage(ctx context.Context, st *state.AppState, p schemas.Payload) (schemas.Payload, error)"));
+    assert!(
+        java_logic.contains("public Payload handle(Payload p)"),
+        "java: expected a real, typed `handle` signature, found: {java_logic}"
+    );
 }
 
 /// v0.24 M9: the "nil-slice `List`" divergence-ledger row (Pillar 7's

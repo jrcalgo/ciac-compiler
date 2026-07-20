@@ -6,7 +6,7 @@ package com.ciac.{{ java_package }}.workers;
 import com.ciac.{{ java_package }}.state.Queue;
 {%- endif %}
 {%- for handler in job.handlers %}
-import com.ciac.{{ java_package }}.services.{{ handler.class_name }};
+import com.ciac.{{ java_package }}.{{ handler.handler_package }}.{{ handler.class_name }};
 {%- endfor %}
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,6 +14,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 {% import "_steps.java.j2" as steps %}
+{#- A cron tick has no natural payload type (unlike an api/worker's
+    own declared payload) -- a job's initial `result` is always a bare
+    `HashMap`, so a typed-handler step here (unexercised by any M4
+    example: `scheduled-cleanup.ciac`'s own `PruneExpired` is classic,
+    not typed) has no sensible cast target either; kept an explicit
+    empty string rather than modeled on a nonexistent `job.payload`. #}
+{%- set payload_type = "" %}
 @Component
 public class {{ job.name }}Job {
     // The source-level 5-field cron expression (minute hour day month
@@ -55,7 +62,7 @@ public class {{ job.name }}Job {
 {%- if job.steps %}
         Object result = new java.util.HashMap<String, Object>();
 {%- for step in job.steps %}
-{{ steps.emit_step(step, "        ", "") }}
+{{ steps.emit_step(step, "        ", payload_type) }}
 {%- endfor %}
         java.util.Objects.requireNonNull(result);
 {%- else %}

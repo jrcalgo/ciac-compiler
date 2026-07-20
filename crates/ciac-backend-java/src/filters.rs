@@ -112,6 +112,23 @@ pub fn spring_cron(schedule: &str) -> String {
     format!("0 {schedule}")
 }
 
+/// JDBC's own placeholder story (Pillar 5): `PreparedStatement`'s `?`
+/// marker is part of the JDBC spec itself, not an engine-specific
+/// convention the way Postgres's own `$N` (a libpq/psql-only spelling,
+/// never valid through `java.sql.PreparedStatement`) is — so every SQL
+/// string this backend emits needs the shared `sqlph` filter's
+/// question-style rewrite unconditionally, regardless of which engine
+/// is actually bound. Found live at M4 while lowering `db.insert` for
+/// `domain-orders.ciac` (`db Postgres;`): the *existing* M2 CRUD path
+/// (`ResourceStore.java.j2`) called `sqlph(sql, resource.db_engine)`,
+/// which leaves a Postgres-bound resource's SQL as literal `$1`/`$2` —
+/// never exercised live before now, since M2's only reachable example
+/// was SQLite (already `?`-style, so the bug never surfaced). Fixed
+/// here and in every `ResourceStore.java.j2` call site.
+pub fn jdbcph(sql: &str) -> String {
+    ciac_codegen::template::sqlph(sql, "mysql")
+}
+
 pub fn java_ddl_type(sql_type: &str, engine: &str) -> String {
     match (sql_type, engine) {
         ("JSONB", "mysql") => "JSON".to_owned(),

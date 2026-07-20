@@ -1139,7 +1139,13 @@ src/main/java/com/ciac/sqlitenotes/schemas/RowMappers.java
 // Explicit, per-model `RowMapper` constants with explicit column order
 // (Pillar 5) -- deterministic, reflection-free, the `FromRow`/`Scan`
 // analog. Column order always matches `select_cols`'s own `id, ..`
-// ordering, so a mapper and the query it backs never drift.
+// ordering, so a mapper and the query it backs never drift. One entry
+// per distinct record backing either a CRUD resource or a `table`
+// declaration a typed handler's `db.get`/`db.query` reads (M4) --
+// `row_mapper_records` is already deduplicated by record name in
+// `lib.rs`, so a record backing both a `crud` resource and a plain
+// `table` (unreachable today, disclosed rather than assumed
+// impossible) still gets exactly one constant.
 package com.ciac.sqlitenotes.schemas;
 
 import org.springframework.jdbc.core.RowMapper;
@@ -1205,6 +1211,46 @@ public final class Schemas {
       UUID.fromString(value);
     } catch (IllegalArgumentException e) {
       throw new BadRequestException("field \"" + field + "\": invalid uuid4 value");
+    }
+  }
+
+  /**
+   * `JsonNode.path(..)` is null-safe by design (never throws, returns a `MissingNode` on a miss) --
+   * typed-handler `Json` indexing (M4) needs the KeyError/IndexError parity every other target's
+   * own decoder enforces, so this restores it explicitly instead of silently returning a
+   * missing-node sentinel.
+   */
+  public static JsonNode indexOrThrow(JsonNode base, String key) {
+    JsonNode v = base.path(key);
+    if (v.isMissingNode()) {
+      throw new BadRequestException("KeyError: '" + key + "'");
+    }
+    return v;
+  }
+
+  /**
+   * Marshals v to a JSON string -- the shared call site every typed handler's
+   * `cache.set`/`object_store.put`/`search.index`/ `http.call` payload goes through (M4). Wraps
+   * Jackson's checked `JsonProcessingException` as unchecked, matching Pillar 2's own "unchecked
+   * exceptions throughout" decision for handler bodies.
+   */
+  public static String toJson(Object v) {
+    try {
+      return MAPPER.writeValueAsString(v);
+    } catch (Exception e) {
+      throw new RuntimeException("serializing to JSON", e);
+    }
+  }
+
+  /** `null` in, `null` out; otherwise parses `s` as a `JsonNode`. */
+  public static JsonNode fromJsonOrNull(String s) {
+    if (s == null) {
+      return null;
+    }
+    try {
+      return MAPPER.readTree(s);
+    } catch (Exception e) {
+      throw new RuntimeException("parsing JSON", e);
     }
   }
 }
@@ -1299,6 +1345,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class AppState {
@@ -1314,6 +1362,19 @@ public class AppState {
   @Bean("dbJdbc")
   public JdbcClient dbJdbc(@Qualifier("db") DataSource dataSource) {
     return JdbcClient.create(dataSource);
+  }
+
+  // Programmatic `TransactionTemplate`, not `@Transactional` (Pillar
+  // 4 -- a same-class annotated call would skip the proxy's aspect
+  // silently). A typed handler's `transaction {}` block executes its
+  // body inside `dbTx.executeWithoutResult(status
+  // -> {..})` (`lower.rs`'s `transaction_stmt`); every db verb inside
+  // still issues SQL through the same `JdbcClient` bean above, which
+  // transparently participates via Spring's own connection binding.
+  @Lazy
+  @Bean("dbTx")
+  public TransactionTemplate dbTx(@Qualifier("db") DataSource dataSource) {
+    return new TransactionTemplate(new DataSourceTransactionManager(dataSource));
   }
 
   // "Applies on boot" (Pillar 5): every `table`-declaration migration

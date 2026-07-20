@@ -29,7 +29,7 @@ public class {{ resource.store_class }} {
 {% if resource.record %}
     public {{ resource.name }} create({{ resource.name }}In payload) {
         String id = UUID.randomUUID().toString();
-        jdbc.sql("INSERT INTO {{ resource.plural }} ({{ resource.record.select_cols }}) VALUES ({{ resource.record.insert_placeholders | sqlph(resource.db_engine) }})")
+        jdbc.sql("INSERT INTO {{ resource.plural }} ({{ resource.record.select_cols }}) VALUES ({{ resource.record.insert_placeholders | jdbcph }})")
                 .param(id)
 {%- for f in fields %}
                 .param(payload.{{ f.name | java_camel }}())
@@ -39,14 +39,14 @@ public class {{ resource.store_class }} {
     }
 
     public Optional<{{ resource.name }}> get(String id) {
-        return jdbc.sql("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} WHERE id = {{ "$1" | sqlph(resource.db_engine) }}")
+        return jdbc.sql("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} WHERE id = {{ "$1" | jdbcph }}")
                 .param(id)
                 .query(RowMappers.{{ resource.name | shouty_snake_case }})
                 .optional();
     }
 
     public List<{{ resource.name }}> list(int limit, int offset) {
-        return jdbc.sql("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} ORDER BY id LIMIT {{ "$1" | sqlph(resource.db_engine) }} OFFSET {{ "$2" | sqlph(resource.db_engine) }}")
+        return jdbc.sql("SELECT {{ resource.record.select_cols }} FROM {{ resource.plural }} ORDER BY id LIMIT {{ "$1" | jdbcph }} OFFSET {{ "$2" | jdbcph }}")
                 .param(limit)
                 .param(offset)
                 .query(RowMappers.{{ resource.name | shouty_snake_case }})
@@ -54,7 +54,7 @@ public class {{ resource.store_class }} {
     }
 
     public Optional<{{ resource.name }}> update(String id, {{ resource.name }}In payload) {
-        int n = jdbc.sql("UPDATE {{ resource.plural }} SET {{ resource.record.update_assignments | sqlph(resource.db_engine) }} WHERE id = {{ resource.record.update_where | sqlph(resource.db_engine) }}")
+        int n = jdbc.sql("UPDATE {{ resource.plural }} SET {{ resource.record.update_assignments | jdbcph }} WHERE id = {{ resource.record.update_where | jdbcph }}")
 {%- for f in fields %}
                 .param(payload.{{ f.name | java_camel }}())
 {%- endfor %}
@@ -68,7 +68,7 @@ public class {{ resource.store_class }} {
 {% else %}
     public {{ resource.name }}Entity create({{ resource.name }}In payload) {
         String id = UUID.randomUUID().toString();
-        jdbc.sql("INSERT INTO {{ resource.plural }} (id, data) VALUES ({{ "$1" | sqlph(resource.db_engine) }}, {{ "$2" | sqlph(resource.db_engine) }})")
+        jdbc.sql("INSERT INTO {{ resource.plural }} (id, data) VALUES ({{ "$1" | jdbcph }}, {{ "$2" | jdbcph }})")
                 .param(id)
                 .param(payload.data().toString())
                 .update();
@@ -76,7 +76,7 @@ public class {{ resource.store_class }} {
     }
 
     public Optional<{{ resource.name }}Entity> get(String id) {
-        return jdbc.sql("SELECT id, data FROM {{ resource.plural }} WHERE id = {{ "$1" | sqlph(resource.db_engine) }}")
+        return jdbc.sql("SELECT id, data FROM {{ resource.plural }} WHERE id = {{ "$1" | jdbcph }}")
                 .param(id)
                 .query((rs, rowNum) -> new {{ resource.name }}Entity(
                         rs.getString("id"), Schemas.MAPPER.readTree(rs.getString("data"))))
@@ -84,7 +84,7 @@ public class {{ resource.store_class }} {
     }
 
     public List<{{ resource.name }}Entity> list(int limit, int offset) {
-        return jdbc.sql("SELECT id, data FROM {{ resource.plural }} ORDER BY id LIMIT {{ "$1" | sqlph(resource.db_engine) }} OFFSET {{ "$2" | sqlph(resource.db_engine) }}")
+        return jdbc.sql("SELECT id, data FROM {{ resource.plural }} ORDER BY id LIMIT {{ "$1" | jdbcph }} OFFSET {{ "$2" | jdbcph }}")
                 .param(limit)
                 .param(offset)
                 .query((rs, rowNum) -> new {{ resource.name }}Entity(
@@ -93,7 +93,7 @@ public class {{ resource.store_class }} {
     }
 
     public Optional<{{ resource.name }}Entity> update(String id, {{ resource.name }}In payload) {
-        int n = jdbc.sql("UPDATE {{ resource.plural }} SET data = {{ "$1" | sqlph(resource.db_engine) }} WHERE id = {{ "$2" | sqlph(resource.db_engine) }}")
+        int n = jdbc.sql("UPDATE {{ resource.plural }} SET data = {{ "$1" | jdbcph }} WHERE id = {{ "$2" | jdbcph }}")
                 .param(payload.data().toString())
                 .param(id)
                 .update();
@@ -104,7 +104,7 @@ public class {{ resource.store_class }} {
     }
 {% endif %}
     public boolean delete(String id) {
-        int n = jdbc.sql("DELETE FROM {{ resource.plural }} WHERE id = {{ "$1" | sqlph(resource.db_engine) }}")
+        int n = jdbc.sql("DELETE FROM {{ resource.plural }} WHERE id = {{ "$1" | jdbcph }}")
                 .param(id)
                 .update();
         return n > 0;

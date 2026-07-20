@@ -52,4 +52,46 @@ public final class Schemas {
             throw new BadRequestException("field \"" + field + "\": invalid uuid4 value");
         }
     }
+
+    /**
+     * `JsonNode.path(..)` is null-safe by design (never throws, returns
+     * a `MissingNode` on a miss) -- typed-handler `Json` indexing (M4)
+     * needs the KeyError/IndexError parity every other target's own
+     * decoder enforces, so this restores it explicitly instead of
+     * silently returning a missing-node sentinel.
+     */
+    public static JsonNode indexOrThrow(JsonNode base, String key) {
+        JsonNode v = base.path(key);
+        if (v.isMissingNode()) {
+            throw new BadRequestException("KeyError: '" + key + "'");
+        }
+        return v;
+    }
+
+    /**
+     * Marshals v to a JSON string -- the shared call site every typed
+     * handler's `cache.set`/`object_store.put`/`search.index`/
+     * `http.call` payload goes through (M4). Wraps Jackson's checked
+     * `JsonProcessingException` as unchecked, matching Pillar 2's own
+     * "unchecked exceptions throughout" decision for handler bodies.
+     */
+    public static String toJson(Object v) {
+        try {
+            return MAPPER.writeValueAsString(v);
+        } catch (Exception e) {
+            throw new RuntimeException("serializing to JSON", e);
+        }
+    }
+
+    /** `null` in, `null` out; otherwise parses `s` as a `JsonNode`. */
+    public static JsonNode fromJsonOrNull(String s) {
+        if (s == null) {
+            return null;
+        }
+        try {
+            return MAPPER.readTree(s);
+        } catch (Exception e) {
+            throw new RuntimeException("parsing JSON", e);
+        }
+    }
 }

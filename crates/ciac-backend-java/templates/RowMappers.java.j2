@@ -3,18 +3,28 @@
 // Explicit, per-model `RowMapper` constants with explicit column order
 // (Pillar 5) -- deterministic, reflection-free, the `FromRow`/`Scan`
 // analog. Column order always matches `select_cols`'s own `id, ..`
-// ordering, so a mapper and the query it backs never drift.
+// ordering, so a mapper and the query it backs never drift. One entry
+// per distinct record backing either a CRUD resource or a `table`
+// declaration a typed handler's `db.get`/`db.query` reads (M4) --
+// `row_mapper_records` is already deduplicated by record name in
+// `lib.rs`, so a record backing both a `crud` resource and a plain
+// `table` (unreachable today, disclosed rather than assumed
+// impossible) still gets exactly one constant.
 package com.ciac.{{ java_package }}.schemas;
 
 import org.springframework.jdbc.core.RowMapper;
 
 public final class RowMappers {
     private RowMappers() {}
-{% for resource in c.resources %}
-{%- if resource.record %}
+{% for entry in row_mapper_records %}
+{%- set record = entry.record %}
 
-    public static final RowMapper<{{ resource.name }}> {{ resource.name | shouty_snake_case }} = (rs, rowNum) -> new {{ resource.name }}(
-{%- for f in resource.record.fields %}
+{%- if entry.table_name %}
+    // {{ entry.table_name }} is the `table {{ entry.table_name }}: {{ record.name }};`
+    // declaration's own row shape, in column order.
+{%- endif %}
+    public static final RowMapper<{{ record.name }}> {{ record.name | shouty_snake_case }} = (rs, rowNum) -> new {{ record.name }}(
+{%- for f in record.fields %}
 {%- if f.name == "id" %}
             rs.getString("id"){% if not loop.last %},{% endif %}
 {%- else %}
@@ -24,16 +34,14 @@ public final class RowMappers {
             {{ f | java_type }}.valueOf(rs.getString("{{ f.name }}")){% if not loop.last %},{% endif %}
 {%- elif (f | java_type) == "java.time.Instant" %}
             rs.getTimestamp("{{ f.name }}").toInstant(){% if not loop.last %},{% endif %}
+{%- elif f.is_json %}
+            Schemas.fromJsonOrNull(rs.getString("{{ f.name }}")){% if not loop.last %},{% endif %}
 {%- else %}
-            {# Str/Uuid/Reference -> String; Json's own column read
-               (`JsonNode` via `Schemas.MAPPER.readTree`) isn't exercised
-               by any CRUD resource reachable through 25UpdatePlan.md
-               M2's own gate -- disclosed rather than guessed at. #}
+            {# Str/Uuid/Reference -> String. #}
             rs.getString("{{ f.name }}"){% if not loop.last %},{% endif %}
 {%- endif %}
 {%- endif %}
 {%- endfor %}
     );
-{%- endif %}
 {%- endfor %}
 }

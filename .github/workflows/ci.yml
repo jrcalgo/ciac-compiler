@@ -196,6 +196,52 @@ jobs:
             echo "::endgroup::"
           done
 
+  # 25UpdatePlan.md M8: the full 26-example matrix, unscoped — the
+  # M5 CHECKPOINT's own pre-agreed CI-scoping decision, taken from
+  # real measured numbers (`./mvnw -q -B verify` ~10s/project,
+  # dominated by JVM+Maven-plugin startup, not compile/test volume),
+  # not deferred or improvised here: the full matrix stays comfortably
+  # inside typical CI budgets, so the narrowing clause this decision
+  # could have invoked never triggers. Mirrors `generated-go`'s own
+  # shape exactly, including its CIAC0011-skip branch (kept for the
+  # same reason: a future capability could reintroduce a real gate,
+  # not because anything is expected to hit it today — zero gates as
+  # of M7).
+  generated-java:
+    name: Validate generated Java projects (all examples)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Build the compiler
+        run: cargo build -p ciac
+      - name: Verify every example
+        run: |
+          set -euo pipefail
+          for src in examples/*.ciac; do
+            name="$(basename "$src" .ciac)"
+            out="/tmp/gen-java-$name"
+            echo "::group::$name"
+            if ! output="$(cargo run -q -p ciac -- verify "$src" --target java --out "$out" 2>&1)"; then
+              if grep -q "CIAC0011" <<<"$output"; then
+                echo "skipped: gated on this target"
+              else
+                echo "$output"
+                exit 1
+              fi
+            else
+              echo "$output"
+            fi
+            echo "::endgroup::"
+          done
+
   # v0.17 M12: `ciac verify --sim` runs the checked-in scenarios against
   # real generated code through in-memory fakes — no Docker, no
   # network. Scoped to the one example with checked-in scenario

@@ -1343,6 +1343,8 @@ package com.ciac.sqlitenotes.state;
 import java.sql.Connection;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
@@ -1355,6 +1357,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class AppState {
+  private static final Logger log = LoggerFactory.getLogger(AppState.class);
 
   @Lazy
   @Bean("db")
@@ -1389,14 +1392,32 @@ public class AppState {
   // `application.yml` stops Spring's own auto-wiring from resolving
   // them first) -- Pillar 4's "compiler owns the wiring" rule applied
   // to Flyway itself, not only to the connection pool.
+  //
+  // Each instance's own migration/table-bootstrap is wrapped in its
+  // own try/catch, logged and skipped on failure rather than left to
+  // propagate (25UpdatePlan.md M8, found live): a `CommandLineRunner`
+  // is *always* eagerly invoked by Spring Boot at startup, so this
+  // is the one call site that unavoidably forces every `@Lazy`
+  // `DataSource` bean above to actually construct (now non-dialing
+  // itself, see `DataSources.open`'s own `initializationFailTimeout`
+  // fix) and then genuinely try to connect -- an unreachable database
+  // must not abort the whole context, the identical graceful-
+  // degradation discipline `Worker.java.j2`'s own NATS/Kafka connect
+  // failures already have.
   @Bean
   public CommandLineRunner migrateOnBoot(@Qualifier("db") DataSource db) {
     return args -> {
-      DataSources.migrate(db);
+      try {
+        DataSources.migrate(db);
+      } catch (Exception e) {
+        log.warn("skipping migration for instance \"db\": database unreachable", e);
+      }
       try (Connection conn = db.getConnection();
           Statement stmt = conn.createStatement()) {
         stmt.execute(
             "CREATE TABLE IF NOT EXISTS notes (id VARCHAR(36) PRIMARY KEY, title TEXT NOT NULL)");
+      } catch (Exception e) {
+        log.warn("skipping table bootstrap for resource \"notes\": database unreachable", e);
       }
     };
   }
@@ -1416,6 +1437,19 @@ src/main/java/com/ciac/sqlitenotes/state/DataSources.java
 // `username`/`password` DataSource properties instead of guessing at
 // a URL shape the driver would accept; sqlite (`jdbc:sqlite:<path>`)
 // carries no credentials at all and is never rewritten.
+//
+// `initializationFailTimeout(-1)` (25UpdatePlan.md M8, found live):
+// HikariCP's own default `checkFailFast` behavior dials the database
+// synchronously *inside* `new HikariDataSource(config)` and throws if
+// it can't connect -- the `@Lazy` annotation on `AppState`'s own
+// `db()` bean method only defers *when* that constructor runs, not
+// what it does once triggered, so a genuinely unreachable database
+// still crashed the whole Spring context the moment anything (here,
+// `migrateOnBoot`'s own `CommandLineRunner`) forced the bean's
+// construction. `-1` is HikariCP's own documented way to make pool
+// construction never attempt a connection, restoring the same
+// "constructing this never dials" contract every other provider
+// client bean already keeps.
 package com.ciac.sqlitenotes.state;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -1431,6 +1465,7 @@ final class DataSources {
 
   static DataSource open(String rawUrl) throws Exception {
     HikariConfig config = new HikariConfig();
+    config.setInitializationFailTimeout(-1);
     if (rawUrl.startsWith("jdbc:sqlite:")) {
       // The sqlite driver creates the database *file* itself but
       // not missing parent directories (mirrors every other

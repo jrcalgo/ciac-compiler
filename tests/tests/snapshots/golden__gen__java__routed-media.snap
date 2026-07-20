@@ -1210,8 +1210,8 @@ src/main/java/com/ciac/routedmedia/routes/ClipController.java
 // `ApiController`), matching every other target's own resource routes.
 package com.ciac.routedmedia.routes;
 
-import com.ciac.routedmedia.schemas.Clip;
 import com.ciac.routedmedia.schemas.ClipIn;
+import com.ciac.routedmedia.schemas.Video;
 import com.ciac.routedmedia.services.ClipStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
@@ -1239,14 +1239,14 @@ public class ClipController {
   }
 
   @PostMapping("/clips")
-  public ResponseEntity<Clip> create(HttpServletRequest request, @RequestBody JsonNode body) {
+  public ResponseEntity<Video> create(HttpServletRequest request, @RequestBody JsonNode body) {
     Jwt jwt = Auth.verifyToken(request, jwtDecoder);
     ClipIn payload = ClipIn.decode(body);
     return ResponseEntity.status(HttpStatus.CREATED).body(store.create(payload));
   }
 
   @GetMapping("/clips")
-  public java.util.List<Clip> list(
+  public java.util.List<Video> list(
       HttpServletRequest request,
       @RequestParam(defaultValue = "50") int limit,
       @RequestParam(defaultValue = "0") int offset) {
@@ -1255,13 +1255,13 @@ public class ClipController {
   }
 
   @GetMapping("/clips/{id}")
-  public Clip get(HttpServletRequest request, @PathVariable String id) {
+  public Video get(HttpServletRequest request, @PathVariable String id) {
     Jwt jwt = Auth.verifyToken(request, jwtDecoder);
     return store.get(id).orElseThrow(() -> new NotFoundException("Clip not found"));
   }
 
   @PutMapping("/clips/{id}")
-  public Clip update(
+  public Video update(
       HttpServletRequest request, @PathVariable String id, @RequestBody JsonNode body) {
     Jwt jwt = Auth.verifyToken(request, jwtDecoder);
     ClipIn payload = ClipIn.decode(body);
@@ -1663,9 +1663,9 @@ src/main/java/com/ciac/routedmedia/services/ClipStore.java
 // Persistence for the Clip resource.
 package com.ciac.routedmedia.services;
 
-import com.ciac.routedmedia.schemas.Clip;
 import com.ciac.routedmedia.schemas.ClipIn;
 import com.ciac.routedmedia.schemas.RowMappers;
+import com.ciac.routedmedia.schemas.Video;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -1681,32 +1681,32 @@ public class ClipStore {
     this.jdbc = jdbc;
   }
 
-  public Clip create(ClipIn payload) {
+  public Video create(ClipIn payload) {
     String id = UUID.randomUUID().toString();
     jdbc.sql("INSERT INTO clips (id, title, status) VALUES (?, ?, ?)")
         .param(id)
         .param(payload.title())
         .param(payload.status())
         .update();
-    return new Clip(id, payload.title(), payload.status());
+    return new Video(id, payload.title(), payload.status());
   }
 
-  public Optional<Clip> get(String id) {
+  public Optional<Video> get(String id) {
     return jdbc.sql("SELECT id, title, status FROM clips WHERE id = ?")
         .param(id)
-        .query(RowMappers.CLIP)
+        .query(RowMappers.VIDEO)
         .optional();
   }
 
-  public List<Clip> list(int limit, int offset) {
+  public List<Video> list(int limit, int offset) {
     return jdbc.sql("SELECT id, title, status FROM clips ORDER BY id LIMIT ? OFFSET ?")
         .param(limit)
         .param(offset)
-        .query(RowMappers.CLIP)
+        .query(RowMappers.VIDEO)
         .list();
   }
 
-  public Optional<Clip> update(String id, ClipIn payload) {
+  public Optional<Video> update(String id, ClipIn payload) {
     int n =
         jdbc.sql("UPDATE clips SET title = ?, status = ? WHERE id = ?")
             .param(payload.title())
@@ -1716,7 +1716,7 @@ public class ClipStore {
     if (n == 0) {
       return Optional.empty();
     }
-    return Optional.of(new Clip(id, payload.title(), payload.status()));
+    return Optional.of(new Video(id, payload.title(), payload.status()));
   }
 
   public boolean delete(String id) {
@@ -1890,6 +1890,8 @@ package com.ciac.routedmedia.state;
 import java.sql.Connection;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
@@ -1905,6 +1907,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class AppState {
+  private static final Logger log = LoggerFactory.getLogger(AppState.class);
 
   @Lazy
   @Bean("db")
@@ -1964,15 +1967,33 @@ public class AppState {
   // `application.yml` stops Spring's own auto-wiring from resolving
   // them first) -- Pillar 4's "compiler owns the wiring" rule applied
   // to Flyway itself, not only to the connection pool.
+  //
+  // Each instance's own migration/table-bootstrap is wrapped in its
+  // own try/catch, logged and skipped on failure rather than left to
+  // propagate (25UpdatePlan.md M8, found live): a `CommandLineRunner`
+  // is *always* eagerly invoked by Spring Boot at startup, so this
+  // is the one call site that unavoidably forces every `@Lazy`
+  // `DataSource` bean above to actually construct (now non-dialing
+  // itself, see `DataSources.open`'s own `initializationFailTimeout`
+  // fix) and then genuinely try to connect -- an unreachable database
+  // must not abort the whole context, the identical graceful-
+  // degradation discipline `Worker.java.j2`'s own NATS/Kafka connect
+  // failures already have.
   @Bean
   public CommandLineRunner migrateOnBoot(@Qualifier("db") DataSource db) {
     return args -> {
-      DataSources.migrate(db);
+      try {
+        DataSources.migrate(db);
+      } catch (Exception e) {
+        log.warn("skipping migration for instance \"db\": database unreachable", e);
+      }
       try (Connection conn = db.getConnection();
           Statement stmt = conn.createStatement()) {
         stmt.execute(
             "CREATE TABLE IF NOT EXISTS clips (id VARCHAR(36) PRIMARY KEY, title TEXT NOT NULL,"
                 + " status TEXT NOT NULL)");
+      } catch (Exception e) {
+        log.warn("skipping table bootstrap for resource \"clips\": database unreachable", e);
       }
     };
   }
@@ -1992,6 +2013,19 @@ src/main/java/com/ciac/routedmedia/state/DataSources.java
 // `username`/`password` DataSource properties instead of guessing at
 // a URL shape the driver would accept; sqlite (`jdbc:sqlite:<path>`)
 // carries no credentials at all and is never rewritten.
+//
+// `initializationFailTimeout(-1)` (25UpdatePlan.md M8, found live):
+// HikariCP's own default `checkFailFast` behavior dials the database
+// synchronously *inside* `new HikariDataSource(config)` and throws if
+// it can't connect -- the `@Lazy` annotation on `AppState`'s own
+// `db()` bean method only defers *when* that constructor runs, not
+// what it does once triggered, so a genuinely unreachable database
+// still crashed the whole Spring context the moment anything (here,
+// `migrateOnBoot`'s own `CommandLineRunner`) forced the bean's
+// construction. `-1` is HikariCP's own documented way to make pool
+// construction never attempt a connection, restoring the same
+// "constructing this never dials" contract every other provider
+// client bean already keeps.
 package com.ciac.routedmedia.state;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -2007,6 +2041,7 @@ final class DataSources {
 
   static DataSource open(String rawUrl) throws Exception {
     HikariConfig config = new HikariConfig();
+    config.setInitializationFailTimeout(-1);
     if (rawUrl.startsWith("jdbc:sqlite:")) {
       // The sqlite driver creates the database *file* itself but
       // not missing parent directories (mirrors every other

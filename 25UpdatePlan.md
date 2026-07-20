@@ -1981,6 +1981,126 @@ surface.
    loop); MCP exercised; evolution/rename-replay re-proven against a
    Java tree; `generated-java` CI job with the M5 scoping decision
    applied and stated in the workflow comment.
+
+   **Shipped (v0.25 M8):** zero gates confirmed — `Component::Logging`
+   is Java's only disclosed refusal and no checked-in example declares
+   it, so every one of the 26 examples that names a Java-capable
+   capability set genuinely verifies. `dev_survives_compile_errors_
+   and_regenerates_on_fix_java` added to `dev_cli.rs` (mirrors the Go
+   test exactly: break `EchoController.java`, confirm the diagnostic
+   surfaces, fix, confirm regeneration lands `RenamedController.java`).
+   A Java `build`+`verify` MCP tool-call pair added to `mcp_cli.rs`
+   between the existing Go block and `explain`, mirroring Go's own
+   shape. The pre-existing `out_replay_resolves_the_java_target_
+   migrations_dir` test (added back at M2) still passes untouched —
+   Java's own evolution/rename-replay surface needed no new code this
+   milestone, only re-confirmation. `docs/language.md`'s provider
+   table gained a Java column on every row except `logging` (an
+   honest disclosed-gap parenthetical, not silently dropped);
+   `README.md`'s CLI usage table and CIaC-concept table both gained
+   Java. `.github/workflows/ci.yml` gained `actions/setup-java@v4` on
+   the existing `generated-system` job (three new Java system rows:
+   inventory-system, mysql-notes, sim-vertical-slice) and a new
+   `generated-java` job mirroring `generated-go`'s shape — per M5's
+   own pre-recorded decision, it runs the full unscoped example
+   matrix (measured `./mvnw -q -B verify` latency stays comfortably
+   inside CI budget even at 26 examples, dominated by JVM+Maven-plugin
+   startup, not build size).
+
+   **The real payoff of this milestone was the first-ever full-sweep
+   live verification** — `for src in examples/*.ciac; do ciac verify
+   "$src" --target java; done` against the real toolchain, not golden-
+   snapshot diffing. Every prior Java milestone had verified its own
+   *scope* live but never the whole example set at once; running all
+   26 for real surfaced three genuine, previously-undiscovered,
+   arc-wide bugs that predate this milestone (M1–M7 all passed their
+   own live proofs only because manual testing shortcuts happened to
+   mask each one):
+
+   - **`mvnw` was never executable when written by the real CLI.**
+     `GeneratedProject::write_to()` (`ciac-codegen/src/project.rs`)
+     and `regen.rs`'s `write_rel()` (the `ciac dev` incremental-write
+     path) both call `std::fs::write`, which never sets or preserves a
+     file's permission bits — the vendored `mvnw` shell script landed
+     on disk with no execute bit on every single Java project this
+     whole arc ever generated. Every prior "live `./mvnw verify`"
+     claim across M1–M7 only worked because I manually `chmod +x
+     mvnw`'d before every hand-invoked run; the MCP `build`+`verify`
+     round-trip added above was the first path that never got that
+     manual step, and it failed immediately (`Permission denied`) —
+     which is how this was found. Fixed with a `#[cfg(unix)]`-gated
+     `std::os::unix::fs::PermissionsExt::set_permissions(0o755)` for
+     any file literally named `mvnw`, applied identically in both
+     write paths.
+   - **HikariCP's `checkFailFast` defeated every `@Lazy` `DataSource`
+     bean.** `HikariDataSource`'s constructor dials the database
+     synchronously by default and throws if it can't connect;
+     `AppState`'s `migrateOnBoot` `CommandLineRunner` bean is *always*
+     eagerly constructed by Spring Boot at startup (no `@Lazy` on a
+     `CommandLineRunner` defers this), which forces its `@Qualifier`-
+     injected `DataSource` dependency to construct too — meaning
+     `@Lazy` on the `DataSource` bean method itself was silently
+     defeated for every db-declaring Java example since M2/M3, and
+     `NoInfraBootTest`'s own headline claim ("boots with no infra
+     reachable") was never actually true for any db-bearing example.
+     It only ever passed because a correctly-named local Postgres
+     database happened to already exist on this machine; stopping
+     Postgres outright (not just pointing at the wrong database name)
+     reproduced a hard startup crash. Fixed two ways: `HikariConfig.
+     setInitializationFailTimeout(-1)` in `DataSources.java.j2`
+     (HikariCP's own documented knob for "pool construction never
+     dials"), plus wrapping each per-instance migration and each
+     per-resource table-bootstrap call inside `AppState`'s
+     `migrateOnBoot` in its own try/catch that logs a warning and
+     continues — the identical graceful-degradation shape
+     `Worker.java.j2`'s NATS/Kafka connect failures already use.
+   - **Typed CRUD broke when the resource name and record name
+     differ.** For `crud Clip: Video;`-style declarations,
+     `ResourceController.java.j2`/`ResourceStore.java.j2` used
+     `resource.name` ("Clip") as the generated schema/entity class
+     name and the `RowMappers` constant key, but the actual generated
+     schema class and `RowMappers` entry are keyed by the *record's*
+     own name ("Video") — producing `cannot find symbol: class Clip`
+     compile errors. This bug is as old as typed CRUD itself but was
+     invisible until this milestone: the three affected examples
+     (`audited-crud`, `routed-media`, `typed-video`) all needed a
+     capability M7's own `supports()` widening had only just
+     un-gated. Fixed by introducing `{% set entity_type =
+     resource.record.name if resource.record else (resource.name ~
+     "Entity") %}` in both templates and substituting `entity_type`
+     everywhere the schema/entity class is referenced (import,
+     method return types, constructor calls, `RowMappers.{{
+     entity_type | shouty_snake_case }}` lookups), while keeping
+     `resource.name` for genuinely resource-scoped identifiers
+     (Controller/Store class names, the `{{ resource.name }}In`
+     payload type, route paths, "not found" messages).
+   - **`crud-notes` failed with an unrelated, fourth bug**: keyed
+     (untyped) CRUD's `get`/`list` RowMapper lambdas called
+     `Schemas.MAPPER.readTree(String)` directly inside a
+     `(rs, rowNum) -> ..` lambda — `JsonProcessingException` is
+     checked and not a subtype of `SQLException`, the only checked
+     exception `RowMapper.mapRow` is permitted to throw, so this
+     never compiled once the corresponding record actually had a JSON
+     column. Fixed by routing through the pre-existing `Schemas.
+     fromJsonOrNull(String)` helper (already used elsewhere in this
+     backend specifically to convert this same checked exception into
+     an unchecked one), rather than adding a new try/catch shape.
+
+   Re-running the full 26-example sweep after each fix: 15 failures →
+   4 (after the mvnw + HikariCP fixes) → 0 (after the CRUD entity-type
+   and JsonProcessingException fixes). All 26 Java projects now
+   genuinely `mvnw -q -B verify` clean from a stock `ciac verify
+   --target java` invocation, with no manual pre-steps.
+
+   Golden snapshots regenerated (`cargo insta test --accept`) —
+   eighteen of the twenty-six churned (every example touching
+   `ResourceController.java.j2`/`ResourceStore.java.j2`/
+   `AppState.java.j2`/`DataSources.java.j2`); the other eight
+   (capability sets with no CRUD resource and no db instance) were
+   byte-identical. Full workspace verification: `cargo fmt --all
+   --check` clean; `cargo clippy --workspace --all-targets -- -D
+   warnings` clean; `cargo test --workspace` green, 0 failures.
+
 9. **M9 — Simulation slice (gated) + version + the five-backend
    retrospective.** Pillar 9's slice with exact-outcome acceptance
    and the refusal case; ratchet row; docs. Workspace version bump.

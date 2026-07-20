@@ -10,6 +10,19 @@
 // `username`/`password` DataSource properties instead of guessing at
 // a URL shape the driver would accept; sqlite (`jdbc:sqlite:<path>`)
 // carries no credentials at all and is never rewritten.
+//
+// `initializationFailTimeout(-1)` (25UpdatePlan.md M8, found live):
+// HikariCP's own default `checkFailFast` behavior dials the database
+// synchronously *inside* `new HikariDataSource(config)` and throws if
+// it can't connect -- the `@Lazy` annotation on `AppState`'s own
+// `db()` bean method only defers *when* that constructor runs, not
+// what it does once triggered, so a genuinely unreachable database
+// still crashed the whole Spring context the moment anything (here,
+// `migrateOnBoot`'s own `CommandLineRunner`) forced the bean's
+// construction. `-1` is HikariCP's own documented way to make pool
+// construction never attempt a connection, restoring the same
+// "constructing this never dials" contract every other provider
+// client bean already keeps.
 package com.ciac.{{ java_package }}.state;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -25,6 +38,7 @@ final class DataSources {
 
     static DataSource open(String rawUrl) throws Exception {
         HikariConfig config = new HikariConfig();
+        config.setInitializationFailTimeout(-1);
         if (rawUrl.startsWith("jdbc:sqlite:")) {
             // The sqlite driver creates the database *file* itself but
             // not missing parent directories (mirrors every other

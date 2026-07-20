@@ -305,3 +305,97 @@ fn dev_survives_compile_errors_and_regenerates_on_fix_go() {
     let _ = child.wait();
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// 25UpdatePlan.md M8: the same watch/break/fix session, against the
+/// Java backend — proves `ciac dev`'s target-neutral watch/rebuild
+/// loop needs no Java-specific code, and that `--no-docker`'s early
+/// return (no `mvnw package`, no `docker compose`, no
+/// `google-java-format` subprocess) genuinely never shells out to the
+/// Java toolchain.
+#[test]
+fn dev_survives_compile_errors_and_regenerates_on_fix_java() {
+    let dir = temp_dir("session-java");
+    let source = dir.join("main.ciac");
+    let out = dir.join("build");
+    std::fs::write(
+        &source,
+        "service DevProbe;\n\nrecord Ping { id: Uuid; }\n\napi Echo: Ping {\n    method: POST;\n    path: \"/echo\";\n}\npipeline Echo: Return;\n",
+    )
+    .unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ciac"))
+        .args([
+            "dev",
+            source.to_str().unwrap(),
+            "-t",
+            "java",
+            "-o",
+            out.to_str().unwrap(),
+            "--no-docker",
+            "--poll",
+        ])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("ciac dev starts");
+
+    let log = Arc::new(Mutex::new(String::new()));
+    {
+        let log = Arc::clone(&log);
+        let stderr = child.stderr.take().expect("stderr");
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let mut log = log.lock().unwrap();
+                log.push_str(&line);
+                log.push('\n');
+            }
+        });
+    }
+
+    assert!(
+        wait_for(&log, "regenerated", 1, Duration::from_secs(30)),
+        "initial generate: {}",
+        log.lock().unwrap()
+    );
+    assert!(
+        wait_for(&log, "watching", 1, Duration::from_secs(10)),
+        "watches must register: {}",
+        log.lock().unwrap()
+    );
+    assert!(out
+        .join("src/main/java/com/ciac/devprobe/routes/EchoController.java")
+        .is_file());
+    std::thread::sleep(Duration::from_millis(1500));
+
+    std::fs::write(&source, "service DevProbe;\n\npipeline Nope: Work;\n").unwrap();
+    assert!(
+        wait_for(&log, "compile errors", 1, Duration::from_secs(60)),
+        "broken save should surface diagnostics: {}",
+        log.lock().unwrap()
+    );
+    std::thread::sleep(Duration::from_millis(600));
+
+    std::fs::write(
+        &source,
+        "service DevProbe;\n\nrecord Ping { id: Uuid; }\n\napi Renamed: Ping {\n    method: POST;\n    path: \"/renamed\";\n}\npipeline Renamed: Return;\n",
+    )
+    .unwrap();
+    assert!(
+        wait_for(&log, "regenerated", 2, Duration::from_secs(60)),
+        "fixed save should regenerate: {}",
+        log.lock().unwrap()
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let renamed = out.join("src/main/java/com/ciac/devprobe/routes/RenamedController.java");
+    while !renamed.is_file() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        renamed.is_file(),
+        "the new api's route module must exist after the fix"
+    );
+
+    child.kill().expect("stop the session");
+    let _ = child.wait();
+    std::fs::remove_dir_all(&dir).ok();
+}

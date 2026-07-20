@@ -6,13 +6,9 @@
 // `ApiController`), matching every other target's own resource routes.
 package com.ciac.{{ java_package }}.routes;
 
-{%- if resource.record %}
-import com.ciac.{{ java_package }}.schemas.{{ resource.name }};
+{%- set entity_type = resource.record.name if resource.record else (resource.name ~ "Entity") %}
+import com.ciac.{{ java_package }}.schemas.{{ entity_type }};
 import com.ciac.{{ java_package }}.schemas.{{ resource.name }}In;
-{%- else %}
-import com.ciac.{{ java_package }}.schemas.{{ resource.name }}Entity;
-import com.ciac.{{ java_package }}.schemas.{{ resource.name }}In;
-{%- endif %}
 import com.ciac.{{ java_package }}.services.{{ resource.store_class }};
 import com.fasterxml.jackson.databind.JsonNode;
 {%- if resource.has_auth %}
@@ -48,7 +44,7 @@ public class {{ resource.name }}Controller {
     }
 
     @PostMapping("/{{ resource.plural }}")
-    public ResponseEntity<{{ resource.name }}{% if not resource.record %}Entity{% endif %}> create(
+    public ResponseEntity<{{ entity_type }}> create(
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @RequestBody JsonNode body) {
 {%- if resource.has_auth %}
@@ -62,7 +58,7 @@ public class {{ resource.name }}Controller {
     }
 
     @GetMapping("/{{ resource.plural }}")
-    public java.util.List<{{ resource.name }}{% if not resource.record %}Entity{% endif %}> list(
+    public java.util.List<{{ entity_type }}> list(
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @RequestParam(defaultValue = "{{ resource.page_size }}") int limit,
             @RequestParam(defaultValue = "0") int offset) {
@@ -76,7 +72,7 @@ public class {{ resource.name }}Controller {
     }
 
     @GetMapping("/{{ resource.plural }}/{id}")
-    public {{ resource.name }}{% if not resource.record %}Entity{% endif %} get(
+    public {{ entity_type }} get(
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @PathVariable String id) {
 {%- if resource.has_auth %}
@@ -89,7 +85,7 @@ public class {{ resource.name }}Controller {
     }
 
     @PutMapping("/{{ resource.plural }}/{id}")
-    public {{ resource.name }}{% if not resource.record %}Entity{% endif %} update(
+    public {{ entity_type }} update(
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @PathVariable String id, @RequestBody JsonNode body) {
 {%- if resource.has_auth %}

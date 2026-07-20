@@ -16,6 +16,8 @@ package com.ciac.{{ java_package }}.state;
 import java.sql.Connection;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 {%- endif %}
 {%- if c.has_cache %}
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
@@ -41,6 +43,9 @@ import org.springframework.stereotype.Component;
 {% if has_beans %}
 @Configuration
 public class AppState {
+{%- if c.has_db %}
+    private static final Logger log = LoggerFactory.getLogger(AppState.class);
+{%- endif %}
 {%- for inst in c.db_instances %}
 
     @Lazy
@@ -153,6 +158,18 @@ public class AppState {
     // `application.yml` stops Spring's own auto-wiring from resolving
     // them first) -- Pillar 4's "compiler owns the wiring" rule applied
     // to Flyway itself, not only to the connection pool.
+    //
+    // Each instance's own migration/table-bootstrap is wrapped in its
+    // own try/catch, logged and skipped on failure rather than left to
+    // propagate (25UpdatePlan.md M8, found live): a `CommandLineRunner`
+    // is *always* eagerly invoked by Spring Boot at startup, so this
+    // is the one call site that unavoidably forces every `@Lazy`
+    // `DataSource` bean above to actually construct (now non-dialing
+    // itself, see `DataSources.open`'s own `initializationFailTimeout`
+    // fix) and then genuinely try to connect -- an unreachable database
+    // must not abort the whole context, the identical graceful-
+    // degradation discipline `Worker.java.j2`'s own NATS/Kafka connect
+    // failures already have.
     @Bean
     public CommandLineRunner migrateOnBoot(
             {%- for inst in c.db_instances %}
@@ -160,7 +177,11 @@ public class AppState {
             {%- endfor %}) {
         return args -> {
         {%- for inst in c.db_instances %}
-            DataSources.migrate({{ inst.state_field | java_camel }});
+            try {
+                DataSources.migrate({{ inst.state_field | java_camel }});
+            } catch (Exception e) {
+                log.warn("skipping migration for instance \"{{ inst.state_field | java_camel }}\": database unreachable", e);
+            }
         {%- endfor %}
         {%- for resource in c.resources %}
             try (Connection conn = {{ resource.rust_db_field | java_camel }}.getConnection();
@@ -172,6 +193,8 @@ public class AppState {
                 stmt.execute(
                         "CREATE TABLE IF NOT EXISTS {{ resource.plural }} (id VARCHAR(36) PRIMARY KEY, data {{ "JSONB" | java_ddl_type(resource.db_engine) }} NOT NULL)");
         {%- endif %}
+            } catch (Exception e) {
+                log.warn("skipping table bootstrap for resource \"{{ resource.plural }}\": database unreachable", e);
             }
         {%- endfor %}
         };

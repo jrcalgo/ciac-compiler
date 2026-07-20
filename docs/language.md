@@ -169,36 +169,38 @@ Legacy entries lower to an implicit instance named `default`. Duplicate
 instances of the same capability kind/name are `CIAC0012`. Supported
 pairs (`CIAC0013` otherwise):
 
-| Capability | Providers | Generated as (Python / Rust / TypeScript / Go) |
+| Capability | Providers | Generated as (Python / Rust / TypeScript / Go / Java) |
 |------------|-----------|--------------------------------------------------|
-| `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) / Fastify preHandler + `jose` (OAuth2: `createRemoteJWKSet`, lazy and cached) / inline route-body check + golang-jwt (OAuth2: `keyfunc`, lazy and cached) |
-| `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) / Drizzle per instance, raw SQL through its `$client` escape hatch (`pg` / `mysql2` / `better-sqlite3`) / `database/sql` pool per instance (`pgx` / `go-sql-driver/mysql` / `modernc.org/sqlite`, one placeholder-style filter shared across all three) |
-| `cache` | `Redis` | redis-py client per instance / redis crate client per instance / `ioredis` client per instance / go-redis client per instance |
-| `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka / `@nats-io/transport-node` or kafkajs / nats.go or franz-go |
-| `logging` | `Structured` | structlog / tracing / pino / `log/slog` JSON handler |
-| `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus / prom-client / prometheus/client_golang |
-| `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper / `@aws-sdk/client-s3` wrapper / AWS SDK Go v2 `s3` wrapper (all four: + MinIO in compose, path-style addressing) |
-| `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender / nodemailer sender / dependency-free `net/smtp` sender (all four: + Mailpit in compose) |
-| `search` | `OpenSearch` | opensearch-py client / opensearch client / `@opensearch-project/opensearch` client / dependency-free `net/http` against OpenSearch's own REST API (all four: + single-node container) |
-| `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance / dependency-free `fetch` client per instance / dependency-free `net/http` client per instance |
-| `scheduler` | `Cron` | in-process scheduled jobs (Python/Rust/Go) / croner scheduled jobs (TypeScript) |
+| `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) / Fastify preHandler + `jose` (OAuth2: `createRemoteJWKSet`, lazy and cached) / inline route-body check + golang-jwt (OAuth2: `keyfunc`, lazy and cached) / inline route-body check + `spring-boot-starter-oauth2-resource-server` (`NimbusJwtDecoder`, OAuth2: `withJwkSetUri`, lazy and cached) |
+| `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) / Drizzle per instance, raw SQL through its `$client` escape hatch (`pg` / `mysql2` / `better-sqlite3`) / `database/sql` pool per instance (`pgx` / `go-sql-driver/mysql` / `modernc.org/sqlite`, one placeholder-style filter shared across all three) / Spring `JdbcClient` (HikariCP) pool per instance (`postgresql` / `mysql-connector-j` / `sqlite-jdbc`, Flyway for `table`-declared migrations) |
+| `cache` | `Redis` | redis-py client per instance / redis crate client per instance / `ioredis` client per instance / go-redis client per instance / spring-data-redis `StringRedisTemplate` per instance (Lettuce) |
+| `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka / `@nats-io/transport-node` or kafkajs / nats.go or franz-go / jnats or spring-kafka |
+| `logging` | `Structured` | structlog / tracing / pino / `log/slog` JSON handler / **not yet implemented** — `Component::Logging` stays `CIAC0011`-refused for Java, a disclosed gap (no checked-in example declares it) |
+| `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus / prom-client / prometheus/client_golang / Micrometer + `micrometer-registry-prometheus` at `/actuator/prometheus` |
+| `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper / `@aws-sdk/client-s3` wrapper / AWS SDK Go v2 `s3` wrapper / AWS SDK v2 `s3` wrapper (all five: + MinIO in compose, path-style addressing) |
+| `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender / nodemailer sender / dependency-free `net/smtp` sender / Spring `JavaMailSenderImpl` sender (all five: + Mailpit in compose) |
+| `search` | `OpenSearch` | opensearch-py client / opensearch client / `@opensearch-project/opensearch` client / dependency-free `net/http` against OpenSearch's own REST API / dependency-free `java.net.http.HttpClient` against OpenSearch's own REST API (all five: + single-node container) |
+| `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance / dependency-free `fetch` client per instance / dependency-free `net/http` client per instance / Spring `RestClient` per instance |
+| `scheduler` | `Cron` | in-process scheduled jobs (Python/Rust/Go/Java, Java via `@Scheduled`) / croner scheduled jobs (TypeScript) |
 | `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
-| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers / OTel Node SDK + `@fastify/otel`/http/pg/undici auto-instrumentation / OTel Go SDK + `otelhttp` auto-instrumentation, explicit broker-hop propagation (all four: `traceparent` propagation across `call`/broker hops) |
-| `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6) |
+| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers / OTel Node SDK + `@fastify/otel`/http/pg/undici auto-instrumentation / OTel Go SDK + `otelhttp` auto-instrumentation, explicit broker-hop propagation / Micrometer Tracing + OTel bridge, `RestClient` auto-instrumented via Micrometer Observation, explicit broker-hop propagation (all five: `traceparent` propagation across `call`/broker hops) |
+| `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6; Java needed zero backend-specific code — the dev-issuer-default computation is target-neutral, confirmed 25UpdatePlan.md M7) |
 
-Every provider above generates on all four bundled targets (as of
-v0.24 M7 — Go closed its own remaining gaps, following TypeScript at
-v0.23 M7, `MySQL`/`Kafka` landing on Rust in v0.13 M1/M2, and
-`SQLite` in v0.13 M3, which needs no container at all, just a `data/`
-volume). `auth OAuth2` requires an `issuer` attribute (and optional
-`audience`): bearer RS256 tokens are validated against `{issuer}/
-.well-known/jwks.json` on every backend — unless `users Keycloak` is
-declared in the same `use { .. }` block, in which case `issuer` may
-be omitted and defaults to the dev Keycloak container's realm URL
-(v0.15 M6; still overridable with an explicit `issuer`).
+Every provider above generates on all five bundled targets except
+`logging` (Java only, disclosed above) as of 25UpdatePlan.md M7 — Java
+closed its own remaining gaps following Go's own M7 (v0.24), which
+followed TypeScript's (v0.23 M7), `MySQL`/`Kafka` landing on Rust in
+v0.13 M1/M2, and `SQLite` in v0.13 M3, which needs no container at
+all, just a `data/` volume. `auth OAuth2` requires an `issuer`
+attribute (and optional `audience`): bearer RS256 tokens are
+validated against `{issuer}/.well-known/jwks.json` on every backend —
+unless `users Keycloak` is declared in the same `use { .. }` block,
+in which case `issuer` may be omitted and defaults to the dev
+Keycloak container's realm URL (v0.15 M6; still overridable with an
+explicit `issuer`).
 
 `tracing OpenTelemetry` (v0.15 M3/M4, TypeScript in v0.23 M7, Go in
-v0.24 M7) adds an `otel-collector` + Jaeger to the dev compose stack;
+v0.24 M7, Java in 25UpdatePlan.md M7) adds an `otel-collector` + Jaeger to the dev compose stack;
 every service that declares it exports spans for its own HTTP server/
 client calls and broker produce/consume, so a `call`/`publish`→worker
 chain shows up as one continuous trace. `users Keycloak` (v0.15 M6)

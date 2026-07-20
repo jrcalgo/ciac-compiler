@@ -1068,8 +1068,8 @@ accounts/src/main/java/com/ciac/accounts/routes/ResourceUserController.java
 // `ApiController`), matching every other target's own resource routes.
 package com.ciac.accounts.routes;
 
-import com.ciac.accounts.schemas.ResourceUser;
 import com.ciac.accounts.schemas.ResourceUserIn;
+import com.ciac.accounts.schemas.User;
 import com.ciac.accounts.services.ResourceUserStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.http.HttpStatus;
@@ -1092,24 +1092,24 @@ public class ResourceUserController {
   }
 
   @PostMapping("/resource_users")
-  public ResponseEntity<ResourceUser> create(@RequestBody JsonNode body) {
+  public ResponseEntity<User> create(@RequestBody JsonNode body) {
     ResourceUserIn payload = ResourceUserIn.decode(body);
     return ResponseEntity.status(HttpStatus.CREATED).body(store.create(payload));
   }
 
   @GetMapping("/resource_users")
-  public java.util.List<ResourceUser> list(
+  public java.util.List<User> list(
       @RequestParam(defaultValue = "100") int limit, @RequestParam(defaultValue = "0") int offset) {
     return store.list(limit, offset);
   }
 
   @GetMapping("/resource_users/{id}")
-  public ResourceUser get(@PathVariable String id) {
+  public User get(@PathVariable String id) {
     return store.get(id).orElseThrow(() -> new NotFoundException("ResourceUser not found"));
   }
 
   @PutMapping("/resource_users/{id}")
-  public ResourceUser update(@PathVariable String id, @RequestBody JsonNode body) {
+  public User update(@PathVariable String id, @RequestBody JsonNode body) {
     ResourceUserIn payload = ResourceUserIn.decode(body);
     return store
         .update(id, payload)
@@ -1323,9 +1323,9 @@ accounts/src/main/java/com/ciac/accounts/services/ResourceUserStore.java
 // Persistence for the ResourceUser resource.
 package com.ciac.accounts.services;
 
-import com.ciac.accounts.schemas.ResourceUser;
 import com.ciac.accounts.schemas.ResourceUserIn;
 import com.ciac.accounts.schemas.RowMappers;
+import com.ciac.accounts.schemas.User;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -1341,31 +1341,31 @@ public class ResourceUserStore {
     this.jdbc = jdbc;
   }
 
-  public ResourceUser create(ResourceUserIn payload) {
+  public User create(ResourceUserIn payload) {
     String id = UUID.randomUUID().toString();
     jdbc.sql("INSERT INTO resource_users (id, title) VALUES (?, ?)")
         .param(id)
         .param(payload.title())
         .update();
-    return new ResourceUser(id, payload.title());
+    return new User(id, payload.title());
   }
 
-  public Optional<ResourceUser> get(String id) {
+  public Optional<User> get(String id) {
     return jdbc.sql("SELECT id, title FROM resource_users WHERE id = ?")
         .param(id)
-        .query(RowMappers.RESOURCE_USER)
+        .query(RowMappers.USER)
         .optional();
   }
 
-  public List<ResourceUser> list(int limit, int offset) {
+  public List<User> list(int limit, int offset) {
     return jdbc.sql("SELECT id, title FROM resource_users ORDER BY id LIMIT ? OFFSET ?")
         .param(limit)
         .param(offset)
-        .query(RowMappers.RESOURCE_USER)
+        .query(RowMappers.USER)
         .list();
   }
 
-  public Optional<ResourceUser> update(String id, ResourceUserIn payload) {
+  public Optional<User> update(String id, ResourceUserIn payload) {
     int n =
         jdbc.sql("UPDATE resource_users SET title = ? WHERE id = ?")
             .param(payload.title())
@@ -1374,7 +1374,7 @@ public class ResourceUserStore {
     if (n == 0) {
       return Optional.empty();
     }
-    return Optional.of(new ResourceUser(id, payload.title()));
+    return Optional.of(new User(id, payload.title()));
   }
 
   public boolean delete(String id) {
@@ -1400,6 +1400,8 @@ package com.ciac.accounts.state;
 import java.sql.Connection;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
@@ -1412,6 +1414,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class AppState {
+  private static final Logger log = LoggerFactory.getLogger(AppState.class);
 
   @Lazy
   @Bean("dbMain")
@@ -1449,15 +1452,34 @@ public class AppState {
   // `application.yml` stops Spring's own auto-wiring from resolving
   // them first) -- Pillar 4's "compiler owns the wiring" rule applied
   // to Flyway itself, not only to the connection pool.
+  //
+  // Each instance's own migration/table-bootstrap is wrapped in its
+  // own try/catch, logged and skipped on failure rather than left to
+  // propagate (25UpdatePlan.md M8, found live): a `CommandLineRunner`
+  // is *always* eagerly invoked by Spring Boot at startup, so this
+  // is the one call site that unavoidably forces every `@Lazy`
+  // `DataSource` bean above to actually construct (now non-dialing
+  // itself, see `DataSources.open`'s own `initializationFailTimeout`
+  // fix) and then genuinely try to connect -- an unreachable database
+  // must not abort the whole context, the identical graceful-
+  // degradation discipline `Worker.java.j2`'s own NATS/Kafka connect
+  // failures already have.
   @Bean
   public CommandLineRunner migrateOnBoot(@Qualifier("dbMain") DataSource dbMain) {
     return args -> {
-      DataSources.migrate(dbMain);
+      try {
+        DataSources.migrate(dbMain);
+      } catch (Exception e) {
+        log.warn("skipping migration for instance \"dbMain\": database unreachable", e);
+      }
       try (Connection conn = dbMain.getConnection();
           Statement stmt = conn.createStatement()) {
         stmt.execute(
             "CREATE TABLE IF NOT EXISTS resource_users (id VARCHAR(36) PRIMARY KEY, title TEXT NOT"
                 + " NULL)");
+      } catch (Exception e) {
+        log.warn(
+            "skipping table bootstrap for resource \"resource_users\": database unreachable", e);
       }
     };
   }
@@ -1477,6 +1499,19 @@ accounts/src/main/java/com/ciac/accounts/state/DataSources.java
 // `username`/`password` DataSource properties instead of guessing at
 // a URL shape the driver would accept; sqlite (`jdbc:sqlite:<path>`)
 // carries no credentials at all and is never rewritten.
+//
+// `initializationFailTimeout(-1)` (25UpdatePlan.md M8, found live):
+// HikariCP's own default `checkFailFast` behavior dials the database
+// synchronously *inside* `new HikariDataSource(config)` and throws if
+// it can't connect -- the `@Lazy` annotation on `AppState`'s own
+// `db()` bean method only defers *when* that constructor runs, not
+// what it does once triggered, so a genuinely unreachable database
+// still crashed the whole Spring context the moment anything (here,
+// `migrateOnBoot`'s own `CommandLineRunner`) forced the bean's
+// construction. `-1` is HikariCP's own documented way to make pool
+// construction never attempt a connection, restoring the same
+// "constructing this never dials" contract every other provider
+// client bean already keeps.
 package com.ciac.accounts.state;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -1492,6 +1527,7 @@ final class DataSources {
 
   static DataSource open(String rawUrl) throws Exception {
     HikariConfig config = new HikariConfig();
+    config.setInitializationFailTimeout(-1);
     if (rawUrl.startsWith("jdbc:sqlite:")) {
       // The sqlite driver creates the database *file* itself but
       // not missing parent directories (mirrors every other
@@ -2932,8 +2968,8 @@ catalog/src/main/java/com/ciac/catalog/routes/ResourceVideoController.java
 // `ApiController`), matching every other target's own resource routes.
 package com.ciac.catalog.routes;
 
-import com.ciac.catalog.schemas.ResourceVideo;
 import com.ciac.catalog.schemas.ResourceVideoIn;
+import com.ciac.catalog.schemas.Video;
 import com.ciac.catalog.services.ResourceVideoStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.http.HttpStatus;
@@ -2956,24 +2992,24 @@ public class ResourceVideoController {
   }
 
   @PostMapping("/resource_videos")
-  public ResponseEntity<ResourceVideo> create(@RequestBody JsonNode body) {
+  public ResponseEntity<Video> create(@RequestBody JsonNode body) {
     ResourceVideoIn payload = ResourceVideoIn.decode(body);
     return ResponseEntity.status(HttpStatus.CREATED).body(store.create(payload));
   }
 
   @GetMapping("/resource_videos")
-  public java.util.List<ResourceVideo> list(
+  public java.util.List<Video> list(
       @RequestParam(defaultValue = "100") int limit, @RequestParam(defaultValue = "0") int offset) {
     return store.list(limit, offset);
   }
 
   @GetMapping("/resource_videos/{id}")
-  public ResourceVideo get(@PathVariable String id) {
+  public Video get(@PathVariable String id) {
     return store.get(id).orElseThrow(() -> new NotFoundException("ResourceVideo not found"));
   }
 
   @PutMapping("/resource_videos/{id}")
-  public ResourceVideo update(@PathVariable String id, @RequestBody JsonNode body) {
+  public Video update(@PathVariable String id, @RequestBody JsonNode body) {
     ResourceVideoIn payload = ResourceVideoIn.decode(body);
     return store
         .update(id, payload)
@@ -3187,9 +3223,9 @@ catalog/src/main/java/com/ciac/catalog/services/ResourceVideoStore.java
 // Persistence for the ResourceVideo resource.
 package com.ciac.catalog.services;
 
-import com.ciac.catalog.schemas.ResourceVideo;
 import com.ciac.catalog.schemas.ResourceVideoIn;
 import com.ciac.catalog.schemas.RowMappers;
+import com.ciac.catalog.schemas.Video;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -3205,31 +3241,31 @@ public class ResourceVideoStore {
     this.jdbc = jdbc;
   }
 
-  public ResourceVideo create(ResourceVideoIn payload) {
+  public Video create(ResourceVideoIn payload) {
     String id = UUID.randomUUID().toString();
     jdbc.sql("INSERT INTO resource_videos (id, title) VALUES (?, ?)")
         .param(id)
         .param(payload.title())
         .update();
-    return new ResourceVideo(id, payload.title());
+    return new Video(id, payload.title());
   }
 
-  public Optional<ResourceVideo> get(String id) {
+  public Optional<Video> get(String id) {
     return jdbc.sql("SELECT id, title FROM resource_videos WHERE id = ?")
         .param(id)
-        .query(RowMappers.RESOURCE_VIDEO)
+        .query(RowMappers.VIDEO)
         .optional();
   }
 
-  public List<ResourceVideo> list(int limit, int offset) {
+  public List<Video> list(int limit, int offset) {
     return jdbc.sql("SELECT id, title FROM resource_videos ORDER BY id LIMIT ? OFFSET ?")
         .param(limit)
         .param(offset)
-        .query(RowMappers.RESOURCE_VIDEO)
+        .query(RowMappers.VIDEO)
         .list();
   }
 
-  public Optional<ResourceVideo> update(String id, ResourceVideoIn payload) {
+  public Optional<Video> update(String id, ResourceVideoIn payload) {
     int n =
         jdbc.sql("UPDATE resource_videos SET title = ? WHERE id = ?")
             .param(payload.title())
@@ -3238,7 +3274,7 @@ public class ResourceVideoStore {
     if (n == 0) {
       return Optional.empty();
     }
-    return Optional.of(new ResourceVideo(id, payload.title()));
+    return Optional.of(new Video(id, payload.title()));
   }
 
   public boolean delete(String id) {
@@ -3264,6 +3300,8 @@ package com.ciac.catalog.state;
 import java.sql.Connection;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
@@ -3276,6 +3314,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 @Configuration
 public class AppState {
+  private static final Logger log = LoggerFactory.getLogger(AppState.class);
 
   @Lazy
   @Bean("dbMain")
@@ -3312,15 +3351,34 @@ public class AppState {
   // `application.yml` stops Spring's own auto-wiring from resolving
   // them first) -- Pillar 4's "compiler owns the wiring" rule applied
   // to Flyway itself, not only to the connection pool.
+  //
+  // Each instance's own migration/table-bootstrap is wrapped in its
+  // own try/catch, logged and skipped on failure rather than left to
+  // propagate (25UpdatePlan.md M8, found live): a `CommandLineRunner`
+  // is *always* eagerly invoked by Spring Boot at startup, so this
+  // is the one call site that unavoidably forces every `@Lazy`
+  // `DataSource` bean above to actually construct (now non-dialing
+  // itself, see `DataSources.open`'s own `initializationFailTimeout`
+  // fix) and then genuinely try to connect -- an unreachable database
+  // must not abort the whole context, the identical graceful-
+  // degradation discipline `Worker.java.j2`'s own NATS/Kafka connect
+  // failures already have.
   @Bean
   public CommandLineRunner migrateOnBoot(@Qualifier("dbMain") DataSource dbMain) {
     return args -> {
-      DataSources.migrate(dbMain);
+      try {
+        DataSources.migrate(dbMain);
+      } catch (Exception e) {
+        log.warn("skipping migration for instance \"dbMain\": database unreachable", e);
+      }
       try (Connection conn = dbMain.getConnection();
           Statement stmt = conn.createStatement()) {
         stmt.execute(
             "CREATE TABLE IF NOT EXISTS resource_videos (id VARCHAR(36) PRIMARY KEY, title TEXT NOT"
                 + " NULL)");
+      } catch (Exception e) {
+        log.warn(
+            "skipping table bootstrap for resource \"resource_videos\": database unreachable", e);
       }
     };
   }
@@ -3340,6 +3398,19 @@ catalog/src/main/java/com/ciac/catalog/state/DataSources.java
 // `username`/`password` DataSource properties instead of guessing at
 // a URL shape the driver would accept; sqlite (`jdbc:sqlite:<path>`)
 // carries no credentials at all and is never rewritten.
+//
+// `initializationFailTimeout(-1)` (25UpdatePlan.md M8, found live):
+// HikariCP's own default `checkFailFast` behavior dials the database
+// synchronously *inside* `new HikariDataSource(config)` and throws if
+// it can't connect -- the `@Lazy` annotation on `AppState`'s own
+// `db()` bean method only defers *when* that constructor runs, not
+// what it does once triggered, so a genuinely unreachable database
+// still crashed the whole Spring context the moment anything (here,
+// `migrateOnBoot`'s own `CommandLineRunner`) forced the bean's
+// construction. `-1` is HikariCP's own documented way to make pool
+// construction never attempt a connection, restoring the same
+// "constructing this never dials" contract every other provider
+// client bean already keeps.
 package com.ciac.catalog.state;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -3355,6 +3426,7 @@ final class DataSources {
 
   static DataSource open(String rawUrl) throws Exception {
     HikariConfig config = new HikariConfig();
+    config.setInitializationFailTimeout(-1);
     if (rawUrl.startsWith("jdbc:sqlite:")) {
       // The sqlite driver creates the database *file* itself but
       // not missing parent directories (mirrors every other

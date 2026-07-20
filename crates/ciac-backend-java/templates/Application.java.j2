@@ -3,8 +3,20 @@ package com.ciac.{{ java_package }};
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+{%- if c.jobs %}
+import org.springframework.scheduling.annotation.EnableScheduling;
+{%- endif %}
+{%- if c.channels %}
+import org.springframework.web.socket.config.annotation.EnableWebSocket;
+{%- endif %}
 
 @SpringBootApplication
+{%- if c.jobs %}
+@EnableScheduling
+{%- endif %}
+{%- if c.channels %}
+@EnableWebSocket
+{%- endif %}
 public class Application {
     public static void main(String[] args) {
         SpringApplication.run(Application.class, args);

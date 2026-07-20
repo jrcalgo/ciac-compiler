@@ -12,8 +12,8 @@ use serde::Deserialize;
 /// backends' identical wrapper for why deserializing just this shape
 /// (serde ignores the rest) is what lets templates write
 /// `{{ field | java_type }}` instead of `{{ field.type_kind | java_type }}`.
-#[derive(Deserialize)]
-pub(crate) struct HasTypeKind {
+#[derive(Debug, Deserialize)]
+pub struct HasTypeKind {
     type_kind: FieldTypeKind,
 }
 
@@ -100,6 +100,18 @@ pub fn java_is_uuid(field: ViaDeserialize<HasTypeKind>) -> bool {
 /// is the first Java call site to emit that string against MySQL/
 /// SQLite. Every other spelling (`TEXT`/`BIGINT`/`DOUBLE PRECISION`/
 /// `BOOLEAN`) is already valid on all three engines.
+/// CIaC's own 5-field cron schedule (`minute hour day month weekday`,
+/// weekday `0`=Sunday, POSIX) to Spring's `CronExpression` syntax
+/// (6-field, seconds-first). Unlike Rust's own `cron` crate, Spring's
+/// parser already accepts weekday `0`-`7` natively (both `0` and `7`
+/// mean Sunday) — verified live against `CronExpression.parse` before
+/// writing this — so the whole translation is a literal `"0 "`
+/// prefix, nothing else; the Rust-specific weekday rewrite is
+/// deliberately not reused here.
+pub fn spring_cron(schedule: &str) -> String {
+    format!("0 {schedule}")
+}
+
 pub fn java_ddl_type(sql_type: &str, engine: &str) -> String {
     match (sql_type, engine) {
         ("JSONB", "mysql") => "JSON".to_owned(),

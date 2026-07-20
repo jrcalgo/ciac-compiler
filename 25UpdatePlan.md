@@ -1006,6 +1006,207 @@ surface.
    retry + public `handleMessageOnce`, `@Scheduled` with the
    prefix-only `spring_cron` filter (equivalence-tested), WS/SSE.
    The four broker/schedule examples verify.
+
+   **Shipped (v0.25 M3):** `supports()` gained one wide OR-chain —
+   `Component::Queue`/`Stream`/`Worker`/`Job`/`Channel`/`Scheduler`/
+   `Realtime` — the same "engine-agnostic component, per-engine
+   branch stays inside the template" shape M2 already established
+   for `Database`. `events <Name>;` needed no separate gate, same as
+   every earlier target: it lowers to the same `Component::Worker`
+   node a plain `worker` declaration does, split into `ConsumerCtx`
+   only at the codegen model layer.
+
+   New templates: `_steps.java.j2` (shared macro, `{% import %}`-ed
+   by `ApiController`/`Worker`/`Job`, simpler than Go's own equivalent
+   since Java has real exceptions — no `if v, err := ..; err != nil`
+   dance needed); `Service.java.j2` (seeded `@Component` stub for
+   classic, `crud`-free handlers — `ctx.services`, genuinely new at
+   M3); `Queue.java.j2` (standalone `@Component`, not one of
+   `AppState`'s own `@Bean` factories — see the design note below);
+   `Worker.java.j2`/`Consumer.java.j2` (jnats `Dispatcher` or
+   `@KafkaListener`, retry loop, public `handleMessageOnce`);
+   `Job.java.j2` (`@Scheduled`, public `handleTickOnce`, `CATCH_UP`
+   constant); `Channel.java.j2` (`TextWebSocketHandler`+
+   `WebSocketConfigurer` or `SseEmitter`, NATS-only this milestone —
+   a Kafka channel needs a fresh consumer group per connection, which
+   `@KafkaListener`'s declarative model can't express, Go's own
+   precedent for the identical reason; no M3 example combines `queue
+   Kafka` with a `channel`, so this is deferred rather than built
+   against nothing reachable, disclosed in the template itself).
+   Modified: `ApiController.java.j2` (rewritten to loop `api.steps`
+   through the shared macro instead of the M1/M2 hardcoded
+   decode-and-return shape); `Application.java.j2` (conditional
+   `@EnableScheduling`/`@EnableWebSocket`); `pom.xml.j2` (jnats,
+   spring-kafka, spring-boot-starter-websocket, all gated).
+
+   **The AppState/Queue self-reference problem, found by trying the
+   obvious shape first, not by reading ahead:** `Queue` was initially
+   sketched as one of `AppState`'s own `@Bean` factory methods
+   (matching `DataSource`/`JdbcClient`'s own M2 pattern) — but a
+   `@Configuration` class cannot inject a bean its own `@Bean` method
+   produces, which every consumer site (`Worker`/`Consumer`/`Channel`,
+   plus `ApiController`/`Job` when they publish) would have needed to
+   reach through `state.getQueue()`. Fixed by making `Queue` a
+   standalone `@Component`, constructor-injected directly into every
+   site instead of routed through `AppState` — a real design
+   correction mid-milestone, not a hedge chosen up front.
+
+   **Kafka's official Java client carries Go's own franz-go risk,
+   applied proactively rather than rediscovered:** Go's own
+   24UpdatePlan.md M3 found, via `goleak` against a real unreachable
+   broker, that franz-go's client starts supervisory goroutines
+   immediately on construction despite never dialing. The official
+   `org.apache.kafka.clients.producer.KafkaProducer` carries the
+   analogous risk (a background sender thread starts at construction),
+   so `Queue`'s Kafka branch is guarded the identical way NATS's own
+   `Connection` already has to be (`synchronized producer()`/
+   `synchronized connection()`, connect-on-first-use) — reasoned
+   through from Go's own finding before writing the code, not
+   discovered by a failing test here (no local broker to fail against).
+
+   **`spring_cron` is a literal `"0 "` prefix, nothing else — verified
+   live, not trusted from the plan's own claim:** Spring's
+   `CronExpression` is six-field, seconds-first, but (unlike Rust's own
+   `cron` crate) accepts CIaC's weekday `0`-`7` convention natively; a
+   standalone `CronExpression.parse("0 0 3 * * 0")`/`"0 0 3 * * 7"`
+   both parsed as Sunday before the filter was written this simply.
+   Equivalence-tested in `tests/tests/cron_vectors.rs` against the same
+   `VALID_SCHEDULES` fixture the Rust-crate equivalence test already
+   uses.
+
+   **Five real bugs, found only by live-generating and building the
+   four target examples plus the newly-reachable `audited-crud.ciac`,
+   not by inspection:**
+   1. `Queue.java.j2`'s NATS branch imported `io.nats.client.NatsMessage`
+      — the real class lives in `io.nats.client.impl.NatsMessage`.
+      Caught immediately by `./mvnw compile` on `event-pipeline.ciac`
+      ("cannot find symbol"), fixed with the correct import.
+   2. `Channel.java.j2` only imported `java.io.IOException` on the SSE
+      branch, but both branches catch it — the websocket branch's own
+      `afterConnectionEstablished` would have failed to compile the
+      moment `realtime-progress.ciac` (M3's first websocket-channel
+      example) tried it. Fixed by hoisting the import out of the
+      `{% if %}` so both branches get it.
+   3. **`schemas.go.j2`'s own M3 finding recurred here, independently,
+      not copied from reading it:** no template ever emitted a
+      *declaration* for a record's inline-`enum` field's named type —
+      `filters::java_type_of` already returned the bare `VideoStatus`
+      name (correct *within* `schemas`, where every sibling type is
+      already in scope), but nothing wrote `public enum VideoStatus {
+      Ready, Failed }` anywhere. `realtime-progress.ciac` (M3's first
+      example with an inline-enum record field, exactly the same
+      example that tripped Go's own identical gap at its own M3) failed
+      `./mvnw compile` with "cannot find symbol: class VideoStatus".
+      Fixed with a new `RecordEnum.java.j2` template, one file per
+      `record.enums` entry, emitted alongside each record — Jackson
+      serializes/deserializes an enum by its constant name by default,
+      and every variant identifier is spelled exactly as the source
+      declared it, so no `@JsonProperty` is needed for the wire shape
+      to match (mirrors Go's own string-enum-type answer, Java's own
+      idiomatic equivalent of the same closed set).
+   4. **A latent M2 gap, invisible until M3's own live-postgres proof
+      first exercised it:** Flyway 10 split per-database support out
+      of `flyway-core` — only H2/SQLite still detect with core alone;
+      Postgres/MySQL need the separate `flyway-database-postgresql`/
+      `flyway-mysql` artifacts. M2's own live proof only ever ran
+      Flyway against SQLite (`crud-notes.ciac`/`mysql-notes.ciac` were
+      both `CIAC0011`-refused at M2), so this never had a chance to
+      fail until `scheduled-cleanup.ciac` became M3's first
+      Postgres-backed example actually booted against a real local
+      Postgres: `migrateOnBoot` threw `FlywayException: Unsupported
+      Database: PostgreSQL 16.13`. Fixed by adding both artifacts
+      (BOM-managed, no explicit version) gated on `has_postgres_db`/
+      `has_mysql_db` respectively — the MySQL half disclosed as
+      unverified live (no local MySQL in this sandbox), added
+      proactively once the Postgres half's own pattern was confirmed.
+   5. **The most consequential live find this milestone — NATS's own
+      `@EventListener(ApplicationReadyEvent.class)` boot-time
+      subscribe was fatal, not merely a disclosed risk:** reasoned
+      through as a forward risk in the first draft (matching M2's own
+      Flyway `CommandLineRunner` disclosure), then actually tested by
+      running `NoInfraBootTest` against `event-pipeline.ciac` with no
+      NATS server reachable — and it genuinely failed:
+      `IOException: Unable to connect to NATS servers` propagating out
+      of an `@EventListener` method aborts Spring's own event
+      multicaster, which aborts context startup entirely. This is
+      *not* the same failure class as Kafka's own `@KafkaListener`
+      (confirmed by the same live test against `kafka-pipeline.ciac`
+      with no Kafka broker either: its listener container polls on a
+      background thread, an unreachable broker blocks that thread, not
+      context refresh, so boot succeeds). Fixed by wrapping
+      `Worker`/`Consumer`'s NATS `start()` body in a try/catch that
+      logs and returns instead of throwing — restoring the same
+      graceful-degradation behavior Go's own goroutine-based consumer
+      already has (the dial failure is caught and logged inside the
+      goroutine, never propagated to `main`), rather than taking the
+      whole app down over a broker outage. Re-ran `NoInfraBootTest`
+      against `event-pipeline.ciac` after the fix: green.
+   6. **A sixth, structural bug — not in a template, in the
+      conformance harness's own newly-widened reach:** M3's wider
+      `supports()` gate is what first makes the multi-service
+      `audited-crud.ciac` reachable for Java at all (M1/M2's narrower
+      gate never had one in the harness's supported set). `generate()`
+      never wrote a root-level combined `openapi.json` index for
+      multi-service systems — only each service's own — the exact bug
+      Go's own M3 already found and fixed for itself, just never
+      ported to Java's parallel code path. Caught by C3's own
+      byte-identical-path-set check (`python: [accounts/openapi.json,
+      catalog/openapi.json, openapi.json]` vs `java:
+      [accounts/openapi.json, catalog/openapi.json]`). Fixed by adding
+      the same `ciac_codegen::openapi::build_index(&model)` write
+      Go's own `generate()` already has, at the same `model.multi`
+      site.
+
+   **Live-verified end to end, not just golden-generated,** all four
+   target examples (`./mvnw -q -B verify` clean, Spotless/
+   `NoInfraBootTest` included) plus the newly-reachable
+   `audited-crud.ciac`:
+   - `scheduled-cleanup.ciac` (jobs-only, Postgres): full `mvn verify`
+     green against a real local Postgres (apt-installed, no Docker) —
+     `NoInfraBootTest` passes with a real `HikariPool` constructed, a
+     real Flyway run (bug 4's fix, live), and the app boots via
+     `spring-boot:run` with `/health` responding. **The seam-import
+     proof this milestone's own exit checklist names** — a throwaway
+     JUnit test, not committed, directly `new`-ing `PruneExpired` and
+     `CleanupJob` (no Spring context at all) and calling
+     `handleTickOnce()` against the same real Postgres — passed clean,
+     the identical "seam a future simulation runner drives directly"
+     proof Go's own M3 ran for its own `HandleTickCleanupOnce`.
+   - `event-pipeline.ciac` (Postgres + NATS): full `mvn verify` green;
+     a live `spring-boot:run` round-trip — `POST /submit` with no NATS
+     broker reachable decodes the body, runs the `Validate` step,
+     attempts the publish, and returns a clean `{"status":"error",
+     "data":"internal server error"}` via `ErrorAdvice`'s generic
+     handler rather than crashing the process (bug 5's fix, confirmed
+     live against a running binary, not just `NoInfraBootTest`).
+   - `kafka-pipeline.ciac` (no db, Kafka): full `mvn verify` green with
+     zero local Kafka broker — the live log confirms the disclosed
+     reasoning for bug 5 empirically: `NetworkClient` retries on a
+     background `kafka-1` thread, never blocking `NoInfraBootTest`'s
+     own context refresh.
+   - `realtime-progress.ciac` (no db, NATS, websocket channel): full
+     `mvn verify` green — `Channel` never dials NATS at boot (only
+     `afterConnectionEstablished`, per real connection), so it was
+     never exposed to bug 5's risk class at all; the enum fix (bug 3)
+     is what let this example compile in the first place.
+   - `audited-crud.ciac` (multi-service, newly reachable): C3 green
+     after bug 6's fix; both `accounts/` and `catalog/` generate their
+     own `openapi.json`, plus the new root index.
+
+   Full workspace verification: `cargo fmt`/`clippy -D warnings` clean
+   three times; `cargo test --workspace` green three times (the first
+   pass caught a stale M1/M2-era unit test —
+   `tests::supports_apis`'s own `assert!(!backend.supports(&Component
+   ::Queue{..}))`, obsolete the moment M3 widened the gate — replaced
+   with `supports_broker_workers_jobs_channels_at_m3`, mirroring Go's
+   own M3 test of the identical name; the second pass caught bug 6
+   above via C3; the third pass was clean). Six new/updated golden
+   snapshots (`ping` picking up the `ApiController` rewrite's uniform
+   `throws Exception`; `event-pipeline`/`kafka-pipeline`/
+   `scheduled-cleanup`/`realtime-progress`/`audited-crud` new), each
+   reviewed before accepting, not blanket-accepted, matching Go's own
+   M3 discipline.
+
 4. **M4 — Typed handlers: `HostSyntax` for Java.** All verbs per
    Pillar 5's table, TransactionTemplate atomicity, JsonNode paths
    with the missing-path check, switch-expression match where fixed,

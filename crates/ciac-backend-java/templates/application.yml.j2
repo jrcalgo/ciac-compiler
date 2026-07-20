@@ -16,6 +16,16 @@ spring:
     # them.
     enabled: false
 {%- endif %}
+{%- if c.queue_engine == "kafka" %}
+  kafka:
+    # Unlike `flyway.enabled`/the `DataSource` beans above,
+    # `@KafkaListener` containers poll the broker on their own
+    # background threads -- an unreachable broker blocks that
+    # thread's consumer loop, not the context refresh itself, so
+    # boot with no local broker still succeeds (disclosed forward
+    # risk, unverified live here: no local broker in this sandbox).
+    bootstrap-servers: ${KAFKA_URL:localhost:9092}
+{%- endif %}
   threads:
     virtual:
       # Loom virtual threads (standard since Java 21): generated

@@ -32,7 +32,7 @@
 //! record needs a constraint this manual check can't express;
 //! recorded here rather than pulled in speculatively.
 
-mod filters;
+pub mod filters;
 
 use ciac_codegen::model as context;
 use ciac_codegen::{
@@ -128,9 +128,26 @@ impl Backend for JavaBackend {
         // `Api`+`Database` (Go's own M2 finding, found the identical
         // way — a real example refused on `Database` alone). `Some(_)`
         // (typed handlers) stays refused until M4.
+        //
+        // M3: `Queue`/`Stream`/`Worker`/`Job`/`Channel`/`Scheduler`/
+        // `Realtime` — one wide gate, the same "engine-agnostic
+        // component, per-engine branch stays inside the template"
+        // shape M2 already established for `Database` (Go's own M3
+        // precedent). `events <Name>;` needed no separate gate: it
+        // lowers to the same `Component::Worker` node a plain
+        // `worker` declaration does, split into a stub-vs-pipeline
+        // shape only at the codegen model layer.
         matches!(
             component,
-            Component::Api { .. } | Component::Database { .. }
+            Component::Api { .. }
+                | Component::Database { .. }
+                | Component::Queue { .. }
+                | Component::Stream { .. }
+                | Component::Worker { .. }
+                | Component::Job { .. }
+                | Component::Channel { .. }
+                | Component::Scheduler { .. }
+                | Component::Realtime { .. }
         ) || matches!(
             component,
             Component::Service {
@@ -163,6 +180,7 @@ impl Backend for JavaBackend {
         env.add_filter("java_pascal", filters::java_pascal);
         env.add_filter("java_is_uuid", filters::java_is_uuid);
         env.add_filter("java_ddl_type", filters::java_ddl_type);
+        env.add_filter("spring_cron", filters::spring_cron);
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -181,6 +199,21 @@ impl Backend for JavaBackend {
             project.add_file(
                 "docker-compose.yml",
                 ciac_codegen::compose::render_system_compose(&model, &COMPOSE_OPTS)?,
+            );
+            // The root-level combined index -- found live (C3, this
+            // milestone's own wider `supports()` gate is what first
+            // makes a multi-service system reachable for Java at all):
+            // every other target writes one alongside each service's
+            // own `openapi.json`, this one was simply missing.
+            project.add_file(
+                "openapi.json",
+                serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
+                    .map_err(|e| BackendError::Other(e.to_string()))?,
+            );
+            project.notes.push(
+                "multi-service system: each directory is a complete project; \
+                 `docker compose up` runs them all together"
+                    .to_owned(),
             );
         }
         Ok(project)
@@ -294,6 +327,12 @@ fn emit_service(
                 at(&format!("{java_root}/schemas/{}.java", record.name.clone())),
                 render_java("record.java.j2", context! { record => record })?,
             );
+            for r_enum in &record.enums {
+                project.add_file(
+                    at(&format!("{java_root}/schemas/{}.java", r_enum.name.clone())),
+                    render_java("RecordEnum.java.j2", context! { record_enum => r_enum })?,
+                );
+            }
         }
     }
 
@@ -354,6 +393,60 @@ fn emit_service(
                 "ResourceController.java.j2",
                 context! { resource => resource },
             )?,
+        );
+    }
+
+    if ctx.queue_engine.is_some() {
+        project.add_file(
+            at(&format!("{java_root}/state/Queue.java")),
+            render_java("Queue.java.j2", empty())?,
+        );
+    }
+
+    // Classic (`signature: None`) handlers not tied to a `crud` --
+    // seeded (business logic goes here, regeneration never overwrites
+    // it), the same shape every other target's own handler stub uses.
+    for service in &ctx.services {
+        project.add_seeded_file(
+            at(&format!(
+                "{java_root}/services/{}.java",
+                service.class_name.clone()
+            )),
+            render_java("Service.java.j2", context! { service => service })?,
+        );
+    }
+
+    for worker in &ctx.workers {
+        project.add_file(
+            at(&format!(
+                "{java_root}/workers/{}Worker.java",
+                worker.name.clone()
+            )),
+            render_java("Worker.java.j2", context! { worker => worker })?,
+        );
+    }
+    for job in &ctx.jobs {
+        project.add_file(
+            at(&format!("{java_root}/workers/{}Job.java", job.name.clone())),
+            render_java("Job.java.j2", context! { job => job })?,
+        );
+    }
+    for consumer in &ctx.consumers {
+        project.add_file(
+            at(&format!(
+                "{java_root}/workers/{}Consumer.java",
+                consumer.name.clone()
+            )),
+            render_java("Consumer.java.j2", context! { consumer => consumer })?,
+        );
+    }
+    for channel in &ctx.channels {
+        project.add_file(
+            at(&format!(
+                "{java_root}/routes/{}Channel.java",
+                channel.name.clone()
+            )),
+            render_java("Channel.java.j2", context! { channel => channel })?,
         );
     }
 
@@ -519,9 +612,39 @@ mod tests {
                 scope: None,
             },
         }));
-        assert!(!backend.supports(&Component::Queue {
+    }
+
+    #[test]
+    fn supports_broker_workers_jobs_channels_at_m3() {
+        let backend = JavaBackend;
+        assert!(backend.supports(&Component::Queue {
             name: "Q".to_owned(),
             engine: ciac_ir::QueueEngine::Nats,
+        }));
+        assert!(backend.supports(&Component::Worker {
+            name: "W".to_owned(),
+            config: Default::default(),
+        }));
+        assert!(backend.supports(&Component::Job {
+            name: "J".to_owned(),
+            config: ciac_ir::JobConfig {
+                schedule: "0 3 * * *".to_owned(),
+                catch_up: false,
+            },
+        }));
+        assert!(backend.supports(&Component::Channel {
+            name: "C".to_owned(),
+            config: ciac_ir::ChannelConfig {
+                path: "/channels/c".to_owned(),
+            },
+        }));
+        assert!(backend.supports(&Component::Scheduler {
+            name: "S".to_owned(),
+            provider: ciac_ir::SchedulerProvider::Cron,
+        }));
+        assert!(backend.supports(&Component::Realtime {
+            name: "R".to_owned(),
+            provider: ciac_ir::RealtimeProvider::WebSocket,
         }));
     }
 

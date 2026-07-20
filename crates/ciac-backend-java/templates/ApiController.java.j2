@@ -4,36 +4,56 @@
 package com.ciac.{{ java_package }}.routes;
 
 import com.ciac.{{ java_package }}.state.AppState;
+{%- if api.has_publish_step %}
+import com.ciac.{{ java_package }}.state.Queue;
+{%- endif %}
 {%- if api.payload %}
 import com.ciac.{{ java_package }}.schemas.{{ api.payload.class_name }};
 import com.fasterxml.jackson.databind.JsonNode;
 {%- endif %}
+{%- for handler in api.handlers %}
+import com.ciac.{{ java_package }}.services.{{ handler.class_name }};
+{%- endfor %}
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
+{% import "_steps.java.j2" as steps %}
 @RestController
 public class {{ api.snake | java_pascal }}Controller {
     private final AppState state;
+{%- if api.has_publish_step %}
+    private final Queue queue;
+{%- endif %}
+{%- for handler in api.handlers %}
+    private final {{ handler.class_name }} {{ handler.class_name | java_camel }};
+{%- endfor %}
 
-    public {{ api.snake | java_pascal }}Controller(AppState state) {
+    public {{ api.snake | java_pascal }}Controller(
+            AppState state
+            {%- if api.has_publish_step %}, Queue queue{% endif -%}
+            {%- for handler in api.handlers %}, {{ handler.class_name }} {{ handler.class_name | java_camel }}{% endfor %}) {
         this.state = state;
+{%- if api.has_publish_step %}
+        this.queue = queue;
+{%- endif %}
+{%- for handler in api.handlers %}
+        this.{{ handler.class_name | java_camel }} = {{ handler.class_name | java_camel }};
+{%- endfor %}
     }
 
     @RequestMapping(method = RequestMethod.{{ api.method_upper }}, path = "{{ api.route }}")
     public Envelope {{ api.snake | java_camel }}(
-{%- if api.has_body and api.payload %}@RequestBody JsonNode body{% endif %}) {
-        // `state` may go unused (a pipeline with no handler/publish/
-        // call step, e.g. plain `Return`) or genuinely used below,
-        // depending on this api's steps -- always taking it as a
-        // constructor param keeps this controller's shape stable as
-        // the pipeline grows.
+{%- if api.has_body and api.payload %}@RequestBody JsonNode body{% endif %}) throws Exception {
 {%- if api.has_body and api.payload %}
         Object result = {{ api.payload.class_name }}.decode(body);
 {%- else %}
         Object result = java.util.Map.of();
 {%- endif %}
+{%- for step in api.steps %}
+{{ steps.emit_step(step, "        ", "") }}
+{%- endfor %}
         return Envelope.accepted(result);
     }
 }

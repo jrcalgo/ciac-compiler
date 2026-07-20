@@ -889,7 +889,7 @@ impl HostSyntax for GoSyntax<'_> {
     fn publish(&self, subject: &str, value: &str, _value_ty: &HirType, indent: &str) -> String {
         let err = self.fresh("__err");
         format!(
-            "{indent}if {err} := queue.PublishJSON(st.Queue, {subject:?}, {value}); {err} != nil {{ return {}, {err} }}",
+            "{indent}if {err} := queue.PublishJSON(ctx, st.Queue, {subject:?}, {value}); {err} != nil {{ return {}, {err} }}",
             self.zero_return
         )
     }
@@ -968,18 +968,18 @@ impl HostSyntax for GoSyntax<'_> {
     // once in `render()` exactly like `db_field`/`cache_field`.
     fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
         let field = self.object_store_state_field();
-        // `Json` is already `json.RawMessage` ([]byte of valid JSON
-        // text) at the Go-syntax level -- passing it through
-        // `fmt.Sprint` (the scalar fallback) would stringify the byte
-        // slice's Go representation, not its JSON content, so it needs
-        // its own branch alongside `Record`'s `json.Marshal` one.
-        let payload = match value_ty {
-            HirType::Record(_) => {
-                format!("func() ([]byte, error) {{ return json.Marshal({value}) }}()")
-            }
-            HirType::Json => value.to_owned(),
-            _ => format!("[]byte(fmt.Sprint({value}))"),
-        };
+        // Reuses `json_body` (the same Record/Json/scalar 3-way
+        // `search.index`/`http.call` already use) rather than its own
+        // bespoke match: an earlier version of this match built a
+        // `func() ([]byte, error) { return json.Marshal(value) }()`
+        // sub-expression for the `Record` arm and passed it as `Put`'s
+        // *third argument* -- a genuine `go vet`/`go build` failure
+        // ("multiple-value ... in single-value context"), since a
+        // multi-return call may only be used as a bare argument when
+        // it is the *sole* argument, not one of three. `Put` now takes
+        // a single `any` payload and marshals it itself, so every
+        // branch here is single-valued.
+        let payload = self.json_body(value, value_ty);
         format!("st.{field}.Put(ctx, {key}, {payload})")
     }
     fn object_store_put_tail(
@@ -1016,10 +1016,11 @@ impl HostSyntax for GoSyntax<'_> {
         self.fallible_tail(&self.object_store_list(prefix), dest, indent)
     }
     fn email_send(&self, to: &str, subject: &str, body: &str) -> String {
-        let field = self
-            .email_field
-            .as_deref()
-            .expect("an email verb requires a bound email instance");
+        let field = go_pascal(
+            self.email_field
+                .clone()
+                .expect("an email verb requires a bound email instance"),
+        );
         format!("st.{field}.Send(ctx, {to}, {subject}, {body})")
     }
     fn email_send_tail(
@@ -1033,10 +1034,11 @@ impl HostSyntax for GoSyntax<'_> {
         self.fallible_tail(&self.email_send(to, subject, body), dest, indent)
     }
     fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String {
-        let field = self
-            .search_field
-            .as_deref()
-            .expect("a search verb requires a bound search instance");
+        let field = go_pascal(
+            self.search_field
+                .clone()
+                .expect("a search verb requires a bound search instance"),
+        );
         let document = self.json_body(document, document_ty);
         format!("st.{field}.Index(ctx, {SEARCH_INDEX_NAME:?}, {doc_id}, {document})")
     }
@@ -1055,20 +1057,22 @@ impl HostSyntax for GoSyntax<'_> {
         )
     }
     fn search_query(&self, query: &str) -> String {
-        let field = self
-            .search_field
-            .as_deref()
-            .expect("a search verb requires a bound search instance");
+        let field = go_pascal(
+            self.search_field
+                .clone()
+                .expect("a search verb requires a bound search instance"),
+        );
         format!("st.{field}.Search(ctx, {SEARCH_INDEX_NAME:?}, {query})")
     }
     fn search_query_tail(&self, query: &str, dest: &Dest, indent: &str) -> Vec<String> {
         self.fallible_tail(&self.search_query(query), dest, indent)
     }
     fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String {
-        let field = self
-            .http_field
-            .as_deref()
-            .expect("an external_http verb requires a bound external_http instance");
+        let field = go_pascal(
+            self.http_field
+                .clone()
+                .expect("an external_http verb requires a bound external_http instance"),
+        );
         let json_val = self.json_body(json_body, body_ty);
         format!("st.{field}.Post(ctx, {url}, {json_val})")
     }
@@ -1246,19 +1250,22 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         needs_schemas,
         needs_time,
         needs_uuid_pkg: needs.uuid,
-        // `needs.json`/`needs.object_store_put` cover every fallible
-        // leaf that spells `json.` (cache/object_store); `Json`
-        // indexing (`HostSyntax::index`) isn't itself tracked by the
-        // shared scanner (no dedicated `Needs` flag exists for it —
-        // see `render`'s own `needs_fmt`/`needs_redis` for the same
-        // situation), so the textual fallback catches it too. Found
-        // live: `needs.json`/`object_store_put` alone left a `p.extra
-        // ["label"]`-shaped body with `json.Unmarshal` in its text but
-        // no `encoding/json` import, an "imported and not used" bug
-        // caught by `go build` on the flip side (importing an unused
-        // package), not this one -- the two failure directions this
-        // whole `needs_*` scheme exists to avoid at once.
-        needs_json: needs.json || needs.object_store_put || body_text.contains("json."),
+        // `needs.json` covers every fallible leaf that spells `json.`
+        // directly in its own rendered text (cache); `object_store.put`
+        // no longer does (M7: it reuses `json_body`, the same single-
+        // valued Record/Json/scalar branch `search.index`/`http.call`
+        // already use, none of which spell `json.` themselves — the
+        // marshaling now happens inside `ObjectStore.Put` itself, not
+        // the caller's body) — an earlier version of this flag OR'd in
+        // `needs.object_store_put` unconditionally, which forced an
+        // `encoding/json` import even on a body with no `json.` text
+        // at all (a scalar `object_store.put` call), an "imported and
+        // not used" failure caught live. `Json` indexing (`HostSyntax
+        // ::index`) isn't itself tracked by the shared scanner (no
+        // dedicated `Needs` flag exists for it — see `render`'s own
+        // `needs_fmt`/`needs_redis` for the same situation), so the
+        // textual fallback below still catches that case (and cache's).
+        needs_json: needs.json || body_text.contains("json."),
         needs_sql_pkg: needs.db_get,
         needs_fmt: body_text.contains("fmt."),
         needs_redis: body_text.contains("redis."),

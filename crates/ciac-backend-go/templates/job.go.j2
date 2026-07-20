@@ -17,6 +17,9 @@ import (
 {%- if job.has_publish_step %}
 	"{{ c.package }}/internal/queue"
 {%- endif %}
+{%- if job.call_imports %}
+	"{{ c.package }}/internal/clients"
+{%- endif %}
 	"{{ c.package }}/internal/state"
 )
 

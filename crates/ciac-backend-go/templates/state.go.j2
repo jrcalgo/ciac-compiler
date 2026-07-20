@@ -10,23 +10,59 @@ import (
 {%- if c.has_db %}
 	"{{ c.package }}/internal/db"
 {%- endif %}
+{%- if c.has_object_store %}
+	"{{ c.package }}/internal/objectstore"
+{%- endif %}
+{%- if c.has_email %}
+	"{{ c.package }}/internal/email"
+{%- endif %}
+{%- if c.has_search %}
+	"{{ c.package }}/internal/search"
+{%- endif %}
+{%- if c.has_external_http %}
+	"{{ c.package }}/internal/httpclients"
+{%- endif %}
 {%- if c.has_queue %}
 	"{{ c.package }}/internal/queue"
+{%- endif %}
+{%- if c.has_cache %}
+
+	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 {%- endif %}
 )
 
 // AppState is every provider client this service's generated code can
-// access. Fields are added by later milestones as each capability
-// lands (cache clients, the broker client, JWKS) — every one of them
-// is constructed lazily, so building an AppState never opens a
-// connection (proven by state_test.go's no-infra construction test).
-// `database/sql`'s own `sql.Open` is already lazy by construction --
-// it never dials, the first query does -- so db pools need no extra
-// lazy-init wrapper the way a hand-rolled client would.
+// access. Every one of them is constructed lazily, so building an
+// AppState never opens a connection (proven by state_test.go's
+// no-infra construction test). `database/sql`'s own `sql.Open` is
+// already lazy by construction -- it never dials, the first query
+// does -- so db pools need no extra lazy-init wrapper the way a
+// hand-rolled client would; `redis.NewClient` is the same (it parses
+// the URL and returns immediately, no dial). `object_store`/`email`/
+// `search`/`external_http` wrapper clients hold configuration only
+// (their own underlying client is built per call — see each
+// package's own doc), so there is nothing to lazily construct there
+// either.
 type AppState struct {
 	Config config.Config
 {%- for inst in c.db_instances %}
 	{{ inst.state_field | go_pascal }} *sql.DB
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+	{{ inst.state_field | go_pascal }} *redis.Client
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+	{{ inst.state_field | go_pascal }} *objectstore.ObjectStore
+{%- endfor %}
+{%- for inst in c.email_instances %}
+	{{ inst.state_field | go_pascal }} *email.Email
+{%- endfor %}
+{%- for inst in c.search_instances %}
+	{{ inst.state_field | go_pascal }} *search.Search
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+	{{ inst.state_field | go_pascal }} *httpclients.ExternalHttp
 {%- endfor %}
 {%- if c.has_queue %}
 	Queue *queue.Queue
@@ -44,6 +80,50 @@ func New(cfg config.Config) (*AppState, error) {
 		return nil, err
 	}
 	st.{{ inst.state_field | go_pascal }} = {{ inst.state_field }}
+{%- endfor %}
+{%- for inst in c.cache_instances %}
+	{{ inst.state_field }}Opts, err := redis.ParseURL(cfg.{{ inst.url_field | go_pascal }})
+	if err != nil {
+		return nil, err
+	}
+	// go-redis v9's "maintenance notifications" feature (Redis Cloud/
+	// Enterprise cluster-maintenance push events) defaults to
+	// `ModeAuto` and spawns a background `CircuitBreakerManager`
+	// goroutine at `NewClient` time regardless of target -- found live
+	// (`TestNewLeaksNoGoroutines`, the same no-infra-at-construction
+	// discipline that caught franz-go's own construction-time
+	// goroutines at v0.24 M3): a plain local/dev Redis never sends
+	// these notifications, so there is nothing for this backend to
+	// react to. Disabled explicitly rather than left to "auto-detects
+	// and turns itself off on error", which only happens after a
+	// first failed attempt, not before the goroutine is spawned.
+	{{ inst.state_field }}Opts.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
+	st.{{ inst.state_field | go_pascal }} = redis.NewClient({{ inst.state_field }}Opts)
+{%- endfor %}
+{%- for inst in c.object_store_instances %}
+	st.{{ inst.state_field | go_pascal }} = &objectstore.ObjectStore{
+		Endpoint:  cfg.{{ inst.cfg[0].field | go_pascal }},
+		AccessKey: cfg.{{ inst.cfg[1].field | go_pascal }},
+		SecretKey: cfg.{{ inst.cfg[2].field | go_pascal }},
+		Bucket:    cfg.{{ inst.cfg[3].field | go_pascal }},
+		Region:    cfg.{{ inst.cfg[4].field | go_pascal }},
+	}
+{%- endfor %}
+{%- for inst in c.email_instances %}
+	st.{{ inst.state_field | go_pascal }} = &email.Email{
+		Host:     cfg.{{ inst.cfg[0].field | go_pascal }},
+		Port:     cfg.{{ inst.cfg[1].field | go_pascal }},
+		Username: cfg.{{ inst.cfg[2].field | go_pascal }},
+		Password: cfg.{{ inst.cfg[3].field | go_pascal }},
+		Sender:   cfg.{{ inst.cfg[4].field | go_pascal }},
+		UseTLS:   cfg.{{ inst.cfg[5].field | go_pascal }},
+	}
+{%- endfor %}
+{%- for inst in c.search_instances %}
+	st.{{ inst.state_field | go_pascal }} = &search.Search{URL: cfg.{{ inst.cfg[0].field | go_pascal }}}
+{%- endfor %}
+{%- for inst in c.external_http_instances %}
+	st.{{ inst.state_field | go_pascal }} = &httpclients.ExternalHttp{BaseURL: cfg.{{ inst.cfg[0].field | go_pascal }}}
 {%- endfor %}
 {%- if c.has_queue %}
 {%- if c.queue_engine == "kafka" %}

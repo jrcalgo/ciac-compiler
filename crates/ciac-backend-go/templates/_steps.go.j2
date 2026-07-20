@@ -62,7 +62,7 @@
 {{ indent }}	result = v
 {{ indent }}}
 {%- elif step.kind == "publish" %}
-{{ indent }}if err := queue.PublishJSON(st.Queue, "{{ step.subject }}", result); err != nil {
+{{ indent }}if err := queue.PublishJSON(ctx, st.Queue, "{{ step.subject }}", result); err != nil {
 {{ indent }}	{{ on_err }}
 {{ indent }}}
 {%- elif step.kind == "call" %}

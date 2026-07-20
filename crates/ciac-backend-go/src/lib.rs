@@ -180,27 +180,31 @@ impl Backend for GoBackend {
         // realtime live WebSocket/SSE; }` capability instances a
         // `job`/`channel` declaration needs present.
         //
-        // M6 (this milestone) adds `Auth` for both schemes at once
-        // (golang-jwt/v5 + keyfunc/v3's own JWKS caching handle HS256
-        // and RS256 through the same `jwt.ParseWithClaims` call shape,
-        // branching only on which `jwt.Keyfunc` gets passed in --
-        // `auth.go.j2`'s own `c.auth_scheme` conditional, not a gate
-        // here). `Cache`/`ObjectStore`/`Email`/`Search`/`ExternalHttp`
-        // stay refused until M7 adds their own client wrappers.
-        matches!(
-            component,
-            Component::Api { .. }
-                | Component::Auth { .. }
-                | Component::Database { .. }
-                | Component::Service { .. }
-                | Component::Queue { .. }
-                | Component::Stream { .. }
-                | Component::Worker { .. }
-                | Component::Job { .. }
-                | Component::Channel { .. }
-                | Component::Scheduler { .. }
-                | Component::Realtime { .. }
-        )
+        // M6 added `Auth` for both schemes at once (golang-jwt/v5 +
+        // keyfunc/v3's own JWKS caching handle HS256 and RS256 through
+        // the same `jwt.ParseWithClaims` call shape, branching only on
+        // which `jwt.Keyfunc` gets passed in -- `auth.go.j2`'s own
+        // `c.auth_scheme` conditional, not a gate here).
+        //
+        // M7 (this milestone) closes out the ontology: `Cache` (a
+        // lazily-parsed `*redis.Client` on `AppState`, wired straight
+        // into `resource_store.go.j2`'s own read-through-cache CRUD --
+        // no dedicated wrapper package needed, matching Rust's/TS's own
+        // choice to keep it inline rather than its own module),
+        // `ObjectStore`/`Email`/`Search`/`ExternalHttp` (one wrapper
+        // package per capability *kind*, matching Rust's own module
+        // shape -- `internal/objectstore`/`internal/email`/
+        // `internal/search`/`internal/httpclients`), `Users` (no Go-
+        // specific code at all: `ciac-codegen::model`'s own dev-issuer-
+        // default computation is already target-neutral, confirmed the
+        // same way TS's own M7 confirmed it), and `Logging`/`Metrics`/
+        // `Tracing` (OTel end-to-end plus a `/metrics` endpoint --
+        // `observability.go.j2`'s own doc comment named this milestone
+        // as where that wiring would land). Every `Component` variant
+        // reaches this backend now, so, like Rust's/TS's own `supports`
+        // at full parity, there is nothing left to gate on.
+        let _ = component;
+        true
     }
 
     fn target_info(&self) -> &'static TargetInfo {
@@ -375,6 +379,46 @@ fn emit_service(
             render_go("auth.go.j2", empty())?,
         );
     }
+    // v0.24 M7: one wrapper package per ontology capability *kind* (not
+    // per named instance, matching Rust's own module shape) -- state.
+    // go.j2's own per-instance loop resolves each named instance's
+    // field against these package types.
+    if ctx.has_object_store {
+        project.add_file(
+            at("internal/objectstore/objectstore.go"),
+            render_go("object_store.go.j2", empty())?,
+        );
+    }
+    if ctx.has_email {
+        project.add_file(
+            at("internal/email/email.go"),
+            render_go("email.go.j2", empty())?,
+        );
+    }
+    if ctx.has_search {
+        project.add_file(
+            at("internal/search/search.go"),
+            render_go("search.go.j2", empty())?,
+        );
+    }
+    if ctx.has_external_http {
+        project.add_file(
+            at("internal/httpclients/http_clients.go"),
+            render_go("http_clients.go.j2", empty())?,
+        );
+    }
+    // One typed HTTP client per downstream service this service
+    // `call`s -- `_steps.go.j2`'s own `call` step arm already expects
+    // `clients.New{ClassName}(st)`. No `mod.rs`-equivalent aggregator
+    // is needed the way Rust's `src/clients/mod.rs` is: every `.go`
+    // file under `internal/clients/` sharing `package clients` forms
+    // the package automatically.
+    for target in &ctx.call_targets {
+        project.add_file(
+            at(&format!("internal/clients/{}.go", target.module)),
+            render_go("client.go.j2", context! { t => target })?,
+        );
+    }
 
     if !ctx.records.is_empty() {
         project.add_file(
@@ -409,11 +453,34 @@ fn emit_service(
                 .tables
                 .iter()
                 .any(|t| t.record.fields.iter().any(|f| f.is_json));
+        // A CRUD resource's `<Name>In` payload struct carries the
+        // record's own enum fields at their real, exported enum type
+        // (`schemas.VideoStatus`), not the row struct's own DB-string
+        // spelling (`go_db_type` correctly keeps that bare `string`)
+        // -- the enum type itself is declared in `internal/schemas`,
+        // a different package than `models`, so any resource with an
+        // enum field needs the import. Found live: `filters::go_type`
+        // returns the bare, unqualified enum name (correct *within*
+        // `schemas.go`, where every sibling enum is already in scope
+        // bare) -- `typed-video.ciac`/`routed-media.ciac` (both
+        // `CIAC0011`-refused until this milestone's own `Cache`
+        // un-gating) were the first examples to reach a `crud`
+        // resource with an enum field at all, an "undefined:
+        // VideoStatus" `go vet` failure this flag closes.
+        let needs_schemas = ctx.resources.iter().any(|r| {
+            r.record
+                .as_ref()
+                .is_some_and(|rec| rec.fields.iter().any(|f| f.is_enum))
+        });
         project.add_file(
             at("internal/models/models.go"),
             render_go(
                 "models.go.j2",
-                context! { needs_json => needs_json, resource_needs_decode => resource_needs_decode },
+                context! {
+                    needs_json => needs_json,
+                    resource_needs_decode => resource_needs_decode,
+                    needs_schemas => needs_schemas,
+                },
             )?,
         );
     }

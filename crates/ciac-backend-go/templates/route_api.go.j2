@@ -21,6 +21,9 @@ import (
 {%- if api.has_publish_step %}
 	"{{ c.package }}/internal/queue"
 {%- endif %}
+{%- if api.call_imports %}
+	"{{ c.package }}/internal/clients"
+{%- endif %}
 	"{{ c.package }}/internal/httpx"
 	"{{ c.package }}/internal/state"
 )

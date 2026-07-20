@@ -22,6 +22,13 @@ import (
 	"{{ c.package }}/internal/routes"
 {%- endif %}
 	"{{ c.package }}/internal/state"
+{%- if c.has_metrics %}
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+{%- endif %}
+{%- if c.has_tracing %}
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+{%- endif %}
 )
 
 // A colocated copy of the project-root openapi.json -- see lib.rs's
@@ -68,9 +75,25 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(openapiJSON)
 	})
+{%- if c.has_metrics %}
+	mux.Handle("GET /metrics", promhttp.Handler())
+{%- endif %}
+
+{%- if c.has_tracing %}
+	// `otelhttp.NewHandler` gives every inbound request a server span
+	// with W3C `traceparent` extraction "for free" (mirrors TS's own
+	// `UndiciInstrumentation`/Python's `HTTPXClientInstrumentor`
+	// choice) -- wrapping here, after every route is already
+	// registered, keeps `routes.Router`'s own return type
+	// (`*http.ServeMux`, needed by `scope_test.go.j2`'s direct
+	// `mux.ServeHTTP` calls) unchanged.
+	var handler http.Handler = otelhttp.NewHandler(mux, "{{ c.service_name }}")
+{%- else %}
+	var handler http.Handler = mux
+{%- endif %}
 
 	slog.Info("listening", "addr", "0.0.0.0:8000")
-	if err := http.ListenAndServe("0.0.0.0:8000", mux); err != nil {
+	if err := http.ListenAndServe("0.0.0.0:8000", handler); err != nil {
 		log.Fatal(err)
 	}
 }

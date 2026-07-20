@@ -1668,6 +1668,250 @@ planning pass finds them named.
    × sim-vertical-slice — and, exploiting Go's build speed, go ×
    multi-service-media (the row Rust's time budget excluded),
    with the job comment updated to say why Go can afford it.
+
+   **Shipped (v0.24 M7):** `supports()` moved to unconditional `true`
+   — `Cache`, `ObjectStore`/`Email`/`Search`/`ExternalHttp`, `Users`,
+   and `Logging`/`Metrics`/`Tracing` all reach this backend now, the
+   same full-parity shape Rust's/TS's own `supports()` already have.
+   `Cache` needed no dedicated wrapper package (a lazily-parsed
+   `*redis.Client` field on `AppState`, wired straight into
+   `resource_store.go.j2`'s new read-through-cache CRUD — cache-aside
+   `Get` (cache hit returns immediately; miss falls through to the db
+   and populates the cache), `Create`/`Update` refresh the cache entry,
+   `Delete` evicts — mirroring Rust's/TS's own choice to keep it
+   inline rather than its own module). `ObjectStore`/`Email`/`Search`/
+   `ExternalHttp` each got one wrapper package per capability *kind*
+   (not per named instance, matching Rust's own module shape):
+   `internal/objectstore` (AWS SDK Go v2's `s3` client, path-style
+   addressing so a local MinIO works with no extra config — the
+   official SDK, not a hand-rolled SigV4 signer, since MinIO's S3 API
+   compatibility is exactly what that SDK targets), `internal/email`
+   (dependency-free `net/smtp`, matching Rust's `lettre`/TS's
+   `nodemailer` shape but with no external module needed — Mailpit's
+   dev SMTP needs neither TLS nor auth), `internal/search`
+   (dependency-free `net/http` straight against OpenSearch's own REST
+   API — `PUT /{index}/_doc/{id}`, `POST /{index}/_search` with the
+   same `{"query": {"query_string": {"query": ..}}}` DSL body Rust's/
+   Python's own `search.query` lowering already builds, `DELETE
+   /{index}/_doc/{id}` — no official `opensearch-go` client needed for
+   three verbs), `internal/httpclients` (dependency-free `net/http`,
+   matching the M5-era typed call clients' own "no HTTP client
+   dependency needed" precedent). `internal/clients` (one file per
+   downstream `call`ed service, no `mod.rs`-equivalent aggregator
+   needed — every `.go` file under one directory sharing `package
+   clients` forms the package automatically) implements the typed
+   HTTP call clients `_steps.go.j2`'s own `call` step arm had already
+   been written, unreachable, since v0.24 M3 (`clients.New{ClassName}
+   (st).{Method}(ctx, result)`) — envelope-unwrapping (`{"data": ..}`)
+   matches Rust's/Python's/TS's own client shape exactly.
+
+   **Observability, in full:** `internal/observability` gained
+   `initTracing()` (`go.opentelemetry.io/otel/sdk` + `otlptracegrpc`,
+   reading `OTEL_EXPORTER_OTLP_ENDPOINT` — default `http://localhost
+   :4317`, the same collector port every other target's own exporter
+   already targets), a process-wide `Tracer`, `Traced(ctx, name,
+   carrier, fn)` (the consume-side half of broker-hop propagation —
+   extracts an inbound W3C `traceparent` carrier, starts a span,
+   nil-safe for a message published by a non-participating system),
+   and `InjectCarrier(ctx)` (the publish-side half, mirroring Rust's
+   `inject_trace_carrier`/TS's own `propagation.inject` call).
+   Inbound HTTP server spans and outbound call-client spans both come
+   "for free" via `go.opentelemetry.io/contrib/instrumentation/net/
+   http/otelhttp` (`otelhttp.NewHandler` wraps the final mux in
+   `main.go.j2`, after every route is already registered — keeping
+   `routes.Router`'s own `*http.ServeMux` return type unchanged, since
+   `scope_test.go.j2` calls `mux.ServeHTTP` directly), the same
+   "instrumentation gives it for free" precedent TS's own
+   `UndiciInstrumentation`/Python's `HTTPXClientInstrumentor` already
+   set — `client.go.j2`'s own call-client methods use the same
+   `propagation.HeaderCarrier` injection pattern directly rather than
+   an instrumented transport, since they already had to hand-build the
+   request. `queue.go.j2`'s `Publish` (both engines) gained a
+   `headers map[string]string` parameter — NATS via a real
+   `nats.Msg`/`nats.Header`, Kafka via `[]kgo.RecordHeader` — and
+   `PublishJSON` now takes `ctx` as its first argument (threaded
+   through both call sites: `_steps.go.j2`'s `publish` step and
+   `lower.rs`'s own `HostSyntax::publish` leaf) to inject the active
+   span before handing off to the broker. `worker.go.j2`'s own consume
+   loops (both engines) extract the inbound carrier from the message's
+   own headers and wrap the handler call in `observability.Traced
+   ("worker.<name>", ..)` — the same span-naming convention Rust's own
+   `tracing::info_span!("worker.{name}")` already established.
+   `Logging`/`Metrics` needed no new wiring beyond what M1's own
+   `observability.go.j2` doc comment already promised: `slog`'s JSON
+   handler swap was already conditional on `has_logging`; `Metrics`
+   adds `prometheus/client_golang`'s default Go/process collectors
+   plus a `GET /metrics` route (`promhttp.Handler()`), mounted in
+   `main.go.j2` alongside `/openapi.json`.
+
+   **Five real bugs found live**, all via generating and building
+   against the real `go` toolchain (not hypothesized) — the same
+   "leaves authored ahead of their gate, exercised for the first time
+   this milestone" pattern TS's own M7 found four of:
+   1. `object_store.put`'s old leaf built a
+      `func() ([]byte, error) { return json.Marshal(value) }()`
+      sub-expression for the `Record` payload branch and passed it as
+      `Put`'s *third* argument — a genuine `go vet`/`go build` failure
+      ("multiple-value ... in single-value context"), since a
+      multi-return call may only be a bare argument when it is the
+      *sole* argument. Fixed by reusing `json_body` (the same single-
+      valued Record/Json/scalar 3-way `search.index`/`http.call`
+      already used) instead of a bespoke match, and giving
+      `ObjectStore.Put` a single `any` parameter that marshals
+      internally — eliminating the bug and a needed-but-wrong
+      `needs.object_store_put` flag in `needs_json`'s own computation
+      (which had forced an `encoding/json` import even on a scalar
+      `object_store.put` call with no `json.` text in its own body) at
+      the same time.
+   2. `email_send`/`search_index`/`search_query`/`http_call`'s field
+      resolution used the raw snake_case `AppState` field name
+      directly (`st.email`) instead of `go_pascal`-converting it
+      (`st.Email`) the way `cache_field`/`db_field` already correctly
+      did — would have been an "undefined: email" compile error on
+      any handler using these leaves. Found by re-reading `lower.rs`
+      before writing the wrapper types it calls into, not by a build
+      failure (the inconsistency was visible directly against the
+      already-correct `cache_field`/`db_field` sites).
+   3. `config.go.j2`'s `object_store`/`email`/`search`/`external_http`
+      default-value lines were missing quotes around
+      `{{ f.rust_default }}` (`envOr("S3_ENDPOINT",
+      http://localhost:9000)` instead of `envOr("S3_ENDPOINT",
+      "http://localhost:9000")`) — a `gofmt`-caught syntax error the
+      moment `extras-verbs.ciac` (the first example to reach any of
+      these four capabilities) was generated. Rust's/TS's own
+      `config.rs.j2`/`config.ts.j2` already wrap `f.rust_default` in
+      quotes; Go's own template, written scaffolding-ahead at an
+      earlier milestone, simply never did.
+   4. `route_api.go.j2`/`worker.go.j2`/`job.go.j2` never imported
+      `internal/clients` on a `call` step, despite `_steps.go.j2`'s own
+      `call` arm (written at v0.24 M3, unreachable until this
+      milestone) already emitting `clients.New{ClassName}(st)` —
+      "undefined: clients" the moment `traced-checkout.ciac` (this
+      milestone's own named example) exercised a `call` step for
+      real. Fixed by adding the conditional import, gated on the
+      already-shared `api.call_imports`/`worker.call_imports`/
+      `job.call_imports` (`Vec<CallCtx>`), to all three templates.
+   5. `models.go.j2`'s `<Name>In` create/update payload struct used
+      the bare field-level `go_type` filter for every field, which
+      returns an *unqualified* enum type name (`VideoStatus`) —
+      correct only *within* `schemas.go`, where every sibling enum is
+      already in scope bare, but `models` is a different package.
+      "undefined: VideoStatus" the moment `typed-video.ciac`/
+      `routed-media.ciac` (both `CIAC0011`-refused for Go until this
+      milestone's own `Cache` un-gating) first reached a `crud`
+      resource with an enum field. Fixed with a `field.is_enum`-gated
+      `schemas.` prefix (a new `needs_schemas` flag on `models.go.j2`'s
+      own render context, computed in `lib.rs`) — which surfaced a
+      second, related bug once the first was fixed:
+      `resource_store.go.j2`'s `Create`/`Update` assigned
+      `payload.Status` (now `schemas.VideoStatus`) directly into the
+      row struct's own `Status string` field, which Go's assignability
+      rules reject between two distinct named string types even though
+      both have the same underlying type — fixed with an explicit
+      `string(payload.Status)` conversion, gated on the same
+      `field.is_enum`.
+
+   **An unplanned, disclosed dependency-version discipline change:**
+   rather than hand-merging each new dependency's scratch-derived
+   `go.mod`/`go.sum` lines into the existing pin files (the v0.24 M6
+   precedent), M7 built one comprehensive scratch Go module
+   reproducing the *entire* real `go.mod.j2` dependency set (every
+   pre-existing package pinned at its exact existing version via `go
+   get pkg@version`, not `@latest`) plus every new package this
+   milestone needed, then ran a single real `go mod tidy` and adopted
+   its output verbatim as the new `go.mod.j2`/`go.sum.pin`. Found live
+   why this mattered: a first attempt hand-merging just the new
+   dependency lines missed that `go.opentelemetry.io/otel`'s own
+   transitive graph requires *higher* minimum versions of
+   `golang.org/x/net`/`x/sync`/`x/sys`/`x/text`/`x/crypto` than the
+   pre-existing pin file had — a hand merge would have left `go.sum`
+   missing hashes for versions the real build graph resolves to,
+   a `go build -mod=readonly` failure the very first time any new
+   dependency actually got exercised. The one-shot authoritative
+   `go mod tidy` approach avoids this whole class of error and is
+   recorded here as the discipline this arc's remaining milestones
+   (and 25UpdatePlan.md's own Go-adjacent work, if any) should follow
+   whenever a new dependency touches the shared transitive graph.
+   Also found live: `go.opentelemetry.io/contrib/instrumentation/net/
+   http/otelhttp`'s *latest* release (`v0.69.0`) requires `go >=
+   1.25.0` and silently upgrades a `go 1.24.0` module's toolchain
+   directive to `go1.25.12` the moment it's added — this sandbox only
+   has `go1.24.7` installed, so an unpinned `@latest` would have
+   broken every subsequent local build. Pinning `otelhttp@v0.63.0`
+   (the contribution-repo release matching the `go.opentelemetry.io/
+   otel@v1.38.0` core/SDK line already in use) keeps the toolchain at
+   `go1.24.7`, unpinned from this arc's own release cadence.
+   Separately, go-redis v9's newer releases ship a "maintenance
+   notifications" feature (Redis Cloud/Enterprise cluster-maintenance
+   push events, `MaintNotificationsConfig`, default `ModeAuto`) that
+   spawns a background `CircuitBreakerManager` goroutine at
+   `redis.NewClient` construction time regardless of target — caught
+   live by `TestNewLeaksNoGoroutines` (the same no-infra-at-
+   construction discipline that caught franz-go's own construction-
+   time goroutines at v0.24 M3), fixed by explicitly setting
+   `MaintNotificationsConfig: &maintnotifications.Config{Mode:
+   maintnotifications.ModeDisabled}` before `redis.NewClient` — a
+   plain local/dev Redis never sends these notifications, so there is
+   nothing for this backend to react to.
+
+   **Live proof:** every reachable ontology-exercising example
+   generated via the real `ciac build --target go` binary and checked
+   against the real toolchain (`gofmt -l .` clean, `go vet ./...`
+   clean, `go build ./...` clean, `go test ./...` green, zero
+   goroutine leaks): `extras-verbs` (all seven `cache`/`object_store`/
+   `email`/`search`/`external_http` verbs, confirming every leaf
+   resolves to its correctly-`go_pascal`-cased field), `crud-notes`/
+   `dev-identity`/`video-platform` (regression check — cache-aside
+   CRUD and OAuth2/`users Keycloak` unchanged by this milestone's own
+   work), `typed-handlers`, `routed-media`/`typed-video` (the enum-
+   field bug's own proving pair), `order-system` (this milestone's own
+   named example, previously `CIAC0011`-refused for `Cache` since v0.24
+   M6 — its full JWT-scope-enforcement suite, `go test ./internal/
+   routes/... -v`, passes for real now: a wrong-scope token gets a
+   real `403` before any Postgres call, a correctly-scoped token clears
+   the check and reaches the expected no-infrastructure Postgres
+   failure, never a `401`/`403`), `inventory-system` (2 services),
+   `multi-service-media` (5 services), `traced-checkout` (2 services,
+   `call`/`publish`/worker-consume trace propagation all present and
+   type-correct — no live Jaeger/collector round-trip attempted, no
+   Docker daemon in this sandbox, the same disclosure every other
+   target's own OTel milestone already carries; "the trace test" this
+   milestone proves is structural: real `go build` compilation of the
+   full wiring, byte-for-byte header-contract parity with the other
+   three targets' own publish/consume shape, confirmed directly against
+   their generated `queue.*`/`worker.*` sources), `ontology-growth`.
+   `dev-identity.ciac` (needs `Component::Users`) needed *zero*
+   Go-specific code, confirming `ciac-codegen::model`'s own dev-issuer-
+   default computation is already target-neutral — the same
+   confirmation TS's own M7 recorded.
+
+   **CI:** `go × inventory-system`, `go × mysql-notes`, `go ×
+   sim-vertical-slice`, and `go × multi-service-media` rows added to
+   `generated-system`'s compose-backed `--system` matrix (`actions/
+   setup-go@v5` added to that job, previously Rust/Python/uv-only);
+   the job's own comment records why Go's build speed affords the
+   5-service system where Rust's own time budget excluded it (a Go
+   compose build compiles in low single-digit seconds even uncached,
+   with none of the crate-tree-recompile cost `cargo build` inside an
+   uncached container carries).
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` clean,
+   `cargo test --workspace` green (68 suites — `c3_openapi_is_byte_
+   identical_across_targets`/`c4a_migration_sql_is_byte_identical_
+   across_targets`/`c4b_declared_topology_appears_in_every_target` all
+   still pass, confirming Go's newly-un-gated ontology output stays
+   byte-identical to the other three targets everywhere all four now
+   reach). Golden acceptance: 12 brand-new Go example trees
+   (`extras-verbs`, `inventory-system`, `multi-service-media`,
+   `mysql-notes`, `ontology-growth`, `order-system`, `routed-media`,
+   `sim-broker-slice`, `traced-checkout`, `typed-handlers`,
+   `typed-video`, `dev-identity`, `crud-notes`) plus every pre-existing
+   Go golden churned (the three new dependency sets — AWS SDK v2,
+   go-redis, OTel — land in the single shared `go.sum.pin` regardless
+   of which capabilities any one example actually declares, the same
+   established discipline v0.24 M6 already used for the JWT/JWKS
+   dependency pair); all diffs reviewed by hand before accepting.
 8. **M8 — Whole-repo integration.** Every example verifies or is
    reason-gated (target: zero gates); goldens complete; generated
    docs tables regenerate; `ciac dev` session test; MCP exercised;

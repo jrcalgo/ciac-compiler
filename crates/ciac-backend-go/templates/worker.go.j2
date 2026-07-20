@@ -25,10 +25,19 @@ import (
 {%- if worker.has_publish_step %}
 	"{{ c.package }}/internal/queue"
 {%- endif %}
+{%- if worker.call_imports %}
+	"{{ c.package }}/internal/clients"
+{%- endif %}
 {%- if worker.payload %}
 	"{{ c.package }}/internal/schemas"
 {%- endif %}
 	"{{ c.package }}/internal/state"
+{%- if c.has_tracing %}
+
+	"go.opentelemetry.io/otel/propagation"
+
+	"{{ c.package }}/internal/observability"
+{%- endif %}
 )
 
 const (
@@ -100,9 +109,23 @@ func consume{{ worker.snake | go_pascal }}(ctx context.Context, st *state.AppSta
 				return
 			}
 {%- endif %}
+{%- if c.has_tracing %}
+			carrier := propagation.MapCarrier{}
+			for _, h := range record.Headers {
+				carrier[h.Key] = string(h.Value)
+			}
+			var procErr error
+			observability.Traced(ctx, "worker.{{ worker.name }}", carrier, func(spanCtx context.Context) {
+				procErr = handleMessage{{ worker.snake | go_pascal }}(spanCtx, st, payload)
+			})
+			if procErr != nil {
+				slog.Error("message processing failed after all retries", "error", procErr, "worker", "{{ worker.name }}", "index", index)
+			}
+{%- else %}
 			if err := handleMessage{{ worker.snake | go_pascal }}(ctx, st, payload); err != nil {
 				slog.Error("message processing failed after all retries", "error", err, "worker", "{{ worker.name }}", "index", index)
 			}
+{%- endif %}
 		})
 	}
 }
@@ -130,9 +153,25 @@ func consume{{ worker.snake | go_pascal }}(ctx context.Context, st *state.AppSta
 			continue
 		}
 {%- endif %}
+{%- if c.has_tracing %}
+		carrier := propagation.MapCarrier{}
+		for k, v := range msg.Header {
+			if len(v) > 0 {
+				carrier[k] = v[0]
+			}
+		}
+		var procErr error
+		observability.Traced(ctx, "worker.{{ worker.name }}", carrier, func(spanCtx context.Context) {
+			procErr = handleMessage{{ worker.snake | go_pascal }}(spanCtx, st, payload)
+		})
+		if procErr != nil {
+			slog.Error("message processing failed after all retries", "error", procErr, "worker", "{{ worker.name }}", "index", index)
+		}
+{%- else %}
 		if err := handleMessage{{ worker.snake | go_pascal }}(ctx, st, payload); err != nil {
 			slog.Error("message processing failed after all retries", "error", err, "worker", "{{ worker.name }}", "index", index)
 		}
+{%- endif %}
 	}
 }
 {%- endif %}

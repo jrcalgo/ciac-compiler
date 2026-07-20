@@ -73,22 +73,22 @@ func FromEnv() Config {
 {%- endfor %}
 {%- for inst in c.object_store_instances %}
 {%- for f in inst.cfg %}
-		{{ f.field | go_pascal }}: envOr("{{ f.env }}", {{ f.rust_default }}),
+		{{ f.field | go_pascal }}: envOr("{{ f.env }}", "{{ f.rust_default }}"),
 {%- endfor %}
 {%- endfor %}
 {%- for inst in c.email_instances %}
 {%- for f in inst.cfg %}
-		{{ f.field | go_pascal }}: envOr("{{ f.env }}", {{ f.rust_default }}),
+		{{ f.field | go_pascal }}: envOr("{{ f.env }}", "{{ f.rust_default }}"),
 {%- endfor %}
 {%- endfor %}
 {%- for inst in c.search_instances %}
 {%- for f in inst.cfg %}
-		{{ f.field | go_pascal }}: envOr("{{ f.env }}", {{ f.rust_default }}),
+		{{ f.field | go_pascal }}: envOr("{{ f.env }}", "{{ f.rust_default }}"),
 {%- endfor %}
 {%- endfor %}
 {%- for inst in c.external_http_instances %}
 {%- for f in inst.cfg %}
-		{{ f.field | go_pascal }}: envOr("{{ f.env }}", {{ f.rust_default }}),
+		{{ f.field | go_pascal }}: envOr("{{ f.env }}", "{{ f.rust_default }}"),
 {%- endfor %}
 {%- endfor %}
 {%- for t in c.call_targets %}

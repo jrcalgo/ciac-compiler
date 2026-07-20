@@ -29,6 +29,10 @@ import (
 	"fmt"
 	"io"
 {%- endif %}
+{%- if needs_schemas %}
+
+	"{{ c.package }}/internal/schemas"
+{%- endif %}
 )
 {%- if resource_needs_decode %}
 
@@ -61,7 +65,7 @@ type {{ resource.name }} struct {
 type {{ resource.name }}In struct {
 {%- for field in resource.record.fields %}
 {%- if field.name != "id" %}
-	{{ field.name | go_pascal }} {{ field | go_type }} `json:"{{ field.name }}"`
+	{{ field.name | go_pascal }} {% if field.is_enum %}schemas.{% endif %}{{ field | go_type }} `json:"{{ field.name }}"`
 {%- endif %}
 {%- endfor %}
 }

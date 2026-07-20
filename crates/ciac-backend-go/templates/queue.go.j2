@@ -15,18 +15,24 @@
 package queue
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
+{%- if c.queue_engine == "kafka" %}
+	"time"
+{%- endif %}
 
 {%- if c.queue_engine == "kafka" %}
-	"context"
 	"strings"
-	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 {%- else %}
 	"github.com/nats-io/nats.go"
+{%- endif %}
+{%- if c.has_tracing %}
+
+	"{{ c.package }}/internal/observability"
 {%- endif %}
 )
 
@@ -64,14 +70,18 @@ func (q *Queue) client() (*kgo.Client, error) {
 // bare `context.Background()` retries internally forever (matching
 // Rust's own rdkafka `message.timeout.ms=5000`, the reason this is a
 // bounded context rather than a background one).
-func (q *Queue) Publish(subject string, payload []byte) error {
+func (q *Queue) Publish(subject string, payload []byte, headers map[string]string) error {
 	cl, err := q.client()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return cl.ProduceSync(ctx, &kgo.Record{Topic: subject, Value: payload}).FirstErr()
+	record := &kgo.Record{Topic: subject, Value: payload}
+	for k, v := range headers {
+		record.Headers = append(record.Headers, kgo.RecordHeader{Key: k, Value: []byte(v)})
+	}
+	return cl.ProduceSync(ctx, record).FirstErr()
 }
 
 // Consumer builds a fresh client in consumer group group, subscribed
@@ -122,12 +132,19 @@ func (q *Queue) client() (*nats.Conn, error) {
 }
 
 // Publish sends payload to subject.
-func (q *Queue) Publish(subject string, payload []byte) error {
+func (q *Queue) Publish(subject string, payload []byte, headers map[string]string) error {
 	nc, err := q.client()
 	if err != nil {
 		return err
 	}
-	return nc.Publish(subject, payload)
+	if len(headers) == 0 {
+		return nc.Publish(subject, payload)
+	}
+	msg := &nats.Msg{Subject: subject, Data: payload, Header: nats.Header{}}
+	for k, v := range headers {
+		msg.Header.Set(k, v)
+	}
+	return nc.PublishMsg(msg)
 }
 
 // QueueSubscribe delivers subject's messages onto a fresh channel,
@@ -162,12 +179,21 @@ func (q *Queue) Subscribe(subject string) (chan *nats.Msg, error) {
 {%- endif %}
 
 // PublishJSON marshals v and publishes it -- the shared call site
-// every generated pipeline `publish` step goes through, mirroring
-// Rust's centralized `AppState::publish`.
-func PublishJSON(q *Queue, subject string, v any) error {
+// every generated pipeline `publish` step (and every typed handler's
+// own `publish` statement) goes through, mirroring Rust's centralized
+// `AppState::publish`.{% if c.has_tracing %} Injects the active span's W3C
+// `traceparent` into the message headers -- the publish-side half of
+// broker-hop trace propagation; the consume side extracts it back out
+// in `worker.go.j2`/`consumer.go.j2`.{% endif %}
+func PublishJSON(ctx context.Context, q *Queue, subject string, v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return q.Publish(subject, payload)
+{%- if c.has_tracing %}
+	return q.Publish(subject, payload, observability.InjectCarrier(ctx))
+{%- else %}
+	_ = ctx
+	return q.Publish(subject, payload, nil)
+{%- endif %}
 }

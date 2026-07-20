@@ -241,13 +241,22 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
       - name: Build the compiler
         run: cargo build -p ciac
       # Python covers all three system-bearing examples; Rust covers
       # only the smallest (a compose build of a Rust service compiles
       # its whole crate tree inside an uncached container — running the
       # 5-service media system that way would blow the job's time
-      # budget for no additional system-test coverage).
+      # budget for no additional system-test coverage). v0.24 M7: Go
+      # gets the same three rows TS's own M7 added, *plus*
+      # multi-service-media — Go's own compose build compiles a
+      # `go build` inside an uncached container in low single-digit
+      # seconds (no crate-tree-style recompile cost the way Rust's
+      # does), so the 5-service system fits comfortably inside this
+      # job's time budget where it didn't for Rust.
       - name: System-verify each target
         run: |
           set -euo pipefail
@@ -260,13 +269,16 @@ jobs:
             echo "::endgroup::"
           }
           run_system examples/multi-service-media.ciac python
+          run_system examples/multi-service-media.ciac go
           run_system examples/audited-crud.ciac python
           run_system examples/inventory-system.ciac python
           run_system examples/inventory-system.ciac rust
           run_system examples/inventory-system.ciac typescript
+          run_system examples/inventory-system.ciac go
           run_system examples/mysql-notes.ciac python
           run_system examples/mysql-notes.ciac rust
           run_system examples/mysql-notes.ciac typescript
+          run_system examples/mysql-notes.ciac go
           run_system examples/kafka-pipeline.ciac python
           # v0.17 M11's fidelity ratchet, all three narrow/full sim
           # targets as of v0.23 M9: the same broker-publish effect each
@@ -281,6 +293,7 @@ jobs:
           run_system examples/sim-vertical-slice.ciac python
           run_system examples/sim-vertical-slice.ciac rust
           run_system examples/sim-vertical-slice.ciac typescript
+          run_system examples/sim-vertical-slice.ciac go
           # v0.23 M7: the remaining two TS `--system` rows the
           # milestone's exit criteria names (inventory-system,
           # mysql-notes; sim-vertical-slice moved into the fidelity-

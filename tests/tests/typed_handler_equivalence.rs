@@ -20,7 +20,23 @@
 //! target, TypeScript, via a second canonical example
 //! ([`DIVISION_EXAMPLE`]) scoped to capabilities TS actually supports
 //! this milestone.
+//!
+//! `24UpdatePlan.md` M4 extends the same [`DIVISION_EXAMPLE`] to a
+//! fourth target, Go — `db Postgres`-only, matching the scope every
+//! other target already needed for this example, so no new capability
+//! gating question arises. Go's own two named divergences pin the
+//! opposite side of Pillar 2's own table from TS's: `Int / Int` needs
+//! no `Math.trunc`-style special case at all (Go's native `/` on
+//! `int64` already truncates toward zero, identical to Rust's `i64`
+//! division — confirmed by reading `GoSyntax::binary`'s own doc), and
+//! `Json` indexing panics with a Go-idiomatic `KeyError: '<key>'`
+//! message after an explicit `json.Unmarshal` (the `Json` HIR type's
+//! Go representation is `json.RawMessage`, not `any` — a concrete
+//! `[]byte`-backed type needing an explicit decode before a map-key
+//! lookup is possible, unlike TS's `unknown`/Python's `dict[str,
+//! Any]`, both already directly indexable).
 
+use ciac_backend_go::GoBackend;
 use ciac_backend_python::PythonBackend;
 use ciac_backend_rust::RustBackend;
 use ciac_backend_ts::TsBackend;
@@ -210,7 +226,7 @@ pipeline Compute:
 "#;
 
 #[test]
-fn python_rust_and_typescript_lower_the_same_handler_body_to_equivalent_shape() {
+fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape() {
     let (ir, diags) = compile(DIVISION_EXAMPLE);
     assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
     let ir = ir.expect("well-typed program produces IR");
@@ -224,6 +240,9 @@ fn python_rust_and_typescript_lower_the_same_handler_body_to_equivalent_shape() 
     let ts_project = TsBackend
         .generate(&ir, &GenOptions::default())
         .expect("typescript must build the typed inline handler");
+    let go_project = GoBackend
+        .generate(&ir, &GenOptions::default())
+        .expect("go must build the typed inline handler");
 
     let py_logic = py_project
         .get("app/logic/compute_average.py")
@@ -234,6 +253,9 @@ fn python_rust_and_typescript_lower_the_same_handler_body_to_equivalent_shape() 
     let ts_logic = ts_project
         .get("src/logic/compute_average.ts")
         .expect("typescript emits the compiler-owned logic file");
+    let go_logic = go_project
+        .get("internal/logic/compute_average.go")
+        .expect("go emits the compiler-owned logic file");
 
     // The `Int / Int` divergence, named and pinned rather than
     // discovered: Python's `/` is true division (never truncates);
@@ -253,27 +275,46 @@ fn python_rust_and_typescript_lower_the_same_handler_body_to_equivalent_shape() 
         "typescript: Int/Int division must lower to Math.trunc for i64-truncation parity \
          with Rust, found: {ts_logic}"
     );
+    // Go's native `/` on `int64` already truncates toward zero, the
+    // same as Rust's `i64` division — no `Math.trunc`-style special
+    // case needed, a real simplification over TS's own leaf.
+    assert!(
+        go_logic.contains("(p.Total / p.Count)") && !go_logic.contains("trunc"),
+        "go: Int/Int division truncates natively via `/`, found: {go_logic}"
+    );
 
     // The `Json` indexing divergence: Python relies on the language's
     // own `KeyError` for a missing key; TS has no equivalent built-in,
     // so the leaf must synthesize an equivalent thrown error rather
-    // than silently propagating `undefined`.
+    // than silently propagating `undefined`. Go's `Json` HIR type is
+    // `json.RawMessage` (a concrete `[]byte`), not `any`, so its own
+    // leaf must `json.Unmarshal` before a key lookup is even possible,
+    // then panics with the same `KeyError: '<key>'` message text TS's
+    // thrown error carries.
     assert!(py_logic.contains(r#"p.extra["label"]"#));
     assert!(
         ts_logic.contains("KeyError: 'label'") && ts_logic.contains("throw new Error"),
         "typescript: Json indexing must throw a KeyError-shaped error on a missing key, \
          found: {ts_logic}"
     );
+    assert!(
+        go_logic.contains("json.Unmarshal(p.Extra, &__m)")
+            && go_logic.contains("KeyError: 'label'"),
+        "go: Json indexing must unmarshal into a map and panic with a KeyError-shaped \
+         message on a missing key, found: {go_logic}"
+    );
 
-    // Same table, same columns, all three hosts: Python's ORM splat
-    // never names fields individually, so only Rust's and TS's raw SQL
-    // assert the full column list.
+    // Same table, same columns, all four hosts: Python's ORM splat
+    // never names fields individually, so only Rust's, TS's, and Go's
+    // raw SQL assert the full column list.
     assert!(py_logic.contains("Payloads(**v2.model_dump())"));
     assert!(rust_logic.contains("sqlx::query(\"INSERT INTO payloads (id, total, count, extra)"));
     assert!(ts_logic.contains(r#""INSERT INTO payloads (id, total, count, extra)"#));
+    assert!(go_logic.contains("INSERT INTO payloads (id, total, count, extra)"));
 
-    // Same verb call counts across all three: one db.insert (commit/
-    // execute/query — each host's own spelling of "run the query").
+    // Same verb call counts across all four: one db.insert (commit/
+    // execute/query/ExecContext — each host's own spelling of "run the
+    // query").
     assert_eq!(
         count(py_logic, "await self.session.commit()"),
         1,
@@ -289,10 +330,16 @@ fn python_rust_and_typescript_lower_the_same_handler_body_to_equivalent_shape() 
         1,
         "typescript: expected exactly one db.insert query"
     );
+    assert_eq!(
+        count(go_logic, "INSERT INTO payloads"),
+        1,
+        "go: expected exactly one db.insert ExecContext"
+    );
 
     // Same real, typed signature on every host — no generic payload/
     // dict fallback anywhere.
     assert!(py_logic.contains("def handle(self, p: Payload) -> Payload:"));
     assert!(rust_logic.contains("fn handle(&self, p: Payload) -> anyhow::Result<Payload>"));
     assert!(ts_logic.contains("async handle(p: Payload): Promise<Payload>"));
+    assert!(go_logic.contains("func ComputeAverage(ctx context.Context, st *state.AppState, p schemas.Payload) (schemas.Payload, error)"));
 }

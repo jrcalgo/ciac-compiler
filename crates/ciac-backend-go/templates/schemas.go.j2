@@ -70,7 +70,15 @@ type {{ record.name }} struct {
 	{{ f.name | go_pascal }} {{ f | go_type }} `json:"{{ f.name }}"{% set tag = f | go_validate_tag %}{% if tag %} validate:"{{ tag }}"{% endif %}`
 {%- endfor %}
 }
-
+{% if record.is_error %}
+// Error satisfies the `error` interface (v0.24 M4): `fail {{ record.name }}(..)`
+// lowers to a `*{{ record.name }}` returned in a typed handler's own `error`
+// position, so the pointer receiver (not `{{ record.name }}` by value) is what
+// callers actually hold and compare against.
+func (e *{{ record.name }}) Error() string {
+	return fmt.Sprintf("{{ record.name }}({% for f in record.fields %}{{ f.name }}=%v{% if not loop.last %}, {% endif %}{% endfor %})"{% for f in record.fields %}, e.{{ f.name | go_pascal }}{% endfor %})
+}
+{% endif %}
 // Decode{{ record.name }} decodes and validates a {{ record.name }} from r.
 func Decode{{ record.name }}(r io.Reader) ({{ record.name }}, error) {
 	body, err := io.ReadAll(r)

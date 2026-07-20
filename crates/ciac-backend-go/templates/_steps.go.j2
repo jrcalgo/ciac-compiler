@@ -32,9 +32,30 @@
     infrastructure -- clients/scope arms -- actually existed) but are
     unreachable by every 24UpdatePlan.md M3 example: no example
     populates `call_imports` or a `match` step yet, so this is inert
-    until 24UpdatePlan.md M6/M7 exercise it for real. -#}
-{% macro emit_step(step, indent, on_err) %}
-{%- if step.kind == "handler" %}
+    until 24UpdatePlan.md M6/M7 exercise it for real.
+
+    v0.24 M4: a `handler` step whose `step.handler.is_typed_handler` is
+    true is a v0.7 typed handler (a plain function --
+    `logic.{ClassName}`/`services.{ClassName}`, not a
+    `New{ClassName}(st).Handle` struct+constructor pair, see
+    `logic.go.j2`), whose single param is always the pipeline's own
+    payload record (sema-enforced: a typed handler used as a pipeline
+    step is only ever reachable this way with an exact-payload-type
+    param, confirmed against every 24UpdatePlan.md M4 example) -- so
+    `result` (declared `any`) needs one explicit type assertion back to
+    that concrete type before the call, unlike a classic handler's own
+    `any`-in/`any`-out `Handle`. `payload_type` is the caller's
+    precomputed Go type string (`"schemas.Order"`); empty for a step
+    site with no typed payload in scope (worker/job pipelines, unused
+    by any M4 example either way). -#}
+{% macro emit_step(step, indent, on_err, payload_type) %}
+{%- if step.kind == "handler" and step.handler.is_typed_handler %}
+{{ indent }}if v, err := {{ step.handler.handler_package }}.{{ step.handler.class_name }}(ctx, st, result.({{ payload_type }})); err != nil {
+{{ indent }}	{{ on_err }}
+{{ indent }}} else {
+{{ indent }}	result = v
+{{ indent }}}
+{%- elif step.kind == "handler" %}
 {{ indent }}if v, err := services.New{{ step.handler.class_name }}(st).Handle(ctx, result); err != nil {
 {{ indent }}	{{ on_err }}
 {{ indent }}} else {
@@ -59,7 +80,7 @@
 {{ indent }}default:
 {%- endif %}
 {%- for inner in arm.steps %}
-{{ emit_step(inner, indent ~ "\t", on_err) }}
+{{ emit_step(inner, indent ~ "\t", on_err, payload_type) }}
 {%- endfor %}
 {%- endfor %}
 {{ indent }}}

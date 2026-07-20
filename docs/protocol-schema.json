@@ -1001,6 +1001,10 @@
             "description": "Package the module lives under: `services` for classic/`extern`\nhandlers (seeded, user-owned), `logic` for v0.7 inline typed\nhandlers (compiler-owned, lowered from the HIR). Shared by both\nbackends (Python's `app.<package>`, Rust's `crate::<package>`).",
             "type": "string"
           },
+          "is_typed_handler": {
+            "description": "`true` for a v0.7 typed handler (`Component::Service {\nsignature: Some(_), .. }`), inline or `extern` alike — `false`\nfor a classic (`signature: None`) handler. Statically- and\nnominally-typed backends whose pipeline value flows through an\nuntyped carrier between steps (Go's `any`, TS's own `as any`)\nneed this to know whether a `handler` pipeline step's call site\nmust assert the carrier back to a concrete type before invoking\nit — a typed handler's `Handle` takes the real declared\nsignature, never `any`, unlike a classic handler's.",
+            "type": "boolean"
+          },
           "module": {
             "description": "Module name, e.g. `store_video`.",
             "type": "string"
@@ -1038,7 +1042,8 @@
           "needs_cache",
           "bindings",
           "py_args",
-          "extras"
+          "extras",
+          "is_typed_handler"
         ],
         "type": "object"
       },

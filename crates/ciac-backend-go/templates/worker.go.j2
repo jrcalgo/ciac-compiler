@@ -15,12 +15,18 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 {%- endif %}
 
-{%- if worker.handlers %}
+{%- if worker.handlers | selectattr("handler_package", "equalto", "services") | list %}
 
 	"{{ c.package }}/internal/services"
 {%- endif %}
+{%- if worker.handlers | selectattr("handler_package", "equalto", "logic") | list %}
+	"{{ c.package }}/internal/logic"
+{%- endif %}
 {%- if worker.has_publish_step %}
 	"{{ c.package }}/internal/queue"
+{%- endif %}
+{%- if worker.payload %}
+	"{{ c.package }}/internal/schemas"
 {%- endif %}
 	"{{ c.package }}/internal/state"
 )
@@ -33,6 +39,7 @@ const (
 )
 
 {%- import "_steps.go.j2" as steps %}
+{%- set payload_type = "schemas." ~ worker.payload.class_name if worker.payload else "" %}
 
 // HandleMessageOnce runs the pipeline exactly once, no retry/backoff
 // wrapper -- the seam a future simulation runner (24UpdatePlan.md M9)
@@ -41,7 +48,7 @@ const (
 func HandleMessageOnce{{ worker.snake | go_pascal }}(ctx context.Context, st *state.AppState, payload any) error {
 	result := payload
 {%- for step in worker.steps %}
-{{ steps.emit_step(step, "\t", "return err") }}
+{{ steps.emit_step(step, "\t", "return err", payload_type) }}
 {%- endfor %}
 	_ = result
 	return nil
@@ -79,11 +86,20 @@ func consume{{ worker.snake | go_pascal }}(ctx context.Context, st *state.AppSta
 			slog.Warn("kafka fetch error", "error", err)
 		})
 		fetches.EachRecord(func(record *kgo.Record) {
+{%- if worker.payload %}
+			var typed schemas.{{ worker.payload.class_name }}
+			if err := json.Unmarshal(record.Value, &typed); err != nil {
+				slog.Warn("discarding malformed message", "error", err)
+				return
+			}
+			var payload any = typed
+{%- else %}
 			var payload any
 			if err := json.Unmarshal(record.Value, &payload); err != nil {
 				slog.Warn("discarding malformed message", "error", err)
 				return
 			}
+{%- endif %}
 			if err := handleMessage{{ worker.snake | go_pascal }}(ctx, st, payload); err != nil {
 				slog.Error("message processing failed after all retries", "error", err, "worker", "{{ worker.name }}", "index", index)
 			}
@@ -100,11 +116,20 @@ func consume{{ worker.snake | go_pascal }}(ctx context.Context, st *state.AppSta
 	}
 	slog.Info("worker {{ worker.name }} consuming", "subject", {{ worker.snake | go_pascal }}Subject, "index", index)
 	for msg := range ch {
+{%- if worker.payload %}
+		var typed schemas.{{ worker.payload.class_name }}
+		if err := json.Unmarshal(msg.Data, &typed); err != nil {
+			slog.Warn("discarding malformed message", "error", err)
+			continue
+		}
+		var payload any = typed
+{%- else %}
 		var payload any
 		if err := json.Unmarshal(msg.Data, &payload); err != nil {
 			slog.Warn("discarding malformed message", "error", err)
 			continue
 		}
+{%- endif %}
 		if err := handleMessage{{ worker.snake | go_pascal }}(ctx, st, payload); err != nil {
 			slog.Error("message processing failed after all retries", "error", err, "worker", "{{ worker.name }}", "index", index)
 		}

@@ -8,8 +8,11 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-{%- if job.handlers %}
+{%- if job.handlers | selectattr("handler_package", "equalto", "services") | list %}
 	"{{ c.package }}/internal/services"
+{%- endif %}
+{%- if job.handlers | selectattr("handler_package", "equalto", "logic") | list %}
+	"{{ c.package }}/internal/logic"
 {%- endif %}
 {%- if job.has_publish_step %}
 	"{{ c.package }}/internal/queue"
@@ -35,7 +38,7 @@ func HandleTick{{ job.snake | go_pascal }}Once(ctx context.Context, st *state.Ap
 {%- if job.steps %}
 	var result any = map[string]any{}
 {%- for step in job.steps %}
-{{ steps.emit_step(step, "\t", "return err") }}
+{{ steps.emit_step(step, "\t", "return err", "") }}
 {%- endfor %}
 	_ = result
 {%- else %}

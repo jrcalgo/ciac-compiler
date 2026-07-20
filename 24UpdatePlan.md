@@ -1236,6 +1236,162 @@ planning pass finds them named.
    `lower.rs` leaf — the one intra-milestone ordering
    `24UpdatePlan.md`'s own "Milestone dependencies and parallelism"
    section hard-codes.
+
+   **Shipped (v0.24 M4, part 2 — the Go leaves themselves):** a full
+   `GoSyntax: HostSyntax` implementation in `ciac-backend-go/src/
+   lower.rs` (~1150 lines), wired into `lib.rs` (`supports()` widened
+   from `Component::Service { signature: None, .. }` to
+   `Component::Service { .. }`; typed handlers render through
+   `lower::render` into `internal/logic/<module>.go` (inline,
+   compiler-owned) or `internal/services/<module>.go` (`extern`,
+   seeded) — plain functions, not the struct+constructor shape classic
+   handlers get, since a typed handler is stateless and its real,
+   declared signature never needs `any`), a new `logic.go.j2`
+   template, and an `Error() string` method added to `schemas.go.j2`
+   for `record.is_error` types (needed so `fail`'s `&schemas.X{..}`
+   satisfies Go's `error` interface — no example had exercised an
+   error-kind record on Go before this milestone).
+
+   Real `sql.Tx` transaction atomicity (Pillar 4's own commitment,
+   exceeding Rust's disclosed non-atomic gap) is proven live, not just
+   asserted: generated `domain-orders.ciac` against a real local
+   Postgres, POSTed a negative-total order through `PlaceOrder`'s
+   `transaction { db.insert(Orders, ..); fail InvalidOrder(..); db
+   .insert(OrderAudits, ..); }`, and confirmed *both* inserts were
+   rolled back (`SELECT` on both tables after the 500 response: zero
+   rows) — then POSTed a valid order and confirmed *both* commits
+   landed, plus a follow-on `LineItem` insert exercising the `Reference
+   <Order>` FK. `query-verbs.ciac` (SQLite, zero Docker) got the same
+   treatment: seeded rows directly via the sqlite driver (no HTTP
+   insert path exists in that example — by design, it only exercises
+   `db.query`/`count`/`update`/`delete`/`delete_where`), then drove
+   every one of its five endpoints over real HTTP and confirmed the
+   list/count/update/delete/delete_where results by hand against the
+   underlying rows. Both generated trees also pass `go build`/`go vet`/
+   `gofmt -l`/`go test` clean.
+
+   Deviation from the plan's literal text: **the domain-orders rollback
+   proof ran against real local Postgres, not "local sqlite"** — the
+   plan's own M4 exit-checklist line says "local sqlite," but `domain-
+   orders.ciac` itself declares `use { db Postgres; }` (unchanged since
+   v0.16), and Postgres was reachable locally in this sandbox
+   (`apt`-installed, matching v0.13 M1's own MariaDB precedent), so the
+   live proof ran against the example's actual declared engine rather
+   than substituting a different one to match the checklist's wording
+   — a strictly stronger proof than the text asked for, recorded here
+   rather than silently reconciled.
+
+   Five real bugs were found and fixed by generating actual `.ciac`
+   examples and reading/running the output, not by reasoning about the
+   code in the abstract — every one of them would have shipped silently
+   otherwise, since none was caught by `cargo check`/`clippy` (all are
+   runtime-shaped: malformed Go source, wrong Go types, or a missing
+   import), only by real `gofmt`/`go vet`/`go build` against generated
+   trees:
+   1. **Nested-quote panic message.** `HostSyntax::index`'s `StrKey`
+      arm built its Go panic message with `format!("panic(\"KeyError:
+      {s:?}\")")` — `{s:?}` (Rust's `Debug` for `&str`) already adds
+      its own quotes, so the result was `panic("KeyError: "label"")`,
+      invalid Go (`gofmt` rejected it: "missing ',' in argument list").
+      Fixed by using a plain `{s}` interpolation for the *message*
+      text (still `{s:?}` for the map*-key* position, which correctly
+      needs a real quoted Go string literal) — found generating a
+      `Json`-indexing handler for the cross-target equivalence test.
+   2. **`db.update`'s `Option<Record>` result produced untyped `nil`.**
+      The original `db_update_tail` applied `dest` separately inside
+      each branch of an *internal* found/not-found `if`/`else` (`db
+      .update`'s own HIR type is `Option<Record>`), passing bare
+      `"nil"` to `Dest::Discard`/`Dest::Assign` — `_ = nil` and `name
+      := nil` are both "use of untyped nil" compile errors, and even
+      when typed, applying `dest` per-branch `:=`-declares a
+      `Dest::Assign` name block-scoped to whichever branch ran (`
+      collect_branching_lets` never sees this internal branch, since
+      it only hoists *source-level* `if`/`match`, so nothing hoists a
+      `var` for it either) — undefined immediately after the `if/else`
+      closes. Rewritten as one `func() (*T, error) { .. }()` closure
+      (matching `db_get`'s own already-correct shape) routed through
+      `fallible_tail`, so there's exactly one `apply_dest` call and the
+      closure's own return type gives the value real typing before
+      `apply_dest` ever sees it. Found generating `query-verbs.ciac`'s
+      `Replace` handler and reading the output.
+   3. **`HirType::Json` disagreed with `FieldTypeKind::Json`.** `go_type
+      (HirType::Json)` mapped to `any`, but the record-*field*-level
+      mapping (`filters::go_type_of`, standing since M1/M2) already
+      spelled a `Json` field `json.RawMessage` — every other target
+      keeps one representation for both (Rust: `serde_json::Value`
+      both places; Python: `dict[str, Any]`; TS: `unknown`); Go was the
+      one inconsistent target. Surfaced as `go vet`: "(p.Extra) ...
+      is not an interface" (a type assertion on a concrete `[]byte`-
+      backed type, not an interface). Fixed by changing `HirType::Json`
+      to also map to `json.RawMessage`, and rewriting `HostSyntax::
+      index` to `json.Unmarshal` into a `map[string]any` first rather
+      than type-asserting `any` directly (plus matching fixes to
+      `object_store_put`'s Json-vs-Record payload branch, unexercised
+      this milestone but now consistent). Found in the same
+      `Json`-indexing example as bug 1, one layer deeper.
+   4. **`table`-declared `Json` fields never imported `encoding/json`.**
+      `models.go.j2`'s `needs_json` flag (standing since M2) only
+      considered `ctx.resources`, never `ctx.tables` — no M1-M3 example
+      ever put a `Json` field on a bare `table`, so this was a latent,
+      un-exercised gap until M4's `DIVISION_EXAMPLE`-shaped test became
+      the first. Fixed by also checking `ctx.tables`' own fields for
+      `f.is_json`. Found as `go vet: undefined: json` in `internal/
+      models/models.go` immediately after fixing bug 3.
+   5. **A typed-handler pipeline step inside a `worker` asserted an
+      empty type.** `_steps.go.j2`'s `handler`-step macro arm needed a
+      concrete Go type to assert the pipeline's `any`-typed `result`
+      back to before calling a typed handler's real, typed signature;
+      `route_api.go.j2` already had this (`api.payload.class_name`),
+      but `worker.go.j2` passed a bare `""`, producing the literal
+      invalid Go expression `result.()`. Not a hypothetical: `examples/
+      sim-vertical-slice.ciac`'s `ProcessOrder` worker pipeline
+      genuinely calls a typed handler (`HandleOrderCreated`), and once
+      `supports()` widened to accept typed handlers broadly, this
+      example became reachable by Go for the first time and the
+      conformance suite (`c3`/`c4a`/`c4b`) caught it immediately. Fixed
+      two ways at once: `worker.go.j2` now computes `payload_type` from
+      `worker.payload.class_name` exactly like `route_api.go.j2` does,
+      *and* the message-decode sites (both NATS and Kafka) now decode
+      directly into the concrete `schemas.<Type>` (assigned into a
+      still-`any`-typed `payload` variable, so every existing call-site
+      signature is unchanged) instead of a bare `json.Unmarshal(..,
+      &payload)` into `any` — decoding into `any` alone would have
+      produced a `map[string]any` at runtime, which the type assertion
+      would then panic on even with the right type name spelled out.
+      `HandlerRef` (shared `ciac-codegen::model`, used by every
+      backend) gained one new field, `is_typed_handler: bool`, so
+      `_steps.go.j2` can tell a typed-handler step from a classic one
+      at the template layer without re-deriving it; `docs/protocol-
+      schema.json` regenerated to match (its own checked-in-schema
+      test caught the drift immediately).
+
+   The M4-scope conformance/golden/equivalence suites are green with
+   all five fixes in: `cargo test --workspace` (65 suites, two new
+   since part 1 — `typed_handler_equivalence`'s Go extension, and the
+   protocol-schema regen) passes with zero failures; `c3`/`c4a`/`c4b`
+   (conformance.rs) pass, meaning Go now participates correctly in
+   every conformance example it's `supports()`-eligible for, not just
+   the two originally-scoped proving examples; five new/updated golden
+   snapshots accepted (`domain-orders`, `kafka-pipeline` — a real,
+   deliberate improvement: `Enrich`'s worker now decodes its Kafka
+   message into a concrete `schemas.Click` instead of generic `any`,
+   `modular-video`, `query-verbs`, `sim-vertical-slice`); `typed_handler
+   _equivalence.rs`'s `DIVISION_EXAMPLE` test extended from 3 targets
+   to 4, Go's own two divergences pinned by assertion (native `/`
+   truncation, no `Math.trunc`-style special case needed at all; `Json`
+   indexing's `json.Unmarshal`-then-panic shape). `typed-handlers.ciac`/
+   `typed-video.ciac`/`extras-verbs.ciac` remain `CIAC0011`-refused
+   this milestone exactly as planned (`object_store`/`auth`/`cache`
+   stay gated to M6/M7); every *reachable* example — including three
+   (`kafka-pipeline`, `modular-video`, `sim-vertical-slice`) the plan's
+   own M4 text didn't name, newly reachable only because `supports()`
+   widened to `Component::Service { .. }` broadly rather than
+   enumerating specific examples — verifies clean.
+
+   `docs/protocol-schema.json` and `cargo insta`-accepted goldens
+   committed alongside the code; fmt/clippy/full-workspace-test all
+   green as the closing gate before commit, per the standing per-
+   milestone discipline.
 5. **M5 — CHECKPOINT.** Measured cost vs the factory model with TS
    actuals as baseline; conformance harness green across four
    targets (OpenAPI byte-equality ×4, topology equality,

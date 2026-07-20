@@ -31,6 +31,7 @@
 //! substituted, since Pillar 1's table named chi as the pick.
 
 mod filters;
+mod lower;
 
 use ciac_codegen::model as context;
 use ciac_codegen::{
@@ -149,9 +150,21 @@ impl Backend for GoBackend {
         // discriminant (pre-v0.7, no typed body) -- exactly the shape
         // `resource_store.go.j2`/`resource_api.go.j2`/`service.go.j2`
         // already render unconditionally, with no handler *body* to
-        // lower. A typed handler (`signature: Some(_)`) is a different,
-        // much bigger feature (HostSyntax leaf lowering) that stays
-        // gated until M4.
+        // lower. A typed handler (`signature: Some(_)`) is v0.24 M4's
+        // own feature (HostSyntax leaf lowering, landing this
+        // milestone) -- the match arm below widens from `signature:
+        // None` to `Component::Service { .. }` so both shapes pass,
+        // mirroring `ciac-backend-ts`'s own M4 commit exactly (read
+        // directly via `git show`, not assumed): every `HostSyntax`
+        // leaf is implemented for trait completeness, but the
+        // *component* kinds a typed handler body can request
+        // (`ObjectStore`/`Email`/`Search`/`ExternalHttp`, plus
+        // `Cache`/`Auth`) stay refused below until M6/M7 add their own
+        // client wrappers -- `typed-handlers.ciac`/`typed-video.ciac`/
+        // `extras-verbs.ciac` stay `CIAC0011`-refused this milestone;
+        // `domain-orders.ciac`/`query-verbs.ciac` (db-only) are this
+        // milestone's actual proving examples, exactly as they were
+        // for TS.
         //
         // M3 (this milestone) adds broker/workers/jobs/channels for
         // both queue engines at once, the same "engine-agnostic
@@ -170,10 +183,7 @@ impl Backend for GoBackend {
             component,
             Component::Api { .. }
                 | Component::Database { .. }
-                | Component::Service {
-                    signature: None,
-                    ..
-                }
+                | Component::Service { .. }
                 | Component::Queue { .. }
                 | Component::Stream { .. }
                 | Component::Worker { .. }
@@ -213,7 +223,7 @@ impl Backend for GoBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
 
         if model.multi {
@@ -254,6 +264,7 @@ impl Backend for GoBackend {
 /// per service (mirroring every other backend's `emit_service`).
 fn emit_service(
     env: &minijinja::Environment<'_>,
+    ir: &NormalizedIr,
     ctx: &context::Ctx,
     multi: bool,
     prefix: &str,
@@ -369,10 +380,20 @@ fn emit_service(
     if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
         let resource_needs_decode = ctx.resources.iter().any(|r| r.record.is_some());
         // Every generic (no-record) resource's `Data` field is a raw
-        // JSON blob; every `table` row struct needs no extra import.
-        // json.RawMessage itself needs `encoding/json` whenever it's
-        // used *or* whenever the presence-check decoder needs it.
-        let needs_json = ctx.resources.iter().any(|r| r.record.is_none()) || resource_needs_decode;
+        // JSON blob; the presence-check decoder needs it too. A
+        // `table`'s own row struct needs it exactly when one of its
+        // fields is `Json`-typed (`go_db_type` spells that field
+        // `json.RawMessage`) -- found live: no v0.24 M1-M3 example
+        // ever put a `Json` field on a `table`, so this arm of the
+        // condition was structurally missing (an "undefined: json"
+        // `go vet` failure) until v0.24 M4's own typed-handler examples
+        // first did.
+        let needs_json = ctx.resources.iter().any(|r| r.record.is_none())
+            || resource_needs_decode
+            || ctx
+                .tables
+                .iter()
+                .any(|t| t.record.fields.iter().any(|f| f.is_json));
         project.add_file(
             at("internal/models/models.go"),
             render_go(
@@ -432,6 +453,45 @@ fn emit_service(
             at(&format!("internal/services/{}.go", service.module)),
             render_go("service.go.j2", context! { service => service })?,
         );
+    }
+
+    // v0.24 M4: typed handlers (`Component::Service { signature:
+    // Some(hir), .. }`). Mirrors `ciac-backend-ts`'s own dispatch:
+    // inline bodies lower straight from the HIR and are compiler-owned
+    // (`internal/logic/`); `extern` gets a typed stub in
+    // `internal/services/` like classic handlers, since it's the same
+    // "implement this yourself" contract -- both are plain functions
+    // (not struct+constructor, unlike classic handlers), matching the
+    // `_steps.go.j2` invocation convention `emit_step` uses for a
+    // typed-handler `handler` pipeline step.
+    let typed_handlers: Vec<(String, &ciac_ir::HandlerBody)> = ctx
+        .typed_handlers
+        .iter()
+        .filter_map(|id| match &ir.node(*id).component {
+            Component::Service {
+                name,
+                signature: Some(hir),
+            } => Some((name.clone(), hir)),
+            _ => None,
+        })
+        .collect();
+    for (name, hir) in &typed_handlers {
+        let handler = lower::render(ir, name, hir);
+        let content = render_go(
+            "logic.go.j2",
+            context! { handler => minijinja::Value::from_serialize(&handler) },
+        )?;
+        if hir.body.is_some() {
+            project.add_file(
+                at(&format!("internal/logic/{}.go", handler.module)),
+                content,
+            );
+        } else {
+            project.add_seeded_file(
+                at(&format!("internal/services/{}.go", handler.module)),
+                content,
+            );
+        }
     }
 
     for worker in &ctx.workers {

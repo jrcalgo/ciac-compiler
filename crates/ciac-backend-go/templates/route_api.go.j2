@@ -11,8 +11,11 @@ import (
 {%- if api.payload %}
 	"{{ c.package }}/internal/schemas"
 {%- endif %}
-{%- if api.handlers %}
+{%- if api.handlers | selectattr("handler_package", "equalto", "services") | list %}
 	"{{ c.package }}/internal/services"
+{%- endif %}
+{%- if api.handlers | selectattr("handler_package", "equalto", "logic") | list %}
+	"{{ c.package }}/internal/logic"
 {%- endif %}
 {%- if api.has_publish_step %}
 	"{{ c.package }}/internal/queue"
@@ -22,6 +25,7 @@ import (
 )
 
 {%- import "_steps.go.j2" as steps %}
+{%- set payload_type = "schemas." ~ api.payload.class_name if api.payload else "" %}
 
 func {{ api.snake | go_pascal }}Handler(st *state.AppState) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +46,7 @@ func {{ api.snake | go_pascal }}Handler(st *state.AppState) http.HandlerFunc {
 		var result any = map[string]any{}
 {%- endif %}
 {%- for step in api.steps %}
-{{ steps.emit_step(step, "\t\t", "httpx.WriteError(w, err); return") }}
+{{ steps.emit_step(step, "\t\t", "httpx.WriteError(w, err); return", payload_type) }}
 {%- endfor %}
 		httpx.Accepted(w, result)
 	}

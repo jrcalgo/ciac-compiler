@@ -1527,6 +1527,139 @@ planning pass finds them named.
 6. **M6 — Auth, scopes, scope tests.** golang-jwt + keyfunc,
    middleware, generated httptest suite green under zero
    infrastructure; order-system and oauth-echo verify.
+
+   **Shipped (v0.24 M6):** `internal/auth/auth.go.j2` (new) —
+   `VerifyToken` (`jwt.ParseWithClaims` against a static HS256 secret
+   for JWT, a lazily-constructed `keyfunc.NewDefaultCtx` behind a
+   `sync.Once` for OAuth2/RS256, mirroring every other lazy provider
+   client — db pools, the broker client, TS's own `jwks ??= ...` — so
+   `state.New` never makes a network call a route never needs) and
+   `RequireScope` (space-joined `scope` string or `scp` array, both
+   real-issuer conventions, matching every other target's own two-
+   shape check). Errors flow through the existing `httpx.Unauthorized`
+   /`httpx.Forbidden`/`httpx.WriteError` machinery — no separate auth
+   error-mapping layer needed. `VerifyToken`/`RequireScope` are called
+   inline at the top of each generated route handler body (matching
+   every other target's own inline-in-route-body placement, not a
+   middleware chain): `route_api.go.j2` gates on `api.has_auth_step`/
+   `api.scope`; `resource_api.go.j2` gates each of its five handlers
+   on `resource.has_auth` with `resource.read_scope`/`write_scope`
+   threaded through as an explicit `cfg config.Config` parameter
+   (below). `scope_test.go.j2` (new) mirrors TS's `scope.test.ts.j2`/
+   Rust's `scope_tests.rs.j2` shape exactly — `httptest.NewRequest` +
+   `mux.ServeHTTP` in place of `fastify.inject()`/`tower::ServiceExt::
+   oneshot`, `jwt.NewWithClaims(...).SignedString(...)` to mint tokens
+   locally, the same dummy-value macros keyed off `FieldTypeKind`'s
+   internally-tagged shape ported directly from TS's own — gated
+   identically: `ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty()`,
+   so a JWT service with no declared scope gets `auth.go` but no
+   `scope_test.go`, and an OAuth2 service never gets one regardless of
+   scope count (the same disclosed reason as every other target: real
+   RS256 verification needs a real issuer's JWKS regardless of how
+   lazily it's fetched, so a true no-infrastructure OAuth2 scope proof
+   needs a fake auth adapter, future work this milestone didn't
+   build). Real dependency versions (`github.com/golang-jwt/jwt/v5
+   v5.3.1`, `github.com/MicahParks/keyfunc/v3 v3.8.0`, plus transitive
+   `github.com/MicahParks/jwkset v0.11.0` and `golang.org/x/time
+   v0.9.0`) were obtained from a scratch Go module exercising both
+   packages' real API surface and `go mod tidy`, not guessed — avoiding
+   a `go.sum` hash mismatch `GOFLAGS=-mod=readonly` would reject at
+   `go test` time; `go.mod.j2`/`go.sum.pin` (the single checked-in
+   verbatim pin file copied byte-for-byte into every generated Go
+   project since M1) now carry all four unconditionally, so every Go
+   golden's `go.mod`/`go.sum` churned this milestone regardless of
+   whether that particular service declares `auth` — expected,
+   consistent with the pin file's own established discipline, not a
+   bug.
+
+   Two real bugs found live, both via generating and building against
+   the real `go` toolchain (not hypothesized):
+   1. `auth.go.j2` unconditionally imported `context`, `sync`, and
+      `github.com/MicahParks/keyfunc/v3` even on JWT-only (HS256)
+      services that never reference them — `go vet`/`go build` failed
+      with `"context" imported and not used` (and the same for `sync`
+      and `keyfunc`) the moment a JWT-only example was generated.
+      Fixed by wrapping all three imports in
+      `{%- if c.auth_scheme == "oauth2" %}` conditionals, the same
+      fix TS's own M6 needed for `createRemoteJWKSet` from `jose`.
+   2. The first `resource_api.go.j2` draft called
+      `auth.VerifyToken(r, store.Config())`, but
+      `services.{StoreClass}` (defined in `resource_store.go.j2`)
+      only holds a `db *sql.DB` field — no `Config`/`Config()`
+      accessor exists, which would have been a compile error on any
+      auth-gated CRUD resource. Fixed by threading `cfg
+      config.Config` as an explicit extra parameter to each of the
+      five handler-factory functions (`create{{ resource.name
+      }}(store, cfg)` etc.), captured once as `cfg := st.Config` in
+      `Register{{ resource.name }}Routes` and only when
+      `resource.has_auth` — avoiding polluting the store struct with
+      an unused field for the common non-auth case.
+
+   **Disclosed scope gap vs. the plan's literal text:** `order-system
+   .ciac`, this milestone's own named verification target, also
+   declares `cache Redis` (`Component::Cache`), which stays refused
+   for Go until M7 — unlike TS, where Cache landed at TS's own M2, so
+   TS's M6 could reach order-system directly. order-system therefore
+   still returns `CIAC0011` for Go this milestone; it will verify for
+   real once M7 lands Cache, as M7's own milestone text already names
+   it. In its place: `oauth-echo.ciac` (the plan's other named
+   example, cache-free, OAuth2-only) verifies exactly as the plan's
+   own "oauth-echo verifies statically" language describes, and a new
+   minimal scratch example (not committed — `jwt-scope.ciac`,
+   `db Postgres; auth JWT;` plus a scope-gated `crud` and a
+   scope-gated `api`) supplied the live JWT+scope proof order-system
+   would otherwise have provided. Among existing examples, only
+   `oauth-echo` newly un-gates for Go this milestone (its golden is
+   new, not modified) — `crud-notes`, `routed-media`, `typed-video`,
+   and `video-platform` all also need `cache Redis` (deferred to M7);
+   `dev-identity` needs `Component::Users`/Keycloak (also deferred to
+   M7, per M7's own milestone text). This is a smaller immediate
+   un-gating than TS's own M6 (which gained six goldens at once,
+   `Cache` already being supported by then) — a real, disclosed
+   consequence of Go's own milestone ordering deferring Cache to M7
+   rather than M2.
+
+   Live proof: `jwt-scope.ciac` generated via the real `ciac build
+   --target go` binary, `gofmt -l .` clean, `go vet ./...` clean,
+   `go build ./...` clean, `go test ./... -v` green — the generated
+   `TestSecureScopeEnforced`, `TestWidgetReadScopeEnforced`, and
+   `TestWidgetWriteScopeEnforced` subtests all pass: a token missing
+   the required scope gets a real `403` before any Postgres call is
+   touched (asserted directly), and a token carrying the granted scope
+   clears the scope check and reaches the (expected, no-infrastructure)
+   failure from the unreachable local Postgres — never a `401`/`403`
+   — proving the check itself, exactly the "zero infrastructure" claim
+   boundary every other target's own scope test documents. `oauth-echo
+   .ciac` separately verified `gofmt`/`go vet`/`go build`/`go test`
+   clean, with its generated `internal/auth/auth.go` reviewed by hand
+   to confirm the RS256/JWKS code path (lazy `keyfunc.NewDefaultCtx`,
+   `jwt.WithValidMethods([]string{"RS256"})`,
+   `jwt.WithIssuer`/`jwt.WithAudience`) is structurally correct.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings (19.19s), `cargo test --workspace` green (65 suites, one
+   `cargo insta test --accept` pass to regenerate the 11 Go goldens
+   that churned from the go.mod/go.sum dependency additions plus the
+   stale "not wired yet" doc-comment removal in `resource_*_api.go`,
+   and the one genuinely new `oauth-echo` golden — all diffs reviewed
+   by hand before accepting, confirming dependency/comment churn only,
+   no unexpected behavioral change). Unlike TS's own M6, no stale
+   gating-test assertion needed updating (`ciac-backend-go`'s M3-era
+   test suite never asserted `Component::Auth` was refused, so no
+   `supports_*` test rename was needed).
+
+   **Unplanned mid-milestone incident:** `cargo build` failed with a
+   linker `Bus error` (`ld terminated with signal 7`) after many
+   rebuilds across this arc's session exhausted the sandbox's root
+   filesystem — diagnosed via `df -h /` (13M free of 252G) and `du
+   -sh` isolating `target/debug/deps` at 21G of orphaned build
+   artifacts. Resolved with `cargo clean` (safe, rebuild-from-scratch,
+   no data loss; 22.7GiB freed, ~35s to rebuild `ciac` afterward)
+   plus `go clean -cache` and deleting several stale scratch-generated
+   Go project directories; unrelated to the milestone's own code
+   changes, noted for the arc's own record since it consumed real
+   session time.
 7. **M7 — Ontology remainder + call clients + observability
    completion.** S3/email/search/http wrappers, call clients, otel
    end-to-end (four-target trace test), metrics. multi-service-media,

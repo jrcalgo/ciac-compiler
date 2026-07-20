@@ -179,9 +179,18 @@ impl Backend for GoBackend {
         // `Scheduler`/`Realtime` gate the `use { scheduler jobs Cron;
         // realtime live WebSocket/SSE; }` capability instances a
         // `job`/`channel` declaration needs present.
+        //
+        // M6 (this milestone) adds `Auth` for both schemes at once
+        // (golang-jwt/v5 + keyfunc/v3's own JWKS caching handle HS256
+        // and RS256 through the same `jwt.ParseWithClaims` call shape,
+        // branching only on which `jwt.Keyfunc` gets passed in --
+        // `auth.go.j2`'s own `c.auth_scheme` conditional, not a gate
+        // here). `Cache`/`ObjectStore`/`Email`/`Search`/`ExternalHttp`
+        // stay refused until M7 adds their own client wrappers.
         matches!(
             component,
             Component::Api { .. }
+                | Component::Auth { .. }
                 | Component::Database { .. }
                 | Component::Service { .. }
                 | Component::Queue { .. }
@@ -360,6 +369,12 @@ fn emit_service(
         at("internal/httpx/httpx.go"),
         render_go("httpx.go.j2", empty())?,
     );
+    if ctx.has_auth {
+        project.add_file(
+            at("internal/auth/auth.go"),
+            render_go("auth.go.j2", empty())?,
+        );
+    }
 
     if !ctx.records.is_empty() {
         project.add_file(
@@ -523,6 +538,23 @@ fn emit_service(
         at("cmd/api/main.go"),
         render_go("main.go.j2", context! { has_routes => has_routes })?,
     );
+
+    // v0.24 M6: scope-enforcement behavioral test, JWT-only. OAuth2 is
+    // excluded from this no-infrastructure suite for the same live
+    // reason TS's own `scope.test.ts.j2` gate discloses: real RS256
+    // verification needs a real issuer's JWKS regardless of how
+    // lazily it's fetched -- a lazy `keyfunc.NewDefaultCtx` just moves
+    // *when* that network call happens (construction to first
+    // request), it doesn't remove the need for it. A no-infrastructure
+    // scope proof for OAuth2 needs an actual fake auth adapter, real,
+    // disclosed future work this milestone didn't build.
+    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at("internal/routes/scope_test.go"),
+            render_go("scope_test.go.j2", empty())?,
+        );
+    }
+
     Ok(())
 }
 

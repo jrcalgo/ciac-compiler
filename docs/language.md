@@ -1,4 +1,4 @@
-# The CIaC Language (v0.21.0)
+# The CIaC Language (v0.22.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of

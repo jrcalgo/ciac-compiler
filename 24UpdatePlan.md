@@ -1999,6 +1999,217 @@ planning pass finds them named.
    version bump; arc analysis feeding 25UpdatePlan.md (the third
    cost-model data point).
 
+   **Shipped (v0.24 M9):** the third narrow, gated `ciac sim --target
+   go` bet, structurally identical to Rust's (v0.17 M11) and
+   TypeScript's (v0.23 M9) own passes, with the same disclosed scope:
+   only `db.insert` and broker publish/consume are faked; `error`-only
+   failure actions; no `--record`/`--replay`.
+
+   Shipped: `internal/world/world.go.j2` (new) — a hand-written
+   restatement (Go cannot `include_str!` Rust source, occupying the
+   same position Python's/TypeScript's own restatements do): a single
+   `World` type wrapping an occurrence-counted `failureEngine`, an
+   in-memory table map (`json.RawMessage` rows), and a queued-message
+   slice, with `DBInsertChecked`/`PublishChecked`/`FindWhere`/
+   `DrainQueue`/`QueueIsEmpty`/`UnmatchedFailureRules` — a single type
+   rather than TS's separate `FakeDatabase`/`FakeQueue` classes,
+   matching the plan's own sketch text more closely than the TS
+   precedent does. `DBInsertChecked` accepts `row any` and marshals
+   internally (reusing the M7 `object_store.Put` lesson: an
+   accept-any-marshal-inside signature, not a call-site marshal
+   closure) rather than the plan's own literal `json.RawMessage`
+   sketch — a deliberate, disclosed deviation, not an oversight.
+   `cmd/sim_runner/main.go.j2` (new) — a generated, generic scenario
+   interpreter (request/publish/advance/drain/expect), driving
+   `net/http/httptest` for requests (no live listener, matching Rust's
+   `tower::ServiceExt::oneshot`/TS's `app.inject()`) and
+   `workers.HandleMessageOnce<Worker>`/`workers.HandleTick<Job>Once`
+   directly for drain/advance steps. Resolves 24UpdatePlan.md's own
+   pre-registered open question #2 (sim_runner packaging): `cmd/
+   sim_runner` is a second `main` package Go's own `go build ./...`/
+   `go vet ./...`/`go test ./...` already discover automatically (the
+   same way Cargo auto-discovers `src/bin/sim_runner.rs`), so no
+   `TargetInfo.validate` change was needed at all.
+
+   `lib.rs`: `TARGET_INFO.sim` flipped from `SimSupport::None` to
+   `SimSupport::Narrow { unsupported: unsupported_sim_capabilities }`;
+   `unsupported_sim_capabilities` (new, public) — a near-verbatim port
+   of Rust's/TS's own, computed over `lower::scan`'s shared
+   `unguarded_verbs`; `lower.rs` gained `pub(crate) use
+   ciac_codegen::lower::scan;` (the one-line re-export Rust's and TS's
+   own `lower.rs` already carry, missing from Go's until now) so
+   `lib.rs` can call it. `world.go`/`cmd/sim_runner/main.go` emission
+   gated on `ctx.has_db || ctx.has_queue`, matching Rust's/TS's own
+   emission gate exactly.
+
+   `state.go.j2`: `AppState` gained a `World *world.World` field
+   (`nil` in production) and a `NewSimulation(cfg, w) *AppState`
+   constructor (calls the real `New(cfg)`, then overrides `World`) —
+   mirroring TS's `createSimulationState`. `queue.go.j2`'s
+   `PublishJSON` gained a `w *world.World` parameter, checked first
+   (`w.PublishChecked`) before falling through to the real broker
+   client. `lower.rs`'s `publish` leaf and `_steps.go.j2`'s `publish`
+   step both thread `st.World` through. `db_insert_tail` gained the
+   world guard (`if st.World != nil { st.World.DBInsertChecked(...) }
+   else { <real ExecContext> }`), reached regardless of `in_tx`.
+   `transaction_stmt` gained the same guard around the real
+   `BeginTx`/`Commit`/`Rollback` calls only — `{TX_HANDLE}` (`__tx`) is
+   now declared unconditionally as `var __tx *sql.Tx` (typed `nil`)
+   rather than `:=`-inferred from `BeginTx`'s own return, since Go
+   requires the identifier to exist even on the simulation path that
+   never calls `BeginTx` at all.
+
+   **Real bugs found live** (`go build`/`go vet` against the
+   zero-Docker sim-vertical-slice/query-verbs/sim-broker-slice
+   examples, not hypothesized):
+   1. The runner's worker-dispatch table was first written as a Go
+      `switch` on the message subject. Go rejects two `case` arms
+      sharing one constant at compile time (not silently-unreachable
+      code, unlike Rust's `match`/TS's `if`/`else` chain) — exactly
+      the shape `examples/sim-broker-slice.ciac`'s two workers on one
+      stream produce (the "first worker registered for a subject
+      wins" semantics `world.go`'s own doc discloses). Fixed by
+      lowering to an `if`/`else`-chain with a `delivered` flag,
+      preserving the same first-match-wins semantics without the
+      switch's uniqueness constraint.
+   2. `cmd/sim_runner/main.go.j2`'s `bytes`/`net/http`/`net/http/
+      httptest`/`context` imports were unconditional; a db/queue-only
+      program with no `api` (never calls `doRequest`) or with no job
+      and no worker whose pipeline has steps (never calls
+      `context.Background()`) left three "imported and not used"
+      `go vet` failures — found sweeping all 26 examples, not from
+      reading the template. Fixed by gating each import on the same
+      condition that gates its only call site (`c.apis` for the first
+      three; a new `sim_needs_context` flag, computed in `lib.rs` as
+      `!ctx.jobs.is_empty() || ctx.workers.iter().any(|w|
+      !w.steps.is_empty())`, for the fourth).
+   3. `transaction_stmt`'s new `var __tx *sql.Tx` needed
+      `database/sql` imported in `internal/logic/*.go`, but the
+      existing `needs_sql_pkg` flag only tracked `needs.db_get`
+      (`sql.ErrNoRows`) — a `transaction {}` block containing only
+      `db.insert` (exactly `sim-vertical-slice.ciac`'s own
+      `PlaceOrder`/`HandleOrderCreated` shape) left `database/sql`
+      unimported, a real "undefined: sql" failure on the very first
+      generate. Fixed with the same textual-fallback idiom
+      `needs_fmt`/`needs_redis` already use: `needs.db_get ||
+      body_text.contains("*sql.Tx")`.
+
+   **Live-verified**, not just golden-generated: both checked-in
+   scenarios (`sim/vertical-slice.ciac-sim.json`,
+   `sim/virtual-week.ciac-sim.json`) reproduce their canonical
+   outcomes byte-for-byte via `ciac sim --target go ... --json`:
+   `{"ProcessOrder":3}`/`{"Reconcile":1}` and
+   `{"ProcessOrder":100}`/`{"Reconcile":7}`. `order-system.ciac`
+   (declares `auth` and calls `cache.delete`/`cache.set`/`db.count`/
+   `db.update`) is refused with all four reasons named, matching
+   Rust's/TS's own refusal shape exactly. The `sim-vertical-slice ×
+   go` ratchet CI row (`.github/workflows/ci.yml`) was already present
+   — added speculatively in M7's own `--system` row sweep, ahead of
+   this milestone landing the actual `ciac sim --target go` support it
+   assumes; only its stale "all three ... as of v0.23 M9" comment
+   needed updating to "all four ... as of v0.24 M9".
+
+   `commands.rs`: `sim_drive_go` (new), mirroring `sim_drive_rust`/
+   `sim_drive_typescript` exactly — finds the single `go.mod` project
+   dir, requires `cmd/sim_runner/main.go` to exist, `go build -o
+   /dev/null ./cmd/sim_runner` once, then `go run ./cmd/sim_runner
+   <scenario>` once per `--scenario`, parsing the last stdout line as
+   `SimScenarioOutcome`. Wired into `sim_inner`'s `SimSupport::Narrow`
+   match as a third `if target == "go"` arm alongside the existing
+   `"rust"`/`"typescript"` arms.
+
+   **The equivalence suite's Go-distinguishing cases**, per Pillar
+   7's own list: i64 division (already covered at M4's
+   `python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape`
+   — Go's native `/` on `int64` already truncates toward zero, no
+   `Math.trunc`-style special case needed) and the absent/null/zero
+   decode triple (already live-verified at M2 against a running
+   binary — a missing field, an explicit `null`, and a legitimate
+   zero value each got a real HTTP round-trip). Two genuinely new at
+   M9: nil-slice normalization — `db.query`'s Go lowering already
+   initializes its result as `[]{Record}{}` (an empty slice literal,
+   never a bare `var`, which would stay `nil` and marshal to JSON
+   `null`), confirmed both by a new regression test
+   (`go_db_query_result_initializes_as_a_non_nil_empty_slice` in
+   `typed_handler_equivalence.rs`) and live against
+   `query-verbs.ciac`'s own zero-row `/list-active-api` response
+   (`{"data":[],"status":"accepted"}`, never `null`). `time.Time` RFC
+   3339 sub-second formatting — confirmed live with a standalone
+   `encoding/json.Marshal` check: Go trims trailing fractional-second
+   zeros (`.5`, `.123456`, `.1`, none at all when exactly zero) rather
+   than fixed-width precision; asserted-as-documented in
+   [docs/backends.md](docs/backends.md) rather than built into a new
+   flagship example, since no checked-in program reaches a
+   `Timestamp` field yet. `tests/tests/conformance.rs`'s own C7
+   comment updated to record where each boundary case actually lives
+   (live proofs plus one regression test, not a new mechanical C7
+   harness — neither Rust's nor TS's own narrow-sim pass built one
+   either, for the same single-target-single-case reason).
+
+   Docs: [docs/simulation.md](docs/simulation.md) gained Go's column
+   in the surface-support table and a Go paragraph mirroring TS's own
+   (world/state/queue wiring, the transaction-atomicity-in-production-
+   only gap, the switch-vs-if/else wrinkle) plus a "Go's protocol
+   mirrors Rust's and TypeScript's own" subsection and CLI example.
+   [docs/backends.md](docs/backends.md)'s Simulation section gained
+   Go's own paragraph (world/state/queue wiring, the two real bugs,
+   the RFC 3339 divergence note) in the same place TS's own paragraph
+   already lives.
+
+   Workspace version bumped 0.21.0 → 0.22.0 (the "number assigned at
+   execution" convention v0.22 M6 established — the plan-file number
+   in the filename and the crate semver are independent counters):
+   `Cargo.toml` (`workspace.package.version` + all ten internal
+   path-dep version pins), `editors/vscode/package.json`,
+   `docs/language.md`'s title. `docs/language.md`'s provider table
+   already carries Go's column (flipped incrementally across M1-M8);
+   nothing new to flip at M9 since `ciac sim` support isn't part of
+   that table's own columns.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` clean,
+   `cargo test --workspace` green, one golden-churn pass (`internal/
+   world/world.go`, `cmd/sim_runner/main.go` newly present; `state.go`/
+   `queue.go`/every `transaction {}`-using logic file churned for the
+   world guard) reviewed diff-by-diff and accepted across all 21
+   Go golden trees — no unexpected behavior, every removed line the
+   old ungated real-infrastructure path, every added line the new
+   world-guarded structure.
+
+   **Arc retrospective, feeding 25UpdatePlan.md's third cost-model
+   data point:** Go was the strongest-stdlib, best-deployment-artifact,
+   most-precedented (two prior in-repo Go artifacts: the v0.8 M6
+   backend spike, the Ext-backend M3 external-protocol reference) of
+   the three post-factory language arcs, and the actuals bear that
+   out. Every milestone shipped inside its own section without a
+   CHECKPOINT go/no-go reversal (M5's factory-acceptance check passed
+   cleanly on the first pass, unlike TS's own arc). The recurring
+   defect class across all nine milestones was never "Go can't express
+   this" — it was always a *textual* completeness gap in a shared
+   scanner/flag (`needs_sql_pkg`, `needs_json`, the missing
+   `internal/clients` import, the missing `schemas.` qualification,
+   and now `sim_needs_context`) that a live `go vet`/`go build` sweep
+   caught immediately and a golden-only workflow would have missed
+   silently. `HostSyntax`'s ~50-leaf contract (22UpdatePlan.md Pillar
+   3) held for the third language in a row without a single contract
+   amendment this arc didn't already need for its own error-idiom
+   reasons (M4) — Go's own two-Go-artifacts precedent and stdlib
+   strength did not, in the end, make the *factory* cheaper than TS's
+   arc; both arcs paid the same category of cost (leaf-by-leaf
+   `HostSyntax` implementation, ontology wrapper packages, a generated
+   sim runner), just with different concrete bug shapes per target's
+   own idiom. The clearest forward signal for Java (25UpdatePlan.md):
+   budget for "the shared scanner doesn't track a flag this target's
+   own idiom needs" as the default defect class per milestone, not a
+   surprise — it has now recurred in Rust (E0382), TypeScript (two
+   hardcoded refusal-message target names), and Go (the four flags
+   above) across three independent arcs, which makes it a property of
+   the *factory's* flag-based design, not any one target's
+   immaturity. Java's own heavier ecosystem and slower validate loop
+   (Maven/Gradle compile times) is the one named risk this arc's own
+   confidence note flagged in advance; nothing this arc found changes
+   that assessment.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** the reconciliation notes are committed in this

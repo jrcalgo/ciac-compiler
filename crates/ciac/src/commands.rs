@@ -1264,6 +1264,8 @@ fn sim_inner(
         SimSupport::Narrow { .. } if target == "typescript" => {
             sim_drive_typescript(out, scenarios, wall_timeout)?
         }
+        // target-literal-ok: see the sibling arm above.
+        SimSupport::Narrow { .. } if target == "go" => sim_drive_go(out, scenarios, wall_timeout)?,
         SimSupport::Narrow { .. } => bail!(
             "`ciac sim` has no generated-runner driver wired for target `{target}` (its \
              `TargetInfo::sim` claims `Narrow` support, but `sim_inner` doesn't know how to \
@@ -1525,6 +1527,86 @@ fn sim_drive_typescript(
         let scenario_abs = resolve_path(scenario_path)?;
         let mut cmd = Command::new("node");
         cmd.arg("dist/sim_runner.js")
+            .arg(&scenario_abs)
+            .current_dir(&project_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run sim_runner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "sim_runner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// Drives every `--scenario` against a generated Go project's own
+/// `cmd/sim_runner/main.go` (v0.24 M9) -- same generated-runner shape
+/// as [`sim_drive_rust`]/[`sim_drive_typescript`] (the runner is
+/// generated code baked into the project itself, compiled and run once
+/// per scenario, one-line JSON reply on stdout), different toolchain:
+/// `go build` then `go run` the runner's own package path. `cmd/
+/// sim_runner` is a second `main` package Go's own `go build ./...`/`go
+/// vet ./...`/`go test ./...` already discover automatically (the same
+/// way Cargo auto-discovers `src/bin/sim_runner.rs`), so unlike Rust's
+/// `--bin sim_runner` flag, no special package selector is needed
+/// beyond the package path itself.
+fn sim_drive_go(
+    out: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let projects = find_project_dirs(out, "go.mod")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!("no generated go project found under {}", out.display()),
+        [one] => one.clone(),
+        many => bail!(
+            "`ciac sim` only supports a single-service Go project in v0.24 (found {} under {}); \
+             see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+    if !project_dir.join("cmd/sim_runner/main.go").exists() {
+        bail!(
+            "no `cmd/sim_runner/main.go` in {} -- this program declares nothing v0.24 M9's \
+             simulation world can fake (no `db`/`queue` use); see docs/simulation.md",
+            project_dir.display()
+        );
+    }
+    run_in(
+        &project_dir,
+        "go",
+        &["build", "-o", "/dev/null", "./cmd/sim_runner"],
+    )?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("go");
+        cmd.arg("run")
+            .arg("./cmd/sim_runner")
             .arg(&scenario_abs)
             .current_dir(&project_dir);
 

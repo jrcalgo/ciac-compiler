@@ -189,8 +189,7 @@
         }
       ],
       "sim": {
-        "level": "none",
-        "reason": "Go simulation support lands at 24UpdatePlan.md M9"
+        "level": "narrow"
       },
       "capabilities": {}
     }

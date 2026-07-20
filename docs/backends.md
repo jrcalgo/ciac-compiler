@@ -299,3 +299,59 @@ production code gives `transaction {}` real atomicity (a real gap Rust's
 own production code still discloses), but degrades to non-atomic,
 unwrapped-statement behavior *only* under simulation, since there is no
 live database for a real `BEGIN`/`COMMIT` to run against a `SimWorld`.
+
+Go reached the same narrow slice in 24UpdatePlan.md M9, structurally
+identical to TypeScript's own shape (Go cannot `include_str!` Rust
+source either, so `internal/world/world.go`'s `World` is a hand-written
+restatement in the same position as Python's/TypeScript's own), fakes
+the identical `db.insert`/broker publish-consume pair, checked by
+`state.AppState.World`/`state.NewSimulation()`/`queue.PublishJSON`'s
+world-guarded branch, and refused by
+`ciac_backend_go::unsupported_sim_capabilities` — computed from the
+same shared `ciac_codegen::lower::scan`, `pub(crate) use`-re-exported
+into this backend's own `lower` module exactly the way Rust's and TS's
+already were. A generated `cmd/sim_runner/main.go` (a generic scenario
+interpreter, needing concrete per-program route/worker/job names baked
+in at codegen time, same reason as Rust/TS) drives `net/http/httptest`
+for requests (no live listener), matching Rust's `tower::ServiceExt::
+oneshot`/TS's `app.inject()` approach exactly; unlike TS's Fastify
+logger wrinkle, Go's `slog` default handler already writes to stderr,
+so no `{ logger: false }`-equivalent construction option was needed.
+Go's own production code gives `transaction {}` **real** atomicity
+unconditionally (`database/sql`'s `*sql.Tx`, the same bar TS's
+Postgres/MySQL branch holds, and a real improvement over Rust's own
+disclosed non-atomic gap), and — like TypeScript — degrades to a
+guarded no-op only under simulation: `transaction_stmt` declares its
+`*sql.Tx` handle unconditionally (typed `nil`, since Go requires the
+identifier to exist even on a path that never runs) but skips the real
+`BeginTx`/`Commit`/`Rollback` calls when `state.World` is set, since
+every db verb this checkpoint's sim gate allows inside a transaction
+(`db.insert` only) already redirects to `World` itself.
+
+Two real bugs the Go pass's own live sweep surfaced, neither
+hypothesized from reading the templates: (1) `cmd/sim_runner/main.go`'s
+worker-dispatch table was first written as a Go `switch` on the
+message subject, which compiles-time-rejects two `case` arms sharing
+the same constant value — exactly the shape `examples/sim-broker-
+slice.ciac`'s two workers on one stream produce (the "first worker
+registered for a subject wins" semantics `world.go`'s own doc
+discloses); fixed by lowering to an `if`/`else`-chain with a
+`delivered` flag instead, the same first-match-wins shape without the
+switch's uniqueness constraint. (2) the runner's own unconditional
+`bytes`/`net/http`/`net/http/httptest`/`context` imports left three
+"imported and not used" `go vet` failures across the db/queue-only
+corner of the example set (a program with no `api` never calls
+`doRequest`; a program with no job and no worker whose pipeline has
+steps never calls `context.Background()`); fixed by gating each import
+on the same conditions that gate its only call site.
+
+One more divergence-ledger row, confirmed but not yet exercised by any
+checked-in example (no reachable program declares a `Timestamp`
+field): Go's `time.Time.MarshalJSON` formats RFC 3339 with a trimmed
+fractional-seconds component — `.5`, `.123456`, `.1`, and no fractional
+part at all when it's exactly zero — rather than a fixed-width
+precision. Confirmed live with a standalone `encoding/json.Marshal`
+check at v0.24 M9 (not hypothesized from reading the stdlib docs);
+asserted-as-documented per Pillar 7's own table rather than built out
+into a new flagship example, since nothing in the current corpus
+reaches this code path yet.

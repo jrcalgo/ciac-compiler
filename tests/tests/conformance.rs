@@ -19,12 +19,26 @@
 //!   `generated-rust` jobs (`.github/workflows/ci.yml`) — local
 //!   toolchains, not re-run here (this suite stays fast); delegated,
 //!   not skipped.
-//! - **C6** (ratchet proofs) / **C7** (boundary decode/encode): no
-//!   content yet — C6 is a support-matrix-table discipline with
-//!   nothing to check mechanically until a third target exists to
-//!   diverge from; C7 is introduced by 24UpdatePlan.md (Go's
-//!   zero-value/null trap) and inherited by later targets. Both are
-//!   named here so the numbering is stable for when they do land.
+//! - **C6** (ratchet proofs): no content yet — a support-matrix-table
+//!   discipline with nothing to check mechanically until a fourth
+//!   target exists to diverge from. Named here so the numbering is
+//!   stable for when it lands.
+//! - **C7** (boundary decode/encode): live-verified rather than housed
+//!   in this file's own harness — Go's absent/null/zero decode triple
+//!   was proven at v0.24 M2 against a running binary (not a unit test:
+//!   a missing field, an explicit `null`, and a legitimate zero value
+//!   each got a real HTTP round-trip and the right status code); the
+//!   nil-slice-normalization row got the same treatment at v0.24 M9
+//!   (`examples/query-verbs.ciac`'s zero-row response), plus a
+//!   structural regression test,
+//!   `go_db_query_result_initializes_as_a_non_nil_empty_slice` in
+//!   `typed_handler_equivalence.rs`. Neither Rust's nor TypeScript's
+//!   own narrow-sim passes built a shared mechanical C7 harness either
+//!   (each did its own live proof instead) — inventing one now, for a
+//!   boundary class with exactly one target-specific case per target
+//!   so far, would be scope beyond what any of the three arcs actually
+//!   needed. Revisit if a fourth target's own boundary cases start
+//!   repeating this file's other C-number shape.
 
 use ciac_codegen::model::build_system;
 use ciac_codegen::GenOptions;

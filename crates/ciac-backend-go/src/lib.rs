@@ -38,7 +38,7 @@ use ciac_codegen::{
     Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
     TargetInfo, ValidateStep,
 };
-use ciac_ir::{Component, NormalizedIr};
+use ciac_ir::{Component, NodeKind, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 
@@ -114,10 +114,53 @@ static TARGET_INFO: TargetInfo = TargetInfo {
         restart: RestartStyle::Restart,
     },
     source_extension: "go",
-    sim: SimSupport::None {
-        reason: "Go simulation support lands at 24UpdatePlan.md M9",
+    sim: SimSupport::Narrow {
+        unsupported: unsupported_sim_capabilities,
     },
 };
+
+/// Human-readable, closed list of reasons `ciac sim --target go`
+/// (v0.24 M9) cannot yet simulate `ir`, empty when it can — the same
+/// gate Rust's own `unsupported_sim_capabilities` (v0.17 M11) and
+/// TypeScript's (v0.23 M9) compute, over the same shared `lower::scan`
+/// this backend already reuses elsewhere: `world.go` only fakes
+/// `db.insert` and broker publish/consume; every other verb a typed
+/// handler calls falls straight through the world-guard to real
+/// infrastructure (`db_update_tail` and friends never check
+/// `st.World`).
+pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
+        reasons.push(
+            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
+             cryptography against a real issuer, which this milestone's simulation world does \
+             not fake"
+                .to_owned(),
+        );
+    }
+    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
+    for node in ir.nodes() {
+        if let Component::Service {
+            signature: Some(hir),
+            ..
+        } = &node.component
+        {
+            for verb in lower::scan(ir, hir).unguarded_verbs {
+                if !unguarded_verbs.contains(&verb) {
+                    unguarded_verbs.push(verb);
+                }
+            }
+        }
+    }
+    if !unguarded_verbs.is_empty() {
+        unguarded_verbs.sort_unstable();
+        reasons.push(format!(
+            "calls verb(s) the simulation world does not fake: {}",
+            unguarded_verbs.join(", ")
+        ));
+    }
+    reasons
+}
 
 #[derive(Debug, Default)]
 pub struct GoBackend;
@@ -434,6 +477,35 @@ fn emit_service(
         project.add_file(
             at("internal/queue/queue.go"),
             render_go("queue.go.j2", empty())?,
+        );
+    }
+    // v0.24 M9: the simulation world -- only for programs with
+    // something it can actually fake (`db.insert`, broker `publish`),
+    // the same gate Rust's/TypeScript's own `world.rs`/`world.ts`
+    // emission (v0.17 M11 / v0.23 M9) uses. `sim_needs_schemas` tells
+    // the runner template whether any worker's typed payload needs
+    // the `internal/schemas` import at all.
+    if ctx.has_db || ctx.has_queue {
+        project.add_file(
+            at("internal/world/world.go"),
+            render_go("world.go.j2", empty())?,
+        );
+        let sim_needs_schemas = ctx.workers.iter().any(|w| w.payload.is_some());
+        // `context.Background()` only appears inside the runner's
+        // `drain`/`advance` bodies, and only for a worker with a
+        // non-empty pipeline (`drain`'s own `{% if worker.steps %}`
+        // gate) or any job (`advance`'s per-job block is unconditional)
+        // -- found live: a db/queue-only program with zero such workers
+        // (e.g. every `crud`-only example that still declares a queue)
+        // left `context` imported and unused, a `go vet` failure.
+        let sim_needs_context =
+            !ctx.jobs.is_empty() || ctx.workers.iter().any(|w| !w.steps.is_empty());
+        project.add_file(
+            at("cmd/sim_runner/main.go"),
+            render_go(
+                "sim_runner.go.j2",
+                context! { sim_needs_schemas => sim_needs_schemas, sim_needs_context => sim_needs_context },
+            )?,
         );
     }
     if !ctx.resources.is_empty() || !ctx.tables.is_empty() {
@@ -803,7 +875,7 @@ mod tests {
         let info = backend.target_info();
         assert_eq!(info.project_marker, "go.mod");
         assert_eq!(info.source_extension, "go");
-        assert!(matches!(info.sim, SimSupport::None { .. }));
+        assert!(matches!(info.sim, SimSupport::Narrow { .. }));
         assert_eq!(info.validate.len(), 4);
     }
 }

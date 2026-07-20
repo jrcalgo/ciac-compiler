@@ -24,13 +24,13 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python (full), Rust and TypeScript (narrow) (v0.17 M11, TypeScript v0.23 M9)
+## Status: Python (full), Rust/TypeScript/Go (narrow) (v0.17 M11, TypeScript v0.23 M9, Go v0.24 M9)
 
-| Surface | Python | Rust | TypeScript |
-| --- | --- | --- | --- |
-| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Rust |
-| `verify --sim` | done | same | same |
-| MCP `verify_sim` | done | same | same |
+| Surface | Python | Rust | TypeScript | Go |
+| --- | --- | --- | --- | --- |
+| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Rust | same narrow slice as Rust/TypeScript |
+| `verify --sim` | done | same | same | same |
+| MCP `verify_sim` | done | same | same | same |
 
 Rust's ports/adapters seam, fake adapters, and a generated per-program
 simulation runner (v0.17 M11) exist now, but they cover a deliberately
@@ -67,15 +67,42 @@ for a real `BEGIN`/`COMMIT` to run against a `SimWorld`, and every
 db-verb inside a transaction this checkpoint's own gate allows is
 `db.insert`, already world-guarded per statement.
 
+Go's own gated bet (v0.24 M9) reaches the same scope again, via the
+same hand-written-restatement shape TypeScript's own pass established
+(Go cannot `include_str!` Rust source either): `internal/world/
+world.go`'s `World` type (an in-package `failureEngine`/table map/
+queue slice, occupying the same position Python's/TypeScript's own
+restatements do) fakes the identical `db.insert` + broker publish/
+consume pair, gated on the identical `db`/`queue` declaration check,
+refused with the identical per-verb/per-capability reasons
+`unsupported_sim_capabilities` computes over the same shared HIR
+scanner Rust's/TypeScript's own gates use. Go's own production code
+gives `transaction {}` **real**, unconditional atomicity
+(`database/sql`'s `*sql.Tx`, the same bar TypeScript's Postgres/MySQL
+branch holds — a real improvement over Rust's own disclosed non-atomic
+gap) and — like TypeScript — degrades to a guarded no-op only under
+simulation, for the identical reason: every db verb this checkpoint's
+own gate allows inside a transaction is `db.insert`, already
+world-guarded per statement. One Go-specific wrinkle the other two
+narrow targets don't have: `cmd/sim_runner/main.go`'s worker-dispatch
+table cannot be a Go `switch` on the subject string (two workers
+sharing one subject — `examples/sim-broker-slice.ciac`'s own shape —
+would be two `case` arms with the same constant value, a compile
+error, not merely dead code the way it would be in Rust's `match`
+guards or TypeScript's `if`/`else` chain), so it lowers to an
+`if`/`else`-chain with a `delivered` flag instead — the same
+first-worker-registered-wins semantics, expressed the one way Go's own
+`switch` uniqueness rule allows.
+
 Single-service projects only, every target: `ciac sim` refuses cleanly
 (not a crash, not a silent partial run) when it finds more than one
-project descriptor (`pyproject.toml`/`Cargo.toml`/`package.json`) under
-`--out`. Multi-service simulation — one driver process per service,
-coordinated through one shared virtual clock — is real future work, not
-attempted here for any target. `--record`/`--replay` remain
-Python-only: neither generated-runner target (Rust's, TypeScript's) has
-plan/replay-tape support (a plain scenario interpreter, not the bounded
-child protocol below).
+project descriptor (`pyproject.toml`/`Cargo.toml`/`package.json`/
+`go.mod`) under `--out`. Multi-service simulation — one driver process
+per service, coordinated through one shared virtual clock — is real
+future work, not attempted here for any target. `--record`/`--replay`
+remain Python-only: no generated-runner target (Rust's, TypeScript's,
+Go's) has plan/replay-tape support (a plain scenario interpreter, not
+the bounded child protocol below).
 
 ## The bounded child protocol
 
@@ -151,6 +178,34 @@ and break the "last line on stdout" contract `ciac sim`'s parent
 process depends on. Production `buildApp` calls keep full logging;
 only the simulation runner passes the override.
 
+### Go's protocol mirrors Rust's and TypeScript's own, line-for-line
+
+Same reasoning again, same shape: `ciac build`/`verify --target go`
+emits `cmd/sim_runner/main.go` whenever the program declares `db` or
+`queue`, dispatching on the closed `request`/`publish`/`advance`/
+`drain`/`expect` step vocabulary exactly like `sim_runner.rs`/
+`sim_runner.ts` do — a generic scenario interpreter generated per
+program, needing concrete per-program route/worker/job names baked in
+at codegen time, the same reason Rust's and TypeScript's own runners
+are generated rather than embedded. `cmd/sim_runner` is a second `main`
+package Go's own `go build ./...`/`go vet ./...`/`go test ./...`
+already discover automatically (the same way Cargo auto-discovers
+`src/bin/sim_runner.rs`), so no `TargetInfo.validate` change was needed
+to pick it up — resolving 24UpdatePlan.md's own pre-registered open
+question about third-binary packaging. `ciac sim --target go` builds it
+once (`go build ./cmd/sim_runner`), then runs it once per `--scenario`:
+
+```text
+go run ./cmd/sim_runner scenario.json
+```
+
+No implementation-level wrinkle equivalent to TypeScript's `{ logger:
+false }`: `net/http/httptest`'s recorder writes to an in-memory buffer,
+never stdout, and Go's own `log/slog` default handler already writes
+to stderr — so the runner's one-line `SimScenarioOutcome` JSON reply on
+stdout is never at risk of interleaving with anything else, the same
+freedom Rust's `tracing` setup already had.
+
 ## CLI
 
 ```sh
@@ -169,6 +224,9 @@ ciac sim service.ciac -t rust -o build/ --scenario sim/checkout.ciac-sim.json
 
 # TypeScript: identical shape and identical refusal behavior to Rust's.
 ciac sim service.ciac -t typescript -o build/ --scenario sim/checkout.ciac-sim.json
+
+# Go: identical shape and identical refusal behavior to Rust's/TypeScript's.
+ciac sim service.ciac -t go -o build/ --scenario sim/checkout.ciac-sim.json
 ```
 
 `--record`/`--replay` accept exactly one `--scenario` at a time.

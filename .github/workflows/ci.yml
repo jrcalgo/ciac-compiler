@@ -292,16 +292,20 @@ jobs:
           run_system examples/mysql-notes.ciac typescript
           run_system examples/mysql-notes.ciac go
           run_system examples/kafka-pipeline.ciac python
-          # v0.17 M11's fidelity ratchet, all three narrow/full sim
-          # targets as of v0.23 M9: the same broker-publish effect each
+          # v0.17 M11's fidelity ratchet, all four narrow/full sim
+          # targets as of v0.24 M9: the same broker-publish effect each
           # target's own sim_runner (no Docker) exercises against its
-          # SimWorld fake queue is exercised here against a real NATS
-          # broker + real Postgres, via the generated tests/system/
+          # SimWorld/World fake queue is exercised here against a real
+          # NATS broker + real Postgres, via the generated tests/system/
           # test_delivery.py capability round-trip (v0.9 M2) -- none of
-          # the three had ever been system-verified before their own
+          # the four had ever been system-verified before their own
           # milestone added this row. A disagreement between this and
           # `ciac sim --target <x>`'s own green run is exactly the
-          # fake/adapter bug this ratchet exists to catch.
+          # fake/adapter bug this ratchet exists to catch. This row was
+          # added speculatively in v0.24 M7 (ahead of Go's own sim
+          # support landing in M9) as part of that milestone's broader
+          # `--system` row additions; still correct now that
+          # `ciac sim --target go` is real.
           run_system examples/sim-vertical-slice.ciac python
           run_system examples/sim-vertical-slice.ciac rust
           run_system examples/sim-vertical-slice.ciac typescript

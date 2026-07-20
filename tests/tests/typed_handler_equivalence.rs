@@ -343,3 +343,65 @@ fn python_rust_typescript_and_go_lower_the_same_handler_body_to_equivalent_shape
     assert!(ts_logic.contains("async handle(p: Payload): Promise<Payload>"));
     assert!(go_logic.contains("func ComputeAverage(ctx context.Context, st *state.AppState, p schemas.Payload) (schemas.Payload, error)"));
 }
+
+/// v0.24 M9: the "nil-slice `List`" divergence-ledger row (Pillar 7's
+/// table: "normalized to `[]`, disclosed"). A bare Go `var out []T`
+/// stays `nil` until the first `append`, and `encoding/json` marshals
+/// a `nil` slice as `null`, not `[]` — a real trap Python's/Rust's/
+/// TS's own empty-list JSON shape doesn't have. `db.query`'s Go
+/// lowering avoids it by initializing the result with an empty *slice
+/// literal* (`[]T{}`, never left as a bare `var`) before the scan loop
+/// runs. Confirmed structurally here and, separately, live at v0.24
+/// M9 against `examples/query-verbs.ciac`: a zero-row `POST
+/// /list-active-api` over a real SQLite file returned
+/// `{"data":[],"status":"accepted"}`, never `{"data":null,...}`.
+#[test]
+fn go_db_query_result_initializes_as_a_non_nil_empty_slice() {
+    const SOURCE: &str = r#"
+service ListProbe;
+
+use {
+    db SQLite;
+}
+
+record Note {
+    id: Uuid;
+    title: String;
+}
+
+record NoFilter {
+    marker: Bool;
+}
+
+table Notes: Note;
+
+handler ListAll(f: NoFilter) -> [Note] {
+    return db.query(Notes);
+}
+
+api ListAllApi: NoFilter;
+pipeline ListAllApi: ListAll -> Return;
+"#;
+    let (ir, diags) = compile(SOURCE);
+    assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
+    let ir = ir.expect("well-typed program produces IR");
+
+    let go_project = GoBackend
+        .generate(&ir, &GenOptions::default())
+        .expect("go must build the list-returning handler");
+    let go_logic = go_project
+        .get("internal/logic/list_all.go")
+        .expect("go emits the compiler-owned logic file");
+
+    assert!(
+        go_logic.contains("[]schemas.Note{}"),
+        "go: db.query's result slice must be initialized as an empty slice literal, not left \
+         as a bare `var` (which stays nil, and a nil slice marshals to JSON `null` instead of \
+         `[]`); found: {go_logic}"
+    );
+    assert!(
+        !go_logic.contains("var __out"),
+        "go: the result slice must never be declared via a bare `var` (nil by default); \
+         found: {go_logic}"
+    );
+}

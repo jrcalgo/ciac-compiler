@@ -25,6 +25,9 @@ import (
 {%- if c.has_queue %}
 	"{{ c.package }}/internal/queue"
 {%- endif %}
+{%- if c.has_db or c.has_queue %}
+	"{{ c.package }}/internal/world"
+{%- endif %}
 {%- if c.has_cache %}
 
 	"github.com/redis/go-redis/v9"
@@ -66,6 +69,17 @@ type AppState struct {
 {%- endfor %}
 {%- if c.has_queue %}
 	Queue *queue.Queue
+{%- endif %}
+{%- if c.has_db or c.has_queue %}
+	// World is `nil` in production; set only by [NewSimulation]
+	// (v0.24 M9) -- every world-guarded call site (`db.insert`,
+	// broker `publish`) checks it first and falls through to the
+	// real fields above when it's unset. Every other db/cache/
+	// ontology field above is still built normally in simulation
+	// (harmless -- lazy construction never touches the network in
+	// production *or* simulation) but is never touched while World
+	// is set.
+	World *world.World
 {%- endif %}
 }
 
@@ -134,3 +148,26 @@ func New(cfg config.Config) (*AppState, error) {
 {%- endif %}
 	return st, nil
 }
+{%- if c.has_db or c.has_queue %}
+
+// NewSimulation builds an AppState against an in-memory [world.World]
+// instead of real infrastructure (v0.24 M9) -- every provider client
+// field above is still constructed normally (the same lazy, network-
+// free construction [New] itself guarantees), but the world-guarded
+// call sites never fall through to them once World is set. cfg is
+// still required (config-driven fields like table/queue subject names
+// aren't faked), but its connection URLs are never dialed.
+func NewSimulation(cfg config.Config, w *world.World) *AppState {
+	st, err := New(cfg)
+	if err != nil {
+		// New's only failure modes are malformed provider URLs, which
+		// simulation still parses from the same cfg -- a scenario run
+		// against a program with an invalid config is a setup bug, not
+		// a scenario outcome, so this panics rather than threading a
+		// second error return through every caller.
+		panic(err)
+	}
+	st.World = w
+	return st
+}
+{%- endif %}

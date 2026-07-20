@@ -47,6 +47,7 @@
 //! orders.ciac`/`query-verbs.ciac` (db-only) are this milestone's
 //! actual proving examples, exactly as they were for TS.
 
+pub(crate) use ciac_codegen::lower::scan;
 use ciac_codegen::lower::{
     self, apply_dest, fidelity_checked_float, strip_outer_parens, Dest, HostSyntax, IndexKey,
     LoweredPredicate, Orientation, PredValue,
@@ -599,11 +600,29 @@ impl HostSyntax for GoSyntax<'_> {
             self.db_engine,
         );
         let mut out = vec![format!("{indent}{row} := {value}")];
+        // v0.24 M9's world guard: the one HostSyntax leaf `ciac sim`
+        // needs to fake, mirroring `SimWorld::db_insert_checked`/
+        // `dbInsertChecked` exactly (including the fact the failure
+        // effect it checks is named `"db.commit"`, not `"db.insert"` --
+        // the FailureEngine rule vocabulary every backend shares).
+        // Reached regardless of `in_tx`: a standalone `db.insert` and
+        // one inside `transaction { .. }` are both simulated the same
+        // way -- `st` (the outer AppState) stays in scope through a
+        // transaction block the same way `self.handle(in_tx)`'s own
+        // `st.{}.BeginTx` call site already relies on.
+        out.push(format!("{indent}if st.World != nil {{"));
         out.push(format!(
-            "{indent}if _, {err} := {handle}.ExecContext(ctx, {sql:?}, {}); {err} != nil {{",
+            "{indent}\tif {err} := st.World.DBInsertChecked({table_snake:?}, {row}); {err} != nil {{"
+        ));
+        out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
+        out.push(format!("{indent}}} else {{"));
+        out.push(format!(
+            "{indent}\tif _, {err} := {handle}.ExecContext(ctx, {sql:?}, {}); {err} != nil {{",
             binds.join(", ")
         ));
-        out.push(format!("{indent}\treturn {}, {err}", self.zero_return));
+        out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
         out.push(format!("{indent}}}"));
         apply_dest(self, dest, &row, indent, &mut out);
         out
@@ -839,28 +858,49 @@ impl HostSyntax for GoSyntax<'_> {
     /// is a safe, idiomatic no-op (`sql.ErrTxDone`, silently ignored)
     /// — this is the ordinary Go transaction pattern, not a hand-
     /// rolled rollback-on-panic scheme.
+    ///
+    /// v0.24 M9's world guard: under simulation (`st.World` set) the
+    /// real `BeginTx`/`Commit`/`Rollback` calls are skipped entirely —
+    /// there is no live database to check a connection out from, and
+    /// every db verb this checkpoint's sim gate allows inside a
+    /// transaction (`db.insert` only; anything else is on
+    /// `unsupported_sim_capabilities`'s unguarded list and already
+    /// refuses `ciac sim` before this code path is reached) already
+    /// redirects to `World` itself in `inner_lines`. Mirrors TS's own
+    /// `if (!this.state.world)` guard around `__connect`/`BEGIN`/
+    /// `COMMIT`/`ROLLBACK` exactly. `{TX_HANDLE}` is still declared
+    /// unconditionally (typed `nil`, never dereferenced under
+    /// simulation since `db_insert_tail`'s own world-guard skips the
+    /// branch that would use it) — Go requires the identifier to exist
+    /// even on a path that never runs.
     fn transaction_stmt(&self, inner_lines: Vec<String>, indent: &str) -> Vec<String> {
         let field = self
             .db_field
             .as_deref()
             .expect("a transaction block requires a bound database instance");
         let err = self.fresh("__err");
-        let mut out = vec![format!(
-            "{indent}{TX_HANDLE}, {err} := st.{}.BeginTx(ctx, nil)",
-            go_pascal(field.to_owned())
-        )];
-        out.push(format!("{indent}if {err} != nil {{"));
-        out.push(format!("{indent}\treturn {}, {err}", self.zero_return));
-        out.push(format!("{indent}}}"));
+        let mut out = vec![format!("{indent}var {TX_HANDLE} *sql.Tx")];
+        out.push(format!("{indent}if st.World == nil {{"));
+        out.push(format!("{indent}\tvar {err} error"));
         out.push(format!(
-            "{indent}defer func() {{ _ = {TX_HANDLE}.Rollback() }}()"
+            "{indent}\t{TX_HANDLE}, {err} = st.{}.BeginTx(ctx, nil)",
+            go_pascal(field.to_owned())
         ));
+        out.push(format!("{indent}\tif {err} != nil {{"));
+        out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
+        out.push(format!(
+            "{indent}\tdefer func() {{ _ = {TX_HANDLE}.Rollback() }}()"
+        ));
+        out.push(format!("{indent}}}"));
         out.extend(inner_lines);
         let cerr = self.fresh("__err");
+        out.push(format!("{indent}if st.World == nil {{"));
         out.push(format!(
-            "{indent}if {cerr} := {TX_HANDLE}.Commit(); {cerr} != nil {{"
+            "{indent}\tif {cerr} := {TX_HANDLE}.Commit(); {cerr} != nil {{"
         ));
-        out.push(format!("{indent}\treturn {}, {cerr}", self.zero_return));
+        out.push(format!("{indent}\t\treturn {}, {cerr}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
         out.push(format!("{indent}}}"));
         out
     }
@@ -889,7 +929,7 @@ impl HostSyntax for GoSyntax<'_> {
     fn publish(&self, subject: &str, value: &str, _value_ty: &HirType, indent: &str) -> String {
         let err = self.fresh("__err");
         format!(
-            "{indent}if {err} := queue.PublishJSON(ctx, st.Queue, {subject:?}, {value}); {err} != nil {{ return {}, {err} }}",
+            "{indent}if {err} := queue.PublishJSON(ctx, st.Queue, st.World, {subject:?}, {value}); {err} != nil {{ return {}, {err} }}",
             self.zero_return
         )
     }
@@ -1266,7 +1306,14 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         // `needs_fmt`/`needs_redis` for the same situation), so the
         // textual fallback below still catches that case (and cache's).
         needs_json: needs.json || body_text.contains("json."),
-        needs_sql_pkg: needs.db_get,
+        // `needs.db_get` covers `sql.ErrNoRows`; a `transaction {}`
+        // block's own world-guarded `var __tx *sql.Tx` (v0.24 M9) is a
+        // second, independent reason this file needs `database/sql` --
+        // the shared `Needs` scanner has no dedicated transaction flag
+        // (see `needs_fmt`/`needs_redis`'s own textual-fallback
+        // pattern just below for why this file leans on `body_text`
+        // for cases the scanner doesn't track).
+        needs_sql_pkg: needs.db_get || body_text.contains("*sql.Tx"),
         needs_fmt: body_text.contains("fmt."),
         needs_redis: body_text.contains("redis."),
         body,

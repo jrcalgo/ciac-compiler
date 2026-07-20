@@ -34,6 +34,8 @@ import (
 
 	"{{ c.package }}/internal/observability"
 {%- endif %}
+
+	"{{ c.package }}/internal/world"
 )
 
 {%- if c.queue_engine == "kafka" %}
@@ -185,10 +187,18 @@ func (q *Queue) Subscribe(subject string) (chan *nats.Msg, error) {
 // `traceparent` into the message headers -- the publish-side half of
 // broker-hop trace propagation; the consume side extracts it back out
 // in `worker.go.j2`/`consumer.go.j2`.{% endif %}
-func PublishJSON(ctx context.Context, q *Queue, subject string, v any) error {
+//
+// v0.24 M9's world guard: w is `nil` in production; when set (by
+// `state.NewSimulation`), the broker is faked entirely and q is never
+// touched, mirroring TS's own `if (state.world)` branch in this same
+// function.
+func PublishJSON(ctx context.Context, q *Queue, w *world.World, subject string, v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
 		return err
+	}
+	if w != nil {
+		return w.PublishChecked(subject, payload)
 	}
 {%- if c.has_tracing %}
 	return q.Publish(subject, payload, observability.InjectCarrier(ctx))

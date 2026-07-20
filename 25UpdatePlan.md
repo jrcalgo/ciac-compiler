@@ -1430,6 +1430,171 @@ surface.
    targets (OpenAPI byte-equality ×5, topology, boundary decode);
    the Pillar 8 latency measurement and the pre-agreed CI-scoping
    decision taken from data. Go/no-go for the remainder.
+
+   **Shipped (v0.25 M5) — the measured cost table**, against
+   `24UpdatePlan.md` M5's own Go actuals (M1–M4, the same milestone
+   marker Java has just reached) as the primary baseline, plus
+   Rust's/Python's mature full-arc figures and TS's own M1–M4 actuals
+   for context exactly as Go's own table did:
+
+   | | Rust (mature, full arc) | Python (mature, full arc) | TypeScript (M1–M4) | Go (M1–M4) | Java (M1–M4) |
+   | --- | --- | --- | --- | --- | --- |
+   | `lower.rs` (leaves + `render`) | 607 | 932 | 1,098 | 1,296 | **1,031** |
+   | `lib.rs` (emission wiring) | 559 | 429 | 501 | 710 | **788** |
+   | `filters.rs` (neutral-field mapping) | n/a | n/a | 206 | 139 | **139** |
+   | templates | ~2,800 | ~2,800 | 5,608 across 28 files | 2,176 across 25 files | **1,824 across 31 files** |
+   | edits outside the crate | 1 (registry line) | 1 (registry line) | 1 (`commands.rs`) | 1 + 2 disclosed amendments | **1** (`commands.rs`, single-line registration) **+ 0 amendments** |
+
+   **`lower.rs`: the lowest of the four fully-typed-verb targets
+   measured at this marker, confirming Pillar 2's own prediction
+   rather than merely repeating it.** Java's 1,031 lines sit below
+   TS's 1,098 and well below Go's 1,296 — the exact gap Pillar 2's
+   unchecked-exception decision predicted going into M4: Go alone
+   needed the error-idiom amendment (`if err != nil` blocks, a
+   closure-wrapped `fallible_tail` for `db.update`); Python/TS/Java
+   all propagate failure through exceptions and needed zero
+   `HostSyntax` contract changes. That Java still lands below TS's
+   own exception-propagating figure, not merely near it, is a second,
+   independent factor: JDBC's single placeholder story (unconditional
+   `?`, no `$N`/`?`-family branch at all, sharpened further at M4 once
+   `jdbcph` replaced the shared `RecordCtx::insert_placeholders`/
+   `update_assignments` strings for the two write-verb tails that
+   needed engine-conditional `::jsonb` casts) needs no per-engine
+   `sqlph`-style dispatch inside `lower.rs` itself the way TS's three
+   structurally different driver APis do. Slightly above Python's 932
+   and Rust's 607: Java's own `record_cons` needs the raw-surface/
+   Java-facing field-list zip (Reference-renaming resolution) neither
+   Python's kwargs-splat nor Rust's field-by-field struct literal
+   needs, and the `TransactionTemplate`/`collect_branching_lets`
+   block-scoping machinery Go's own `lower.rs` doc already named as a
+   real, shared Java/Go cost (`var`-declared locals inside `if`/
+   `switch` blocks don't escape their block in either language).
+
+   **`lib.rs`: a real, disclosed overrun — the highest of the five —
+   with a concrete, non-idiom cause.** Java's 788 lines exceed even
+   Go's own 710 (which M4's own retro already flagged as a 42% premium
+   over TS's 501). Two factors, neither about verb-lowering
+   difficulty: (1) **file count.** Java emits 31 distinct templates
+   at this milestone marker against Go's 25 and TS's 28 — each
+   `project.add_file(..., render_java("X.java.j2", ...))` call is a
+   few lines of wiring on its own, and Spring's own idiom (one
+   `@Component`/`@Configuration` class per concern — `RowMappers`,
+   `DataSources`, `Schemas`, `Envelope`, `ErrorAdvice`, two exception
+   base classes, `AppState`, `Queue`, per-resource `In`/`Entity`/
+   `Store`/`Controller` quartets — split more finely than Go's own
+   fewer, denser files) multiplies that cost more than any other
+   target's own file layout does. (2) **the `google-java-format`
+   subprocess pipeline** (vendored-jar materialization,
+   stdin/stdout piping, exit-code handling, the `CIAC_DEBUG_JAVA_SRC`
+   diagnostic hook this milestone's own bug-hunting needed and kept)
+   is roughly 50 lines of wiring no other target's `lib.rs` carries
+   at all — Python/TS/Go/Rust format at the template-authoring level
+   (consistent indentation baked into the `.j2` files themselves,
+   `rustfmt`/`gofmt`/`prettier` are non-blocking dev-time tools, never
+   invoked from inside `generate()`); Java's own commitment to a
+   canonical, Spotless-asserted format (Pillar 5) means the formatter
+   is a hard dependency of `generate()` itself, priced directly into
+   `lib.rs`.
+
+   **Templates: a second confirmation of Go's own M5 retro, not a
+   contradiction of it.** Go's checkpoint found that a target whose
+   database layer has one unifying driver interface (Go's
+   `database/sql`, identical method sets across drivers) lands far
+   below TS's per-engine-branching figure. JDBC is an even more
+   direct instance of the same lens — `PreparedStatement`/`ResultSet`
+   are the *standard library* interface every JDBC driver implements
+   identically, not merely a popular convention the way Go's
+   `database/sql` is — and Java's 1,824 lines across 31 files lands
+   below even Go's own 2,176/25, despite six *more* files, each
+   individually smaller (Spring's own per-concern class-splitting
+   convention, the same factor `lib.rs`'s own overrun traces to,
+   nets out favorably here: more files, but each one is a thinner,
+   more repetitive shape — a `RowMapper` constant, a `JdbcClient`
+   call chain — than Go's own denser per-file logic).
+
+   **Zero shared-crate amendments — the cleanest factory-fidelity
+   result of any target measured at this marker.** `git diff --stat
+   4c7d9be^..20cfa33 -- crates/ciac-codegen crates/ciac-ir
+   crates/ciac-sema crates/ciac-syntax` returns nothing: the factory
+   held for Java's entire M1–M4 arc with no `HostSyntax`/`Needs`/
+   `RecordCtx` changes at all — better than Go's own precedent (two
+   disclosed, narrow amendments: the error-idiom amendment and
+   `HandlerRef::is_typed_handler`), matching Python's/Rust's/TS's own
+   original "factory held without amendment" pattern. The "edits
+   outside the crate" Java's own arc did touch —
+   `Cargo.toml`/`Cargo.lock`/`crates/ciac/Cargo.toml`/`tests/Cargo.toml`
+   (workspace member registration), `crates/ciac/src/commands.rs`
+   (the single-line target registration, identical in shape to every
+   prior target's own), `tests/src/lib.rs` (the `backends()` list),
+   `docs/targets.json` (mechanical, test-enforced regeneration),
+   `crates/ciac/tests/rename_cli.rs` (M2's own required rename-replay
+   proof, 67 lines — routine per-target scaffolding, not a factory
+   change), and `tests/tests/cron_vectors.rs`/`tests/tests/
+   typed_handler_equivalence.rs` (the cron-schedule and typed-handler
+   equivalence suites' own per-target extension, expected at M1 and
+   M4 respectively) — are the same routine registration/test-extension
+   set every prior target's own checkpoint already named, not
+   additional factory surface.
+
+   **Conformance harness, run for real across all five targets:**
+   `cargo test --workspace` is green with Java included (confirmed
+   this same milestone, immediately before writing this retrospective
+   — not a stale claim); `tests/tests/conformance.rs`'s
+   `c3_openapi_is_byte_identical_across_targets`,
+   `c4a_migration_sql_is_byte_identical_across_targets`, and
+   `c4b_declared_topology_appears_in_every_target` all pass — the
+   last one only after M4's own bug 8 fix (a `RowMappers.java.j2` doc
+   comment naming each table's own declared PascalCase name, since
+   Java otherwise names everything after the singular record, not
+   the table, everywhere in its own output). `tests/tests/golden.rs`
+   is green across eleven Java trees. `ciac targets --json` lists
+   `"id": "java"` alongside python/rust/typescript/go, confirmed
+   live this same session. The boundary-case decode suite this
+   checkpoint's own text names is M1's/M2's own live-verified
+   absent/explicit-null/legitimate-zero triple (already passing, not
+   new work this milestone).
+
+   **Pillar 8 latency, re-measured at this milestone marker (not
+   merely carried forward from M1):** M1's own ping-parity baseline
+   (this sandbox, proxied Maven Central, `~/.m2` not genuinely
+   empty) was ~10.6s cold (only `com.ciac` artifacts cleared) / ~6.3s
+   warm. Re-measured against `domain-orders.ciac` — M4's own larger,
+   Postgres-backed, `transaction {}`-bearing example, a real
+   `./mvnw -q -B verify` against a live local Postgres, not the
+   ping-parity project's own zero-dependency shape — after clearing
+   `~/.m2/repository/com/ciac`: **9.8s**, and **9.9s** on an immediate
+   warm re-run. Materially flat against M1's own figure despite a
+   genuinely larger, infrastructure-backed project: the "startup tax
+   paid once" mitigation (Pillar 8 #2, one `./mvnw -q -B verify`
+   invocation covering compile + Spotless + tests) is holding as
+   designed, not degrading as the example matrix grows in complexity.
+
+   **The pre-agreed CI-scoping decision, taken from this data:** the
+   26-example matrix does *not* blow the CI budget at this milestone's
+   measurement — ~10s per project, dominated by JVM+Maven-plugin
+   startup rather than compile/test volume, means even the full
+   matrix stays comfortably inside typical CI job budgets (the same
+   conclusion Go's own `generated-system` job already reached for a
+   comparable per-project cost). Decision: `generated-java` runs the
+   *full* example matrix, unscoped — the narrowing clause in Pillar 8
+   #5 is not exercised this arc, disclosed here as a decision taken
+   from real numbers, not deferred or improvised later.
+
+   **Go/no-go verdict: GO.** `lower.rs` came in below every other
+   fully-typed-verb target measured at this marker, confirming
+   Pillar 2's own unchecked-exception prediction with real numbers,
+   not just repeating it; `lib.rs`'s real overrun has a concrete,
+   disclosed, Spring-idiom-shaped cause (file-count multiplication
+   plus the formatter-subprocess pipeline), not a capability or
+   correctness gap; templates land favorably for the identical
+   unifying-driver reason Go's own M5 retro named; the factory needed
+   *zero* amendments across the entire M1–M4 arc, a cleaner result
+   than Go's own two-amendment precedent; and Pillar 8's own latency
+   budget holds flat under a materially larger, infrastructure-backed
+   example than M1's own baseline. Nothing measured here is a
+   structural blocker. `25UpdatePlan.md`'s remaining milestones
+   (M6–M9) proceed without pausing to amend the factory further.
+
 6. **M6 — Auth, scopes, scope tests.** Resource-server both modes,
    requireScope, MockMvc `ScopeTests` green under zero
    infrastructure; order-system and oauth-echo verify.

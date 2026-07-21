@@ -33,6 +33,12 @@
          pinned explicitly here. -->
     <aws-sdk.version>2.29.52</aws-sdk.version>
 {%- endif %}
+{%- if c.has_db or c.has_queue %}
+    <!-- Not managed by spring-boot-dependencies' own BOM, so pinned
+         explicitly here (SimRunner's own `test-compile exec:java`
+         driver, 25UpdatePlan.md M9). -->
+    <exec-maven-plugin.version>3.4.1</exec-maven-plugin.version>
+{%- endif %}
   </properties>
 
   <dependencies>
@@ -196,6 +202,27 @@
           </execution>
         </executions>
       </plugin>
+{%- if c.has_db or c.has_queue %}
+      <!-- Drives `SimRunner` (25UpdatePlan.md M9): a test-scoped
+           `main`, not the packaged application, since `MockMvc`/
+           `spring-test` only ever sit on the `test` classpath.
+           Running it via `test-compile exec:java` (build once, then
+           one `exec:java` invocation per scenario) mirrors every
+           other target's own "compile once, run the driver once per
+           scenario" shape (Go's `go build` then `go run`; Rust's
+           `cargo build` then a scoped `cargo run`; TypeScript's
+           `npm run build` then `node dist/sim_runner.js`) without
+           packaging a second artifact of its own. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>${exec-maven-plugin.version}</version>
+        <configuration>
+          <mainClass>com.ciac.{{ java_package }}.sim.SimRunner</mainClass>
+          <classpathScope>test</classpathScope>
+        </configuration>
+      </plugin>
+{%- endif %}
     </plugins>
   </build>
 </project>

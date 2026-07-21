@@ -14,7 +14,9 @@
 // infrastructure-free regardless of engine.
 package com.ciac.{{ java_package }}.state;
 
+import com.ciac.{{ java_package }}.sim.World;
 import java.util.Map;
+import org.springframework.beans.factory.ObjectProvider;
 
 {%- if c.queue_engine == "kafka" %}
 import java.util.Properties;
@@ -50,6 +52,13 @@ import org.springframework.stereotype.Component;
 public final class Queue {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private final String url;
+    // `null` in production; a simulation-run `World` when SimRunner
+    // manually registers one (v0.25 M9) -- `ObjectProvider<World>` is
+    // Spring's own null-safe "this bean, or nothing" injection, so no
+    // `World` bean ever needs to exist for production wiring to
+    // resolve cleanly (`World.java` is a plain class, never a
+    // `@Component`; nothing auto-registers it).
+    private final World world;
 {%- if c.queue_engine == "kafka" %}
     private volatile KafkaProducer<String, byte[]> producer;
 {%- else %}
@@ -61,8 +70,10 @@ public final class Queue {
 {%- endif %}
 
     public Queue(
-            @Value("${{ '{' }}{% if c.queue_engine == "kafka" %}KAFKA_URL:localhost:9092{% else %}NATS_URL:nats://localhost:4222{% endif %}{{ '}' }}") String url{% if c.has_tracing %}, Tracer tracer, Propagator propagator{% endif %}) {
+            @Value("${{ '{' }}{% if c.queue_engine == "kafka" %}KAFKA_URL:localhost:9092{% else %}NATS_URL:nats://localhost:4222{% endif %}{{ '}' }}") String url,
+            ObjectProvider<World> worldProvider{% if c.has_tracing %}, Tracer tracer, Propagator propagator{% endif %}) {
         this.url = url;
+        this.world = worldProvider.getIfAvailable();
 {%- if c.has_tracing %}
         this.tracer = tracer;
         this.propagator = propagator;
@@ -123,7 +134,13 @@ public final class Queue {
 {%- endif %}
 
     /** Marshals v and publishes it -- the shared call site every
-     * generated pipeline `publish` step goes through.{% if c.has_tracing %} The
+     * generated pipeline `publish` step (and every `state.publish`
+     * leaf) goes through, world-guarded (v0.25 M9): a simulation run
+     * routes to the fake in-memory broker instead, skipping the real
+     * connection/tracing path below entirely -- the sole choke point
+     * every publish call site needs, so neither `_steps.java.j2` nor
+     * `lower.rs`'s own `publish` leaf need any world-awareness of
+     * their own.{% if c.has_tracing %} The
      * current span's trace context (if any) is injected as headers
      * (W3C `traceparent`, via Micrometer's own `Propagator`) so a
      * consuming worker/consumer can continue the same trace -- the
@@ -131,6 +148,10 @@ public final class Queue {
      * Go's own `InjectCarrier`/`otel.GetTextMapPropagator().Inject`.{% endif %} */
     public void publishJson(String subject, Object v) {
         try {
+            if (world != null) {
+                world.publishChecked(subject, MAPPER.writeValueAsBytes(v));
+                return;
+            }
 {%- if c.has_tracing %}
             Map<String, String> headers = new HashMap<>();
             Span current = tracer.currentSpan();

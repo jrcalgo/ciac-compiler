@@ -529,12 +529,28 @@ impl HostSyntax for JavaSyntax<'_> {
             placeholders.join(", ")
         );
         let binds = self.bind_expr(&record, &row);
+        // World-guarded (v0.25 M9, `lib.rs`'s `unsupported_sim_
+        // capabilities`/`World.java`'s own doc): `world` is a
+        // constructor-injected field on every `needs_db` class
+        // (`logic.java.j2`), `null` in production (an `ObjectProvider`
+        // resolves nothing since `World` is never a `@Component`) and
+        // set only by a `SimRunner`-constructed context. This leaf
+        // owns its own indentation (unlike `transaction_stmt`, which
+        // receives caller-rendered `inner_lines` it must not reflow)
+        // so the extra branch needs no special handling.
+        let inner_indent = format!("{indent}    ");
         let mut out = vec![format!("{indent}var {row} = {value};")];
+        out.push(format!("{indent}if (world != null) {{"));
         out.push(format!(
-            "{indent}{}.sql({sql:?}){}.update();",
+            "{inner_indent}world.dbInsertChecked({table_sql:?}, {row});"
+        ));
+        out.push(format!("{indent}}} else {{"));
+        out.push(format!(
+            "{inner_indent}{}.sql({sql:?}){}.update();",
             self.jdbc(),
             Self::params_chain(&binds)
         ));
+        out.push(format!("{indent}}}"));
         // `Dest::Discard` here means the caller only wanted the SQL
         // side effect, already emitted above -- unlike every other
         // leaf's own `discard_stmt` (always a call-chain expression,
@@ -704,17 +720,40 @@ impl HostSyntax for JavaSyntax<'_> {
     /// caller — sema already forbids `return`/`publish`/non-db verbs
     /// inside a `transaction {}` block, so this lambda body is
     /// guaranteed to need no `return`-from-enclosing-method escape
-    /// (which a Java lambda cannot express anyway).
+    /// (which a Java lambda cannot express anyway) — a guarantee this
+    /// leaf's own `Runnable` re-wrap (below) relies on too, since
+    /// `Runnable.run()` declares no `throws` clause either.
+    ///
+    /// World-guarded (v0.25 M9): production `transaction {}` is
+    /// already genuinely atomic (unlike Go's/TS's own manual `BeginTx`/
+    /// `Commit` dance, this leaf never had one to skip) — the only
+    /// thing simulation needs to skip is the `TransactionTemplate`
+    /// call itself, since touching it would force the real, `@Lazy`
+    /// `DataSource` proxy to actually dial an unreachable database.
+    /// Each `db.insert` inside `inner_lines` already re-checks `world`
+    /// on its own (`db_insert_tail`), so simply running the body
+    /// directly under simulation is correct, not merely expedient.
+    /// `inner_lines` arrives pre-indented by the shared lowering
+    /// framework for exactly *one* enclosing lambda body -- reusing it
+    /// unchanged inside a second, brand-new `Runnable` (rather than
+    /// duplicating it once per branch, which would need reflowing its
+    /// baked-in indentation to stay `spotless:check`-clean) keeps that
+    /// contract intact while still letting both branches share it.
     fn transaction_stmt(&self, inner_lines: Vec<String>, indent: &str) -> Vec<String> {
         let tx_field = self
             .tx_field
             .as_deref()
             .expect("a transaction block requires a bound database instance");
-        let mut out = vec![format!(
-            "{indent}{tx_field}.executeWithoutResult(__status -> {{"
-        )];
+        let mut out = vec![format!("{indent}Runnable __txBody = () -> {{")];
         out.extend(inner_lines);
-        out.push(format!("{indent}}});"));
+        out.push(format!("{indent}}};"));
+        out.push(format!("{indent}if (world != null) {{"));
+        out.push(format!("{indent}    __txBody.run();"));
+        out.push(format!("{indent}}} else {{"));
+        out.push(format!(
+            "{indent}    {tx_field}.executeWithoutResult(__status -> __txBody.run());"
+        ));
+        out.push(format!("{indent}}}"));
         out
     }
 

@@ -1267,6 +1267,10 @@ fn sim_inner(
         }
         // target-literal-ok: see the sibling arm above.
         SimSupport::Narrow { .. } if target == "go" => sim_drive_go(out, scenarios, wall_timeout)?,
+        // target-literal-ok: see the sibling arm above.
+        SimSupport::Narrow { .. } if target == "java" => {
+            sim_drive_java(out, scenarios, wall_timeout)?
+        }
         SimSupport::Narrow { .. } => bail!(
             "`ciac sim` has no generated-runner driver wired for target `{target}` (its \
              `TargetInfo::sim` claims `Narrow` support, but `sim_inner` doesn't know how to \
@@ -1634,6 +1638,110 @@ fn sim_drive_go(
             .with_context(|| {
                 format!(
                     "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// Whether `project_dir` has a generated `SimRunner.java` anywhere
+/// under `src/test/java` -- unlike Go's fixed `cmd/sim_runner/
+/// main.go` path, Java's own runner lives at a package-qualified path
+/// (`src/test/java/com/ciac/<pkg>/sim/SimRunner.java`) `commands.rs`
+/// doesn't otherwise know, so this walks rather than checking one
+/// literal path.
+fn java_sim_runner_exists(project_dir: &Path) -> bool {
+    fn walk(path: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                if walk(&child) {
+                    return true;
+                }
+            } else if child.file_name().is_some_and(|n| n == "SimRunner.java") {
+                return true;
+            }
+        }
+        false
+    }
+    walk(&project_dir.join("src/test/java"))
+}
+
+/// Drives every `--scenario` against a generated Java project's own
+/// `src/test/java/.../sim/SimRunner.java` (v0.25 M9) -- the same
+/// shape as `sim_drive_rust`/`sim_drive_typescript`/`sim_drive_go`
+/// (the runner is generated code baked into the project itself,
+/// compiled and run once per scenario, one-line JSON reply on
+/// stdout), different toolchain: `./mvnw test-compile` (build once --
+/// `SimRunner` is test-scoped, since `MockMvc`/`spring-test` never sit
+/// on the packaged application's own classpath) then `./mvnw
+/// exec:java` (the pom's own `exec-maven-plugin`, preconfigured with
+/// `SimRunner`'s main class and the `test` classpath scope) once per
+/// scenario.
+fn sim_drive_java(
+    out: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let projects = find_project_dirs(out, "pom.xml")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!("no generated java project found under {}", out.display()),
+        [one] => one.clone(),
+        many => bail!(
+            "`ciac sim` only supports a single-service Java project in v0.25 (found {} under {}); \
+             see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+    if !java_sim_runner_exists(&project_dir) {
+        bail!(
+            "no `SimRunner.java` under {} -- this program declares nothing v0.25 M9's simulation \
+             world can fake (no `db`/`queue` use); see docs/simulation.md",
+            project_dir.display()
+        );
+    }
+    run_in(&project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let scenario_arg = format!("-Dexec.args={}", scenario_abs.display());
+        let mut cmd = Command::new("./mvnw");
+        cmd.arg("-q")
+            .arg("-B")
+            .arg("exec:java")
+            .arg(&scenario_arg)
+            .current_dir(&project_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run SimRunner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "SimRunner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse SimRunner's result for scenario {}: {last_line:?}",
                     scenario_path.display()
                 )
             })?;

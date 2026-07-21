@@ -24,13 +24,13 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python (full), Rust/TypeScript/Go (narrow) (v0.17 M11, TypeScript v0.23 M9, Go v0.24 M9)
+## Status: Python (full), Rust/TypeScript/Go/Java (narrow) (v0.17 M11, TypeScript v0.23 M9, Go v0.24 M9, Java v0.25 M9)
 
-| Surface | Python | Rust | TypeScript | Go |
-| --- | --- | --- | --- | --- |
-| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Rust | same narrow slice as Rust/TypeScript |
-| `verify --sim` | done | same | same | same |
-| MCP `verify_sim` | done | same | same | same |
+| Surface | Python | Rust | TypeScript | Go | Java |
+| --- | --- | --- | --- | --- | --- |
+| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Rust | same narrow slice as Rust/TypeScript | same narrow slice as Rust/TypeScript/Go |
+| `verify --sim` | done | same | same | same | same |
+| MCP `verify_sim` | done | same | same | same | same |
 
 Rust's ports/adapters seam, fake adapters, and a generated per-program
 simulation runner (v0.17 M11) exist now, but they cover a deliberately
@@ -94,15 +94,61 @@ guards or TypeScript's `if`/`else` chain), so it lowers to an
 first-worker-registered-wins semantics, expressed the one way Go's own
 `switch` uniqueness rule allows.
 
+Java's own gated bet (v0.25 M9) reaches the same scope a fourth time,
+via the same hand-written-restatement shape TypeScript's/Go's own
+passes established (Java cannot vendor `ciac-sim`'s Rust source
+either): `sim/World.java`'s `World` class (a nested `FailureEngine`/
+table map/queue list, occupying the same position Python's/
+TypeScript's/Go's own restatements do) fakes the identical `db.insert`
++ broker publish/consume pair, gated on the identical `db`/`queue`
+declaration check, refused with the identical per-verb/per-capability
+reasons `unsupported_sim_capabilities` computes over the same shared
+HIR scanner Rust's/TypeScript's/Go's own gates use. Java's own
+production code gives `transaction {}` **real**, unconditional
+atomicity too (`TransactionTemplate`, matching Go's own improvement
+over Rust's disclosed non-atomic gap) and degrades to a guarded no-op
+only under simulation, for the identical reason every other narrow
+target does: every db verb this checkpoint's own gate allows inside a
+transaction is `db.insert`, already world-guarded per statement — the
+`transaction {}` wrapper itself is what simulation skips, not anything
+inside it. One design choice specific to Java's own architecture: every
+class holding a `JdbcClient`/`Queue` field also holds a
+constructor-injected, nullable `World` (via Spring's own
+`ObjectProvider<World>` — `null` in production, since `World` is never
+a `@Component` no production context ever registers one), rather than
+threading one shared state object through every call site the way
+Go's `*state.AppState`/Rust's `&AppState` do — `Queue.publishJson`
+becomes the single choke point every `publish` call site (pipeline
+steps and the `publish <Stream>(..)` HIR leaf alike) shares, needing
+no world-awareness of its own at either call site. `SimRunner.java`
+(`src/test/java/.../sim/SimRunner.java`, test-scoped since `MockMvc`/
+`spring-test` never sit on the packaged application's own classpath)
+resolves the milestone's own pre-registered "SimRunner packaging" open
+question: not `@SpringBootTest`, not a `sim` Spring profile on the main
+jar, but a plain `AnnotationConfigApplicationContext` scanning every
+package below the service root *except* `Application` itself (whose
+conditional `@EnableScheduling`/`@EnableWebSocket` would otherwise
+activate Spring's own background timer/WebSocket machinery — exactly
+the real side effects a scenario's own explicit `advance`/`drain`
+steps exist to replace) plus one manually-registered `World` bean,
+driving requests through Spring's own standalone `MockMvc` (`@RestController`
+beans and `@RestControllerAdvice` gathered by annotation, no embedded
+servlet container, no bound port) and worker/job beans directly via
+their own `handleMessageOnce`/`handleTickOnce` entry points — the same
+"real routes, real handlers, no live listener" contract every other
+target's own runner already holds, reached without needing Spring
+Boot's own `SpringApplication` bootstrap (and its banner/startup
+logging) at all.
+
 Single-service projects only, every target: `ciac sim` refuses cleanly
 (not a crash, not a silent partial run) when it finds more than one
 project descriptor (`pyproject.toml`/`Cargo.toml`/`package.json`/
-`go.mod`) under `--out`. Multi-service simulation — one driver process
-per service, coordinated through one shared virtual clock — is real
-future work, not attempted here for any target. `--record`/`--replay`
-remain Python-only: no generated-runner target (Rust's, TypeScript's,
-Go's) has plan/replay-tape support (a plain scenario interpreter, not
-the bounded child protocol below).
+`go.mod`/`pom.xml`) under `--out`. Multi-service simulation — one
+driver process per service, coordinated through one shared virtual
+clock — is real future work, not attempted here for any target.
+`--record`/`--replay` remain Python-only: no generated-runner target
+(Rust's, TypeScript's, Go's, Java's) has plan/replay-tape support (a
+plain scenario interpreter, not the bounded child protocol below).
 
 ## The bounded child protocol
 
@@ -206,6 +252,32 @@ to stderr — so the runner's one-line `SimScenarioOutcome` JSON reply on
 stdout is never at risk of interleaving with anything else, the same
 freedom Rust's `tracing` setup already had.
 
+### Java's protocol mirrors Rust's/TypeScript's/Go's own, with a Maven-native build/run split
+
+Same closed step vocabulary, same generated-per-program shape (route/
+worker/job names baked in at codegen time), different toolchain: `ciac
+build`/`verify --target java` emits `src/test/java/.../sim/
+SimRunner.java` whenever the program declares `db` or `queue`, and the
+generated `pom.xml` gains one more plugin — `exec-maven-plugin`,
+preconfigured with `SimRunner`'s main class and the `test` classpath
+scope — purely to drive it; nothing about the packaged application
+changes. `ciac sim --target java` compiles it once (`./mvnw
+test-compile`), then runs it once per `--scenario`:
+
+```text
+./mvnw exec:java -Dexec.args=scenario.json
+```
+
+No implementation-level wrinkle equivalent to TypeScript's `{ logger:
+false }` either: `SimRunner` never calls `SpringApplication.run` (see
+above), so Spring Boot's own startup banner/INFO logging never fires;
+`MockMvc`'s own one-time "Initializing Spring TestDispatcherServlet"
+log lines land *before* the scenario runs, never after, so the
+runner's one-line `SimScenarioOutcome` JSON reply is always the true
+last line of stdout — the same "parse the last line" contract every
+other target's own runner already relies on, confirmed live rather
+than assumed.
+
 ## CLI
 
 ```sh
@@ -227,6 +299,9 @@ ciac sim service.ciac -t typescript -o build/ --scenario sim/checkout.ciac-sim.j
 
 # Go: identical shape and identical refusal behavior to Rust's/TypeScript's.
 ciac sim service.ciac -t go -o build/ --scenario sim/checkout.ciac-sim.json
+
+# Java: identical shape and identical refusal behavior to Rust's/TypeScript's/Go's.
+ciac sim service.ciac -t java -o build/ --scenario sim/checkout.ciac-sim.json
 ```
 
 `--record`/`--replay` accept exactly one `--scenario` at a time.

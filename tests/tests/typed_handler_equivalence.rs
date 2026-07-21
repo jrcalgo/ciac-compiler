@@ -462,3 +462,94 @@ pipeline ListAllApi: ListAll -> Return;
          found: {go_logic}"
     );
 }
+
+/// v0.25 M9: Java's own world-guard shape, structurally confirmed the
+/// same way Go's nil-slice test above is (not just live-verified
+/// against `sim-vertical-slice.ciac`, though that live proof exists
+/// too — see 25UpdatePlan.md M9's Shipped notes). `db.insert` (bare
+/// and inside `transaction {}`) and the pipeline-level `publish` step
+/// must each branch on `world != null`, routing to `World`'s fake
+/// table/queue instead of the real `JdbcClient`/`Queue` path — the
+/// mechanism `ciac sim --target java` depends on to run with zero
+/// infrastructure reachable.
+#[test]
+fn java_db_insert_and_publish_are_world_guarded() {
+    const SOURCE: &str = r#"
+service WorldGuardExample;
+
+use {
+    db Postgres;
+    queue NATS;
+}
+
+record Order {
+    id: Uuid;
+    total: Float;
+}
+table Orders: Order;
+
+stream OrderCreated: Order;
+
+handler PlaceOrder(order: Order) -> Order {
+    transaction {
+        db.insert(Orders, order);
+    }
+    return order;
+}
+
+api PlaceOrderApi: Order {
+    method: POST;
+    path: "/orders";
+}
+pipeline PlaceOrderApi:
+    PlaceOrder
+    -> publish OrderCreated
+    -> Return;
+"#;
+    let (ir, diags) = compile(SOURCE);
+    assert!(!diags.has_errors(), "unexpected: {:?}", diags.codes());
+    let ir = ir.expect("well-typed program produces IR");
+
+    let java_project = JavaBackend
+        .generate(&ir, &GenOptions::default())
+        .expect("java must build a transaction+publish handler");
+    let java_logic = java_project
+        .get("src/main/java/com/ciac/worldguardexample/logic/PlaceOrder.java")
+        .expect("java emits the compiler-owned logic file");
+
+    assert!(
+        java_logic.contains("if (world != null) {"),
+        "java: db.insert must branch on `world != null`; found: {java_logic}"
+    );
+    assert!(
+        java_logic.contains("world.dbInsertChecked(\"orders\", "),
+        "java: the world branch must route through World.dbInsertChecked with the SQL table \
+         name; found: {java_logic}"
+    );
+    assert!(
+        java_logic.contains("INSERT INTO orders"),
+        "java: the real (non-world) branch must still emit the genuine INSERT; found: \
+         {java_logic}"
+    );
+    assert!(
+        java_logic.contains("Runnable __txBody"),
+        "java: `transaction {{}}` must wrap its body once in a `Runnable`, shared unchanged by \
+         both the world and real branches, rather than duplicating (and needing to reflow the \
+         indentation of) the framework-supplied `inner_lines`; found: {java_logic}"
+    );
+
+    let queue_java = java_project
+        .get("src/main/java/com/ciac/worldguardexample/state/Queue.java")
+        .expect("java emits Queue.java when queue_engine is set");
+    assert!(
+        queue_java.contains("if (world != null) {"),
+        "java: Queue.publishJson must check world first -- the single choke point every \
+         `queue.publishJson` call site (pipeline `publish` steps AND the `publish <Stream>(..)` \
+         HIR leaf) shares, so neither call site needs its own world-awareness; found: \
+         {queue_java}"
+    );
+    assert!(
+        queue_java.contains("world.publishChecked(subject, "),
+        "java: Queue's world branch must route through World.publishChecked; found: {queue_java}"
+    );
+}

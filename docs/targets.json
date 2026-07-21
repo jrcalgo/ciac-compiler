@@ -205,8 +205,7 @@
         }
       ],
       "sim": {
-        "level": "none",
-        "reason": "Java simulation support lands at 25UpdatePlan.md M9"
+        "level": "narrow"
       },
       "capabilities": {}
     }

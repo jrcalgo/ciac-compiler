@@ -2112,6 +2112,322 @@ surface.
    atomicity catch-up, Java's image-size follow-up) — handed to
    whichever forecast track executes next.
 
+   **Shipped (v0.25 M9):** the third narrow, gated `ciac sim --target
+   java` bet, structurally identical to Rust's (v0.17 M11),
+   TypeScript's (v0.23 M9), and Go's (v0.24 M9) own passes, with the
+   same disclosed scope: only `db.insert` and broker publish/consume
+   are faked; `error`-only failure actions; no `--record`/`--replay`.
+
+   **`World.java`** (`crates/ciac-backend-java/templates/World.java.j2`,
+   package `com.ciac.<pkg>.sim`, emitted whenever `has_db || has_queue`)
+   is a narrow, hand-written restatement of `ciac-sim`'s `SimWorld` —
+   Java cannot `include_str!` Rust source any more than Go/TypeScript
+   can. One `World` class (not separate fake-database/fake-queue
+   classes) holds a table map (`Map<String, List<Map<String,
+   Object>>>`), a queue list, and a nested `FailureEngine`
+   (occurrence-counted, `error`-action-only, first-match-via-`Set`,
+   mirroring Go's/TS's own narrowing of `ciac_sim::failure`'s fuller
+   vocabulary). `dbInsertChecked`/`publishChecked` each run the
+   failure check first, matching a real transaction rolling back
+   before the write commits. A **real correctness bug found live, not
+   hypothesized**: `World`'s own row-to-map conversion (needed so
+   `expect.row.where` filters can match by key) initially reused
+   `Schemas.MAPPER` directly — but `Schemas.java` is only emitted when
+   the program declares at least one record/resource, while `World.java`
+   is emitted whenever `has_db || has_queue` alone, a strictly wider
+   gate. `event-pipeline.ciac` (declares `db`+`queue` but uses only
+   classic/seeded handlers, no `table`/`crud`/`record` at all) hit this
+   exactly: `package com.ciac.ingest.schemas does not exist`, surfaced
+   by this milestone's own full 26-example sweep, not by reading the
+   templates. Fixed by giving `World.java` (and `SimRunner.java`, which
+   had the identical unconditional-`Schemas`-dependency shape for its
+   own scenario-JSON parsing) its own private, identically-configured
+   `ObjectMapper` (`SNAKE_CASE` + `JavaTimeModule`) instead — two
+   independently-declared mappers are fine as long as neither drifts
+   from the other's configuration, and now neither file has a hard
+   dependency on `Schemas.java` existing at all.
+
+   **The world-guard reaches generated code differently in Java than
+   in Go/Rust/TS, by architectural necessity, not by choice.** Go's
+   `*state.AppState`/Rust's `&AppState`/TS's `AppState` are each one
+   object threaded explicitly through every call site; Java's own
+   Spring-DI architecture never had one central state object to begin
+   with — every class already receiving `JdbcClient`/`Queue` via
+   constructor injection needed its own `World` too. Resolved through
+   `ObjectProvider<World>` (Spring's null-safe "this bean, or nothing"
+   injection): `null` in production, since `World` is a plain class,
+   never `@Component`, so no production `ApplicationContext` ever
+   registers one. `logic.java.j2` (gated on `handler.needs_db`, the
+   same condition already gating its `jdbc` field) gained the `World
+   world` field; `db_insert_tail`/`transaction_stmt` in `lower.rs`
+   gained the branch. `Queue.java.j2` gained the identical injection
+   for its own `publishJson` — and because `Queue.publishJson` is the
+   *one* choke point every publish call site already shared (pipeline
+   `-> publish <Stream>` steps in `_steps.java.j2` and the
+   `publish <Stream>(..)` HIR statement leaf in `lower.rs` both call
+   it, unchanged), **neither `_steps.java.j2` nor `lower.rs`'s own
+   `publish` leaf needed to become world-aware at all** — a genuine
+   simplification over Go's/TS's own per-call-site threading, found by
+   design rather than by accident.
+
+   **`transaction_stmt`'s own shape needed one more piece of care than
+   `db_insert_tail`'s.** Java's `transaction {}` is already genuinely,
+   unconditionally atomic in production (`TransactionTemplate`,
+   matching Go's own real improvement over Rust's disclosed non-atomic
+   gap) — simulation only needs to *skip* the `TransactionTemplate`
+   call itself, since touching it would force the real, `@Lazy`
+   `DataSource` proxy to actually try dialing an unreachable database.
+   The shared lowering framework hands `transaction_stmt` its
+   `inner_lines` **already indented for exactly one enclosing lambda
+   body** — reusing them a second time inside a second, differently-
+   nested branch (one copy directly under `if (world != null)`, one
+   copy inside `dbTx.executeWithoutResult(status -> {...})`) would
+   need reflowing that baked-in indentation to stay
+   `spotless:check`-clean, or (found live testing the naive version)
+   introduce a genuine double-nesting mismatch. Fixed by wrapping
+   `inner_lines` in exactly one new `Runnable __txBody = () -> {..};`
+   — reused, unchanged, by both branches (`__txBody.run()` directly
+   under simulation; `dbTx.executeWithoutResult(status ->
+   __txBody.run())` in production) — preserving the framework's own
+   single-nesting-level contract for `inner_lines` while still letting
+   both branches share one body.
+
+   **`SimRunner.java`** (`src/test/java/.../sim/SimRunner.java`,
+   `com.ciac.<pkg>.sim` package) resolves the milestone's own
+   pre-registered "SimRunner packaging" open question concretely,
+   against all three candidates the plan named (test-scoped main vs
+   `@SpringBootTest` driver vs a `sim` Spring profile on the main jar):
+   **a test-scoped `main`**, since `MockMvc`/`spring-test` only ever
+   sit on the `test` classpath (confirmed live against a scratch Maven
+   project before committing to the template, this arc's own standing
+   discipline). Driven by a new `exec-maven-plugin` entry in the
+   generated `pom.xml` (gated identically to `World.java`/
+   `SimRunner.java`'s own emission), preconfigured with `SimRunner`'s
+   main class and `classpathScope=test`: `./mvnw test-compile` once,
+   then `./mvnw exec:java -Dexec.args=<scenario>` once per scenario —
+   Maven's own "compile once, run repeatedly" shape, matching `go
+   build`+`go run`/`cargo build`+a scoped `cargo run`/`npm run
+   build`+`node dist/sim_runner.js` exactly. A real syntax bug found
+   live writing this plugin block: the doc comment explaining *why*
+   `exec-maven-plugin` exists contained `cargo run --bin`, and XML
+   comments forbid `--` anywhere in their body — `Non-parseable POM ...
+   in comment after two dashes` — fixed by rewording, not escaping
+   (the comment reads better without the double-dash example anyway).
+
+   **The actual design decision inside `SimRunner`: never call
+   `SpringApplication.run` at all.** A raw
+   `AnnotationConfigApplicationContext` `.scan()`s every package below
+   the service root **except** the one holding `Application` itself —
+   found necessary, not just tidier, before writing a line of runner
+   logic: `Application`'s own conditional `@EnableScheduling`/
+   `@EnableWebSocket` annotations would, if swept up by scanning the
+   root package, activate Spring's real background `@Scheduled` timer
+   and WebSocket machinery the moment the context refreshes, exactly
+   the real wall-clock/network side effects a scenario's own explicit
+   `advance`/`drain` steps exist to replace with deterministic,
+   scripted calls. One manually-registered `World` bean later,
+   requests are driven through Spring's own standalone `MockMvc`
+   (`MockMvcBuilders.standaloneSetup` over every `@RestController`
+   bean gathered via `ctx.getBeansWithAnnotation`, `@RestControllerAdvice`
+   beans registered the same way) — no embedded servlet container, no
+   bound port, the same "real routes, real handlers, no live listener"
+   contract Rust's `tower::ServiceExt::oneshot`/TS's `app.inject()`/
+   Go's `net/http/httptest` already hold; worker/job beans are driven
+   directly via their own `handleMessageOnce`/`handleTickOnce` methods,
+   fetched straight from the context. Confirmed live, not just reasoned
+   from the Spring docs, in a standalone scratch project before the
+   real template: skipping `SpringApplication` means Spring Boot's own
+   startup banner/INFO logging never fires, and `MockMvc`'s own
+   one-time "Initializing Spring TestDispatcherServlet" log lines land
+   *before* the scenario runs, never interleaved with it — so
+   `SimRunner`'s one-line `SimScenarioOutcome` JSON reply is always the
+   true last line of stdout, needing no `{ logger: false }`-equivalent
+   construction option the way TypeScript's own Fastify runner did.
+
+   **Worker dispatch is an if/else-if chain over the message subject
+   from the start — a defect class proactively avoided, not found
+   live.** Go's own M9 discovered, the hard way, that a `switch` on
+   the subject string hard-errors at compile time the moment two
+   workers share one subject (`sim-broker-slice.ciac`'s `ConsumerA`/
+   `ConsumerB`, both on `Pings`). Since Java's own `switch` carries the
+   identical duplicate-case-label restriction, `SimRunner.java.j2`'s
+   `drain` method was written as an if/else-if chain with a
+   `delivered` flag from the very first draft, informed directly by
+   reading Go's own M9 retrospective before writing a line of Java —
+   confirmed correct live: `sim-broker-slice.ciac` (refused for `ciac
+   sim` itself, since it also declares `cache` — but its generated
+   `SimRunner.java` still must compile, part of the project's own
+   `mvnw verify`) compiles clean.
+
+   **Cron due-instants reuse Spring's own `CronExpression`, not a new
+   dependency.** `org.springframework.scheduling.support.CronExpression`
+   — already transitively present via `spring-boot-starter`, the same
+   class `@Scheduled(cron=..)` itself parses internally — has a
+   `next(Temporal)` method perfectly suited to the same
+   repeated-`.next(cursor)`-until-past-`toMs` loop Go's own
+   `robfig/cron/v3` usage already established the shape of; no new
+   Maven dependency needed, and the `job.schedule | spring_cron`
+   filter Pillar 6 already established feeds it the identical 6-field,
+   seconds-first expression `@Scheduled` itself consumes, so
+   `SimRunner`'s own advance semantics can never drift from
+   production's.
+
+   **Live-verified end to end, not just golden-generated or
+   compile-checked:** both checked-in scenarios reproduce their
+   canonical outcomes **byte-exact** against the real toolchain —
+   `{"ProcessOrder":3}`/`{"Reconcile":1}` for `sim/vertical-
+   slice.ciac-sim.json`, `{"ProcessOrder":100}`/`{"Reconcile":7}` for
+   `sim/virtual-week.ciac-sim.json` — via the real `ciac sim --target
+   java` CLI path (`sim_drive_java`, `crates/ciac/src/commands.rs`),
+   not a hand-invoked `exec:java`. `examples/order-system.ciac` is
+   refused with both reasons named (`declares auth`, and `calls
+   verb(s) the simulation world does not fake: cache.delete,
+   cache.set, db.count, db.update`), matching Rust's/TS's/Go's own
+   refusal shape exactly. The full 26-example sweep (`ciac verify
+   --target java`, real `mvnw verify`, zero manual pre-steps) stayed
+   green throughout — the world-guard changes touch every `has_db`/
+   `has_queue` example's own generated output, not just the two sim
+   ones, so this sweep is this milestone's own real regression net,
+   not merely M8's repeated.
+
+   **Structural equivalence, added alongside the live proof, not
+   instead of it:** `typed_handler_equivalence.rs` gained
+   `java_db_insert_and_publish_are_world_guarded` — asserts the
+   `if (world != null)` branch, `world.dbInsertChecked("orders", ..)`,
+   the real `INSERT INTO orders` in the else branch, the shared
+   `Runnable __txBody` wrapper, and `Queue.java`'s own `world.
+   publishChecked(subject, ..)` call all appear in freshly generated
+   output for a minimal transaction+publish fixture — mirroring Go's
+   own `go_db_query_result_initializes_as_a_non_nil_empty_slice`
+   precedent (a structural regression net independent of, not a
+   substitute for, the live scenario proof above).
+
+   **Docs:** `docs/simulation.md` gained Java's own status-table
+   column, design paragraph, and protocol subsection (the Maven
+   `test-compile`+`exec:java` build/run split, the `SpringApplication`-
+   avoidance rationale, the stdout-purity finding); `docs/backends.md`'s
+   Simulation section gained the matching paragraph, including both
+   real bugs found live (the `Schemas` dependency gap, the XML
+   double-dash comment) and the one proactively-avoided defect class.
+   `docs/targets.json` regenerated (`java`'s own `sim.level` flips
+   `"none"` → `"narrow"`, the field this milestone's own `targets_cli`
+   test caught stale before it could ship). Version: **0.22.0 →
+   0.23.0** (`Cargo.toml` workspace + all `ciac-*` path-dependency
+   pins, `editors/vscode/package.json`, `docs/language.md`'s title).
+   Full workspace verification: `cargo fmt --all --check` clean;
+   `cargo clippy --workspace --all-targets -- -D warnings` clean;
+   `cargo test --workspace` green after `cargo insta test --accept`
+   (22 Java golden trees regenerated — every `has_db`/`has_queue`
+   example's own world-guard churn, plus the version-string line every
+   golden carries).
+
+   ---
+
+   **The five-backend retrospective.**
+
+   *The consolidated cost model, Java's own final-arc numbers against
+   its own M5 checkpoint baseline (the same table, extended):*
+
+   | | at M5 (M1–M4 marker) | at M9 (full arc) |
+   | --- | --- | --- |
+   | `lower.rs` (leaves + `render`) | 1,031 | **1,081** |
+   | `lib.rs` (emission wiring) | 788 | **955** |
+   | `filters.rs` | 139 | **139** |
+   | templates | 1,824 across 31 files | **3,648 across 43 files** |
+   | shared-crate (`ciac-codegen`/`-ir`/`-sema`/`-syntax`) amendments | 0 | **1, disclosed** (M8's `write_to`/`write_rel` executable-bit fix — an infra-level fix every target's own generated `mvnw`-equivalent benefits from identically, not a `HostSyntax`/`Needs`/`RecordCtx` language-surface amendment) |
+
+   Growth from M5 to M9 (M6's auth/scopes, M7's ontology remainder +
+   observability, M8's whole-repo integration, M9's own sim slice) is
+   proportionate, not front-loaded: `lower.rs` grew 5% (the world-guard
+   branches are the only new leaf-level logic this back half of the
+   arc added — auth/scopes/ontology verbs were already fully lowered
+   by M4); `lib.rs` grew 21% (mostly M7's five new wrapper-class
+   emission blocks and M9's `World.java`/`SimRunner.java` emission);
+   templates roughly doubled (12 new files: `ObjectStore`/`Email`/
+   `Search`/`ExternalHttp`/`Client` at M7, `World`/`SimRunner` at M9,
+   plus the auth/scope-test/observability templates M6/M7 both
+   needed) while the *average* file stayed thin, the same Spring
+   per-concern-class idiom M5's own retro already named. The single
+   shared-crate touch across the *entire* nine-milestone arc — a
+   generated-file executable-bit fix that Go's/Rust's/TS's own
+   `write_to` equivalents needed identically and now also carry —
+   is, if anything, a cleaner result than Go's own two-amendment
+   precedent (the error-idiom amendment, `HandlerRef::is_typed_handler`)
+   and TS's own (the two hardcoded-target-name refusal-message bugs):
+   confirmation, not contradiction, of Pillar 2's own core bet that a
+   fully-typed, exception-propagating host needs no `HostSyntax`
+   contract changes to reach full ontology coverage.
+
+   *The generated support matrix, as the single source of truth:*
+   `docs/targets.json` (test-enforced fresh by `targets_cli.rs`,
+   regenerated this same milestone) is exactly that — a machine-
+   readable `{targets: [{id, description, project_marker, validate,
+   sim, capabilities}]}` document, not a hand-maintained table prone
+   to drifting from what `ciac targets --json` actually reports. Five
+   targets, `"kind": "internal"` on all five; Java's own
+   `"sim": {"level": "narrow"}` (flipped this milestone, formerly
+   `"none"`) is the last per-target field this arc's own `TargetInfo`
+   registration touches — every other field (`project_marker`,
+   `validate`, `ci_test_steps`, `compose`, `dev`) was already correct
+   as of M1's own registration and never needed a second pass.
+
+   *The cross-target disclosed-gaps ledger, consolidated:*
+
+   | Gap | Python | Rust | TypeScript | Go | Java |
+   | --- | --- | --- | --- | --- | --- |
+   | sim depth | full | narrow (`db.insert`+publish only) | narrow, same | narrow, same | narrow, same |
+   | sim record/replay | yes | no | no | no | no |
+   | `transaction {}` atomicity | atomic | **disclosed non-atomic** | atomic | atomic | atomic |
+   | OAuth2 scope-testing | full | JWT-only | JWT-only | JWT-only | JWT-only |
+   | deploy artifact size | venv + interpreter | stripped static binary | node_modules image | static binary | **JRE image (~200MB)**, jlink/native disclosed future |
+   | migrations executor | generated runner | `sqlx::migrate!` | generated runner | Flyway on renamed CIaC SQL | Flyway on renamed CIaC SQL |
+
+   Two items carried forward unresolved, named explicitly rather than
+   silently dropped, exactly as the milestone's own text asked:
+   **Rust's transaction-atomicity gap** (the one target of five whose
+   production `transaction {}` is not genuinely atomic — a real,
+   disclosed divergence this arc did not attempt to close, since
+   closing it is Rust's own follow-up, not Java's) and **Java's own
+   image-size follow-up** (a plain JRE base image is the only shipped
+   option; `jlink` custom-runtime or GraalVM native-image slimming is
+   real future work, deliberately not attempted this arc — Pillar 8's
+   own validate-latency budget was the measured constraint this arc
+   chose to spend its own effort on, not image size, and nothing
+   observed this arc changes that priority call). Both are handed to
+   whichever forecast track executes next, per this milestone's own
+   text, not resolved here.
+
+   **Arc-closing verdict.** Nine milestones, five checked-in Java
+   goldens at M1 growing to 26 (every non-gated example) by M8, zero
+   unexplained `CIAC0011` gates at M9 (`Component::Logging` is the
+   only Java refusal, and it is unreachable by any checked-in example
+   — a disclosed gap, not a silent one). The recurring defect class
+   across the *whole* arc, matching Go's own M9 retrospective's own
+   named pattern one arc later: never "Java can't express this" — the
+   language surface reached full ontology coverage with a single,
+   infra-level shared-crate touch — but a live-sweep-only defect class
+   recurring at nearly every milestone that touched infrastructure
+   wiring: the `mvnw` executable-bit gap (M8, masked by manual
+   `chmod +x` since M1), the HikariCP eager-connect gap (M8, masked by
+   a pre-created local database since M2), the CRUD resource-vs-record
+   name mismatch (M8, masked by no example ever exercising it before
+   M7's own capability widening), and this milestone's own `Schemas`-
+   dependency gap (masked by every prior has_db/has_queue example
+   also declaring at least one record). Each was found by a real,
+   full-corpus live sweep — `mvnw verify`/`ciac sim` against the real
+   toolchain, not golden-snapshot diffing — never by reading the
+   templates first. The clearest forward signal for whichever target
+   executes next: budget for "a live sweep finds an infrastructure-
+   wiring gap no unit test or golden diff would catch" as the default
+   defect class per milestone, not a surprise — it has now recurred in
+   Rust (E0382), TypeScript (two hardcoded refusal-message target
+   names), Go (four flags/switch-uniqueness findings), and Java (four
+   findings above) across four independent arcs. Java's own heavier
+   ecosystem and slower validate loop was this arc's one named risk
+   going in (25UpdatePlan.md's own Context section); nothing found
+   this arc changes that assessment, and Pillar 8's own latency
+   budget held flat from M1 through M9 regardless.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** reconciliation notes committed; the registry

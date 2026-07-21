@@ -40,7 +40,7 @@ use ciac_codegen::{
     Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
     TargetInfo, ValidateStep,
 };
-use ciac_ir::{Component, NormalizedIr};
+use ciac_ir::{Component, NodeKind, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 use serde::Serialize;
@@ -105,10 +105,53 @@ static TARGET_INFO: TargetInfo = TargetInfo {
         restart: RestartStyle::Restart,
     },
     source_extension: "java",
-    sim: SimSupport::None {
-        reason: "Java simulation support lands at 25UpdatePlan.md M9",
+    sim: SimSupport::Narrow {
+        unsupported: unsupported_sim_capabilities,
     },
 };
+
+/// Human-readable, closed list of reasons `ciac sim --target java`
+/// (v0.25 M9) cannot yet simulate `ir`, empty when it can — the same
+/// gate Rust's own `unsupported_sim_capabilities` (v0.17 M11),
+/// TypeScript's (v0.23 M9), and Go's (v0.24 M9) compute, over the same
+/// shared `lower::scan` this backend already reuses elsewhere:
+/// `World.java` only fakes `db.insert` and broker publish/consume;
+/// every other verb a typed handler calls falls straight through the
+/// world-guard to real infrastructure (`db_update_tail` and friends
+/// never check `world`).
+pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
+        reasons.push(
+            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
+             cryptography against a real issuer, which this milestone's simulation world does \
+             not fake"
+                .to_owned(),
+        );
+    }
+    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
+    for node in ir.nodes() {
+        if let Component::Service {
+            signature: Some(hir),
+            ..
+        } = &node.component
+        {
+            for verb in lower::scan(ir, hir).unguarded_verbs {
+                if !unguarded_verbs.contains(&verb) {
+                    unguarded_verbs.push(verb);
+                }
+            }
+        }
+    }
+    if !unguarded_verbs.is_empty() {
+        unguarded_verbs.sort_unstable();
+        reasons.push(format!(
+            "calls verb(s) the simulation world does not fake: {}",
+            unguarded_verbs.join(", ")
+        ));
+    }
+    reasons
+}
 
 #[derive(Debug, Default)]
 pub struct JavaBackend;
@@ -527,6 +570,26 @@ fn emit_service(
         );
     }
 
+    // M9 simulation slice: `World.java` (main, gated the same as
+    // Rust's/TS's/Go's own restatement) plus `SimRunner.java` (test-
+    // scoped, `MockMvc`/`spring-test` only ever sit on the `test`
+    // classpath) -- generated unconditionally for any has_db/has_queue
+    // program, whether or not that specific program is ever actually
+    // eligible for `ciac sim` (an auth-declaring or unguarded-verb-
+    // calling program still gets a compiling SimRunner; `ciac sim`
+    // itself is what refuses to run it, via `unsupported_sim_
+    // capabilities` above), mirroring Go's own M9 emission gate.
+    if ctx.has_db || ctx.has_queue {
+        project.add_file(
+            at(&format!("{java_root}/sim/World.java")),
+            render_java("World.java.j2", empty())?,
+        );
+        project.add_file(
+            at(&format!("{test_root}/sim/SimRunner.java")),
+            render_java("SimRunner.java.j2", empty())?,
+        );
+    }
+
     // M7 ontology wrapper classes: one shared class per capability
     // *kind*, reused across every named instance of that kind via a
     // distinct `AppState` bean per instance (mirrors Go's own
@@ -854,7 +917,7 @@ mod tests {
         let info = backend.target_info();
         assert_eq!(info.project_marker, "pom.xml");
         assert_eq!(info.source_extension, "java");
-        assert!(matches!(info.sim, SimSupport::None { .. }));
+        assert!(matches!(info.sim, SimSupport::Narrow { .. }));
         assert_eq!(
             (info.migration_filename)(1, "add_orders"),
             "V0001__add_orders.sql"

@@ -355,3 +355,94 @@ check at v0.24 M9 (not hypothesized from reading the stdlib docs);
 asserted-as-documented per Pillar 7's own table rather than built out
 into a new flagship example, since nothing in the current corpus
 reaches this code path yet.
+
+Java reached the same narrow slice in 25UpdatePlan.md M9, structurally
+identical to TypeScript's/Go's own shape (Java cannot vendor `ciac-
+sim`'s Rust source either, so `sim/World.java`'s `World` class is a
+hand-written restatement in the same position as Python's/
+TypeScript's/Go's own), fakes the identical `db.insert`/broker
+publish-consume pair, and refused by
+`ciac_backend_java::unsupported_sim_capabilities` — computed from the
+same shared `ciac_codegen::lower::scan`, `pub(crate) use`-re-exported
+into this backend's own `lower` module exactly the way Rust's/TS's/
+Go's already were. Java's own architecture diverges from the other
+three narrow targets in *how* the world-guard reaches generated code,
+not in what it fakes: rather than one shared state struct/object
+threaded through every call site (Go's `*state.AppState`, Rust's
+`&AppState`, TS's `AppState`), every Java class already holding a
+`JdbcClient`/`Queue` field (Spring constructor injection, per-class,
+since Java's own DI-container architecture never had one central
+state object to begin with) gains a constructor-injected, nullable
+`World` too, resolved through Spring's own `ObjectProvider<World>` —
+`null` in production (nothing ever registers a `World` bean; the class
+is a plain POJO, never `@Component`), the real fake only when
+`SimRunner` manually registers one. `Queue.publishJson` becomes the
+one choke point every `publish` call site shares (pipeline `publish`
+steps *and* the `publish <Stream>(..)` HIR leaf both call the same
+method, unchanged), so unlike the other three targets, neither
+`_steps.java.j2` nor `lower.rs`'s own `publish` leaf needed to become
+world-aware at all — only `db_insert_tail` and `transaction_stmt` did,
+since `JdbcClient`'s own fluent SQL calls have no single shared choke
+point to intercept the way a broker publish does. Java's own
+production code gives `transaction {}` **real** atomicity
+unconditionally too (`TransactionTemplate`, the same bar Go's/TS's own
+Postgres branch holds), and — like Go/TypeScript — degrades to a
+guarded no-op only under simulation; unlike Go's own `*sql.Tx`
+typed-`nil`-then-skip shape, Java's own `transaction_stmt` wraps its
+(framework-pre-indented) body in a `Runnable __txBody` once and shares
+it unchanged between the world/real branches, rather than duplicating
+it once per branch — reusing caller-supplied, already-indented lines
+inside a second nesting level would need reflowing their baked-in
+whitespace to stay `spotless:check`-clean, which sharing one `Runnable`
+avoids needing at all.
+
+`SimRunner.java` (`src/test/java/.../sim/SimRunner.java`) resolves the
+milestone's own pre-registered "SimRunner packaging" open question
+concretely: it lives under `src/test/java` specifically because
+`MockMvc`/`spring-test` only ever sit on the `test` classpath, is
+driven by a new `exec-maven-plugin` entry in the generated `pom.xml`
+(`./mvnw test-compile` once, then `./mvnw exec:java
+-Dexec.args=<scenario>` once per scenario — Maven's own "compile once,
+run repeatedly" shape, mirroring `go build`+`go run`/`cargo build`+
+`cargo run`/`npm run build`+`node`), and — the actual design decision —
+never calls `SpringApplication.run` at all. Instead it builds a plain
+`AnnotationConfigApplicationContext`, `.scan()`s every package below
+the service root *except* the one holding `Application` itself (whose
+conditional `@EnableScheduling`/`@EnableWebSocket` would otherwise
+activate Spring's own background `@Scheduled` timer and WebSocket
+machinery the moment the context refreshes — exactly the real
+wall-clock/network side effects a scenario's own explicit `advance`/
+`drain` steps exist to replace with deterministic, scripted calls),
+registers one `World` bean manually, and drives requests through
+Spring's own standalone `MockMvc` (`MockMvcBuilders.standaloneSetup`
+over every `@RestController` bean gathered by
+`ctx.getBeansWithAnnotation`, `@RestControllerAdvice` beans registered
+the same way) — no embedded servlet container, no bound port, the same
+"real routes, real handlers, no live listener" contract Rust's
+`tower::ServiceExt::oneshot`/TS's `app.inject()`/Go's
+`net/http/httptest` already hold. Confirmed live, not just reasoned
+from the Spring docs: skipping `SpringApplication` means Spring Boot's
+own startup banner/INFO logging never fires at all, and `MockMvc`'s own
+one-time "Initializing Spring TestDispatcherServlet" log lines land
+*before* the scenario runs rather than interleaving with it — so
+`SimRunner`'s one-line `SimScenarioOutcome` JSON reply is always the
+true last line of stdout with no `{ logger: false }`-equivalent
+construction option needed, the same freedom Go's own `slog`-to-stderr
+default already had.
+
+Both checked-in scenarios reproduce their canonical outcomes
+byte-exact against the real toolchain — `{"ProcessOrder":3}`/
+`{"Reconcile":1}` for `sim/vertical-slice.ciac-sim.json`,
+`{"ProcessOrder":100}`/`{"Reconcile":7}` for `sim/virtual-week.ciac-
+sim.json` — and `examples/order-system.ciac` is refused with both
+reasons named (`auth`, and the four unguarded verbs `cache.delete`/
+`cache.set`/`db.count`/`db.update`), matching Rust's/TS's/Go's own
+refusal shape exactly. One design choice proactively avoided rather
+than found live: `SimRunner`'s own worker-dispatch table is an
+if/else-if chain over the message subject from the start (never a
+`switch`), specifically because Go's own M9 had already discovered
+live that a Java-equivalent `switch` construct (Go's own, in that
+case) rejects two `case` arms sharing one constant at compile time —
+exactly the shape `examples/sim-broker-slice.ciac`'s two workers on
+one stream produce — so Java's own runner never risked repeating that
+defect class at all.

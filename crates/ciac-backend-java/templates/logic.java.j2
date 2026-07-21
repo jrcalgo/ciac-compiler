@@ -24,6 +24,8 @@ package com.ciac.{{ java_package }}.logic;
 {%- endmacro %}
 {%- if handler.needs_db %}
 import com.ciac.{{ java_package }}.schemas.RowMappers;
+import com.ciac.{{ java_package }}.sim.World;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.simple.JdbcClient;
 {%- endif %}
@@ -53,6 +55,10 @@ import org.springframework.stereotype.Component;
 public class {{ handler.class_name }} {
 {%- if handler.needs_db %}
     private final JdbcClient jdbc;
+    // `null` in production; a simulation-run `World` when SimRunner
+    // manually registers one (v0.25 M9) -- see `db_insert_tail`'s own
+    // generated `if (world != null)` branch in `lower.rs`.
+    private final World world;
 {%- endif %}
 {%- if handler.needs_tx %}
     private final TransactionTemplate {{ handler.java_tx_field }};
@@ -68,7 +74,7 @@ public class {{ handler.class_name }} {
 {%- endfor %}
 
     public {{ handler.class_name }}(
-{%- if handler.needs_db %}@Qualifier("{{ handler.rust_db_field | java_camel }}Jdbc") JdbcClient jdbc{% endif -%}
+{%- if handler.needs_db %}@Qualifier("{{ handler.rust_db_field | java_camel }}Jdbc") JdbcClient jdbc, ObjectProvider<World> worldProvider{% endif -%}
 {%- if handler.needs_tx %}{% if handler.needs_db %}, {% endif %}@Qualifier("{{ handler.java_tx_field }}") TransactionTemplate {{ handler.java_tx_field }}{% endif -%}
 {%- if handler.needs_queue %}{% if handler.needs_db or handler.needs_tx %}, {% endif %}Queue queue{% endif -%}
 {%- if handler.needs_cache %}{% if handler.needs_db or handler.needs_tx or handler.needs_queue %}, {% endif %}@Qualifier("{{ handler.rust_cache_field | java_camel }}") StringRedisTemplate {{ handler.rust_cache_field | java_camel }}{% endif -%}
@@ -76,6 +82,7 @@ public class {{ handler.class_name }} {
     ) {
 {%- if handler.needs_db %}
         this.jdbc = jdbc;
+        this.world = worldProvider.getIfAvailable();
 {%- endif %}
 {%- if handler.needs_tx %}
         this.{{ handler.java_tx_field }} = {{ handler.java_tx_field }};

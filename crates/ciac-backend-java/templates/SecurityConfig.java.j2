@@ -19,7 +19,15 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 {%- if c.auth_scheme == "oauth2" %}
+import java.util.List;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtClaimNames;
+import org.springframework.security.oauth2.jwt.JwtClaimValidator;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 {%- else %}
 import java.nio.charset.StandardCharsets;
@@ -47,10 +55,36 @@ public class SecurityConfig {
     // this bean never makes a network call, the same laziness bar
     // every other provider client (db pools, the broker client) already
     // meets.
+    //
+    // `OAUTH_ISSUER`/`OAUTH_AUDIENCE` overridable via `@Value`, the
+    // same env-driven pattern every other target's own config already
+    // uses (`26UpdatePlan.md` M5) -- the previous literal-interpolated
+    // issuer string had no runtime override at all, which the no-infra
+    // OAuth2 test rig (a real in-process JWKS stub) needs to point the
+    // decoder at itself. `NimbusJwtDecoder.withJwkSetUri(...).build()`
+    // installs only `JwtValidators.createDefault()` (timestamp checks)
+    // -- it does *not* validate `iss`/`aud` on its own, unlike
+    // `JwtDecoders.fromIssuerLocation`. `JwtIssuerValidator` (and, if
+    // an audience is declared, a `JwtClaimValidator` on `aud`) close
+    // that gap, matching every other target's own issuer/audience
+    // checks -- found live while wiring `wrong_issuer`'s own rig case,
+    // which a validator-less decoder let through as 200.
     @Lazy
     @Bean
-    public JwtDecoder jwtDecoder() {
-        return NimbusJwtDecoder.withJwkSetUri("{{ c.auth_issuer }}/.well-known/jwks.json").build();
+    public JwtDecoder jwtDecoder(
+            @Value("${OAUTH_ISSUER:{{ c.auth_issuer }}}") String issuer,
+            @Value("${OAUTH_AUDIENCE:{{ c.auth_audience }}}") String audience) {
+        NimbusJwtDecoder decoder =
+                NimbusJwtDecoder.withJwkSetUri(issuer + "/.well-known/jwks.json").build();
+        List<OAuth2TokenValidator<Jwt>> validators =
+                new java.util.ArrayList<>(List.of(JwtValidators.createDefault(), new JwtIssuerValidator(issuer)));
+        if (!audience.isBlank()) {
+            validators.add(
+                    new JwtClaimValidator<List<String>>(
+                            JwtClaimNames.AUD, aud -> aud != null && aud.contains(audience)));
+        }
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(validators));
+        return decoder;
     }
 {%- else %}
 

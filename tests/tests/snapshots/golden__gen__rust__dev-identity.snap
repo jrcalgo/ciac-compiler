@@ -2744,3 +2744,59 @@ async fn account_write_wrong_issuer() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+============================================================
+tests/scope_tests.rs
+============================================================
+//! Generated behavioral test for scope enforcement. Regenerated on
+//! every build. Drives the real router directly via
+//! `tower::ServiceExt::oneshot` — no live server needed. Db pools are
+//! lazy (`connect_lazy`), so a request that clears the auth layer but
+//! then touches one may still come back as a 5xx; that's still proof
+//! the auth layer itself let it through, which is all these assert.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
+
+use accounts::{config::Config, routes, state::AppState};
+
+async fn app() -> axum::Router {
+    let state = AppState::new(Config::from_env())
+        .await
+        .expect("lazy state construction needs no live infra");
+    routes::router().with_state(state)
+}
+
+
+#[tokio::test]
+async fn account_no_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/accounts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn account_malformed_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/accounts")
+                .header("Authorization", "Bearer not-a-jwt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

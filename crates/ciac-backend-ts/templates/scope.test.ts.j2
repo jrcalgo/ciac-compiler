@@ -4,9 +4,16 @@
 // clears the auth layer but then touches one may still come back as a
 // 5xx, which is still proof the auth layer itself let it through —
 // the same claim boundary `scope_tests.rs.j2` documents).
+//
+// `no_token`/`malformed_token` are scheme-agnostic (gated below on
+// `has_auth_step`/`has_auth`, not on scheme) — an oauth2 project gets
+// them here too; the real-RS256 rig in `oauth-rig.test.ts` covers the
+// oauth2-only cases (`26UpdatePlan.md` M5).
 
 import { describe, expect, it } from "vitest";
+{%- if c.auth_scheme == "jwt" %}
 import { SignJWT } from "jose";
+{%- endif %}
 import { loadConfig } from "../src/config.js";
 import { createState } from "../src/state.js";
 import { buildApp } from "../src/main.js";
@@ -15,6 +22,7 @@ async function app() {
   const state = createState(loadConfig());
   return buildApp(state);
 }
+{%- if c.auth_scheme == "jwt" %}
 
 async function bearer(scope: string): Promise<string> {
   const config = loadConfig();
@@ -24,6 +32,19 @@ async function bearer(scope: string): Promise<string> {
     .sign(secret);
   return `Bearer ${token}`;
 }
+
+/** `expDelta` in the past mints an already-expired token
+    (`26UpdatePlan.md` M4's `expired_token` case). */
+async function bearerExp(scope: string, expDelta: number): Promise<string> {
+  const config = loadConfig();
+  const secret = new TextEncoder().encode(config.jwt_secret);
+  const token = await new SignJWT({ sub: "test", scope })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime(Math.floor(Date.now() / 1000) + expDelta)
+    .sign(secret);
+  return `Bearer ${token}`;
+}
+{%- endif %}
 {% macro dummy_field(field) -%}
 {%- if field.type_kind.kind == "enum" -%}
 "{{ field.type_kind.variants[0] }}"
@@ -66,7 +87,34 @@ false
 {%- endif -%}
 {%- endmacro -%}
 {% for api in c.apis %}
-{%- if api.scope %}
+{%- if api.has_auth_step %}
+
+describe("{{ api.snake }} auth enforcement", () => {
+  it("rejects a request with no token", async () => {
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a malformed bearer token", async () => {
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+      headers: { authorization: "Bearer not-a-jwt" },
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+{%- endif %}
+{%- if api.scope and c.auth_scheme == "jwt" %}
 
 describe("{{ api.snake }} scope enforcement", () => {
   it("rejects a token missing the required scope", async () => {
@@ -93,11 +141,41 @@ describe("{{ api.snake }} scope enforcement", () => {
     expect(response.statusCode).not.toBe(401);
     expect(response.statusCode).not.toBe(403);
   });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+      headers: { authorization: await bearerExp("{{ api.scope }}", -3600) },
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).toBe(401);
+  });
 });
 {%- endif %}
 {%- endfor %}
 {% for resource in c.resources %}
-{%- if resource.read_scope %}
+{%- if resource.has_auth %}
+
+describe("{{ resource.snake }} auth enforcement", () => {
+  it("rejects a request with no token", async () => {
+    const response = await (await app()).inject({ method: "GET", url: "/{{ resource.plural }}" });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a malformed bearer token", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: "Bearer not-a-jwt" },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+{%- endif %}
+{%- if resource.read_scope and c.auth_scheme == "jwt" %}
 
 describe("{{ resource.snake }} read scope enforcement", () => {
   it("rejects a token missing the read scope", async () => {
@@ -118,9 +196,18 @@ describe("{{ resource.snake }} read scope enforcement", () => {
     expect(response.statusCode).not.toBe(401);
     expect(response.statusCode).not.toBe(403);
   });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await bearerExp("{{ resource.read_scope }}", -3600) },
+    });
+    expect(response.statusCode).toBe(401);
+  });
 });
 {%- endif %}
-{%- if resource.write_scope %}
+{%- if resource.write_scope and c.auth_scheme == "jwt" %}
 
 describe("{{ resource.snake }} write scope enforcement", () => {
   it("rejects a token missing the write scope", async () => {
@@ -142,6 +229,16 @@ describe("{{ resource.snake }} write scope enforcement", () => {
     });
     expect(response.statusCode).not.toBe(401);
     expect(response.statusCode).not.toBe(403);
+  });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await bearerExp("{{ resource.write_scope }}", -3600) },
+      payload: {{ dummy_body(resource) }},
+    });
+    expect(response.statusCode).toBe(401);
   });
 });
 {%- endif %}

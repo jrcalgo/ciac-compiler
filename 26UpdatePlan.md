@@ -1776,6 +1776,106 @@ per the house convention.
    that proves the mechanism with real cryptography. Ledger row
    CLOSED at M7's table birth.
 
+   **Shipped (v0.26 M5):** the seven-case matrix (`no_token`,
+   `malformed_token`, `wrong_scope`, `correct_scope`, `expired_token`
+   folded into each target's existing JWT-scheme suite; `wrong_scope`,
+   `correct_scope`, `expired_token`, `wrong_key`, `wrong_issuer` in
+   each target's new real-RS256 rig) landed on TypeScript, Go, and
+   Java, closing the gap M4 opened on the two reference targets.
+   **A wider gap than M4's own scope revealed on inspection, fixed
+   before porting:** TypeScript's, Go's, and Java's *existing* JWT
+   scope suites only ever carried the 2-case `wrong_scope`/
+   `correct_scope` pair — no `no_token`, `malformed_token`, or
+   `expired_token` at all, on any of the three, predating this arc
+   entirely. Matching "same case names, same matrix" across all five
+   targets required bringing these three up to Python's/Rust's own
+   5-case JWT bar first, not just bolting an OAuth2-only rig on top
+   of a thinner existing suite. **A second gap found only by
+   generating and testing a real db-backed oauth2 project (not by
+   inspection):** M4 had widened Rust's `scope_tests.rs` gate in
+   prose but the actual code still gated the whole file on
+   `auth_scheme == "jwt"`, so a pure-oauth2 Rust project (`dev-
+   identity`) silently got zero `no_token`/`malformed_token`
+   coverage — caught by regenerating `dev-identity` for Rust and
+   finding the cases simply weren't there, fixed as this milestone's
+   own first step since it directly blocked "same matrix" parity for
+   the reference target M5 was about to imitate three more times.
+   **A materially different accommodation per target, each disclosed
+   at its own gate:**
+   - **TypeScript**: `jose` (already a dependency) generates RSA
+     keypairs directly via WebCrypto — no new dependency for the rig,
+     unlike Rust's embedded-key workaround. The stub is a memoized
+     `node:http` server started lazily on first use, not at module
+     load, so a project's non-auth tests never pay for it.
+   - **Go**: `internal/auth.getJWKS` caches its fetched JWKS behind a
+     package-level `sync.Once` — correct for one issuer per production
+     process, wrong for a test binary that wants a *different* stub
+     issuer than a previous test file might have set. `TestMain`
+     starts one stub for the whole `routes` package and sets
+     `OAUTH_ISSUER` before any test runs, closing the gap a second
+     per-test stub would have hit silently (whichever `OAUTH_ISSUER`
+     the `sync.Once` latched onto first, every other stub's JWKS would
+     have gone uncontacted). The JWKS server and RSA keypair are both
+     stdlib (`net/http/httptest`, `crypto/rsa`) — zero new
+     dependencies, reusing `github.com/golang-jwt/jwt/v5` (already a
+     dependency) for RS256 signing.
+   - **Java**: the deepest accommodation of the three, found live, not
+     by inspection. `SecurityConfig.jwtDecoder()` built the JWKS URI
+     by interpolating `{{ c.auth_issuer }}` as a Java string literal
+     at codegen time — no runtime override existed at all, so a stub
+     pointed at any other URL was structurally unreachable. Rewired to
+     `@Value("${OAUTH_ISSUER:<declared-default>}")`, matching every
+     other target's own env-driven config, with `@DynamicPropertySource`
+     (Spring's own purpose-built "set a property before context
+     startup" mechanism, normally used to point tests at a
+     Testcontainers-allocated port) supplying the stub's dynamically-
+     allocated URL. Wiring the override surfaced a second, real
+     production gap along the way: `NimbusJwtDecoder.withJwkSetUri(...)
+     .build()` installs only `JwtValidators.createDefault()` (`exp`/
+     `nbf` timestamp checks) — it does **not** validate `iss` or `aud`
+     on its own, unlike the `JwtDecoders.fromIssuerLocation` factory
+     every Spring Security example reaches for instead. A token from
+     any issuer, correctly signed by whatever key the *configured*
+     JWKS URI happened to serve, would have been accepted regardless
+     of its own `iss` claim — the `wrong_issuer` rig case would have
+     silently passed as a false negative (200, not 401) had this not
+     been caught by writing the actual test rather than trusting the
+     existing code read correctly. Closed with an explicit
+     `JwtIssuerValidator` plus (when an audience is declared) a
+     `JwtClaimValidator` on `aud`, composed via
+     `DelegatingOAuth2TokenValidator` — the same issuer/audience
+     enforcement every other target's own decoder already had. The
+     JWKS stub itself is `com.sun.net.httpserver.HttpServer` (JDK
+     stdlib) plus `com.nimbusds.jose.jwk.RSAKey`/`JWKSet` (already a
+     dependency, the same library `SecurityConfig`'s own decoder
+     builds on) — zero new dependencies, same bar as the other four
+     targets.
+   **A pre-existing, orthogonal, and disclosed-not-fixed
+   characteristic found live:** Java's `dev-identity` and
+   `order-system` "accepts"-shaped cases (correct scope, auth clears)
+   that reach a `db`-backed resource take ~30s each against this
+   environment's unreachable Postgres — HikariCP's default
+   `connectionTimeout`, versus the other four targets' respective
+   drivers, which fail fast (`ECONNREFUSED` in milliseconds, not a
+   30s pool-acquisition wait). Correctness is unaffected (the
+   "not 401, not 403" assertion still holds against the eventual 5xx,
+   the exact claim boundary every target's own scope-test file header
+   already documents), and the same slowness would already have hit
+   any hypothetical JWT+db Java example's own `AcceptsRequiredScope`
+   case before this milestone — not something M5 introduced, and
+   tuning `HikariCP`'s timeout is a distinct concern from OAuth2 rig
+   parity, left untouched. **Live proof, all real crypto, all three
+   targets, all four affected examples:** TypeScript 8+13+19,
+   Go 7+12+(order-system green), Java 7+12+18 — every case green,
+   `tsc --noEmit`/`eslint .` clean (TS), `gofmt -l .`/`go vet ./...`
+   clean (Go), `mvn compile`/`test-compile` clean (Java). Only
+   pre-existing, unrelated finding left disclosed rather than fixed:
+   TypeScript's `dev-identity` `sim_runner.ts.j2` carries three
+   unrelated `no-unused-vars` ESLint errors (dead code for a
+   db-only-no-queue project, predating this arc, outside this
+   milestone's own scope). docs/deployment.md's live-Keycloak
+   paragraph reworded per this milestone's own exit bar.
+
 6. **M6 — Supply-chain scanning.** `deny.toml` (advisories/
    licenses/bans/sources, ignore-requires-reason-and-expiry checked
    by script); `workspace-audit` job (cargo audit + cargo deny) and

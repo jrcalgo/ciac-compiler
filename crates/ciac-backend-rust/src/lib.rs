@@ -388,11 +388,16 @@ fn emit_service(
     // broker client lazy (matching the db pools' `connect_lazy`), so
     // the `!has_queue` half of this gate is gone -- a queue-bearing JWT
     // service's `AppState::new` no longer touches the network either.
-    // OAuth2 gets its own no-infra suite below (`26UpdatePlan.md` M4) --
-    // it once needed a real issuer's JWKS to test at all, closed by
-    // running real RS256 crypto against an in-process stub instead of a
-    // live IdP.
-    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+    // `26UpdatePlan.md` M5: this file's own `no_token`/`malformed_token`
+    // cases are scheme-agnostic (gated inside the template on
+    // `has_auth_step`/`has_auth`, not on scheme), so the file now
+    // renders for both schemes -- an oauth2 project without it silently
+    // lost that coverage, a gap M4 introduced and M5 closed. The
+    // JWT-only bearer-minting helpers and their wrong_scope/
+    // correct_scope/expired_token blocks stay gated on
+    // `c.auth_scheme == "jwt"` inside the template; oauth2 gets the
+    // equivalent via the real-RS256 rig below.
+    if !ctx.scopes.is_empty() {
         project.add_file(
             at("tests/scope_tests.rs"),
             render("scope_tests.rs.j2", empty())?,

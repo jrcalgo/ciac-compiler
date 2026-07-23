@@ -437,19 +437,35 @@ fn emit_service(
         at("tests/state.test.ts"),
         render("state.test.ts.j2", empty())?,
     );
-    // v0.23 M6: scope-enforcement behavioral test, JWT-only. OAuth2 is
-    // excluded from this no-infrastructure suite for the same live
-    // reason Rust's own `scope_tests.rs` gate discloses: real RS256
-    // verification needs a real issuer's JWKS regardless of how
-    // lazily it's fetched — a lazy `createRemoteJWKSet` just moves
-    // *when* that network call happens (construction to first
-    // request), it doesn't remove the need for it. A no-infrastructure
-    // scope proof for OAuth2 needs an actual fake auth adapter, real,
-    // disclosed future work this milestone didn't build.
-    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+    // v0.23 M6: scope-enforcement behavioral test. `26UpdatePlan.md`
+    // M5 widened this from JWT-only to both schemes: the file's own
+    // `no_token`/`malformed_token` cases are scheme-agnostic (gated
+    // inside the template on `has_auth_step`/`has_auth`), and its
+    // JWT-only `bearer`/`bearerExp` helpers plus their wrong_scope/
+    // correct_scope/expired_token blocks stay gated on
+    // `c.auth_scheme == "jwt"` inside the template. OAuth2 gets the
+    // scheme-specific equivalent via the real-RS256 rig below --
+    // closing the "future work" this file's v0.23 M6 comment used to
+    // disclose (real RS256 verification needing a real issuer's JWKS
+    // is no longer a blocker once the JWKS server itself is an
+    // in-process stub, not a live IdP).
+    if !ctx.scopes.is_empty() {
         project.add_file(
             at("tests/scope.test.ts"),
             render("scope.test.ts.j2", empty())?,
+        );
+    }
+    // The no-infra OAuth2 rig (`26UpdatePlan.md` M5): real RS256
+    // signing against an in-process JWKS stub, gated the same way the
+    // scope suite is gated on `c.scopes` above.
+    if ctx.auth_scheme == "oauth2" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at("tests/oauth-stub.ts"),
+            render("oauth_stub.ts.j2", empty())?,
+        );
+        project.add_file(
+            at("tests/oauth-rig.test.ts"),
+            render("oauth_rig.test.ts.j2", empty())?,
         );
     }
 

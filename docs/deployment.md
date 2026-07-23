@@ -192,8 +192,15 @@ target-language ones) proving whole-system behavior:
   `users Keycloak`-backed OAuth2 service, every scoped CRUD resource
   gets the same 403-without/200-with assertions the no-infra suite
   already proves for the `jwt` scheme, but with real tokens minted
-  from the live dev realm via `scripts/token.sh` — the case the
-  no-infra suite can't cover, since OAuth2 needs a live JWKS issuer.
+  from the live dev realm via `scripts/token.sh`. Since
+  `26UpdatePlan.md` M4/M5, every target's own no-infra suite already
+  proves OAuth2 scope enforcement too — real RS256 signing against a
+  real (if tiny) in-process JWKS stub, no live infrastructure — so
+  this `--system` check is the deeper oracle sitting above that: proof
+  the mechanism also round-trips against an actual, separately-running
+  identity provider (discovery, realm config, token issuance) rather
+  than a stand-in JWKS server, not the only place OAuth2 gets tested
+  at all.
 
 ```sh
 ciac verify inventory-system.ciac --target python --out ./inventory --system

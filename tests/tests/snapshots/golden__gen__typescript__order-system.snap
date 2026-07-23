@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -7801,6 +7802,11 @@ tests/scope.test.ts
 // clears the auth layer but then touches one may still come back as a
 // 5xx, which is still proof the auth layer itself let it through —
 // the same claim boundary `scope_tests.rs.j2` documents).
+//
+// `no_token`/`malformed_token` are scheme-agnostic (gated below on
+// `has_auth_step`/`has_auth`, not on scheme) — an oauth2 project gets
+// them here too; the real-RS256 rig in `oauth-rig.test.ts` covers the
+// oauth2-only cases (`26UpdatePlan.md` M5).
 
 import { describe, expect, it } from "vitest";
 import { SignJWT } from "jose";
@@ -7822,6 +7828,39 @@ async function bearer(scope: string): Promise<string> {
   return `Bearer ${token}`;
 }
 
+/** `expDelta` in the past mints an already-expired token
+    (`26UpdatePlan.md` M4's `expired_token` case). */
+async function bearerExp(scope: string, expDelta: number): Promise<string> {
+  const config = loadConfig();
+  const secret = new TextEncoder().encode(config.jwt_secret);
+  const token = await new SignJWT({ sub: "test", scope })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime(Math.floor(Date.now() / 1000) + expDelta)
+    .sign(secret);
+  return `Bearer ${token}`;
+}
+
+
+describe("shipped_summary_api auth enforcement", () => {
+  it("rejects a request with no token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/orders/summary/shipped",
+      payload: {"min_total": 0.0},
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a malformed bearer token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/orders/summary/shipped",
+      headers: { authorization: "Bearer not-a-jwt" },
+      payload: {"min_total": 0.0},
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
 
 describe("shipped_summary_api scope enforcement", () => {
   it("rejects a token missing the required scope", async () => {
@@ -7843,6 +7882,37 @@ describe("shipped_summary_api scope enforcement", () => {
     });
     expect(response.statusCode).not.toBe(401);
     expect(response.statusCode).not.toBe(403);
+  });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/orders/summary/shipped",
+      headers: { authorization: await bearerExp("orders:read", -3600) },
+      payload: {"min_total": 0.0},
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+
+describe("mark_shipped_api auth enforcement", () => {
+  it("rejects a request with no token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/orders/mark-shipped",
+      payload: {"id": "00000000-0000-0000-0000-000000000000", "customer_id": "00000000-0000-0000-0000-000000000000", "total": 0.0},
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a malformed bearer token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/orders/mark-shipped",
+      headers: { authorization: "Bearer not-a-jwt" },
+      payload: {"id": "00000000-0000-0000-0000-000000000000", "customer_id": "00000000-0000-0000-0000-000000000000", "total": 0.0},
+    });
+    expect(response.statusCode).toBe(401);
   });
 });
 
@@ -7867,8 +7937,34 @@ describe("mark_shipped_api scope enforcement", () => {
     expect(response.statusCode).not.toBe(401);
     expect(response.statusCode).not.toBe(403);
   });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/orders/mark-shipped",
+      headers: { authorization: await bearerExp("orders:write", -3600) },
+      payload: {"id": "00000000-0000-0000-0000-000000000000", "customer_id": "00000000-0000-0000-0000-000000000000", "total": 0.0},
+    });
+    expect(response.statusCode).toBe(401);
+  });
 });
 
+
+describe("customer auth enforcement", () => {
+  it("rejects a request with no token", async () => {
+    const response = await (await app()).inject({ method: "GET", url: "/customers" });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a malformed bearer token", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/customers",
+      headers: { authorization: "Bearer not-a-jwt" },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
 
 describe("customer read scope enforcement", () => {
   it("rejects a token missing the read scope", async () => {
@@ -7888,6 +7984,15 @@ describe("customer read scope enforcement", () => {
     });
     expect(response.statusCode).not.toBe(401);
     expect(response.statusCode).not.toBe(403);
+  });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/customers",
+      headers: { authorization: await bearerExp("customers:read", -3600) },
+    });
+    expect(response.statusCode).toBe(401);
   });
 });
 
@@ -7911,6 +8016,16 @@ describe("customer write scope enforcement", () => {
     });
     expect(response.statusCode).not.toBe(401);
     expect(response.statusCode).not.toBe(403);
+  });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/customers",
+      headers: { authorization: await bearerExp("customers:write", -3600) },
+      payload: {"name": "x", "email": "x"},
+    });
+    expect(response.statusCode).toBe(401);
   });
 });
 ============================================================

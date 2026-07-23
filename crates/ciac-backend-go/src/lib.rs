@@ -678,19 +678,34 @@ fn emit_service(
         render_go("main.go.j2", context! { has_routes => has_routes })?,
     );
 
-    // v0.24 M6: scope-enforcement behavioral test, JWT-only. OAuth2 is
-    // excluded from this no-infrastructure suite for the same live
-    // reason TS's own `scope.test.ts.j2` gate discloses: real RS256
-    // verification needs a real issuer's JWKS regardless of how
-    // lazily it's fetched -- a lazy `keyfunc.NewDefaultCtx` just moves
-    // *when* that network call happens (construction to first
-    // request), it doesn't remove the need for it. A no-infrastructure
-    // scope proof for OAuth2 needs an actual fake auth adapter, real,
-    // disclosed future work this milestone didn't build.
-    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+    // v0.24 M6: scope-enforcement behavioral test. `26UpdatePlan.md`
+    // M5 widened this from JWT-only to both schemes: the file's own
+    // no-token/malformed-token cases are scheme-agnostic (gated inside
+    // the template on `HasAuthStep`/`HasAuth`), and its JWT-only
+    // `bearer`/`bearerExp` helpers plus their wrong_scope/
+    // correct_scope/expired_token blocks stay gated on
+    // `c.auth_scheme == "jwt"` inside the template. OAuth2 gets the
+    // scheme-specific equivalent via the real-RS256 rig below.
+    if !ctx.scopes.is_empty() {
         project.add_file(
             at("internal/routes/scope_test.go"),
             render_go("scope_test.go.j2", empty())?,
+        );
+    }
+    // The no-infra OAuth2 rig (`26UpdatePlan.md` M5): real RS256
+    // signing against an in-process JWKS stub, gated the same way the
+    // scope suite is gated on `c.scopes` above. `oauth_stub_test.go`
+    // owns this package's `TestMain` (`internal/auth`'s JWKS fetch is
+    // cached behind a package-level `sync.Once`, so only one stub per
+    // test binary may ever set `OAUTH_ISSUER`).
+    if ctx.auth_scheme == "oauth2" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at("internal/routes/oauth_stub_test.go"),
+            render_go("oauth_stub_test.go.j2", empty())?,
+        );
+        project.add_file(
+            at("internal/routes/oauth_rig_test.go"),
+            render_go("oauth_rig_test.go.j2", empty())?,
         );
     }
 

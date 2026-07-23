@@ -17,6 +17,7 @@ async fn app() -> axum::Router {
         .expect("lazy state construction needs no live infra");
     routes::router().with_state(state)
 }
+{%- if c.auth_scheme == "jwt" %}
 
 fn bearer(scope: &str) -> String {
     bearer_exp(scope, 3600)
@@ -40,6 +41,7 @@ fn bearer_exp(scope: &str, exp_delta: i64) -> String {
     .expect("token encodes");
     format!("Bearer {token}")
 }
+{%- endif %}
 {%- macro dummy_json(record, skip_id) -%}
 {%- if record %}{
 {%- for field in record.fields if not (skip_id and field.name == "id") %}
@@ -115,7 +117,7 @@ async fn {{ api.snake }}_malformed_token() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
-{%- if api.scope %}
+{%- if api.scope and c.auth_scheme == "jwt" %}
 
 #[tokio::test]
 async fn {{ api.snake }}_wrong_scope() {
@@ -227,7 +229,7 @@ async fn {{ resource.snake }}_malformed_token() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 {%- endif %}
-{%- if resource.read_scope %}
+{%- if resource.read_scope and c.auth_scheme == "jwt" %}
 
 #[tokio::test]
 async fn {{ resource.snake }}_read_wrong_scope() {
@@ -281,7 +283,7 @@ async fn {{ resource.snake }}_read_expired_token() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 {%- endif %}
-{%- if resource.write_scope %}
+{%- if resource.write_scope and c.auth_scheme == "jwt" %}
 
 #[tokio::test]
 async fn {{ resource.snake }}_write_wrong_scope() {

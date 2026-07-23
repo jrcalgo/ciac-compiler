@@ -1,0 +1,395 @@
+// OAuthRigTests.java -- Generated behavioral test for the no-infra
+// OAuth2 scope rig. Real RS256 signing against a real (if tiny)
+// in-process JWKS server, built on `com.nimbusds` -- the same
+// dependency `SecurityConfig`'s own `NimbusJwtDecoder` already uses
+// to fetch and verify against a JWKS -- so this suite exercises
+// production code, not a parallel implementation. `ScopeTests`'s own
+// no-token/malformed-token cases already cover this service; this
+// file covers the scheme-specific cases only (`26UpdatePlan.md` M5).
+//
+// `@DynamicPropertySource` starts the stub and registers `OAUTH_ISSUER`
+// before the Spring context is created -- the same "issuer override
+// before first read" constraint every other target's own rig
+// discloses, met here through Spring's own purpose-built mechanism
+// (normally used to point tests at a Testcontainers-allocated port)
+// rather than an import-ordering trick.
+package com.ciac.{{ java_package }}.routes;
+
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.interfaces.RSAPublicKey;
+import java.util.Date;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class OAuthRigTests {
+    @Autowired MockMvc mvc;
+
+    @Value("${OAUTH_AUDIENCE:{{ c.auth_audience }}}")
+    String configuredAudience;
+
+    private static final String KID = "test-key-1";
+    private static String stubIssuer;
+    private static RSAKey signingKey;
+    private static RSAKey wrongSigningKey;
+
+    @DynamicPropertySource
+    static void oauthStub(DynamicPropertyRegistry registry) throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        KeyPair pair = generator.generateKeyPair();
+        KeyPair wrongPair = generator.generateKeyPair();
+        signingKey =
+                new RSAKey.Builder((RSAPublicKey) pair.getPublic())
+                        .privateKey(pair.getPrivate())
+                        .keyID(KID)
+                        .build();
+        wrongSigningKey =
+                new RSAKey.Builder((RSAPublicKey) wrongPair.getPublic())
+                        .privateKey(wrongPair.getPrivate())
+                        .keyID(KID)
+                        .build();
+
+        byte[] body =
+                new JWKSet(signingKey.toPublicJWK()).toString().getBytes(StandardCharsets.UTF_8);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext(
+                "/.well-known/jwks.json",
+                exchange -> {
+                    exchange.getResponseHeaders().add("Content-Type", "application/json");
+                    exchange.sendResponseHeaders(200, body.length);
+                    try (var os = exchange.getResponseBody()) {
+                        os.write(body);
+                    }
+                });
+        server.setExecutor(null);
+        server.start();
+
+        stubIssuer = "http://127.0.0.1:" + server.getAddress().getPort();
+        registry.add("OAUTH_ISSUER", () -> stubIssuer);
+    }
+
+    private String mint(String scope) throws Exception {
+        return mint(scope, signingKey, KID, stubIssuer, 3600_000);
+    }
+
+    private String mint(String scope, RSAKey key, String kid, String iss, long expDeltaMillis) throws Exception {
+        JWTClaimsSet.Builder claims =
+                new JWTClaimsSet.Builder()
+                        .subject("test")
+                        .claim("scope", scope)
+                        .issuer(iss)
+                        .expirationTime(new Date(System.currentTimeMillis() + expDeltaMillis));
+        if (!configuredAudience.isBlank()) {
+            claims.audience(configuredAudience);
+        }
+        SignedJWT jwt =
+                new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(kid).build(), claims.build());
+        jwt.sign(new RSASSASigner(key));
+        return "Bearer " + jwt.serialize();
+    }
+{% macro dummy_field(field) -%}
+{%- if field.type_kind.kind == "enum" -%}
+"{{ field.type_kind.variants[0] }}"
+{%- elif field.type_kind.kind == "int" -%}
+0
+{%- elif field.type_kind.kind == "float" -%}
+0.0
+{%- elif field.type_kind.kind == "bool" -%}
+false
+{%- elif field.type_kind.kind == "uuid" or field.type_kind.kind == "reference" -%}
+"00000000-0000-0000-0000-000000000000"
+{%- elif field.type_kind.kind == "timestamp" -%}
+"1970-01-01T00:00:00Z"
+{%- elif field.type_kind.kind == "json" -%}
+{}
+{%- else -%}
+"x"
+{%- endif -%}
+{%- endmacro %}
+{%- macro dummy_json(record, skip_id) -%}
+{%- if record -%}
+{
+{%- for field in record.fields if not (skip_id and field.name == "id") -%}
+{%- if not loop.first %}, {% endif -%}
+"{{ field.name }}": {{ dummy_field(field) }}
+{%- endfor -%}
+}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro dummy_body(resource) -%}
+{{ dummy_json(resource.record, true) }}
+{%- endmacro -%}
+{%- macro dummy_api_body(api) -%}
+{%- if api.payload -%}
+{{ dummy_json(c.records | selectattr("name", "equalto", api.payload.class_name) | first, false) }}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{% for api in c.apis %}
+{%- if api.scope %}
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsMissingScope() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", mint("not:{{ api.scope }}"))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void {{ api.snake | java_camel }}AcceptsRequiredScope() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", mint("{{ api.scope }}"))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect((result) -> {
+                    int code = result.getResponse().getStatus();
+                    if (code == 401 || code == 403) {
+                        throw new AssertionError(
+                                "expected neither 401 nor 403 (mechanism proof only), got " + code);
+                    }
+                });
+    }
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsExpiredToken() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header(
+                                        "Authorization",
+                                        mint("{{ api.scope }}", signingKey, KID, stubIssuer, -3600_000))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsWrongKey() throws Exception {
+        // The crypto-boundary case the JWT suite cannot express as
+        // sharply: a correctly-shaped, correctly-`kid`'d token signed
+        // by a key the stub JWKS never served -- proof the signature
+        // check itself gates the door, not just claim shape or `kid`
+        // lookup.
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header(
+                                        "Authorization",
+                                        mint("{{ api.scope }}", wrongSigningKey, KID, stubIssuer, 3600_000))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsWrongIssuer() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header(
+                                        "Authorization",
+                                        mint(
+                                                "{{ api.scope }}",
+                                                signingKey,
+                                                KID,
+                                                "http://wrong-issuer.example",
+                                                3600_000))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- endfor %}
+{% for resource in c.resources %}
+{%- if resource.read_scope %}
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsMissingReadScope() throws Exception {
+        mvc.perform(get("/{{ resource.plural }}").header("Authorization", mint("not:{{ resource.read_scope }}")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}ListAcceptsReadScope() throws Exception {
+        mvc.perform(get("/{{ resource.plural }}").header("Authorization", mint("{{ resource.read_scope }}")))
+                .andExpect((result) -> {
+                    int code = result.getResponse().getStatus();
+                    if (code == 401 || code == 403) {
+                        throw new AssertionError(
+                                "expected neither 401 nor 403 (mechanism proof only), got " + code);
+                    }
+                });
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsExpiredReadToken() throws Exception {
+        mvc.perform(
+                        get("/{{ resource.plural }}")
+                                .header(
+                                        "Authorization",
+                                        mint("{{ resource.read_scope }}", signingKey, KID, stubIssuer, -3600_000)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsWrongKey() throws Exception {
+        mvc.perform(
+                        get("/{{ resource.plural }}")
+                                .header(
+                                        "Authorization",
+                                        mint("{{ resource.read_scope }}", wrongSigningKey, KID, stubIssuer, 3600_000)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsWrongIssuer() throws Exception {
+        mvc.perform(
+                        get("/{{ resource.plural }}")
+                                .header(
+                                        "Authorization",
+                                        mint(
+                                                "{{ resource.read_scope }}",
+                                                signingKey,
+                                                KID,
+                                                "http://wrong-issuer.example",
+                                                3600_000)))
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- if resource.write_scope %}
+
+    @Test
+    void {{ resource.name | java_camel }}CreateRejectsMissingWriteScope() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", mint("not:{{ resource.write_scope }}"))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}CreateAcceptsWriteScope() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", mint("{{ resource.write_scope }}"))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect((result) -> {
+                    int code = result.getResponse().getStatus();
+                    if (code == 401 || code == 403) {
+                        throw new AssertionError(
+                                "expected neither 401 nor 403 (mechanism proof only), got " + code);
+                    }
+                });
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}CreateRejectsExpiredWriteToken() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header(
+                                        "Authorization",
+                                        mint("{{ resource.write_scope }}", signingKey, KID, stubIssuer, -3600_000))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}CreateRejectsWrongKey() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header(
+                                        "Authorization",
+                                        mint(
+                                                "{{ resource.write_scope }}",
+                                                wrongSigningKey,
+                                                KID,
+                                                stubIssuer,
+                                                3600_000))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}CreateRejectsWrongIssuer() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header(
+                                        "Authorization",
+                                        mint(
+                                                "{{ resource.write_scope }}",
+                                                signingKey,
+                                                KID,
+                                                "http://wrong-issuer.example",
+                                                3600_000))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- endfor %}
+}

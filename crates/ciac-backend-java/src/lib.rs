@@ -440,15 +440,28 @@ fn emit_service(
             render_java("SecurityConfig.java.j2", empty())?,
         );
     }
-    // MockMvc `ScopeTests` (M6): JWT-only, matching Rust's/Go's own
-    // disclosed exclusion -- a true no-infrastructure OAuth2 scope
-    // proof needs a fake auth adapter (real RS256 verification needs a
-    // real issuer's JWKS regardless of how lazily it's fetched), future
-    // work this milestone doesn't attempt.
-    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+    // MockMvc `ScopeTests` (M6). `26UpdatePlan.md` M5 widened this
+    // from JWT-only to both schemes: the file's own no-token/
+    // malformed-token cases are scheme-agnostic (gated inside the
+    // template on hasAuthStep/hasAuth), and its JWT-only `bearer`/
+    // `bearerExp` helpers plus their wrong_scope/correct_scope/
+    // expired_token blocks stay gated on `c.auth_scheme == "jwt"`
+    // inside the template. OAuth2 gets the scheme-specific equivalent
+    // via `OAuthRigTests` below.
+    if !ctx.scopes.is_empty() {
         project.add_file(
             at(&format!("{test_root}/routes/ScopeTests.java")),
             render_java("ScopeTests.java.j2", empty())?,
+        );
+    }
+    // The no-infra OAuth2 rig (`26UpdatePlan.md` M5): real RS256
+    // signing against an in-process JWKS stub (`com.sun.net.httpserver`,
+    // JDK stdlib), gated the same way `ScopeTests` is gated on
+    // `c.scopes` above.
+    if ctx.auth_scheme == "oauth2" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at(&format!("{test_root}/routes/OAuthRigTests.java")),
+            render_java("OAuthRigTests.java.j2", empty())?,
         );
     }
     // `LogShapeTest` (`26UpdatePlan.md` M3): proves the `LogstashEncoder`

@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1958,11 +1959,20 @@ src/main/java/com/ciac/accounts/state/SecurityConfig.java
 // rather than a middleware chain.
 package com.ciac.accounts.state;
 
+import java.util.List;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtClaimNames;
+import org.springframework.security.oauth2.jwt.JwtClaimValidator;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtIssuerValidator;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
 
@@ -1981,11 +1991,37 @@ public class SecurityConfig {
   // this bean never makes a network call, the same laziness bar
   // every other provider client (db pools, the broker client) already
   // meets.
+  //
+  // `OAUTH_ISSUER`/`OAUTH_AUDIENCE` overridable via `@Value`, the
+  // same env-driven pattern every other target's own config already
+  // uses (`26UpdatePlan.md` M5) -- the previous literal-interpolated
+  // issuer string had no runtime override at all, which the no-infra
+  // OAuth2 test rig (a real in-process JWKS stub) needs to point the
+  // decoder at itself. `NimbusJwtDecoder.withJwkSetUri(...).build()`
+  // installs only `JwtValidators.createDefault()` (timestamp checks)
+  // -- it does *not* validate `iss`/`aud` on its own, unlike
+  // `JwtDecoders.fromIssuerLocation`. `JwtIssuerValidator` (and, if
+  // an audience is declared, a `JwtClaimValidator` on `aud`) close
+  // that gap, matching every other target's own issuer/audience
+  // checks -- found live while wiring `wrong_issuer`'s own rig case,
+  // which a validator-less decoder let through as 200.
   @Lazy
   @Bean
-  public JwtDecoder jwtDecoder() {
-    return NimbusJwtDecoder.withJwkSetUri("http://keycloak:8080/realms/dev/.well-known/jwks.json")
-        .build();
+  public JwtDecoder jwtDecoder(
+      @Value("${OAUTH_ISSUER:http://keycloak:8080/realms/dev}") String issuer,
+      @Value("${OAUTH_AUDIENCE:}") String audience) {
+    NimbusJwtDecoder decoder =
+        NimbusJwtDecoder.withJwkSetUri(issuer + "/.well-known/jwks.json").build();
+    List<OAuth2TokenValidator<Jwt>> validators =
+        new java.util.ArrayList<>(
+            List.of(JwtValidators.createDefault(), new JwtIssuerValidator(issuer)));
+    if (!audience.isBlank()) {
+      validators.add(
+          new JwtClaimValidator<List<String>>(
+              JwtClaimNames.AUD, aud -> aud != null && aud.contains(audience)));
+    }
+    decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(validators));
+    return decoder;
   }
 }
 ============================================================
@@ -2329,6 +2365,288 @@ class NoInfraBootTest {
     // assertion. Kept non-empty so a future refactor can't
     // silently turn this into a no-op test.
     assertThat(true).isTrue();
+  }
+}
+============================================================
+src/test/java/com/ciac/accounts/routes/OAuthRigTests.java
+============================================================
+// OAuthRigTests.java -- Generated behavioral test for the no-infra
+// OAuth2 scope rig. Real RS256 signing against a real (if tiny)
+// in-process JWKS server, built on `com.nimbusds` -- the same
+// dependency `SecurityConfig`'s own `NimbusJwtDecoder` already uses
+// to fetch and verify against a JWKS -- so this suite exercises
+// production code, not a parallel implementation. `ScopeTests`'s own
+// no-token/malformed-token cases already cover this service; this
+// file covers the scheme-specific cases only (`26UpdatePlan.md` M5).
+//
+// `@DynamicPropertySource` starts the stub and registers `OAUTH_ISSUER`
+// before the Spring context is created -- the same "issuer override
+// before first read" constraint every other target's own rig
+// discloses, met here through Spring's own purpose-built mechanism
+// (normally used to point tests at a Testcontainers-allocated port)
+// rather than an import-ordering trick.
+package com.ciac.accounts.routes;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.interfaces.RSAPublicKey;
+import java.util.Date;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class OAuthRigTests {
+  @Autowired MockMvc mvc;
+
+  @Value("${OAUTH_AUDIENCE:}")
+  String configuredAudience;
+
+  private static final String KID = "test-key-1";
+  private static String stubIssuer;
+  private static RSAKey signingKey;
+  private static RSAKey wrongSigningKey;
+
+  @DynamicPropertySource
+  static void oauthStub(DynamicPropertyRegistry registry) throws Exception {
+    KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+    generator.initialize(2048);
+    KeyPair pair = generator.generateKeyPair();
+    KeyPair wrongPair = generator.generateKeyPair();
+    signingKey =
+        new RSAKey.Builder((RSAPublicKey) pair.getPublic())
+            .privateKey(pair.getPrivate())
+            .keyID(KID)
+            .build();
+    wrongSigningKey =
+        new RSAKey.Builder((RSAPublicKey) wrongPair.getPublic())
+            .privateKey(wrongPair.getPrivate())
+            .keyID(KID)
+            .build();
+
+    byte[] body = new JWKSet(signingKey.toPublicJWK()).toString().getBytes(StandardCharsets.UTF_8);
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext(
+        "/.well-known/jwks.json",
+        exchange -> {
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, body.length);
+          try (var os = exchange.getResponseBody()) {
+            os.write(body);
+          }
+        });
+    server.setExecutor(null);
+    server.start();
+
+    stubIssuer = "http://127.0.0.1:" + server.getAddress().getPort();
+    registry.add("OAUTH_ISSUER", () -> stubIssuer);
+  }
+
+  private String mint(String scope) throws Exception {
+    return mint(scope, signingKey, KID, stubIssuer, 3600_000);
+  }
+
+  private String mint(String scope, RSAKey key, String kid, String iss, long expDeltaMillis)
+      throws Exception {
+    JWTClaimsSet.Builder claims =
+        new JWTClaimsSet.Builder()
+            .subject("test")
+            .claim("scope", scope)
+            .issuer(iss)
+            .expirationTime(new Date(System.currentTimeMillis() + expDeltaMillis));
+    if (!configuredAudience.isBlank()) {
+      claims.audience(configuredAudience);
+    }
+    SignedJWT jwt =
+        new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID(kid).build(), claims.build());
+    jwt.sign(new RSASSASigner(key));
+    return "Bearer " + jwt.serialize();
+  }
+
+  @Test
+  void accountListRejectsMissingReadScope() throws Exception {
+    mvc.perform(get("/accounts").header("Authorization", mint("not:accounts:read")))
+        .andExpect(status().isForbidden());
+  }
+
+  @Test
+  void accountListAcceptsReadScope() throws Exception {
+    mvc.perform(get("/accounts").header("Authorization", mint("accounts:read")))
+        .andExpect(
+            (result) -> {
+              int code = result.getResponse().getStatus();
+              if (code == 401 || code == 403) {
+                throw new AssertionError(
+                    "expected neither 401 nor 403 (mechanism proof only), got " + code);
+              }
+            });
+  }
+
+  @Test
+  void accountListRejectsExpiredReadToken() throws Exception {
+    mvc.perform(
+            get("/accounts")
+                .header(
+                    "Authorization", mint("accounts:read", signingKey, KID, stubIssuer, -3600_000)))
+        .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void accountListRejectsWrongKey() throws Exception {
+    mvc.perform(
+            get("/accounts")
+                .header(
+                    "Authorization",
+                    mint("accounts:read", wrongSigningKey, KID, stubIssuer, 3600_000)))
+        .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void accountListRejectsWrongIssuer() throws Exception {
+    mvc.perform(
+            get("/accounts")
+                .header(
+                    "Authorization",
+                    mint(
+                        "accounts:read", signingKey, KID, "http://wrong-issuer.example", 3600_000)))
+        .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void accountCreateRejectsMissingWriteScope() throws Exception {
+    mvc.perform(
+            post("/accounts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Authorization", mint("not:accounts:write"))
+                .content("""
+{"email": "x"}
+"""))
+        .andExpect(status().isForbidden());
+  }
+
+  @Test
+  void accountCreateAcceptsWriteScope() throws Exception {
+    mvc.perform(
+            post("/accounts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Authorization", mint("accounts:write"))
+                .content("""
+{"email": "x"}
+"""))
+        .andExpect(
+            (result) -> {
+              int code = result.getResponse().getStatus();
+              if (code == 401 || code == 403) {
+                throw new AssertionError(
+                    "expected neither 401 nor 403 (mechanism proof only), got " + code);
+              }
+            });
+  }
+
+  @Test
+  void accountCreateRejectsExpiredWriteToken() throws Exception {
+    mvc.perform(
+            post("/accounts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header(
+                    "Authorization", mint("accounts:write", signingKey, KID, stubIssuer, -3600_000))
+                .content("""
+{"email": "x"}
+"""))
+        .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void accountCreateRejectsWrongKey() throws Exception {
+    mvc.perform(
+            post("/accounts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header(
+                    "Authorization",
+                    mint("accounts:write", wrongSigningKey, KID, stubIssuer, 3600_000))
+                .content("""
+{"email": "x"}
+"""))
+        .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void accountCreateRejectsWrongIssuer() throws Exception {
+    mvc.perform(
+            post("/accounts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .header(
+                    "Authorization",
+                    mint(
+                        "accounts:write", signingKey, KID, "http://wrong-issuer.example", 3600_000))
+                .content("""
+{"email": "x"}
+"""))
+        .andExpect(status().isUnauthorized());
+  }
+}
+============================================================
+src/test/java/com/ciac/accounts/routes/ScopeTests.java
+============================================================
+// ScopeTests.java -- Generated behavioral test for scope enforcement.
+// Regenerated on every build. Drives the real Spring context via
+// MockMvc -- no live listener needed (db/cache/queue pools stay lazy;
+// a request that clears the auth layer but then touches unreachable
+// infrastructure may still come back as a 5xx, which is still proof
+// the auth layer itself let it through -- the same claim boundary
+// every other target's own scope test documents).
+//
+// no-token/malformed-token are scheme-agnostic (gated below on
+// hasAuthStep/hasAuth, not on scheme) -- an oauth2 project gets them
+// here too; `OAuthRigTests` covers the oauth2-only cases
+// (`26UpdatePlan.md` M5, closing the "future work" this file's own
+// v0.25 M6 comment used to disclose).
+package com.ciac.accounts.routes;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.web.servlet.MockMvc;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class ScopeTests {
+  @Autowired MockMvc mvc;
+
+  @Test
+  void accountListRejectsNoToken() throws Exception {
+    mvc.perform(get("/accounts")).andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void accountListRejectsMalformedToken() throws Exception {
+    mvc.perform(get("/accounts").header("Authorization", "Bearer not-a-jwt"))
+        .andExpect(status().isUnauthorized());
   }
 }
 ============================================================

@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -2631,6 +2632,11 @@ internal/routes/scope_test.go
 // touches unreachable infrastructure may still come back as a 5xx,
 // which is still proof the auth layer itself let it through -- the
 // same claim boundary every other target's own scope test documents).
+//
+// `no_token`/`malformed_token` are scheme-agnostic (gated below on
+// `HasAuthStep`/`HasAuth`, not on scheme) -- an oauth2 project gets
+// them here too; `oauth_rig_test.go` covers the oauth2-only cases
+// (`26UpdatePlan.md` M5).
 package routes
 
 import (
@@ -2660,6 +2666,22 @@ func bearer(t *testing.T, cfg config.Config, scope string) string {
 	return "Bearer " + token
 }
 
+// bearerExp mints an already-expired token (exp in the past) --
+// `26UpdatePlan.md` M4's `expired_token` case.
+func bearerExp(t *testing.T, cfg config.Config, scope string, expDelta time.Duration) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"sub":   "test",
+		"scope": scope,
+		"exp":   time.Now().Add(expDelta).Unix(),
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(cfg.JWTSecret))
+	if err != nil {
+		t.Fatalf("signing test token: %v", err)
+	}
+	return "Bearer " + token
+}
+
 func testRouter(t *testing.T) (*http.ServeMux, config.Config) {
 	t.Helper()
 	cfg := config.FromEnv()
@@ -2668,6 +2690,31 @@ func testRouter(t *testing.T) (*http.ServeMux, config.Config) {
 		t.Fatalf("building state: %v", err)
 	}
 	return Router(st), cfg
+}
+
+func TestShippedSummaryAPIAuthEnforced(t *testing.T) {
+	mux, _ := testRouter(t)
+
+	t.Run("rejects a request with no token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/orders/summary/shipped", bytes.NewBufferString(`{"min_total": 0.0}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a malformed bearer token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/orders/summary/shipped", bytes.NewBufferString(`{"min_total": 0.0}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer not-a-jwt")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestShippedSummaryAPIScopeEnforced(t *testing.T) {
@@ -2692,6 +2739,42 @@ func TestShippedSummaryAPIScopeEnforced(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
 			t.Fatalf("expected neither 401 nor 403 (mechanism proof only), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects an expired token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/orders/summary/shipped", bytes.NewBufferString(`{"min_total": 0.0}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", bearerExp(t, cfg, "orders:read", -time.Hour))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestMarkShippedAPIAuthEnforced(t *testing.T) {
+	mux, _ := testRouter(t)
+
+	t.Run("rejects a request with no token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/orders/mark-shipped", bytes.NewBufferString(`{"id": "00000000-0000-0000-0000-000000000000", "customer_id": "00000000-0000-0000-0000-000000000000", "total": 0.0}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a malformed bearer token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/orders/mark-shipped", bytes.NewBufferString(`{"id": "00000000-0000-0000-0000-000000000000", "customer_id": "00000000-0000-0000-0000-000000000000", "total": 0.0}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer not-a-jwt")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -2720,6 +2803,40 @@ func TestMarkShippedAPIScopeEnforced(t *testing.T) {
 			t.Fatalf("expected neither 401 nor 403 (mechanism proof only), got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
+
+	t.Run("rejects an expired token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/orders/mark-shipped", bytes.NewBufferString(`{"id": "00000000-0000-0000-0000-000000000000", "customer_id": "00000000-0000-0000-0000-000000000000", "total": 0.0}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", bearerExp(t, cfg, "orders:write", -time.Hour))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestCustomerAuthEnforced(t *testing.T) {
+	mux, _ := testRouter(t)
+
+	t.Run("rejects a request with no token", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/customers", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a malformed bearer token", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/customers", nil)
+		req.Header.Set("Authorization", "Bearer not-a-jwt")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func TestCustomerReadScopeEnforced(t *testing.T) {
@@ -2742,6 +2859,16 @@ func TestCustomerReadScopeEnforced(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
 			t.Fatalf("expected neither 401 nor 403 (mechanism proof only), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects an expired token", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/customers", nil)
+		req.Header.Set("Authorization", bearerExp(t, cfg, "customers:read", -time.Hour))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -2768,6 +2895,17 @@ func TestCustomerWriteScopeEnforced(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
 			t.Fatalf("expected neither 401 nor 403 (mechanism proof only), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects an expired token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/customers", bytes.NewBufferString(`{"name": "x", "email": "x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", bearerExp(t, cfg, "customers:write", -time.Hour))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }

@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -644,7 +645,8 @@ openapi.json
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-ciac-scope": "echo:write"
       }
     },
     "/health": {
@@ -911,6 +913,7 @@ public class EchoController {
   @RequestMapping(method = RequestMethod.POST, path = "/echo")
   public Envelope echo(HttpServletRequest request, @RequestBody JsonNode body) throws Exception {
     Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+    Auth.requireScope(jwt, "echo:write");
     Object result = Message.decode(body);
 
     return Envelope.accepted(result);
@@ -1288,7 +1291,8 @@ src/main/resources/apidoc.json
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-ciac-scope": "echo:write"
       }
     },
     "/health": {

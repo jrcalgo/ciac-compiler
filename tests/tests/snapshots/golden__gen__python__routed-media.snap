@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1613,6 +1614,8 @@ These run without any infrastructure: clients are lazy and the ASGI
 transport below does not trigger the startup lifespan.
 """
 
+import time
+
 import jwt
 import httpx
 import pytest
@@ -1626,12 +1629,15 @@ def _client(*, raise_app_exceptions: bool = True) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
-def _bearer(scope: str) -> dict[str, str]:
+def _bearer(scope: str, *, exp_delta: int = 3600) -> dict[str, str]:
     """A locally-signed token carrying `scope` — the JWT scheme verifies
     against `jwt_secret`, which this process already has, so no live
-    issuer is needed to prove the scope check itself works."""
+    issuer is needed to prove the scope check itself works. `exp_delta`
+    in the past mints an already-expired token (`26UpdatePlan.md` M4's
+    `expired_token` case)."""
     settings = get_settings()
-    token = jwt.encode({"sub": "test", "scope": scope}, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    claims = {"sub": "test", "scope": scope, "exp": int(time.time()) + exp_delta}
+    token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -1651,14 +1657,26 @@ async def test_health() -> None:
 
 
 @pytest.mark.anyio
-async def test_upload_requires_auth() -> None:
+async def test_upload_no_token() -> None:
     async with _client() as client:
         response = await client.put("/videos", json={})
     assert response.status_code in (401, 403)
 
 
 @pytest.mark.anyio
-async def test_upload_rejects_missing_scope() -> None:
+async def test_upload_malformed_token() -> None:
+    # `26UpdatePlan.md` M4: a case matrix entry the JWT suite alone
+    # never distinguished from `no_token` — both schemes' decoders
+    # reject an unparseable bearer value the same way.
+    async with _client() as client:
+        response = await client.put(
+            "/videos", json={}, headers={"Authorization": "Bearer not-a-jwt"}
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_upload_wrong_scope() -> None:
     async with _client() as client:
         response = await client.put(
             "/videos", json={}, headers=_bearer("not:videos:write")
@@ -1667,7 +1685,7 @@ async def test_upload_rejects_missing_scope() -> None:
 
 
 @pytest.mark.anyio
-async def test_upload_accepts_granted_scope() -> None:
+async def test_upload_correct_scope() -> None:
     # `raise_app_exceptions=False`: a granted-scope request clears the
     # auth dependency and reaches the route body, which may then fail
     # on a real dependency this no-infra suite doesn't have (a live
@@ -1679,8 +1697,24 @@ async def test_upload_accepts_granted_scope() -> None:
         )
     assert response.status_code not in (401, 403)
 
+
 @pytest.mark.anyio
-async def test_clips_require_auth() -> None:
+async def test_upload_expired_token() -> None:
+    async with _client() as client:
+        response = await client.put(
+            "/videos", json={}, headers=_bearer("videos:write", exp_delta=-3600)
+        )
+    assert response.status_code == 401
+
+@pytest.mark.anyio
+async def test_clips_no_token() -> None:
     async with _client() as client:
         response = await client.get("/clips")
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_clips_malformed_token() -> None:
+    async with _client() as client:
+        response = await client.get("/clips", headers={"Authorization": "Bearer not-a-jwt"})
+    assert response.status_code == 401

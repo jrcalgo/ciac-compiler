@@ -5,6 +5,8 @@ transport below does not trigger the startup lifespan.
 """
 
 {% if c.auth_scheme == "jwt" and c.scopes -%}
+import time
+
 import jwt
 {% endif -%}
 import httpx
@@ -21,12 +23,15 @@ def _client(*, raise_app_exceptions: bool = True) -> httpx.AsyncClient:
 {%- if c.auth_scheme == "jwt" and c.scopes %}
 
 
-def _bearer(scope: str) -> dict[str, str]:
+def _bearer(scope: str, *, exp_delta: int = 3600) -> dict[str, str]:
     """A locally-signed token carrying `scope` — the JWT scheme verifies
     against `jwt_secret`, which this process already has, so no live
-    issuer is needed to prove the scope check itself works."""
+    issuer is needed to prove the scope check itself works. `exp_delta`
+    in the past mints an already-expired token (`26UpdatePlan.md` M4's
+    `expired_token` case)."""
     settings = get_settings()
-    token = jwt.encode({"sub": "test", "scope": scope}, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    claims = {"sub": "test", "scope": scope, "exp": int(time.time()) + exp_delta}
+    token = jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return {"Authorization": f"Bearer {token}"}
 {%- endif %}
 
@@ -52,7 +57,7 @@ async def test_health() -> None:
 {%- if api.has_auth_step %}
 
 @pytest.mark.anyio
-async def test_{{ api.snake }}_requires_auth() -> None:
+async def test_{{ api.snake }}_no_token() -> None:
     async with _client() as client:
 {%- if api.has_body %}
         response = await client.{{ api.method_lower }}("{{ api.route }}", json={})
@@ -60,11 +65,29 @@ async def test_{{ api.snake }}_requires_auth() -> None:
         response = await client.{{ api.method_lower }}("{{ api.route }}")
 {%- endif %}
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_{{ api.snake }}_malformed_token() -> None:
+    # `26UpdatePlan.md` M4: a case matrix entry the JWT suite alone
+    # never distinguished from `no_token` — both schemes' decoders
+    # reject an unparseable bearer value the same way.
+    async with _client() as client:
+{%- if api.has_body %}
+        response = await client.{{ api.method_lower }}(
+            "{{ api.route }}", json={}, headers={"Authorization": "Bearer not-a-jwt"}
+        )
+{%- else %}
+        response = await client.{{ api.method_lower }}(
+            "{{ api.route }}", headers={"Authorization": "Bearer not-a-jwt"}
+        )
+{%- endif %}
+    assert response.status_code == 401
 {%- if api.scope and c.auth_scheme == "jwt" %}
 
 
 @pytest.mark.anyio
-async def test_{{ api.snake }}_rejects_missing_scope() -> None:
+async def test_{{ api.snake }}_wrong_scope() -> None:
     async with _client() as client:
 {%- if api.has_body %}
         response = await client.{{ api.method_lower }}(
@@ -77,7 +100,7 @@ async def test_{{ api.snake }}_rejects_missing_scope() -> None:
 
 
 @pytest.mark.anyio
-async def test_{{ api.snake }}_accepts_granted_scope() -> None:
+async def test_{{ api.snake }}_correct_scope() -> None:
     # `raise_app_exceptions=False`: a granted-scope request clears the
     # auth dependency and reaches the route body, which may then fail
     # on a real dependency this no-infra suite doesn't have (a live
@@ -92,6 +115,21 @@ async def test_{{ api.snake }}_accepts_granted_scope() -> None:
         response = await client.{{ api.method_lower }}("{{ api.route }}", headers=_bearer("{{ api.scope }}"))
 {%- endif %}
     assert response.status_code not in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_{{ api.snake }}_expired_token() -> None:
+    async with _client() as client:
+{%- if api.has_body %}
+        response = await client.{{ api.method_lower }}(
+            "{{ api.route }}", json={}, headers=_bearer("{{ api.scope }}", exp_delta=-3600)
+        )
+{%- else %}
+        response = await client.{{ api.method_lower }}(
+            "{{ api.route }}", headers=_bearer("{{ api.scope }}", exp_delta=-3600)
+        )
+{%- endif %}
+    assert response.status_code == 401
 {%- endif %}
 {%- endif %}
 {%- endfor %}
@@ -99,31 +137,47 @@ async def test_{{ api.snake }}_accepts_granted_scope() -> None:
 {%- if resource.has_auth %}
 
 @pytest.mark.anyio
-async def test_{{ resource.plural }}_require_auth() -> None:
+async def test_{{ resource.plural }}_no_token() -> None:
     async with _client() as client:
         response = await client.get("/{{ resource.plural }}")
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_{{ resource.plural }}_malformed_token() -> None:
+    async with _client() as client:
+        response = await client.get("/{{ resource.plural }}", headers={"Authorization": "Bearer not-a-jwt"})
+    assert response.status_code == 401
 {%- if resource.read_scope and c.auth_scheme == "jwt" %}
 
 
 @pytest.mark.anyio
-async def test_{{ resource.plural }}_read_rejects_missing_scope() -> None:
+async def test_{{ resource.plural }}_read_wrong_scope() -> None:
     async with _client() as client:
         response = await client.get("/{{ resource.plural }}", headers=_bearer("not:{{ resource.read_scope }}"))
     assert response.status_code == 403
 
 
 @pytest.mark.anyio
-async def test_{{ resource.plural }}_read_accepts_granted_scope() -> None:
+async def test_{{ resource.plural }}_read_correct_scope() -> None:
     async with _client(raise_app_exceptions=False) as client:
         response = await client.get("/{{ resource.plural }}", headers=_bearer("{{ resource.read_scope }}"))
     assert response.status_code not in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_{{ resource.plural }}_read_expired_token() -> None:
+    async with _client() as client:
+        response = await client.get(
+            "/{{ resource.plural }}", headers=_bearer("{{ resource.read_scope }}", exp_delta=-3600)
+        )
+    assert response.status_code == 401
 {%- endif %}
 {%- if resource.write_scope and c.auth_scheme == "jwt" %}
 
 
 @pytest.mark.anyio
-async def test_{{ resource.plural }}_write_rejects_missing_scope() -> None:
+async def test_{{ resource.plural }}_write_wrong_scope() -> None:
     async with _client() as client:
         response = await client.post(
             "/{{ resource.plural }}", json={}, headers=_bearer("not:{{ resource.write_scope }}")
@@ -132,12 +186,21 @@ async def test_{{ resource.plural }}_write_rejects_missing_scope() -> None:
 
 
 @pytest.mark.anyio
-async def test_{{ resource.plural }}_write_accepts_granted_scope() -> None:
+async def test_{{ resource.plural }}_write_correct_scope() -> None:
     async with _client(raise_app_exceptions=False) as client:
         response = await client.post(
             "/{{ resource.plural }}", json={}, headers=_bearer("{{ resource.write_scope }}")
         )
     assert response.status_code not in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_{{ resource.plural }}_write_expired_token() -> None:
+    async with _client() as client:
+        response = await client.post(
+            "/{{ resource.plural }}", json={}, headers=_bearer("{{ resource.write_scope }}", exp_delta=-3600)
+        )
+    assert response.status_code == 401
 {%- endif %}
 {%- endif %}
 {%- endfor %}

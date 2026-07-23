@@ -388,19 +388,23 @@ fn emit_service(
     // broker client lazy (matching the db pools' `connect_lazy`), so
     // the `!has_queue` half of this gate is gone -- a queue-bearing JWT
     // service's `AppState::new` no longer touches the network either.
-    // OAuth2 remains excluded for a different, still-live reason (not
-    // mere constructor eagerness): validating a real signed token needs
-    // real RS256 crypto against the real issuer's JWKS, which this
-    // no-infra suite can't have -- also-lazy JWKS just moves *when* that
-    // network call happens, from construction to first request, it
-    // doesn't remove the need for it. A no-infrastructure scope proof
-    // for OAuth2 needs an actual fake auth adapter (the Rust analog of
-    // Pillar 8's Python `world`-guarded auth bypass), which is real,
-    // disclosed future work this milestone didn't build.
+    // OAuth2 gets its own no-infra suite below (`26UpdatePlan.md` M4) --
+    // it once needed a real issuer's JWKS to test at all, closed by
+    // running real RS256 crypto against an in-process stub instead of a
+    // live IdP.
     if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
         project.add_file(
             at("tests/scope_tests.rs"),
             render("scope_tests.rs.j2", empty())?,
+        );
+    }
+    // The no-infra OAuth2 rig (`26UpdatePlan.md` M4): real RS256
+    // signing against an in-process JWKS stub, gated the same way the
+    // JWT scope suite is gated on `c.scopes` above.
+    if ctx.auth_scheme == "oauth2" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at("tests/oauth_rig_tests.rs"),
+            render("oauth_rig_tests.rs.j2", empty())?,
         );
     }
     if !ctx.resources.is_empty() || !ctx.tables.is_empty() {

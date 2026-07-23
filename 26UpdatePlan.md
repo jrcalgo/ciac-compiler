@@ -1688,6 +1688,82 @@ per the house convention.
    in-process stub. Any per-target config-override accommodation
    (issuer env not reaching test context) recorded.
 
+   **Shipped (v0.26 M4):** the seven-case matrix landed on both
+   reference targets, plus a scheme-agnostic pair (`no_token`,
+   `malformed_token`) folded into the *existing* JWT suites on both
+   targets rather than duplicated — those two cases never touch
+   scheme-specific crypto, so testing them once per endpoint (not
+   once per scheme) is the correct shape, not a shortcut. **Open
+   question 2, decided differently per target and disclosed as
+   such:** Python generates a fresh RSA keypair per test session
+   (`cryptography`, already a transitive dependency via
+   `pyjwt[crypto]`, so generation is genuinely free); Rust embeds a
+   fixed 2048-bit test keypair instead, because `jsonwebtoken`'s
+   RS256 support is backed by `ring`, which deliberately does not
+   expose RSA key generation — adding a keygen dependency purely for
+   this rig would have been a heavier cost than embedding one. Both
+   choices are recorded here rather than silently diverging.
+   **Zero new production dependencies on either target, as
+   specified**, and in fact zero new *dependencies at all*: Python's
+   JWKS stub is a bare `http.server.HTTPServer` on a background
+   thread (no `pytest-httpserver`); Rust's is a two-line `axum`
+   router serving one route — the exact same crate `crate::auth::Jwks`
+   already depends on to fetch JWKS in production, reused rather than
+   duplicated. **Issuer-override accommodation, exactly the kind
+   Pillar 3 pre-registered space for:** Python's `get_settings()` is
+   `@lru_cache`d and `app.main` reads it at *module import time*, so
+   the env override has to land before `app.main` is ever imported —
+   solved by doing the override at `conftest.py`'s own module level
+   (pytest loads every `conftest.py` before importing any `test_*.py`
+   module, so this ordering is guaranteed, not assumed). Rust's
+   `cargo test` runs a file's `#[tokio::test]` functions concurrently
+   on shared OS threads, and `OAUTH_ISSUER` is a process-global env
+   var — a real data race the first draft didn't have (each test
+   wants a *different* stub URL) — solved with a `std::sync::Mutex`
+   guarding only the synchronous set-env/read-config pair, dropped
+   before the async `AppState::new` call, since `Config::from_env()`
+   copies the issuer into an owned `String` before the lock releases.
+   **A transcription bug found and fixed via live verification, not
+   inspection:** the first embedded Rust private key was hand-copied
+   incompletely (several PEM lines dropped mid-paste), producing
+   `Error(InvalidKeyFormat)` at test run time; fixed by copying the
+   exact key bytes programmatically instead of retyping, verified
+   byte-for-byte against the source key file. **Harmonization went
+   beyond M4's own literal exit bar:** rather than leave Rust's JWT
+   suite on its old case names while Python's used the new vocabulary,
+   both targets' JWT suites were renamed to the shared vocabulary
+   (`no_token`/`malformed_token`/`wrong_scope`/`correct_scope`/
+   `expired_token`) in this milestone rather than deferred to M5,
+   since leaving one target's JWT suite un-harmonized while its own
+   OAuth2 rig used the new names would have been an inconsistency
+   inside this milestone's own two targets, not just across the
+   five-target arc. Rust's `tower` dev-dependency gate (previously
+   `c.auth_scheme == "jwt" and c.scopes and not (has_db or has_queue)`)
+   widened to include `oauth2`, a real gap the first generation
+   attempt surfaced as an `unresolved import` compile error, not
+   found by inspection. **Live proof, all real crypto, all four
+   affected examples:** `oauth-echo` (new `scope: "echo:write"` on
+   `Echo`, the corpus carrier) 9/9 Python + 5/5 Rust; `dev-identity`
+   (pre-existing OAuth2 example with `read_scope`/`write_scope` on a
+   `crud` resource) 14/14 Python + 10/10 Rust; `order-system` (JWT,
+   harmonization regression check) 24/24 Python + 18/18 Rust;
+   `routed-media` (JWT, harmonization regression check) 9/9 Python +
+   7/7 Rust — every case green, including live-observed 200 on
+   correct-key/correct-scope and live-observed 401 on wrong-key with
+   the exact `"invalid or expired token"` production error body,
+   confirmed via an ad-hoc script outside the test harness as an
+   independent check that the assertions weren't vacuously passing.
+   All five targets' production scope-enforcement code and OpenAPI
+   `x-ciac-scope` metadata confirmed unaffected/correctly-affected by
+   the new `Echo` scope (TypeScript/Go/Java compile clean with no new
+   test suite, exactly the expected M5-deferred shape). Golden/IR
+   snapshots reviewed diff-by-diff across all touched examples and
+   targets — no unexpected diffs. `cargo clippy -p ciac-backend-rust
+   --all-targets -- -D warnings` clean; `cargo build --workspace`
+   clean; targeted `golden`/`gating`/`negative`/`docs`/
+   `host_syntax_identity`/`typed_handler_equivalence` suites green
+   post-snapshot-accept.
+
 5. **M5 — The OAuth2 rig: full parity.** TypeScript, Go, Java.
    Textually parallel suites (same case names, same matrix — the
    conformance-style diff reads as idiom only); all five gates

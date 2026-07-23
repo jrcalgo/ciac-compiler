@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -132,7 +133,8 @@ cmd/api/apidoc.json
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-ciac-scope": "echo:write"
       }
     },
     "/health": {
@@ -801,7 +803,10 @@ func EchoHandler(st *state.AppState) http.HandlerFunc {
 			httpx.WriteError(w, err)
 			return
 		}
-		_ = claims
+		if err := auth.RequireScope(claims, "echo:write"); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
 		decoded, err := schemas.DecodeMessage(r.Body)
 		if err != nil {
 			httpx.WriteError(w, httpx.BadRequest(err))
@@ -1055,7 +1060,8 @@ openapi.json
           {
             "bearerAuth": []
           }
-        ]
+        ],
+        "x-ciac-scope": "echo:write"
       }
     },
     "/health": {

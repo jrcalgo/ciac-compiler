@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1040,7 +1041,14 @@ async def test_health() -> None:
 
 
 @pytest.mark.anyio
-async def test_notes_require_auth() -> None:
+async def test_notes_no_token() -> None:
     async with _client() as client:
         response = await client.get("/notes")
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_notes_malformed_token() -> None:
+    async with _client() as client:
+        response = await client.get("/notes", headers={"Authorization": "Bearer not-a-jwt"})
+    assert response.status_code == 401

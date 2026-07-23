@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -3278,7 +3279,18 @@ async fn app() -> axum::Router {
 }
 
 fn bearer(scope: &str) -> String {
-    let claims = serde_json::json!({"sub": "test", "scope": scope});
+    bearer_exp(scope, 3600)
+}
+
+/// `exp_delta` in the past mints an already-expired token
+/// (`26UpdatePlan.md` M4's `expired_token` case).
+fn bearer_exp(scope: &str, exp_delta: i64) -> String {
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64
+        + exp_delta;
+    let claims = serde_json::json!({"sub": "test", "scope": scope, "exp": exp});
     let secret = Config::from_env().jwt_secret;
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
@@ -3290,7 +3302,46 @@ fn bearer(scope: &str) -> String {
 }
 
 #[tokio::test]
-async fn shipped_summary_api_rejects_missing_scope() {
+async fn shipped_summary_api_no_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/summary/shipped")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"min_total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn shipped_summary_api_malformed_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/summary/shipped")
+                .header("Authorization", "Bearer not-a-jwt")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"min_total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn shipped_summary_api_wrong_scope() {
     // A well-formed body: axum extracts parameters in declaration
     // order, so `Json<..>` extraction (and its own validation) still
     // runs before the handler body's `require_scope` check — an
@@ -3315,7 +3366,7 @@ async fn shipped_summary_api_rejects_missing_scope() {
 }
 
 #[tokio::test]
-async fn shipped_summary_api_accepts_granted_scope() {
+async fn shipped_summary_api_correct_scope() {
     let response = app()
         .await
         .oneshot(
@@ -3336,7 +3387,70 @@ async fn shipped_summary_api_accepts_granted_scope() {
 }
 
 #[tokio::test]
-async fn mark_shipped_api_rejects_missing_scope() {
+async fn shipped_summary_api_expired_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/summary/shipped")
+                .header("Authorization", bearer_exp("orders:read", -3600))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"min_total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn mark_shipped_api_no_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/mark-shipped")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"id":"00000000-0000-0000-0000-000000000000",
+"customer_id":"00000000-0000-0000-0000-000000000000",
+"total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn mark_shipped_api_malformed_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/mark-shipped")
+                .header("Authorization", "Bearer not-a-jwt")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"id":"00000000-0000-0000-0000-000000000000",
+"customer_id":"00000000-0000-0000-0000-000000000000",
+"total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn mark_shipped_api_wrong_scope() {
     // A well-formed body: axum extracts parameters in declaration
     // order, so `Json<..>` extraction (and its own validation) still
     // runs before the handler body's `require_scope` check — an
@@ -3363,7 +3477,7 @@ async fn mark_shipped_api_rejects_missing_scope() {
 }
 
 #[tokio::test]
-async fn mark_shipped_api_accepts_granted_scope() {
+async fn mark_shipped_api_correct_scope() {
     let response = app()
         .await
         .oneshot(
@@ -3385,9 +3499,64 @@ async fn mark_shipped_api_accepts_granted_scope() {
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 }
 
+#[tokio::test]
+async fn mark_shipped_api_expired_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders/mark-shipped")
+                .header("Authorization", bearer_exp("orders:write", -3600))
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{
+"id":"00000000-0000-0000-0000-000000000000",
+"customer_id":"00000000-0000-0000-0000-000000000000",
+"total":0.0
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
 
 #[tokio::test]
-async fn customer_read_rejects_missing_scope() {
+async fn customer_no_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/customers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn customer_malformed_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/customers")
+                .header("Authorization", "Bearer not-a-jwt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn customer_read_wrong_scope() {
     let response = app()
         .await
         .oneshot(
@@ -3404,7 +3573,7 @@ async fn customer_read_rejects_missing_scope() {
 }
 
 #[tokio::test]
-async fn customer_read_accepts_granted_scope() {
+async fn customer_read_correct_scope() {
     let response = app()
         .await
         .oneshot(
@@ -3422,7 +3591,24 @@ async fn customer_read_accepts_granted_scope() {
 }
 
 #[tokio::test]
-async fn customer_write_rejects_missing_scope() {
+async fn customer_read_expired_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/customers")
+                .header("Authorization", bearer_exp("customers:read", -3600))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn customer_write_wrong_scope() {
     // A well-formed body: axum extracts parameters in declaration
     // order, so `Json<..>` extraction (and its own validation) still
     // runs before the handler body's `require_scope` check — an
@@ -3449,7 +3635,7 @@ async fn customer_write_rejects_missing_scope() {
 }
 
 #[tokio::test]
-async fn customer_write_accepts_granted_scope() {
+async fn customer_write_correct_scope() {
     let response = app()
         .await
         .oneshot(
@@ -3469,4 +3655,26 @@ async fn customer_write_accepts_granted_scope() {
         .unwrap();
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn customer_write_expired_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/customers")
+                .header("Content-Type", "application/json")
+                .header("Authorization", bearer_exp("customers:write", -3600))
+                .body(Body::from(r#"
+{
+"name":"x",
+"email":"x"
+}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

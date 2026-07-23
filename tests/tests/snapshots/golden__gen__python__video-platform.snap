@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -966,7 +967,19 @@ async def test_health() -> None:
 
 
 @pytest.mark.anyio
-async def test_upload_requires_auth() -> None:
+async def test_upload_no_token() -> None:
     async with _client() as client:
         response = await client.post("/upload", json={})
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.anyio
+async def test_upload_malformed_token() -> None:
+    # `26UpdatePlan.md` M4: a case matrix entry the JWT suite alone
+    # never distinguished from `no_token` — both schemes' decoders
+    # reject an unparseable bearer value the same way.
+    async with _client() as client:
+        response = await client.post(
+            "/upload", json={}, headers={"Authorization": "Bearer not-a-jwt"}
+        )
+    assert response.status_code == 401

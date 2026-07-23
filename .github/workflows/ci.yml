@@ -8,6 +8,12 @@ on:
     # claims for Docker-dependent verification never executed.
     branches: [main, "claude/**"]
   pull_request:
+  # 26UpdatePlan.md M6: template pins and the compiler's own dependency
+  # tree age between pushes -- a weekly run means both scanners still
+  # fire even on a quiet week, so a newly-published advisory is caught
+  # within days rather than at the next incidental push.
+  schedule:
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -45,6 +51,111 @@ jobs:
         with:
           go-version: "1.24"
       - run: cargo test --workspace
+
+  # 26UpdatePlan.md M6: the compiler's own dependency tree, scanned
+  # against RustSec (advisories) and cargo-deny's broader policy
+  # (licenses/bans/sources). Runs on every push (fast: no example
+  # generation) and again on the weekly `schedule:` trigger above so
+  # newly-published advisories are caught between pushes.
+  workspace-audit:
+    name: Workspace dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit + cargo-deny (pinned)
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo audit
+      - run: cargo deny check
+      - name: Verify deny.toml ignore entries carry reason + unexpired expiry
+        run: ./scripts/check-deny-ignores.sh deny.toml
+
+  # 26UpdatePlan.md M6: the novel half of this pillar -- scanning what
+  # users *inherit*, not just this repo's own tree. Builds the flagship
+  # `order-system` (+ `kafka-pipeline` for the divergent broker trees)
+  # for all five targets and runs each ecosystem's own scanner against
+  # the generated project's resolved dependencies. A finding here is
+  # fixed by bumping the pin in the *template*, which the goldens then
+  # show to every reviewer and the next release ships to every user.
+  generated-audit:
+    name: Generated-project dependency audit (5 ecosystems)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Install pip-audit
+        run: uv tool install pip-audit
+      - name: Install cargo-audit (pinned)
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Install grype
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+      - name: Build the compiler
+        run: cargo build -p ciac
+      - name: Generate the representative projects
+        run: |
+          set -euo pipefail
+          for target in python rust typescript go java; do
+            cargo run -q -p ciac -- verify examples/order-system.ciac --target "$target" --out "/tmp/audit-order-system-$target"
+            cargo run -q -p ciac -- verify examples/kafka-pipeline.ciac --target "$target" --out "/tmp/audit-kafka-pipeline-$target"
+          done
+      - name: pip-audit (Python)
+        run: |
+          set -euo pipefail
+          for proj in /tmp/audit-order-system-python /tmp/audit-kafka-pipeline-python; do
+            [ -d "$proj" ] || continue
+            (cd "$proj" && pip-audit --strict -r requirements.txt)
+          done
+      - name: cargo audit (Rust)
+        run: |
+          set -euo pipefail
+          for proj in /tmp/audit-order-system-rust /tmp/audit-kafka-pipeline-rust; do
+            [ -d "$proj" ] || continue
+            (cd "$proj" && cargo generate-lockfile && cargo audit)
+          done
+      - name: npm audit (TypeScript)
+        run: |
+          set -euo pipefail
+          for proj in /tmp/audit-order-system-typescript /tmp/audit-kafka-pipeline-typescript; do
+            [ -d "$proj" ] || continue
+            (cd "$proj" && npm install --package-lock-only && npm audit --audit-level=high)
+          done
+      - name: govulncheck (Go)
+        run: |
+          set -euo pipefail
+          for proj in /tmp/audit-order-system-go /tmp/audit-kafka-pipeline-go; do
+            [ -d "$proj" ] || continue
+            (cd "$proj" && govulncheck ./...)
+          done
+      - name: grype (Java, resolved classpath)
+        run: |
+          set -euo pipefail
+          for proj in /tmp/audit-order-system-java /tmp/audit-kafka-pipeline-java; do
+            [ -d "$proj" ] || continue
+            (cd "$proj" && ./mvnw -q -B dependency:build-classpath -Dmdep.outputFile=/dev/stdout)
+            grype "dir:$proj" --fail-on high
+          done
 
   generated-python:
     name: Validate generated Python projects (all examples)

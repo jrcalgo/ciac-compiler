@@ -1893,6 +1893,63 @@ per the house convention.
    reason+expiry if not, and either way recorded in the Shipped
    note as this milestone's most interesting output.
 
+   **Shipped (v0.26 M6):** `deny.toml` landed against the real
+   dependency tree (211 crates), not the draft's armchair guess —
+   `cargo deny check` surfaced two licenses the draft's allowlist
+   didn't carry (`notify`'s sole `CC0-1.0` and `webpki-roots`' sole
+   `CDLA-Permissive-2.0`, the latter transitive via `ureq`, itself
+   pulled in for `--live` health probing), both reviewed and added;
+   the draft's speculative `BSD-2-Clause` entry was dropped after
+   `cargo deny`'s own `license-not-encountered` warning showed no
+   crate actually carries it — the allowlist ships matching the tree,
+   not padded for hypotheticals. `scripts/check-deny-ignores.sh`
+   (bash, no new tooling) enforces the reason+expiry convention over
+   `[advisories].ignore` entries; the ten `windows_*`/`bitflags`
+   duplicate-version warnings `cargo deny` reports are exactly the
+   "diet concern, not a security gate" the `bans` policy already
+   named, not a defect. **The live negative test, run twice:**
+   `cargo audit` and `cargo deny check` both proven able to fail, not
+   just pass — a scratch crate pinning `time = "=0.1.45"` (RUSTSEC-
+   2020-0071, a real advisory, not a synthetic one) made `cargo audit`
+   exit 1 with the advisory printed and `cargo deny check advisories`
+   exit 1 with the same CVE, both against the pinned `cargo-audit
+   0.22.2`/`cargo-deny 0.20.2` this milestone's CI job installs — then
+   discarded, never touching the real workspace `Cargo.lock`. **First-
+   run finding triage: zero findings, nothing to triage.** `cargo
+   audit` cleared all 211 workspace crates; `cargo deny check` reported
+   `advisories ok, bans ok, licenses ok, sources ok`. `deny.toml`'s
+   `ignore` list ships empty — an honest empty, arrived at by running
+   the scanner, not asserted from a lack of testing.
+   **The Java scanner decision (Open question 3), resolved on
+   observed behavior against the real generated `order-system` pom,
+   not the armchair:** grype confirmed over OWASP dependency-check.
+   `./mvnw dependency:build-classpath` against the real generated
+   project resolved cleanly, and `syft`'s Java cataloger (the same
+   cataloging engine grype embeds) correctly identified every
+   transitive jar from the resolved `.m2` tree by name and exact
+   version — Spring Boot 3.3.5, Spring Security 6.3.4, Netty
+   4.1.114.Final, the Postgres/Redis/NATS drivers, dozens more —
+   zero resolution errors, the fallback's own trigger condition
+   ("grype's Maven resolution disappoints") never fired. **Disclosed,
+   not fixed, and out of this milestone's control:** this sandbox's
+   network egress policy blocks `grype.anchore.io` outright (`403`,
+   the same block `github.com`'s own release-asset host hit earlier
+   in this milestone — `raw.githubusercontent.com` and
+   `static.crates.io` are allowlisted, `grype.anchore.io` and
+   `github.com` are not), so `grype`'s own vulnerability-database
+   fetch could not be exercised live here; `ubuntu-latest` GitHub
+   Actions runners carry unrestricted outbound internet and hit no
+   equivalent block, so `generated-audit`'s own grype step is
+   expected to complete its DB fetch on first real CI run, unverified
+   by this sandbox but not blocked by anything this milestone's own
+   design controls — the same category of disclosure this repo's
+   other CI-only-verified rows already carry (Docker-delegated
+   `--system` runs), not a new kind of gap. `cargo-audit`/`cargo-deny`
+   were installed from source (`cargo install --version <pin>
+   --locked`) rather than prebuilt binaries for the identical reason —
+   `github.com`'s release-asset host is the block, `static.crates.io`
+   is not, and source builds only need the latter.
+
 7. **M7 — The two-table ledger and truthful targets.json.** The
    Permanent-by-design and Open-(tracked) tables land as
    backends.md front matter with the initial rows from Pillar 5,

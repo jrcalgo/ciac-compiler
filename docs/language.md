@@ -175,7 +175,7 @@ pairs (`CIAC0013` otherwise):
 | `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) / Drizzle per instance, raw SQL through its `$client` escape hatch (`pg` / `mysql2` / `better-sqlite3`) / `database/sql` pool per instance (`pgx` / `go-sql-driver/mysql` / `modernc.org/sqlite`, one placeholder-style filter shared across all three) / Spring `JdbcClient` (HikariCP) pool per instance (`postgresql` / `mysql-connector-j` / `sqlite-jdbc`, Flyway for `table`-declared migrations) |
 | `cache` | `Redis` | redis-py client per instance / redis crate client per instance / `ioredis` client per instance / go-redis client per instance / spring-data-redis `StringRedisTemplate` per instance (Lettuce) |
 | `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka / `@nats-io/transport-node` or kafkajs / nats.go or franz-go / jnats or spring-kafka |
-| `logging` | `Structured` | structlog / tracing / pino / `log/slog` JSON handler / **not yet implemented** — `Component::Logging` stays `CIAC0011`-refused for Java, a disclosed gap (no checked-in example declares it) |
+| `logging` | `Structured` | structlog / tracing / pino / `log/slog` JSON handler / Logback + `logstash-logback-encoder` via `logback-spring.xml` (`26UpdatePlan.md` M3) |
 | `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus / prom-client / prometheus/client_golang / Micrometer + `micrometer-registry-prometheus` at `/actuator/prometheus` |
 | `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper / `@aws-sdk/client-s3` wrapper / AWS SDK Go v2 `s3` wrapper / AWS SDK v2 `s3` wrapper (all five: + MinIO in compose, path-style addressing) |
 | `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender / nodemailer sender / dependency-free `net/smtp` sender / Spring `JavaMailSenderImpl` sender (all five: + Mailpit in compose) |
@@ -186,12 +186,15 @@ pairs (`CIAC0013` otherwise):
 | `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers / OTel Node SDK + `@fastify/otel`/http/pg/undici auto-instrumentation / OTel Go SDK + `otelhttp` auto-instrumentation, explicit broker-hop propagation / Micrometer Tracing + OTel bridge, `RestClient` auto-instrumented via Micrometer Observation, explicit broker-hop propagation (all five: `traceparent` propagation across `call`/broker hops) |
 | `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6; Java needed zero backend-specific code — the dev-issuer-default computation is target-neutral, confirmed 25UpdatePlan.md M7) |
 
-Every provider above generates on all five bundled targets except
-`logging` (Java only, disclosed above) as of 25UpdatePlan.md M7 — Java
-closed its own remaining gaps following Go's own M7 (v0.24), which
-followed TypeScript's (v0.23 M7), `MySQL`/`Kafka` landing on Rust in
-v0.13 M1/M2, and `SQLite` in v0.13 M3, which needs no container at
-all, just a `data/` volume. `auth OAuth2` requires an `issuer`
+Every provider above generates on all five bundled targets, including
+`logging` since `26UpdatePlan.md` M3 closed Java's own remaining gap
+(Java's `supports()` refused `Component::Logging` with `CIAC0011`
+through v0.25 despite this doc's own table already claiming support).
+Prior to that, Java closed its other remaining gaps following Go's own
+M7 (v0.24), which followed TypeScript's (v0.23 M7), `MySQL`/`Kafka`
+landing on Rust in v0.13 M1/M2, and `SQLite` in v0.13 M3, which needs
+no container at all, just a `data/` volume. `auth OAuth2` requires an
+`issuer`
 attribute (and optional `audience`): bearer RS256 tokens are
 validated against `{issuer}/.well-known/jwks.json` on every backend —
 unless `users Keycloak` is declared in the same `use { .. }` block,

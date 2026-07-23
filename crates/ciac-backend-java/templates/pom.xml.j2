@@ -39,6 +39,11 @@
          driver, 25UpdatePlan.md M9). -->
     <exec-maven-plugin.version>3.4.1</exec-maven-plugin.version>
 {%- endif %}
+{%- if c.has_logging %}
+    <!-- Not managed by spring-boot-dependencies' own BOM, so pinned
+         explicitly here (`26UpdatePlan.md` M3). -->
+    <logstash-logback-encoder.version>7.4</logstash-logback-encoder.version>
+{%- endif %}
   </properties>
 
   <dependencies>
@@ -172,6 +177,13 @@
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+{%- endif %}
+{%- if c.has_logging %}
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>${logstash-logback-encoder.version}</version>
     </dependency>
 {%- endif %}
   </dependencies>

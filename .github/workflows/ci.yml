@@ -206,7 +206,9 @@ jobs:
   # shape exactly, including its CIAC0011-skip branch (kept for the
   # same reason: a future capability could reintroduce a real gate,
   # not because anything is expected to hit it today — zero gates as
-  # of M7).
+  # of `26UpdatePlan.md` M3, which closed the one gate M7 missed:
+  # `Component::Logging` stayed CIAC0011-refused through v0.25 despite
+  # this backend's own module doc already claiming support).
   generated-java:
     name: Validate generated Java projects (all examples)
     runs-on: ubuntu-latest

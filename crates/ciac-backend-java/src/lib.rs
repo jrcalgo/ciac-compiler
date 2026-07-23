@@ -216,6 +216,13 @@ impl Backend for JavaBackend {
         // refusal before this widening — so each needs its own arm
         // here even though none but `Tracing` changes what this
         // backend actually emits.
+        //
+        // `26UpdatePlan.md` M3: `Logging` widens in too, closing a gap
+        // this file's own module doc (line 15,
+        // `| Logging | SLF4J + Logback + logstash-logback-encoder |`)
+        // claimed true since M1 while `supports()` refused it —
+        // `logback-spring.xml.j2`, gated on `has_logging`, is what
+        // makes the claim true.
         matches!(
             component,
             Component::Api { .. }
@@ -237,6 +244,7 @@ impl Backend for JavaBackend {
                 | Component::Metrics { .. }
                 | Component::Tracing { .. }
                 | Component::Users { .. }
+                | Component::Logging { .. }
         )
     }
 
@@ -380,6 +388,12 @@ fn emit_service(
         at("src/main/resources/application.yml"),
         render("application.yml.j2", empty())?,
     );
+    if ctx.has_logging {
+        project.add_file(
+            at("src/main/resources/logback-spring.xml"),
+            render("logback-spring.xml.j2", empty())?,
+        );
+    }
     project.add_file(
         at(&format!("{java_root}/Application.java")),
         render_java("Application.java.j2", empty())?,
@@ -435,6 +449,15 @@ fn emit_service(
         project.add_file(
             at(&format!("{test_root}/routes/ScopeTests.java")),
             render_java("ScopeTests.java.j2", empty())?,
+        );
+    }
+    // `LogShapeTest` (`26UpdatePlan.md` M3): proves the `LogstashEncoder`
+    // wired into `logback-spring.xml` actually produces parseable
+    // structured JSON with the expected field shape.
+    if ctx.has_logging {
+        project.add_file(
+            at(&format!("{test_root}/LogShapeTest.java")),
+            render_java("LogShapeTest.java.j2", empty())?,
         );
     }
 

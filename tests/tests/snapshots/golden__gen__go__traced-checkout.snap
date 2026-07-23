@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1280,7 +1281,7 @@ func Init() {
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		_ = level.UnmarshalText([]byte(v))
 	}
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	slog.SetDefault(slog.New(handler))
 	initTracing()
 }
@@ -2919,7 +2920,7 @@ func Init() {
 	if v := os.Getenv("LOG_LEVEL"); v != "" {
 		_ = level.UnmarshalText([]byte(v))
 	}
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	slog.SetDefault(slog.New(handler))
 	initTracing()
 }

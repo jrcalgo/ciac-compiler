@@ -1599,6 +1599,81 @@ per the house convention.
    CIAC0011-skip stops matching — verified in CI output, the
    regression proof that the refusal is gone.
 
+   **Shipped (v0.26 M3):** `Component::Logging` added to
+   `JavaBackend::supports()`; `logback-spring.xml.j2` (new template)
+   emitted at `src/main/resources/logback-spring.xml` gated on
+   `ctx.has_logging`, wiring a single `ConsoleAppender` through
+   `net.logstash.logback.encoder.LogstashEncoder` — Spring Boot's
+   `LogbackLoggingSystem` auto-discovers this exact filename, so no
+   `application.yml` change is needed or made, matching every other
+   target's own declared-vs-default shape (structlog `JSONRenderer`
+   / `tracing_subscriber` `.json()` / `slog.NewJSONHandler` /
+   TypeScript's observability template). `pom.xml.j2` gained a
+   `logstash-logback-encoder` version property (`7.4`, pinned the
+   same way `jnats`/`aws-sdk`/`exec-maven-plugin` already are, since
+   spring-boot-dependencies' own BOM doesn't manage it) and a gated
+   dependency. Corpus: **extension preferred** over a new file, per
+   this milestone's own pre-registered choice — `traced-checkout.ciac`
+   (the v0.15 M3/M4 distributed-tracing flagship, already declaring
+   `tracing OpenTelemetry` in both services) gained `logging
+   Structured;` alongside it in both `Payments` and `Checkout`, since
+   the golden churn from extending an existing two-service example
+   was smaller and more legible than standing up a new fixture purely
+   to exercise one capability. Built and verified live on **all five**
+   targets with `logging Structured` newly declared — the capability's
+   first true five-target exercise: Java (`./mvnw -q -B verify`, both
+   services, twice — once green, once red, see bug below), Python
+   (`py_compile` clean), Rust (`cargo check` clean, ~26s, confirming
+   the `tracing-subscriber` `json` feature pulls in cleanly), Go
+   (`go build ./...` clean, both services), TypeScript (`npm run
+   build` clean, both services). **A real bug found and fixed via
+   this live verification, exactly the loop this arc exists to run:**
+   the first `logback-spring.xml.j2` draft used `--` as a stylistic
+   dash twice inside its XML comment — illegal per the XML spec (a
+   comment body may not contain `--`), the same bug class this
+   project's `pom.xml.j2` hit earlier in its own history. Caught live
+   by `NoInfraBootTest` failing with `org.xml.sax.SAXParseException:
+   ... The string "--" is not permitted within comments`, not by
+   inspection; fixed by rewording the comment; re-verified green.
+   **`LogShapeTest`** (new template, gated the same as the encoder):
+   rather than hand-building a synthetic `ILoggingEvent` (the first
+   draft's approach), which NPE'd inside `LogstashEncoder.encode`
+   because a synthetic event carries no `LoggerContext` of its own —
+   found live, the second bug this milestone's verification loop
+   caught — the shipped version routes one real SLF4J `logger.info(..)`
+   call through a `ch.qos.logback.core.read.ListAppender` to capture a
+   properly-contexted `ILoggingEvent`, then runs the *exact*
+   `LogstashEncoder` configuration through it directly (no Spring
+   context needed — this is a property of the encoder alone), parses
+   the encoded bytes as JSON, and asserts `@timestamp`/`message`/
+   `logger_name`/`level` are present with the expected values. Proven
+   green on both services after the fix. **Absence case asserted
+   live:** `examples/ping.ciac` (no `logging` declared) emits no
+   `logback-spring.xml` and no `LogShapeTest`, and its own
+   `NoInfraBootTest` stays green with Boot's default human-readable
+   console format — confirmed by inspecting the generated output and
+   re-running `mvnw verify`. Golden/IR/dot snapshots reviewed
+   diff-by-diff for all five targets (`traced-checkout`'s only
+   affected example): the four already-working targets show exactly
+   the expected default-to-JSON switch (Python: `configure_logging()`
+   call plus `structlog` config module and dependency pin; Rust: the
+   `tracing-subscriber` `json` feature flag and `.json()` layer call;
+   TypeScript: the observability config literal; Go: `NewTextHandler`
+   → `NewJSONHandler`) and Java shows the two new files plus the pom
+   additions — no unexpected diffs anywhere, confirming the four prior
+   targets' `has_logging` wiring was already correct before this
+   milestone touched only Java. Docs: `docs/language.md`'s capability
+   table row and its "every provider generates on all five... except
+   `logging`" paragraph both corrected in place (the second one, on
+   inspection, cited the wrong closing milestone before this fix —
+   corrected while here); `.github/workflows/ci.yml`'s `generated-java`
+   job comment, which had claimed "zero gates as of M7" while the
+   logging gate was in fact still live through v0.25, corrected to
+   name this milestone as what actually closed it. `cargo clippy -p
+   ciac-backend-java --all-targets -- -D warnings` clean; targeted
+   `golden`/`gating`/`negative`/`docs` suites green post-snapshot-
+   accept.
+
 4. **M4 — The OAuth2 rig: design once, land twice.** The rig's
    cross-target contract fixed in prose first (key handling per
    Open question 2; stub route; issuer-override mechanism; the

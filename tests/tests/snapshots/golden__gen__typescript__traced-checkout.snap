@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -5834,7 +5835,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { FastifyOtelInstrumentation } from "@fastify/otel";
 
 export function loggerOptions(): FastifyServerOptions["logger"] {
-  return true;
+  return { level: process.env.LOG_LEVEL ?? "info" };
 }
 
 /** Standalone logger for the workers entrypoint (`dist/workers.js`), which never touches Fastify. */
@@ -12721,7 +12722,7 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { FastifyOtelInstrumentation } from "@fastify/otel";
 
 export function loggerOptions(): FastifyServerOptions["logger"] {
-  return true;
+  return { level: process.env.LOG_LEVEL ?? "info" };
 }
 
 /** The Fastify plugin `main.ts` registers -- server-side request spans. */

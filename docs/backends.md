@@ -295,10 +295,11 @@ otherwise interleave with the runner's own one-line JSON reply on
 stdout, a wrinkle Rust's own `tracing` setup never had to solve because
 it writes to stderr by default. One genuine target-specific
 simplification, disclosed in [simulation.md](simulation.md): TypeScript
-production code gives `transaction {}` real atomicity (a real gap Rust's
-own production code still discloses), but degrades to non-atomic,
-unwrapped-statement behavior *only* under simulation, since there is no
-live database for a real `BEGIN`/`COMMIT` to run against a `SimWorld`.
+production code gives `transaction {}` real atomicity (matching Rust's
+own production code since `26UpdatePlan.md` M1), but degrades to
+non-atomic, unwrapped-statement behavior *only* under simulation, since
+there is no live database for a real `BEGIN`/`COMMIT` to run against a
+`SimWorld`.
 
 Go reached the same narrow slice in 24UpdatePlan.md M9, structurally
 identical to TypeScript's own shape (Go cannot `include_str!` Rust
@@ -318,9 +319,8 @@ oneshot`/TS's `app.inject()` approach exactly; unlike TS's Fastify
 logger wrinkle, Go's `slog` default handler already writes to stderr,
 so no `{ logger: false }`-equivalent construction option was needed.
 Go's own production code gives `transaction {}` **real** atomicity
-unconditionally (`database/sql`'s `*sql.Tx`, the same bar TS's
-Postgres/MySQL branch holds, and a real improvement over Rust's own
-disclosed non-atomic gap), and — like TypeScript — degrades to a
+unconditionally (`database/sql`'s `*sql.Tx`, the same bar TS's and
+Rust's own Postgres branches hold), and — like TypeScript — degrades to a
 guarded no-op only under simulation: `transaction_stmt` declares its
 `*sql.Tx` handle unconditionally (typed `nil`, since Go requires the
 identifier to exist even on a path that never runs) but skips the real

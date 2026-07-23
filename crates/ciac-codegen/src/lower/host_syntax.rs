@@ -185,20 +185,25 @@ pub trait HostSyntax {
         let _ = (enum_name, scrutinee, arms);
         unimplemented!("match_expr is Expression-oriented only")
     }
-    fn db_insert_expr(&self, table: TableId, value: &str) -> String {
-        let _ = (table, value);
+    /// `in_tx` (`26UpdatePlan.md` M1): `true` when this verb is lowered
+    /// inside a `transaction {}` block's real (non-simulated) branch —
+    /// see [`HostSyntax::transaction_expr`]. A leaf that cares (Rust:
+    /// picks `&mut *__tx` over the pool) reads it; every other
+    /// Expression-oriented leaf ignores it exactly as before.
+    fn db_insert_expr(&self, table: TableId, value: &str, in_tx: bool) -> String {
+        let _ = (table, value, in_tx);
         unimplemented!("db_insert_expr is Expression-oriented only")
     }
-    fn db_update_expr(&self, table: TableId, key: &str, value: &str) -> String {
-        let _ = (table, key, value);
+    fn db_update_expr(&self, table: TableId, key: &str, value: &str, in_tx: bool) -> String {
+        let _ = (table, key, value, in_tx);
         unimplemented!("db_update_expr is Expression-oriented only")
     }
-    fn db_delete_expr(&self, table: TableId, key: &str) -> String {
-        let _ = (table, key);
+    fn db_delete_expr(&self, table: TableId, key: &str, in_tx: bool) -> String {
+        let _ = (table, key, in_tx);
         unimplemented!("db_delete_expr is Expression-oriented only")
     }
-    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>) -> String {
-        let _ = (verb, predicate);
+    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>, in_tx: bool) -> String {
+        let _ = (verb, predicate, in_tx);
         unimplemented!("query_expr is Expression-oriented only")
     }
     fn let_binding(&self, name: &str, value: &str) -> String {
@@ -217,8 +222,20 @@ pub trait HostSyntax {
     fn unit_literal(&self) -> String {
         unimplemented!("unit_literal is Expression-oriented only")
     }
-    fn transaction_expr(&self, inner: &str) -> String {
-        let _ = inner;
+    /// `26UpdatePlan.md` M1: the dispatcher lowers the transaction
+    /// body *twice* — `world_branch` (`in_tx=false`, identical to how
+    /// every verb inside it already renders outside a transaction,
+    /// including its own `self.world` check) and `real_branch`
+    /// (`in_tx=true`, each db verb executing against the held
+    /// executor) — because whether a real `sqlx::Transaction` can be
+    /// opened at all depends on whether `self.world` is `Some` (opening
+    /// one under simulation would attempt a real, absent database
+    /// connection), and that can only be decided once, by the host, not
+    /// independently by each nested verb. A leaf that implements this
+    /// wraps both branches in an outer `self.world`-presence check and
+    /// binds the transaction handle only in the `real_branch` arm.
+    fn transaction_expr(&self, world_branch: &str, real_branch: &str) -> String {
+        let _ = (world_branch, real_branch);
         unimplemented!("transaction_expr is Expression-oriented only")
     }
 

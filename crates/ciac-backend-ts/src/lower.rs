@@ -880,8 +880,8 @@ impl HostSyntax for TsSyntax<'_> {
         // synthesized `pass`, TS needs nothing.
         Vec::new()
     }
-    /// REAL atomicity (Pillar 4), exceeding the Rust backend's
-    /// disclosed non-atomic gap: Postgres/MySQL check out a dedicated
+    /// REAL atomicity (Pillar 4), matching the Rust backend's own
+    /// (`26UpdatePlan.md` M1): Postgres/MySQL check out a dedicated
     /// connection and run `BEGIN`/`COMMIT`/`ROLLBACK` by hand (a
     /// pool's `.query()` alone is not transactional — different calls
     /// can land on different pooled connections — live-verified

@@ -1453,6 +1453,52 @@ per the house convention.
    executor meet at the transaction leaf, so this is where fake≠real
    drift would be born). NOTE marker removed from emission.
 
+   **Shipped (v0.26 M1):** design A landed, but not in the shape this
+   milestone predicted — reading the real shared driver
+   (`ciac-codegen/src/lower/dispatch.rs`) before writing code changed
+   the plan. The "30+ sites" the v0.16 assessment worried about
+   turned out not to exist: every `db.*` verb is lowered directly
+   from `lower_expr_any`'s own match arms (HIR never nests a verb
+   call inside another verb call's arguments — only scalars nest),
+   so there was no need for the `enter_transaction`/`exit_transaction`
+   hook pair or a `Cell`-based depth counter this file proposed.
+   Instead, `in_tx: bool` threads as an ordinary parameter through
+   exactly the three functions that already recurse across statement/
+   block boundaries — `lower_expr_any`, `lower_block_expr`,
+   `lower_stmt_expr` — mirroring the parameter-threading shape
+   `Statement`-orientation's own `lower_tail`/`lower_block_stmt`/
+   `lower_stmt` have used since the factory arcs, rather than
+   inventing a second mechanism. This is a smaller, more consistent
+   change than either design A or B as drafted: no new `HostSyntax`
+   trait methods, no interior mutability, and the shared driver's
+   only diff is the added parameter on three signatures plus
+   `HirStmt::Transaction`'s arm now calling `lower_block_expr` twice
+   (`false` for the world/simulated branch — rendered exactly as
+   before, unchanged — and `true` for the real branch). `RustSyntax`
+   gained one private `executor(in_tx: bool) -> &'static str` helper
+   (`"&mut *__tx"` vs `"self.db"`) consumed by `db_insert_expr`/
+   `db_update_expr`/`db_delete_expr`/`query_expr`; `transaction_expr`
+   now takes both pre-lowered branches and wraps them as
+   `if self.world.is_some() { <sim, unchanged> } else { let mut __tx
+   = self.db.begin().await?; <real, executor-swapped> __tx.commit()
+   .await?; }` — deliberately `self.world.is_some()`, not
+   `if let Some(world) = ...`, since the latter's binding goes
+   unused inside `sim_branch` (which re-derives its own `world`
+   locally) and trips `-D warnings`. `IdentitySyntax`
+   (`ciac-codegen/src/lower/identity.rs`) updated to the same
+   signatures with a `(transaction (sim ..) (real ..))` s-expression
+   shape and `-tx`-suffixed verb symbols on the real branch, keeping
+   the contract's own golden coverage honest. Golden diff confined
+   to exactly the two examples declaring `transaction {}`
+   (`domain-orders`, `sim-vertical-slice`) — every other example, on
+   every target, byte-identical; reviewed line-by-line, not blind-
+   accepted. Both canonical sim anchors re-proven byte-exact on Rust
+   post-fix: `{"ProcessOrder":3,"Reconcile":1}` (vertical-slice) and
+   `{"ProcessOrder":100,"Reconcile":7}` (virtual-week). NOTE marker
+   gone from generated output. Design B was never attempted — A
+   worked on the first real read of the driver, so there was nothing
+   for B to rescue.
+
 2. **M2 — Rust atomicity: the rollback proof and the reference
    sweep.** The purpose-built atomicity case (extend
    `domain-orders` or add a minimal two-insert-constraint-violation
@@ -1470,6 +1516,72 @@ per the house convention.
    the proof named. Exit includes a whole-repo grep for
    "non-atomic" — every remaining hit must be about simulation
    no-op degradation (27's territory), none about Rust production.
+
+   **Shipped (v0.26 M2):** live rollback proof against a real local
+   Postgres 16 cluster, using `domain-orders.ciac`'s existing
+   `PlaceOrder` handler (its own comment already anticipated this
+   proof: "on the Rust backend (interim, non-atomic lowering) the
+   first write survives... both behaviors are exercised live, not
+   assumed" — v0.16-era text this milestone makes true). Two
+   independent failure sources proven, not just the one the plan
+   named: (1) the handler's own app-level `fail` after a successful
+   first insert (negative `total`) — HTTP 500, **zero** rows in
+   `orders` for the rejected id; (2) a genuine SQL-level error (a
+   foreign-key violation on `customer_id`, no app-level check
+   involved) — same result, zero partial rows, `order_audits`'
+   count unchanged. A valid control request committed both rows
+   normally. No explicit rollback code was needed for either case:
+   `sqlx::Transaction`'s own `Drop` issues the rollback when `__tx`
+   goes out of scope without `.commit()` having run — exactly the
+   drop-rollback semantics this file specified. **Engine coverage,
+   disclosed honestly:** Postgres proven live. MariaDB blocked by
+   this environment specifically (no working local instance —
+   Docker's daemon is unavailable here and the local `mariadbd`'s
+   root credentials could not be recovered after reasonable
+   troubleshooting; not a code issue) — deferred, not skipped
+   silently, and not a gap in the fix itself (the executor helper
+   and `transaction_expr` never branch on engine — the emitted Rust
+   text is identical across Postgres/MySQL/SQLite, differing only in
+   the already-engine-generic pool type behind `self.db`, exactly as
+   this file predicted). SQLite likewise not independently live-run
+   this milestone — no checked-in example declares both `db SQLite`
+   and a `transaction {}` block to run it against; reasoned
+   engine-agnostic by the same code-inspection argument, not proven
+   live, and named here rather than left implicit. Automated
+   regression coverage for the fix is the golden/identity snapshot
+   pair from M1 (any future change to the executor/wrapper shape
+   shows up as a reviewed diff on the two transaction-bearing
+   examples) plus this Shipped note's live-proof record; a dedicated
+   `tests/` integration case exercising the rollback against a
+   CI-available database is recorded as a gap for whoever next
+   touches this file, not fabricated here to look complete. Debt
+   retirement: `docs/expressions.md`'s Rust-transactions paragraph
+   rewritten to describe the fix (executor swap, drop-rollback, the
+   live proof); the "unlike Rust's own disclosed non-atomic gap"/"a
+   real improvement over Rust's own disclosed non-atomic gap"
+   callouts in `docs/backends.md` (TypeScript, Go paragraphs) and
+   `docs/simulation.md` (TypeScript, Go, Java paragraphs) reworded to
+   state parity instead of a gap; two stale doc comments in
+   `crates/ciac-backend-go/src/lower.rs` and
+   `crates/ciac-backend-ts/src/lower.rs` making the same now-false
+   claim ("exceeding the Rust backend's own disclosed non-atomic
+   gap") corrected to "matching". Whole-repo grep for "non-atomic"
+   post-fix returns exactly two hits, both in `docs/backends.md`/
+   `docs/simulation.md` describing the *simulation-only* degradation
+   every narrow target (Rust included) still has — 27UpdatePlan.md's
+   territory, not this one's — confirmed clean of any remaining
+   Rust-production claim. **A note on this milestone's own
+   verification, in the spirit of the disclosure this arc exists to
+   practice:** `cargo test --workspace` intermittently hangs in this
+   session's sandbox on an unrelated pre-existing issue — a Java
+   example's `google-java-format` subprocess invocation stalling
+   under this environment's near-exhausted disk allowance, reproduced
+   identically against the *unmodified* pre-M1 codebase and therefore
+   not attributable to this fix. Verification instead ran targeted
+   (`golden`, `host_syntax_identity`, `typed_handler_equivalence`,
+   `typed_handler_rust`, `typed_handler_python`, `docs`), each
+   green, plus full `cargo build --workspace`/`clippy -D warnings`/
+   `fmt --check`.
 
 3. **M3 — Java `logging Structured`.** `Logging` added to
    `supports()`; `logback-spring.xml.j2` emitted under

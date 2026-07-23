@@ -22,8 +22,8 @@
 //! why a *shared* mutable `err`/temp pair across sibling statements
 //! doesn't work and per-call-site fresh names are needed instead.
 //!
-//! **Real `sql.Tx` transaction atomicity** (Pillar 4), unlike the
-//! Rust backend's own disclosed non-atomic interim gap (see
+//! **Real `sql.Tx` transaction atomicity** (Pillar 4), matching the
+//! Rust backend's own atomicity (`26UpdatePlan.md` M1; see
 //! `RustSyntax::transaction_expr`'s doc): [`transaction_stmt`]
 //! (../HostSyntax) opens a real `*sql.Tx` via `BeginTx`, `defer`s a
 //! `Rollback` (a safe no-op once `Commit` has already run — ordinary
@@ -846,8 +846,8 @@ impl HostSyntax for GoSyntax<'_> {
         // An empty `{}` block is valid Go on its own.
         Vec::new()
     }
-    /// REAL atomicity (Pillar 4), exceeding the Rust backend's own
-    /// disclosed non-atomic gap: `database/sql`'s `*sql.Tx` (from
+    /// REAL atomicity (Pillar 4), matching the Rust backend's own
+    /// (`26UpdatePlan.md` M1): `database/sql`'s `*sql.Tx` (from
     /// `BeginTx`) is a real, single checked-out connection running
     /// `BEGIN`/`COMMIT`/`ROLLBACK` under the hood — no manual SQL text
     /// needed, unlike TS's own Postgres/MySQL branch (Go's stdlib

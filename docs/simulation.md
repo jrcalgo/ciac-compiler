@@ -60,12 +60,13 @@ check, refused with the identical per-verb/per-capability reasons
 `unsupportedSimCapabilities` computes over the same shared HIR scanner
 Rust's own `unsupported_sim_capabilities` uses. One real, disclosed
 target-specific wrinkle: TypeScript's `transaction {}` blocks are
-*really* atomic in production (unlike Rust's own disclosed non-atomic
-gap), but degrade to the same non-atomic, unwrapped-statement behavior
-Rust already has *only* under simulation — there is no live database
-for a real `BEGIN`/`COMMIT` to run against a `SimWorld`, and every
-db-verb inside a transaction this checkpoint's own gate allows is
-`db.insert`, already world-guarded per statement.
+*really* atomic in production (matching Rust's own production code
+since `26UpdatePlan.md` M1), but degrade to non-atomic,
+unwrapped-statement behavior *only* under simulation — the same
+degradation Rust's own simulation path still has too — since there is
+no live database for a real `BEGIN`/`COMMIT` to run against a
+`SimWorld`, and every db-verb inside a transaction this checkpoint's
+own gate allows is `db.insert`, already world-guarded per statement.
 
 Go's own gated bet (v0.24 M9) reaches the same scope again, via the
 same hand-written-restatement shape TypeScript's own pass established
@@ -78,10 +79,9 @@ refused with the identical per-verb/per-capability reasons
 `unsupported_sim_capabilities` computes over the same shared HIR
 scanner Rust's/TypeScript's own gates use. Go's own production code
 gives `transaction {}` **real**, unconditional atomicity
-(`database/sql`'s `*sql.Tx`, the same bar TypeScript's Postgres/MySQL
-branch holds — a real improvement over Rust's own disclosed non-atomic
-gap) and — like TypeScript — degrades to a guarded no-op only under
-simulation, for the identical reason: every db verb this checkpoint's
+(`database/sql`'s `*sql.Tx`, the same bar TypeScript's and Rust's own
+Postgres branches hold) and — like TypeScript — degrades to a guarded
+no-op only under simulation, for the identical reason: every db verb this checkpoint's
 own gate allows inside a transaction is `db.insert`, already
 world-guarded per statement. One Go-specific wrinkle the other two
 narrow targets don't have: `cmd/sim_runner/main.go`'s worker-dispatch
@@ -105,8 +105,8 @@ declaration check, refused with the identical per-verb/per-capability
 reasons `unsupported_sim_capabilities` computes over the same shared
 HIR scanner Rust's/TypeScript's/Go's own gates use. Java's own
 production code gives `transaction {}` **real**, unconditional
-atomicity too (`TransactionTemplate`, matching Go's own improvement
-over Rust's disclosed non-atomic gap) and degrades to a guarded no-op
+atomicity too (`TransactionTemplate`, matching Go's/TypeScript's/
+Rust's own Postgres branches) and degrades to a guarded no-op
 only under simulation, for the identical reason every other narrow
 target does: every db verb this checkpoint's own gate allows inside a
 transaction is `db.insert`, already world-guarded per statement — the

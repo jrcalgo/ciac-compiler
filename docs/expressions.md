@@ -245,23 +245,24 @@ not hidden:**
   exception (including a `fail`'s raised error) — proven live: a
   negative-`total` `PlaceOrder` call leaves *neither* the `Orders` nor
   the `OrderAudits` row behind.
-- **Rust**: validated, but not yet atomic. Sema fully enforces every
-  rule above, and the block lowers correctly — but each `db.*` verb
-  still executes (and commits) against `self.db` independently, exactly
-  as if the `transaction { .. }` wrapper weren't there. Real atomicity
-  needs every verb inside the block to run against a held
-  `sqlx::Transaction<'_, _>` instead, and `sqlx`'s `Transaction` type
-  has no transparent substitute for `self.db` in already-generated
-  `.execute(self.db)` call sites — doing this properly means choosing
-  an executor per call site across `rust_expr`'s entire recursive call
-  graph (every arm that can nest a `db.*` verb, not just the verb arms
-  themselves), a much larger and riskier change than the Python
-  backend's single `tx: bool` flag threaded through three lowering
-  functions. The generated Rust source carries the same disclosure
-  inline (`// NOTE: this block is not yet atomic on the Rust backend`)
-  above the lowered body. Proven live with the same negative-`total`
-  request against the Rust backend: the invalid `Orders` row it wrote
-  before the `fail` survives, unlike the Python backend's rollback.
+- **Rust**: real atomicity (`26UpdatePlan.md` M1). Every `db.*` verb
+  inside the block executes against a held `sqlx::Transaction<'_, _>`
+  instead of the pool: the dispatcher lowers the block's body twice —
+  once as it already renders under simulation (unchanged), once with
+  every db-verb leaf's executor swapped from `self.db` to a fresh
+  `&mut *__tx` reborrow — and the host wraps both behind a single
+  `self.world.is_some()` check, opening the real `sqlx::Transaction`
+  only on the non-simulated path (`let mut __tx = self.db.begin()`)
+  and committing it only after every verb inside succeeds
+  (`__tx.commit().await?`). No explicit rollback arm is needed: if any
+  verb's `?` propagates an error — including a `fail`'s typed error —
+  the function returns before `commit()` runs, `__tx` drops unused,
+  and `sqlx::Transaction`'s own `Drop` impl issues the rollback.
+  Proven live against Postgres with the same negative-`total`
+  `PlaceOrder` request the Python backend is proven against: the
+  `Orders` row the first `db.insert` would have written is gone too —
+  both backends now agree, and a real foreign-key violation (not just
+  a `fail`) rolls back identically.
 
 Neither backend maps a failure — a `fail`'s typed error, or a
 database-rejected foreign-key/unique-constraint violation — to a

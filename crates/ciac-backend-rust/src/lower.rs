@@ -90,6 +90,24 @@ struct RustSyntax<'a> {
 }
 
 impl RustSyntax<'_> {
+    /// `26UpdatePlan.md` M1: the executor a db-verb leaf binds its
+    /// query to — the pool (`self.db`) outside a transaction,
+    /// exactly as before this milestone, or a reborrow of the held
+    /// `sqlx::Transaction` (`&mut *__tx`, bound by
+    /// [`HostSyntax::transaction_expr`]'s `real_branch` wrapper)
+    /// inside one. A fresh `&mut *__tx` reborrow per call site (not a
+    /// single captured `&mut` held across statements) is required
+    /// because `sqlx::Transaction` isn't `Copy` and the borrow
+    /// checker won't let one `&mut` outlive the statement that uses
+    /// it.
+    fn executor(in_tx: bool) -> &'static str {
+        if in_tx {
+            "&mut *__tx"
+        } else {
+            "self.db"
+        }
+    }
+
     /// Builds a ` WHERE ..` clause (empty string if there's no
     /// predicate) and the ordered `.bind(..)` expressions it needs
     /// (v0.14 M2). Written with Postgres-style `$N` placeholders and
@@ -294,7 +312,7 @@ impl HostSyntax for RustSyntax<'_> {
         out.push('}');
         out
     }
-    fn db_insert_expr(&self, table: TableId, value: &str) -> String {
+    fn db_insert_expr(&self, table: TableId, value: &str, in_tx: bool) -> String {
         let table_snake = self.ir.table(table).name.to_snake_case();
         let record_ctx = context::build_record(self.ir, self.ir.table(table).record);
         let binds: String = record_ctx
@@ -317,14 +335,26 @@ impl HostSyntax for RustSyntax<'_> {
         // The `self.world` branch is the v0.17 M11 world-guard: when
         // `AppState::simulation` constructed this handler, `db.insert`
         // writes to the in-memory `SimWorld` (and can be
-        // failure-injected) instead of ever touching `self.db`.
+        // failure-injected) instead of ever touching `self.db`. Kept
+        // here unchanged even when `in_tx` (`26UpdatePlan.md` M1):
+        // this whole leaf only ever renders inside
+        // `transaction_expr`'s `real_branch`, where `self.world` is
+        // already known `None` at generated-code runtime (the
+        // enclosing `if !self.world.is_some()` already chose this
+        // branch) — so this nested check is provably dead on the
+        // `Some` arm and harmlessly redundant, not wrong; leaving it
+        // in place (rather than threading a third "world already
+        // resolved" state through every leaf) is what keeps this
+        // milestone's diff to "swap the executor", not "restructure
+        // every verb's world-guard".
         format!(
-            "{{\n    let __row = {value}.clone();\n    if let Some(world) = self.world {{\n        world.db_insert_checked(\"{table_snake}\", serde_json::to_value(&__row)?)?;\n    }} else {{\n        sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n            .execute(self.db)\n            .await?;\n    }}\n    __row\n}}",
+            "{{\n    let __row = {value}.clone();\n    if let Some(world) = self.world {{\n        world.db_insert_checked(\"{table_snake}\", serde_json::to_value(&__row)?)?;\n    }} else {{\n        sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n            .execute({executor})\n            .await?;\n    }}\n    __row\n}}",
             cols = record_ctx.select_cols,
             phs = ciac_codegen::template::sqlph(&record_ctx.insert_placeholders, self.db_engine),
+            executor = Self::executor(in_tx),
         )
     }
-    fn db_update_expr(&self, table: TableId, key: &str, value: &str) -> String {
+    fn db_update_expr(&self, table: TableId, key: &str, value: &str, in_tx: bool) -> String {
         let table_snake = self.ir.table(table).name.to_snake_case();
         let record_ctx = context::build_record(self.ir, self.ir.table(table).record);
         let binds: String = record_ctx
@@ -342,19 +372,22 @@ impl HostSyntax for RustSyntax<'_> {
         // Same clone-into-`__row` reasoning as `db.insert` above: the
         // source value may still be referenced later in the body.
         format!(
-            "{{\n    let __row = {value}.clone();\n    let __updated = sqlx::query(\"UPDATE {table_snake} SET {assignments} WHERE id = {where_ph}\"){binds}\n        .bind({key}.to_string())\n        .execute(self.db)\n        .await?;\n    if __updated.rows_affected() == 0 {{ None }} else {{ Some(__row) }}\n}}",
+            "{{\n    let __row = {value}.clone();\n    let __updated = sqlx::query(\"UPDATE {table_snake} SET {assignments} WHERE id = {where_ph}\"){binds}\n        .bind({key}.to_string())\n        .execute({executor})\n        .await?;\n    if __updated.rows_affected() == 0 {{ None }} else {{ Some(__row) }}\n}}",
             assignments = ciac_codegen::template::sqlph(&record_ctx.update_assignments, self.db_engine),
             where_ph = ciac_codegen::template::sqlph(&record_ctx.update_where, self.db_engine),
+            executor = Self::executor(in_tx),
         )
     }
-    fn db_delete_expr(&self, table: TableId, key: &str) -> String {
+    fn db_delete_expr(&self, table: TableId, key: &str, in_tx: bool) -> String {
         let table_snake = self.ir.table(table).name.to_snake_case();
         format!(
-            "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .execute(self.db)\n        .await?;\n    __deleted.rows_affected() > 0\n}}",
+            "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .execute({executor})\n        .await?;\n    __deleted.rows_affected() > 0\n}}",
             ph = ciac_codegen::template::sqlph("$1", self.db_engine),
+            executor = Self::executor(in_tx),
         )
     }
-    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>) -> String {
+    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>, in_tx: bool) -> String {
+        let executor = Self::executor(in_tx);
         match verb {
             Verb::DbQuery(table) => {
                 let table_snake = self.ir.table(table).name.to_snake_case();
@@ -367,7 +400,7 @@ impl HostSyntax for RustSyntax<'_> {
                     .map(|b| format!("\n        .bind({b})"))
                     .collect();
                 format!(
-                    "{{\n    let __rows: Vec<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_all(self.db)\n        .await?;\n    __rows.into_iter().map({record_name}::try_from).collect::<Result<Vec<_>, _>>()?\n}}",
+                    "{{\n    let __rows: Vec<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_all({executor})\n        .await?;\n    __rows.into_iter().map({record_name}::try_from).collect::<Result<Vec<_>, _>>()?\n}}",
                     cols = record_ctx.select_cols,
                 )
             }
@@ -379,7 +412,7 @@ impl HostSyntax for RustSyntax<'_> {
                     .map(|b| format!("\n        .bind({b})"))
                     .collect();
                 format!(
-                    "{{\n    let __count: i64 = sqlx::query_scalar(\"SELECT COUNT(*) FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_one(self.db)\n        .await?;\n    __count\n}}"
+                    "{{\n    let __count: i64 = sqlx::query_scalar(\"SELECT COUNT(*) FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_one({executor})\n        .await?;\n    __count\n}}"
                 )
             }
             Verb::DbDeleteWhere(table) => {
@@ -390,7 +423,7 @@ impl HostSyntax for RustSyntax<'_> {
                     .map(|b| format!("\n        .bind({b})"))
                     .collect();
                 format!(
-                    "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake}{where_sql}\"){bind_lines}\n        .execute(self.db)\n        .await?;\n    __deleted.rows_affected() as i64\n}}"
+                    "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake}{where_sql}\"){bind_lines}\n        .execute({executor})\n        .await?;\n    __deleted.rows_affected() as i64\n}}"
                 )
             }
             _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
@@ -409,27 +442,31 @@ impl HostSyntax for RustSyntax<'_> {
     fn unit_literal(&self) -> String {
         "()".to_owned()
     }
-    // v0.16 M6 (assessed, deliberately deferred): sema fully validates
-    // `transaction` blocks, but making this genuinely atomic needs
-    // every `db.*` verb inside to execute against a held
-    // `sqlx::Transaction<'_, _>` instead of `self.db` — sqlx's
-    // `Transaction` has no `Deref`-to-pool trick that lets
-    // already-generated `.execute(self.db)` call sites transparently
-    // keep working, so real atomicity means threading an executor
-    // choice through the entire recursive lowering call graph (30+
-    // sites: every arm that can nest a db verb, not just the db-verb
-    // arms themselves) rather than the one `in_tx: bool` flag that
-    // suffices for a `Statement`-oriented target's uniform session.
-    // That's a materially larger, riskier change to code every
-    // existing Rust example depends on, so it's tracked as a
-    // follow-up rather than attempted here. Interim: lower the body
-    // exactly as if unwrapped — correct per-statement, just not yet
-    // atomic across the whole block. See docs/language.md's
-    // transactions section.
-    fn transaction_expr(&self, inner: &str) -> String {
-        let note =
-            "// NOTE: this block is not yet atomic on the Rust backend (see docs/language.md)";
-        format!("{note}\n{inner}")
+    // `26UpdatePlan.md` M1: real atomicity, closing the gap v0.16 M6
+    // assessed and deliberately deferred. The blocker then was real:
+    // sqlx's `Transaction` has no `Deref`-to-pool trick, so a
+    // `.execute(self.db)` call site can't transparently start
+    // executing against a transaction instead. What made it
+    // tractable now, on inspection, is that the "30+ sites" the v0.16
+    // assessment worried about turned out not to exist: every `db.*`
+    // verb call is lowered directly from `lower_expr_any`'s own match
+    // arms (never nested inside another verb's arguments — the HIR
+    // only ever nests *scalars* inside a verb call, and scalars
+    // cannot themselves be db verbs), so threading `in_tx: bool`
+    // through exactly the three functions that already recurse across
+    // statement/block boundaries (`lower_expr_any`, `lower_block_expr`,
+    // `lower_stmt_expr` — the Expression-orientation analogs of
+    // `Statement`-orientation's existing `lower_tail`/`lower_block_stmt`/
+    // `lower_stmt`, which have threaded `in_tx` since the factory
+    // arcs) reaches every leaf that needs it. See
+    // `HostSyntax::transaction_expr`'s doc for why the body is
+    // rendered twice.
+    fn transaction_expr(&self, world_branch: &str, real_branch: &str) -> String {
+        format!(
+            "if self.world.is_some() {{\n{}\n}} else {{\n    let mut __tx = self.db.begin().await?;\n{}\n    __tx.commit().await?;\n}}",
+            indent_lines(world_branch, "    "),
+            indent_lines(real_branch, "    "),
+        )
     }
 
     fn return_stmt(&self, value: Option<&str>, _indent: &str) -> String {

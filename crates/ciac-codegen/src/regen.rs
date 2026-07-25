@@ -374,7 +374,7 @@ mod tests {
         let mut old = GeneratedProject::new();
         old.add_file("a.txt", "old");
         old.write_to(&dir).unwrap();
-        let manifest = build_manifest(&old, "0.6.0", "src", "python");
+        let manifest = build_manifest(&old, "0.6.0", "1.0.0", "src", "python");
 
         let mut new = GeneratedProject::new();
         new.add_file("a.txt", "new");
@@ -389,7 +389,7 @@ mod tests {
         let mut old = GeneratedProject::new();
         old.add_file("a.txt", "old");
         old.write_to(&dir).unwrap();
-        let manifest = build_manifest(&old, "0.6.0", "src", "python");
+        let manifest = build_manifest(&old, "0.6.0", "1.0.0", "src", "python");
         std::fs::write(dir.join("a.txt"), "user").unwrap();
 
         let mut new = GeneratedProject::new();
@@ -407,7 +407,7 @@ mod tests {
         old.add_file("a.txt", "old-a");
         old.add_file("b.txt", "old-b");
         old.write_to(&dir).unwrap();
-        let manifest = build_manifest(&old, "0.6.0", "src", "python");
+        let manifest = build_manifest(&old, "0.6.0", "1.0.0", "src", "python");
         std::fs::write(dir.join("a.txt"), "user-edit").unwrap();
 
         let mut new = GeneratedProject::new();
@@ -451,7 +451,7 @@ mod tests {
             p
         };
         v1.write_to(&dir).unwrap();
-        let manifest_v1 = build_manifest(&v1, "0.6.0", "src-v1", "python");
+        let manifest_v1 = build_manifest(&v1, "0.6.0", "1.0.0", "src-v1", "python");
 
         // User edits one owned file.
         std::fs::write(dir.join("app/main.py"), "user-edit").unwrap();

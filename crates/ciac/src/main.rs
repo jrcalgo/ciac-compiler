@@ -16,10 +16,21 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+// 26UpdatePlan.md M8: `--version` co-presents the compiler number
+// (CARGO_PKG_VERSION, moves every release) and the language number
+// (ciac_syntax::LANGUAGE_VERSION, frozen at v1.0.0) -- the two-version
+// discipline docs/language.md's own stability section commits to.
+const CLI_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (language ",
+    include_str!("../../../LANGUAGE_VERSION"),
+    ")"
+);
+
 #[derive(Parser)]
 #[command(
     name = "ciac",
-    version,
+    version = CLI_VERSION,
     about = "Compile declarative backend architectures into runnable systems"
 )]
 struct Cli {

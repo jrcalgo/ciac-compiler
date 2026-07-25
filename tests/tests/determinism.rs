@@ -26,8 +26,8 @@ fn generation_is_byte_deterministic() {
                 path.display(),
                 backend.id()
             );
-            let first_manifest = build_manifest(&first, "0.6.0", "source", backend.id());
-            let second_manifest = build_manifest(&second, "0.6.0", "source", backend.id());
+            let first_manifest = build_manifest(&first, "0.6.0", "1.0.0", "source", backend.id());
+            let second_manifest = build_manifest(&second, "0.6.0", "1.0.0", "source", backend.id());
             assert_eq!(
                 serde_json::to_string_pretty(&first_manifest).expect("manifest serializes"),
                 serde_json::to_string_pretty(&second_manifest).expect("manifest serializes"),

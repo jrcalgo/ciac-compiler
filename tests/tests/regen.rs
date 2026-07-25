@@ -10,7 +10,7 @@ fn clean_rebuild_is_noop() {
     let dir = temp_dir("clean-rebuild-is-noop");
     let old = project([("app/main.py", "print('v1')\n")], []);
     old.write_to(&dir).unwrap();
-    let manifest = build_manifest(&old, "0.6.0", "source", "python");
+    let manifest = build_manifest(&old, "0.6.0", "1.0.0", "source", "python");
     write_manifest(&dir, &manifest).unwrap();
 
     let plan = plan_regeneration(&old, &dir, Some(&manifest), RegenMode::Normal).unwrap();
@@ -26,7 +26,7 @@ fn modified_owned_file_gets_conflict_sidecar() {
     let dir = temp_dir("modified-owned-file-gets-conflict-sidecar");
     let old = project([("app/main.py", "print('v1')\n")], []);
     old.write_to(&dir).unwrap();
-    let manifest = build_manifest(&old, "0.6.0", "source", "python");
+    let manifest = build_manifest(&old, "0.6.0", "1.0.0", "source", "python");
     std::fs::write(dir.join("app/main.py"), "print('user')\n").unwrap();
 
     let new = project([("app/main.py", "print('v2')\n")], []);
@@ -56,7 +56,7 @@ fn seeded_file_drift_gets_warning_sidecar() {
         )],
     );
     old.write_to(&dir).unwrap();
-    let manifest = build_manifest(&old, "0.6.0", "source", "python");
+    let manifest = build_manifest(&old, "0.6.0", "1.0.0", "source", "python");
     std::fs::write(
         dir.join("app/services/store.py"),
         "async def run(payload):\n    return payload\n",
@@ -87,7 +87,7 @@ fn untouched_owned_orphan_is_deleted() {
     let dir = temp_dir("untouched-owned-orphan-is-deleted");
     let old = project([("app/old.py", "old\n")], []);
     old.write_to(&dir).unwrap();
-    let manifest = build_manifest(&old, "0.6.0", "source", "python");
+    let manifest = build_manifest(&old, "0.6.0", "1.0.0", "source", "python");
 
     let new = project([], []);
     let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();

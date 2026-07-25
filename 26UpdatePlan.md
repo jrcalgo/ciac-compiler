@@ -2050,6 +2050,68 @@ per the house convention.
    timing defers it, and whichever milestone observes the firing
    records it.
 
+   **Shipped (v0.26 M8):** `LANGUAGE_VERSION` lands as a single-source,
+   no-trailing-newline file; `ciac_syntax::LANGUAGE_VERSION` reads it via
+   `include_str!` rather than duplicating the literal anywhere else.
+   Surfaced live: `ciac --version` → `ciac 0.23.0 (language 1.0.0)`
+   (compiler number moves to 0.24.0 in M9; the two-version format itself
+   lands here); `describe`'s JSON gained `language_version` beside
+   `ciac_version`; `targets --json`'s header gained the same field,
+   `docs/targets.json` regenerated to match. The manifest stamp
+   (`ciac-codegen::manifest::Manifest.language_version`, `Option<String>`,
+   `#[serde(default)]` so pre-M8 manifests still deserialize) proved
+   additive and regeneration-neutral via a live no-op `ciac diff --target
+   python` against an already-built project: zero diff lines. **One
+   dependency-shape correction made during implementation, not
+   pre-planned:** `ciac-codegen` has no real (non-dev) dependency on
+   `ciac-syntax`, so `build_manifest` could not call
+   `ciac_syntax::LANGUAGE_VERSION` directly without adding a new
+   inter-crate edge; fixed by threading `language_version: impl
+   Into<String>` through `build_manifest`'s own signature (mirroring the
+   existing `compiler_version` parameter) instead, with every call site
+   (`regen.rs`, `commands.rs`, and the `migrations.rs`/`regen.rs`/
+   `determinism.rs` test files) passing `ciac_syntax::LANGUAGE_VERSION` or
+   the `"1.0.0"` literal from the caller side — no new dependency edge,
+   no duplicated version string. `docs/language.md` retitled to `(v1.0.0)`
+   (the language number, not the compiler's); new `## Stability and
+   versioning` section landed ahead of `## Grammar` with the compiler-
+   language support contract, the covered surface, a breaking/additive/
+   editorial classification (reusing `ciac-codegen::semantic_diff::
+   Classification`'s own vocabulary, plus a docs-only "Editorial" third
+   category), and the three-step deprecation ladder (docs-flagged and
+   still-accepted → compiler warning via a reserved error-code range,
+   still accepted → removal only with a major `LANGUAGE_VERSION` bump); a
+   `## Changelog` section seeded with the single v1.0.0 entry, explicitly
+   scoped to language-surface changes only (compiler-only releases get no
+   entry here — their own git history and each plan's Shipped notes are
+   that record). **One stale reservation caught and corrected before
+   landing, not after:** the plan's own text named CIAC0060–0069 for the
+   deprecation ladder's warning step; grepping
+   `crates/ciac-diagnostics/src/*.rs` found CIAC0060, CIAC0061, and
+   CIAC0062 already real, registered codes from v0.16 (field validation
+   attributes, transaction blocks, non-transactional effects) — reserving
+   that range would have collided with live diagnostics. Corrected to
+   CIAC0063–0072 in both `docs/errors.md`'s new `### Reserved` subsection
+   and `docs/language.md`'s own deprecation-ladder prose; the range is
+   documented as empty (no code in it appears in `ErrorCode::ALL` today,
+   since nothing has been deprecated yet) so a future deprecation
+   warning's number is picked from an already-agreed block rather than
+   improvised at the point of need. `language-release.yml` lands
+   paths-filtered on `LANGUAGE_VERSION` against `main`, with an idempotent
+   `git ls-remote --tags` existence check before publishing — inert on
+   this branch (not `main`), so pushing it triggers nothing; validated
+   only as parseable YAML and read through step-by-step, not fired live.
+   Full `cargo test --workspace --no-fail-fast` run (fmt and clippy clean
+   beforehand): every test green except the same one pre-existing,
+   already-disclosed `backfill_cli::
+   refuses_until_the_expand_migration_lands_then_plans_and_gates_the_contract`
+   failure M7's Shipped note traced to `ruff` version drift in this
+   environment — confirmed unchanged by this milestone's diff, not
+   re-investigated. `conformance.rs`, `determinism.rs`, `golden.rs`,
+   `openapi.rs`, `ledger_integrity.rs`, and the full `ciac-codegen` unit
+   suite (including the `manifest_is_sorted_and_stable` test extended for
+   the new field) all green, including doc-tests across every crate.
+
 9. **M9 — Version 0.24.0, the first compiler release, and the arc
    retrospective.** Version: **0.23.0 → 0.24.0** (`Cargo.toml`
    workspace + the eleven internal pins, `editors/vscode/

@@ -1,5 +1,7 @@
 {
   "targets_version": 1,
+  "ciac_version": "0.23.0",
+  "language_version": "1.0.0",
   "targets": [
     {
       "id": "python",

@@ -1,0 +1,54 @@
+name: Language Release
+
+# 26UpdatePlan.md M8: fires when LANGUAGE_VERSION changes on `main` --
+# tags `lang-v<version>` and publishes the spec (docs/language.md) as
+# its own GitHub Release, separate from `release.yml`'s compiler-binary
+# releases (tag `v<version>`). Idempotent: a version this workflow has
+# already tagged is a no-op, so a re-run or an unrelated push that
+# happens to touch this path a second time never double-releases.
+on:
+  push:
+    branches: [main]
+    paths:
+      - LANGUAGE_VERSION
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag and publish the language spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read LANGUAGE_VERSION
+        id: version
+        run: echo "version=$(cat LANGUAGE_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Check for an existing tag (idempotent)
+        id: exists
+        run: |
+          if git ls-remote --exit-code --tags origin "lang-v${{ steps.version.outputs.version }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish the language release
+        if: steps.exists.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: lang-v${{ steps.version.outputs.version }}
+          name: CIaC Language v${{ steps.version.outputs.version }}
+          files: docs/language.md
+          generate_release_notes: false
+          body: |
+            The CIaC language specification, version ${{ steps.version.outputs.version }}.
+
+            See `docs/language.md` for the full grammar, declaration
+            surface, and the `## Stability and versioning` section this
+            release's own contract is defined by. This tag names the
+            language surface, independent of any particular `ciac`
+            compiler release -- see the repository's `v*.*.*` tags for
+            compiler releases and their own changelog.

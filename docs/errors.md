@@ -79,6 +79,18 @@ rename). See `docs/agents.md`.
 | CIAC0061 | error | invalid transaction block |
 | CIAC0062 | error | non-transactional effect inside a transaction |
 
+### Reserved
+
+`26UpdatePlan.md` M8 reserves `CIAC0063`–`CIAC0072` for the language
+deprecation ladder (`docs/language.md`'s `## Stability and
+versioning`) — step 2 of that ladder (a compiler warning on every use
+of a deprecated-but-still-accepted construct) will draw from this
+range. Empty today: no construct has been deprecated yet, so no code
+in this range is emitted by any diagnostic, and none appears in
+`ErrorCode::ALL`. The range is documented here, ahead of first use, so
+a future deprecation warning's code number is picked from a pre-agreed
+block rather than improvised at the point of need.
+
 ## Notes
 
 - **CIAC0005** covers every capability requirement: `Auth` steps need

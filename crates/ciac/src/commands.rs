@@ -328,6 +328,7 @@ pub(crate) fn build_inner(
         let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -380,6 +381,7 @@ pub(crate) fn build_inner(
         let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -484,6 +486,7 @@ pub(crate) fn replay_recipe(
         let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -988,6 +991,7 @@ fn materialize_generated(
         let mut manifest = build_manifest(
             project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -2356,6 +2360,12 @@ pub fn targets(json: bool) -> Result<ExitCode> {
 #[derive(serde::Serialize)]
 struct TargetsDoc {
     targets_version: u32,
+    /// The compiler's own version (26UpdatePlan.md M8), distinct from
+    /// `language_version` below.
+    ciac_version: &'static str,
+    /// The frozen CIaC language surface version this compiler build
+    /// implements (`LANGUAGE_VERSION`, via `ciac_syntax`).
+    language_version: &'static str,
     targets: Vec<TargetEntry>,
 }
 
@@ -2449,6 +2459,8 @@ fn targets_doc() -> TargetsDoc {
         .collect();
     TargetsDoc {
         targets_version: 1,
+        ciac_version: env!("CARGO_PKG_VERSION"),
+        language_version: ciac_syntax::LANGUAGE_VERSION,
         targets,
     }
 }
@@ -3062,6 +3074,8 @@ mod tests {
     fn targets_json_is_stable_shape() {
         let json = serde_json::to_value(super::targets_doc()).unwrap();
         assert_eq!(json["targets_version"], 1);
+        assert_eq!(json["ciac_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["language_version"], ciac_syntax::LANGUAGE_VERSION);
         let targets = json["targets"].as_array().expect("targets array");
         assert!(targets.iter().any(|t| t["id"] == "python"), "{targets:?}");
         assert!(targets.iter().any(|t| t["id"] == "rust"), "{targets:?}");

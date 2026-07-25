@@ -105,7 +105,7 @@ fn migrate_step(dir: &std::path::Path, src: &str) -> Result<Option<String>, Sche
     let broken: Vec<_> = plan.entries.iter().filter(|e| e.is_error()).collect();
     assert!(broken.is_empty(), "unexpected regen errors: {broken:?}");
 
-    let mut manifest = build_manifest(&project, "test", "src", backend.id());
+    let mut manifest = build_manifest(&project, "test", "1.0.0", "src", backend.id());
     manifest.tables = new_tables;
     manifest.next_migration_seq = next_seq;
     write_manifest(dir, &manifest).expect("manifest writes");

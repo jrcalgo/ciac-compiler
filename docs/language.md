@@ -1,4 +1,4 @@
-# The CIaC Language (v0.23.0)
+# The CIaC Language (v1.0.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -17,6 +17,89 @@ build`/`ciac check` accept it while `ciac build` itself refuses to
 generate for it — `CIAC0011`, the same mechanism a new backend or
 provider grows into on the way to full support, most recently
 exercised by external backends (`docs/external-backends.md`).
+`ciac targets --json` (checked in at `docs/targets.json`) is the
+live, machine-derived source of truth for current per-target support
+— this section's own prose is narrative, not the ledger.
+
+## Stability and versioning
+
+Two version numbers appear everywhere `ciac` reports itself
+(`ciac --version`, `ciac describe`, `ciac targets --json`, the
+generated manifest stamp): the **compiler** version
+(`CARGO_PKG_VERSION`, e.g. `0.23.0`) and the **language** version
+(this document's own title, e.g. `1.0.0`). They move independently
+and on purpose — a compiler release can ship faster codegen, a new
+backend, or a bug fix without the language surface changing at all,
+and the reverse (a language surface change with no compiler-visible
+behavior difference) is possible in principle even if rare in
+practice. `26UpdatePlan.md` M8 is where the language surface first
+froze at `1.0.0`; every compiler release before `v0.24.0` shipped
+without a language version because there was nothing yet to freeze
+against.
+
+### The compiler-language support contract
+
+A given `ciac` binary's `LANGUAGE_VERSION` names the exact language
+surface it implements — every construct in this document, at the
+grammar and semantics this document currently describes. The
+contract: **a `.ciac` program that type-checks against language
+version `N.x.y` continues to type-check, with the same meaning,
+against every later compiler that still reports language version
+`N.x.y`.** A compiler that changes the language surface bumps
+`LANGUAGE_VERSION`; a compiler that only changes its own internals
+(codegen quality, a new backend, performance, bug fixes that make an
+already-documented behavior actually match this document) does not.
+
+### Covered surface
+
+Everything in this document as of `1.0.0` is covered: the full
+grammar (`## Grammar`), every declaration kind (`## Declarations`),
+every capability/provider in `docs/backends.md`'s own tables, the
+expression/verb surface in `docs/expressions.md`, and the
+determinism guarantee (`## Determinism` below). Not covered — real,
+useful, and explicitly outside the frozen surface: anything gated
+behind `CIAC0011` on every target (a construct that type-checks but
+no backend generates for yet carries no stability promise until a
+target actually implements it), and any `--json` output shape's own
+independent version field (`describe_version`, `targets_version`,
+manifest schema fields), each versioned separately from the language
+itself.
+
+### Breaking, additive, and editorial changes
+
+Every language-surface change to a future `LANGUAGE_VERSION` is
+classified the same way `ciac diff --semantic`'s own differ already
+classifies *generated-schema* changes (`ciac-codegen::semantic_diff`,
+v0.18 M2) — the vocabulary is deliberately the same one this repo's
+tooling already uses, not a new one invented for this document:
+
+- **Breaking**: an existing, valid `.ciac` program stops type-checking,
+  or type-checks but means something different than it did — a
+  removed keyword, a narrowed field type, a verb that now requires an
+  argument it didn't before. Requires a new major `LANGUAGE_VERSION`
+  (`2.0.0`, ...).
+- **Additive**: new syntax, new verbs, new providers, new capability
+  kinds — anything that leaves every existing valid program's meaning
+  untouched. Ships as a minor `LANGUAGE_VERSION` bump (`1.1.0`, ...).
+- **Editorial**: this document's own prose, examples, or error-message
+  wording change with zero effect on what type-checks or what it
+  means. No `LANGUAGE_VERSION` bump at all — these ride the compiler
+  version instead, same as any other doc fix.
+
+### The deprecation ladder
+
+No construct has ever been deprecated yet — `1.0.0` is the first frozen
+point, so this is the standing policy for when one eventually is, not
+a retrospective account. A future breaking removal is expected to pass
+through three steps, each its own compiler release: (1) the construct
+is marked deprecated in this document and the changelog below, and
+still accepted, unchanged, by every backend; (2) a later release adds
+a compiler warning (a reserved `CIAC0063`-`CIAC0072` code, see
+`docs/errors.md`) on every use, still accepted; (3) removal happens
+only in a release that also bumps `LANGUAGE_VERSION`'s major
+component, never silently inside a minor bump. A program pinned to an
+older `LANGUAGE_VERSION` is never forced to migrate by a compiler
+upgrade alone.
 
 ## Grammar
 
@@ -575,3 +658,19 @@ payload should be typed.
 
 Given identical source, `ciac build` produces byte-identical output —
 generated projects are safe to diff and regenerate.
+
+## Changelog
+
+Language-version entries only (breaking/additive surface changes,
+classified per `## Stability and versioning` above) — compiler-only
+releases (bug fixes, new backends, performance) do not get an entry
+here; see the compiler's own git history and each `NNUpdatePlan.md`'s
+Shipped notes for those.
+
+### 1.0.0 — `26UpdatePlan.md` M8
+
+The language surface freezes for the first time. Every construct in
+this document as of this entry is the covered surface `## Stability
+and versioning` now holds the compiler to. No grammar or semantics
+changed to make this freeze — `1.0.0` names what was already true as
+of v0.23.0, so this entry is the starting line, not a migration.

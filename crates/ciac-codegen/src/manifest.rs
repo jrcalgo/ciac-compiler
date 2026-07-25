@@ -52,6 +52,13 @@ pub struct Manifest {
     /// than guessing (18UpdatePlan.md Pillar 7).
     #[serde(default)]
     pub recipe: Option<BuildRecipe>,
+    /// v0.26 M8: the frozen CIaC language surface version
+    /// (`ciac_syntax::LANGUAGE_VERSION`) this build's compiler
+    /// implemented — additive, regeneration-neutral (a manifest field
+    /// only, never a byte a backend emits into the generated project
+    /// itself). `None` for manifests written before M8.
+    #[serde(default)]
+    pub language_version: Option<String>,
 }
 
 /// See [`Manifest::recipe`]. Every field a fresh `ciac build` needs to
@@ -97,6 +104,7 @@ pub fn hash_content(content: &str) -> String {
 pub fn build_manifest(
     project: &GeneratedProject,
     compiler_version: impl Into<String>,
+    language_version: impl Into<String>,
     source_hash: impl Into<String>,
     target: impl Into<String>,
 ) -> Manifest {
@@ -122,6 +130,7 @@ pub fn build_manifest(
         records: BTreeMap::new(),
         semantic_snapshot: None,
         recipe: None,
+        language_version: Some(language_version.into()),
     }
 }
 
@@ -153,7 +162,7 @@ mod tests {
         let mut project = GeneratedProject::new();
         project.add_file("b.txt", "b");
         project.add_seeded_file("a.txt", "a");
-        let manifest = build_manifest(&project, "0.6.0", "src", "python");
+        let manifest = build_manifest(&project, "0.6.0", "1.0.0", "src", "python");
         let json = serde_json::to_string_pretty(&manifest).expect("serialize");
         let again = serde_json::to_string_pretty(&manifest).expect("serialize");
         assert_eq!(json, again);

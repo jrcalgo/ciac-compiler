@@ -1,4 +1,4 @@
-# The CIaC Language (v0.20.0)
+# The CIaC Language (v1.0.0)
 
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
@@ -17,6 +17,89 @@ build`/`ciac check` accept it while `ciac build` itself refuses to
 generate for it — `CIAC0011`, the same mechanism a new backend or
 provider grows into on the way to full support, most recently
 exercised by external backends (`docs/external-backends.md`).
+`ciac targets --json` (checked in at `docs/targets.json`) is the
+live, machine-derived source of truth for current per-target support
+— this section's own prose is narrative, not the ledger.
+
+## Stability and versioning
+
+Two version numbers appear everywhere `ciac` reports itself
+(`ciac --version`, `ciac describe`, `ciac targets --json`, the
+generated manifest stamp): the **compiler** version
+(`CARGO_PKG_VERSION`, e.g. `0.24.0`) and the **language** version
+(this document's own title, e.g. `1.0.0`). They move independently
+and on purpose — a compiler release can ship faster codegen, a new
+backend, or a bug fix without the language surface changing at all,
+and the reverse (a language surface change with no compiler-visible
+behavior difference) is possible in principle even if rare in
+practice. `26UpdatePlan.md` M8 is where the language surface first
+froze at `1.0.0`; every compiler release before `v0.24.0` shipped
+without a language version because there was nothing yet to freeze
+against.
+
+### The compiler-language support contract
+
+A given `ciac` binary's `LANGUAGE_VERSION` names the exact language
+surface it implements — every construct in this document, at the
+grammar and semantics this document currently describes. The
+contract: **a `.ciac` program that type-checks against language
+version `N.x.y` continues to type-check, with the same meaning,
+against every later compiler that still reports language version
+`N.x.y`.** A compiler that changes the language surface bumps
+`LANGUAGE_VERSION`; a compiler that only changes its own internals
+(codegen quality, a new backend, performance, bug fixes that make an
+already-documented behavior actually match this document) does not.
+
+### Covered surface
+
+Everything in this document as of `1.0.0` is covered: the full
+grammar (`## Grammar`), every declaration kind (`## Declarations`),
+every capability/provider in `docs/backends.md`'s own tables, the
+expression/verb surface in `docs/expressions.md`, and the
+determinism guarantee (`## Determinism` below). Not covered — real,
+useful, and explicitly outside the frozen surface: anything gated
+behind `CIAC0011` on every target (a construct that type-checks but
+no backend generates for yet carries no stability promise until a
+target actually implements it), and any `--json` output shape's own
+independent version field (`describe_version`, `targets_version`,
+manifest schema fields), each versioned separately from the language
+itself.
+
+### Breaking, additive, and editorial changes
+
+Every language-surface change to a future `LANGUAGE_VERSION` is
+classified the same way `ciac diff --semantic`'s own differ already
+classifies *generated-schema* changes (`ciac-codegen::semantic_diff`,
+v0.18 M2) — the vocabulary is deliberately the same one this repo's
+tooling already uses, not a new one invented for this document:
+
+- **Breaking**: an existing, valid `.ciac` program stops type-checking,
+  or type-checks but means something different than it did — a
+  removed keyword, a narrowed field type, a verb that now requires an
+  argument it didn't before. Requires a new major `LANGUAGE_VERSION`
+  (`2.0.0`, ...).
+- **Additive**: new syntax, new verbs, new providers, new capability
+  kinds — anything that leaves every existing valid program's meaning
+  untouched. Ships as a minor `LANGUAGE_VERSION` bump (`1.1.0`, ...).
+- **Editorial**: this document's own prose, examples, or error-message
+  wording change with zero effect on what type-checks or what it
+  means. No `LANGUAGE_VERSION` bump at all — these ride the compiler
+  version instead, same as any other doc fix.
+
+### The deprecation ladder
+
+No construct has ever been deprecated yet — `1.0.0` is the first frozen
+point, so this is the standing policy for when one eventually is, not
+a retrospective account. A future breaking removal is expected to pass
+through three steps, each its own compiler release: (1) the construct
+is marked deprecated in this document and the changelog below, and
+still accepted, unchanged, by every backend; (2) a later release adds
+a compiler warning (a reserved `CIAC0063`-`CIAC0072` code, see
+`docs/errors.md`) on every use, still accepted; (3) removal happens
+only in a release that also bumps `LANGUAGE_VERSION`'s major
+component, never silently inside a minor bump. A program pinned to an
+older `LANGUAGE_VERSION` is never forced to migrate by a compiler
+upgrade alone.
 
 ## Grammar
 
@@ -169,40 +252,46 @@ Legacy entries lower to an implicit instance named `default`. Duplicate
 instances of the same capability kind/name are `CIAC0012`. Supported
 pairs (`CIAC0013` otherwise):
 
-| Capability | Providers | Generated as (Python / Rust) |
-|------------|-----------|------------------------------|
-| `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) |
-| `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) |
-| `cache` | `Redis` | redis-py client per instance / redis crate client per instance |
-| `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka |
-| `logging` | `Structured` | structlog / tracing |
-| `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus |
-| `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper (+ MinIO in compose) |
-| `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender (+ Mailpit in compose) |
-| `search` | `OpenSearch` | opensearch-py client / opensearch client (+ single-node container) |
-| `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance |
-| `scheduler` | `Cron` | in-process scheduled jobs |
+| Capability | Providers | Generated as (Python / Rust / TypeScript / Go / Java) |
+|------------|-----------|--------------------------------------------------|
+| `auth` | `JWT`, `OAuth2` | FastAPI dependency + PyJWT (OAuth2: JWKS) / axum extractor + jsonwebtoken (OAuth2: fetched JWKS) / Fastify preHandler + `jose` (OAuth2: `createRemoteJWKSet`, lazy and cached) / inline route-body check + golang-jwt (OAuth2: `keyfunc`, lazy and cached) / inline route-body check + `spring-boot-starter-oauth2-resource-server` (`NimbusJwtDecoder`, OAuth2: `withJwkSetUri`, lazy and cached) |
+| `db` | `Postgres`, `MySQL`, `SQLite` | SQLAlchemy async engine per instance (asyncpg / aiomysql / aiosqlite) / SQLx pool per instance (`PgPool` / `MySqlPool` / `SqlitePool`) / Drizzle per instance, raw SQL through its `$client` escape hatch (`pg` / `mysql2` / `better-sqlite3`) / `database/sql` pool per instance (`pgx` / `go-sql-driver/mysql` / `modernc.org/sqlite`, one placeholder-style filter shared across all three) / Spring `JdbcClient` (HikariCP) pool per instance (`postgresql` / `mysql-connector-j` / `sqlite-jdbc`, Flyway for `table`-declared migrations) |
+| `cache` | `Redis` | redis-py client per instance / redis crate client per instance / `ioredis` client per instance / go-redis client per instance / spring-data-redis `StringRedisTemplate` per instance (Lettuce) |
+| `queue` | `NATS`, `Kafka` | nats-py or aiokafka / async-nats or rdkafka / `@nats-io/transport-node` or kafkajs / nats.go or franz-go / jnats or spring-kafka |
+| `logging` | `Structured` | structlog / tracing / pino / `log/slog` JSON handler / Logback + `logstash-logback-encoder` via `logback-spring.xml` (`26UpdatePlan.md` M3) |
+| `metrics` | `Prometheus` | prometheus-client / metrics-exporter-prometheus / prom-client / prometheus/client_golang / Micrometer + `micrometer-registry-prometheus` at `/actuator/prometheus` |
+| `object_store` | `S3` | aioboto3 wrapper / rust-s3 wrapper / `@aws-sdk/client-s3` wrapper / AWS SDK Go v2 `s3` wrapper / AWS SDK v2 `s3` wrapper (all five: + MinIO in compose, path-style addressing) |
+| `email` | `SES`, `SMTP` | aiosmtplib sender / lettre sender / nodemailer sender / dependency-free `net/smtp` sender / Spring `JavaMailSenderImpl` sender (all five: + Mailpit in compose) |
+| `search` | `OpenSearch` | opensearch-py client / opensearch client / `@opensearch-project/opensearch` client / dependency-free `net/http` against OpenSearch's own REST API / dependency-free `java.net.http.HttpClient` against OpenSearch's own REST API (all five: + single-node container) |
+| `external_http` | providerless; requires `base_url` | httpx client per instance / reqwest client per instance / dependency-free `fetch` client per instance / dependency-free `net/http` client per instance / Spring `RestClient` per instance |
+| `scheduler` | `Cron` | in-process scheduled jobs (Python/Rust/Go/Java, Java via `@Scheduled`) / croner scheduled jobs (TypeScript) |
 | `realtime` | `WebSocket`, `SSE` | stream channels over WebSocket/SSE |
-| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers (both: `traceparent` propagation across `call`/broker hops) |
-| `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6) |
+| `tracing` | `OpenTelemetry` | OTel SDK + FastAPI/HTTPX auto-instrumentation / `tracing` + `opentelemetry-otlp` layers / OTel Node SDK + `@fastify/otel`/http/pg/undici auto-instrumentation / OTel Go SDK + `otelhttp` auto-instrumentation, explicit broker-hop propagation / Micrometer Tracing + OTel bridge, `RestClient` auto-instrumented via Micrometer Observation, explicit broker-hop propagation (all five: `traceparent` propagation across `call`/broker hops) |
+| `users` | `Keycloak` | none generated in the app — a seeded dev Keycloak container + `scripts/token.sh` (v0.15 M6; Java needed zero backend-specific code — the dev-issuer-default computation is target-neutral, confirmed 25UpdatePlan.md M7) |
 
-Every provider above generates on both bundled targets (as of v0.13 —
-`MySQL` and `Kafka` landed on Rust in v0.13 M1/M2, closing the last
-Python-only gap; `SQLite` is new in v0.13 M3 and needs no container at
-all, just a `data/` volume). `auth OAuth2` requires an `issuer`
-attribute (and optional `audience`): bearer RS256 tokens are validated
-against `{issuer}/.well-known/jwks.json` on both backends — unless
-`users Keycloak` is declared in the same `use { .. }` block, in which
-case `issuer` may be omitted and defaults to the dev Keycloak
-container's realm URL (v0.15 M6; still overridable with an explicit
-`issuer`).
+Every provider above generates on all five bundled targets, including
+`logging` since `26UpdatePlan.md` M3 closed Java's own remaining gap
+(Java's `supports()` refused `Component::Logging` with `CIAC0011`
+through v0.25 despite this doc's own table already claiming support).
+Prior to that, Java closed its other remaining gaps following Go's own
+M7 (v0.24), which followed TypeScript's (v0.23 M7), `MySQL`/`Kafka`
+landing on Rust in v0.13 M1/M2, and `SQLite` in v0.13 M3, which needs
+no container at all, just a `data/` volume. `auth OAuth2` requires an
+`issuer`
+attribute (and optional `audience`): bearer RS256 tokens are
+validated against `{issuer}/.well-known/jwks.json` on every backend —
+unless `users Keycloak` is declared in the same `use { .. }` block,
+in which case `issuer` may be omitted and defaults to the dev
+Keycloak container's realm URL (v0.15 M6; still overridable with an
+explicit `issuer`).
 
-`tracing OpenTelemetry` (v0.15 M3/M4) adds an `otel-collector` +
-Jaeger to the dev compose stack; every service that declares it
-exports spans for its own HTTP server/client calls and broker
-produce/consume, so a `call`/`publish`→worker chain shows up as one
-continuous trace. `users Keycloak` (v0.15 M6) adds a `keycloak`
-container seeded with a `dev` realm — a public password-grant client,
+`tracing OpenTelemetry` (v0.15 M3/M4, TypeScript in v0.23 M7, Go in
+v0.24 M7, Java in 25UpdatePlan.md M7) adds an `otel-collector` + Jaeger to the dev compose stack;
+every service that declares it exports spans for its own HTTP server/
+client calls and broker produce/consume, so a `call`/`publish`→worker
+chain shows up as one continuous trace. `users Keycloak` (v0.15 M6)
+adds a `keycloak` container seeded with a `dev` realm — a public
+password-grant client,
 one client scope per distinct `scope`/`read_scope`/`write_scope`
 string declared anywhere in the system, and two dev users
 (`dev-admin`/`dev-user`, password `dev-password`). It's a dev/test
@@ -569,3 +658,19 @@ payload should be typed.
 
 Given identical source, `ciac build` produces byte-identical output —
 generated projects are safe to diff and regenerate.
+
+## Changelog
+
+Language-version entries only (breaking/additive surface changes,
+classified per `## Stability and versioning` above) — compiler-only
+releases (bug fixes, new backends, performance) do not get an entry
+here; see the compiler's own git history and each `NNUpdatePlan.md`'s
+Shipped notes for those.
+
+### 1.0.0 — `26UpdatePlan.md` M8
+
+The language surface freezes for the first time. Every construct in
+this document as of this entry is the covered surface `## Stability
+and versioning` now holds the compiler to. No grammar or semantics
+changed to make this freeze — `1.0.0` names what was already true as
+of v0.23.0, so this entry is the starting line, not a migration.

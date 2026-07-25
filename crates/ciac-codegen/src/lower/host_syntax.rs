@@ -9,7 +9,7 @@
 //! [`ciac_ir::HirExpr`] trees, and never precompute a per-language
 //! "context struct" the shared crate would have to own).
 
-use super::dispatch::{Dest, Wrap};
+use super::dispatch::{apply_dest, Dest, Wrap};
 use ciac_ir::{BinOp, HirExpr, HirType, NodeId, PredOp, RecordId, TableId, UnOp, Verb};
 
 /// Whether a target's control flow and statement-shaped verbs
@@ -185,20 +185,25 @@ pub trait HostSyntax {
         let _ = (enum_name, scrutinee, arms);
         unimplemented!("match_expr is Expression-oriented only")
     }
-    fn db_insert_expr(&self, table: TableId, value: &str) -> String {
-        let _ = (table, value);
+    /// `in_tx` (`26UpdatePlan.md` M1): `true` when this verb is lowered
+    /// inside a `transaction {}` block's real (non-simulated) branch —
+    /// see [`HostSyntax::transaction_expr`]. A leaf that cares (Rust:
+    /// picks `&mut *__tx` over the pool) reads it; every other
+    /// Expression-oriented leaf ignores it exactly as before.
+    fn db_insert_expr(&self, table: TableId, value: &str, in_tx: bool) -> String {
+        let _ = (table, value, in_tx);
         unimplemented!("db_insert_expr is Expression-oriented only")
     }
-    fn db_update_expr(&self, table: TableId, key: &str, value: &str) -> String {
-        let _ = (table, key, value);
+    fn db_update_expr(&self, table: TableId, key: &str, value: &str, in_tx: bool) -> String {
+        let _ = (table, key, value, in_tx);
         unimplemented!("db_update_expr is Expression-oriented only")
     }
-    fn db_delete_expr(&self, table: TableId, key: &str) -> String {
-        let _ = (table, key);
+    fn db_delete_expr(&self, table: TableId, key: &str, in_tx: bool) -> String {
+        let _ = (table, key, in_tx);
         unimplemented!("db_delete_expr is Expression-oriented only")
     }
-    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>) -> String {
-        let _ = (verb, predicate);
+    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>, in_tx: bool) -> String {
+        let _ = (verb, predicate, in_tx);
         unimplemented!("query_expr is Expression-oriented only")
     }
     fn let_binding(&self, name: &str, value: &str) -> String {
@@ -217,8 +222,20 @@ pub trait HostSyntax {
     fn unit_literal(&self) -> String {
         unimplemented!("unit_literal is Expression-oriented only")
     }
-    fn transaction_expr(&self, inner: &str) -> String {
-        let _ = inner;
+    /// `26UpdatePlan.md` M1: the dispatcher lowers the transaction
+    /// body *twice* — `world_branch` (`in_tx=false`, identical to how
+    /// every verb inside it already renders outside a transaction,
+    /// including its own `self.world` check) and `real_branch`
+    /// (`in_tx=true`, each db verb executing against the held
+    /// executor) — because whether a real `sqlx::Transaction` can be
+    /// opened at all depends on whether `self.world` is `Some` (opening
+    /// one under simulation would attempt a real, absent database
+    /// connection), and that can only be decided once, by the host, not
+    /// independently by each nested verb. A leaf that implements this
+    /// wraps both branches in an outer `self.world`-presence check and
+    /// binds the transaction handle only in the `real_branch` arm.
+    fn transaction_expr(&self, world_branch: &str, real_branch: &str) -> String {
+        let _ = (world_branch, real_branch);
         unimplemented!("transaction_expr is Expression-oriented only")
     }
 
@@ -333,6 +350,143 @@ pub trait HostSyntax {
     fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String;
     fn search_query(&self, query: &str) -> String;
     fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String;
+
+    // --- the error-idiom amendment (`24UpdatePlan.md` M4) ---
+    //
+    // Every leaf above this point that reaches `Statement` orientation
+    // renders exactly one value, applied to its statement's `Dest` by
+    // the shared `apply_dest`/`lower_tail` fallback — correct for
+    // Python (exceptions) and TS (exceptions) alike, since neither
+    // needs any extra syntax at the call site to propagate a failure.
+    // Go has no such implicit propagation: a fallible call is a
+    // multiple-return `(T, error)`, and using its result at all
+    // requires its own `if err != nil { ... }` statement *before* the
+    // value is usable — there is no expression-position error
+    // operator the way Rust's `?` lets `db_insert_expr` stay a single
+    // expression string even in `Expression` orientation.
+    //
+    // Each `..._tail` pair below gives a `Statement`-oriented host a
+    // real decomposition point for one of the leaves above — `Dest`-
+    // and `indent`-aware, exactly like `db_insert_tail`/`db_update_tail`
+    // /`db_delete_tail`/`query_tail` already are. The **default**
+    // implementation is not `unimplemented!()`: it is defined to
+    // reproduce today's "compute the plain leaf value, then
+    // `apply_dest` it" behavior byte-for-byte (call the existing
+    // scalar leaf, then run the same three-way `Dest` dispatch
+    // `apply_dest` already performs) — so Python, TS, and
+    // `IdentitySyntaxStatement` need **zero** code changes and emit
+    // **zero** output difference from before this amendment; only a
+    // host that actually overrides one of these (Go) changes shape.
+    // This is the amendment's own byte-identical proof, provable by
+    // construction rather than only by snapshot diff — the snapshot
+    // diff (or its absence) is the executable confirmation.
+    fn db_get_tail(&self, table: TableId, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.db_get(table, key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn cache_get_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.cache_get(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn cache_set_tail(
+        &self,
+        key: &str,
+        value: &str,
+        value_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let rendered = self.cache_set(key, value, value_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &rendered, indent, &mut out);
+        out
+    }
+    fn cache_delete_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.cache_delete(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn object_store_put_tail(
+        &self,
+        key: &str,
+        value: &str,
+        value_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let rendered = self.object_store_put(key, value, value_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &rendered, indent, &mut out);
+        out
+    }
+    fn object_store_get_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.object_store_get(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn object_store_delete_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.object_store_delete(key);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn object_store_list_tail(&self, prefix: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.object_store_list(prefix);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn email_send_tail(
+        &self,
+        to: &str,
+        subject: &str,
+        body: &str,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let value = self.email_send(to, subject, body);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn search_index_tail(
+        &self,
+        doc_id: &str,
+        document: &str,
+        document_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let rendered = self.search_index(doc_id, document, document_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &rendered, indent, &mut out);
+        out
+    }
+    fn search_query_tail(&self, query: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let value = self.search_query(query);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
+    fn http_call_tail(
+        &self,
+        url: &str,
+        json_body: &str,
+        body_ty: &HirType,
+        dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let value = self.http_call(url, json_body, body_ty);
+        let mut out = Vec::new();
+        apply_dest(self, dest, &value, indent, &mut out);
+        out
+    }
 }
 
 /// Resolves a publish target's subject string — identical logic both

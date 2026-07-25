@@ -210,17 +210,25 @@ impl HostSyntax for IdentitySyntax<'_> {
             .collect();
         format!("(match {scrutinee} {})", arm_strs.join(" "))
     }
-    fn db_insert_expr(&self, table: TableId, value: &str) -> String {
-        format!("(db-insert {} {value})", self.ir.table(table).name)
+    fn db_insert_expr(&self, table: TableId, value: &str, in_tx: bool) -> String {
+        let op = if in_tx { "db-insert-tx" } else { "db-insert" };
+        format!("({op} {} {value})", self.ir.table(table).name)
     }
-    fn db_update_expr(&self, table: TableId, key: &str, value: &str) -> String {
-        format!("(db-update {} {key} {value})", self.ir.table(table).name)
+    fn db_update_expr(&self, table: TableId, key: &str, value: &str, in_tx: bool) -> String {
+        let op = if in_tx { "db-update-tx" } else { "db-update" };
+        format!("({op} {} {key} {value})", self.ir.table(table).name)
     }
-    fn db_delete_expr(&self, table: TableId, key: &str) -> String {
-        format!("(db-delete {} {key})", self.ir.table(table).name)
+    fn db_delete_expr(&self, table: TableId, key: &str, in_tx: bool) -> String {
+        let op = if in_tx { "db-delete-tx" } else { "db-delete" };
+        format!("({op} {} {key})", self.ir.table(table).name)
     }
-    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>) -> String {
-        format!("({} {})", verb_symbol(verb), predicate_sexpr(predicate))
+    fn query_expr(&self, verb: Verb, predicate: Option<&LoweredPredicate>, in_tx: bool) -> String {
+        let suffix = if in_tx { "-tx" } else { "" };
+        format!(
+            "({}{suffix} {})",
+            verb_symbol(verb),
+            predicate_sexpr(predicate)
+        )
     }
     fn let_binding(&self, name: &str, value: &str) -> String {
         format!("(let {name} {value})")
@@ -235,8 +243,8 @@ impl HostSyntax for IdentitySyntax<'_> {
     fn unit_literal(&self) -> String {
         "(unit)".to_owned()
     }
-    fn transaction_expr(&self, inner: &str) -> String {
-        format!("(transaction {inner})")
+    fn transaction_expr(&self, world_branch: &str, real_branch: &str) -> String {
+        format!("(transaction (sim {world_branch}) (real {real_branch}))")
     }
 
     fn return_stmt(&self, value: Option<&str>, _indent: &str) -> String {

@@ -1,0 +1,25 @@
+[package]
+name = "ciac-backend-go"
+description = "Go (net/http + database/sql ecosystem) code-generation backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ciac-codegen.workspace = true
+ciac-ir.workspace = true
+heck.workspace = true
+include_dir.workspace = true
+minijinja.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+ciac-diagnostics.workspace = true
+ciac-sema.workspace = true
+ciac-syntax.workspace = true
+
+[lints]
+workspace = true

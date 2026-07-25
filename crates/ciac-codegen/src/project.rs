@@ -98,6 +98,20 @@ impl GeneratedProject {
     }
 
     /// Writes the tree under `root`, creating directories as needed.
+    ///
+    /// A file named exactly `mvnw` (the Maven wrapper shell script
+    /// Java's own `ciac-backend-java` vendors) gets its executable bit
+    /// set on Unix after writing — found live (`25UpdatePlan.md` M8):
+    /// `std::fs::write` never preserves or sets any permission bit, so
+    /// every prior "`./mvnw -q -B verify` passes live" claim this arc
+    /// made was true only because that command was run by hand after a
+    /// manual `chmod +x`, never through `ciac verify`/`ciac build`
+    /// itself — `TargetInfo::validate`'s own `Command::new("./mvnw")`
+    /// spawn failed with "Permission denied" on a freshly generated
+    /// tree until this fix. No other target ships an executable
+    /// wrapper script of its own, so this stays a generic "a file
+    /// literally named `mvnw`" rule rather than a per-target special
+    /// case threaded through the `Backend` trait.
     pub fn write_to(&self, root: &Path) -> io::Result<()> {
         for (rel, file) in &self.files {
             let path = root.join(rel);
@@ -105,6 +119,11 @@ impl GeneratedProject {
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&path, &file.content)?;
+            #[cfg(unix)]
+            if path.file_name().and_then(|n| n.to_str()) == Some("mvnw") {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+            }
         }
         Ok(())
     }

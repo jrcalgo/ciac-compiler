@@ -213,6 +213,189 @@ fn out_replays_the_recorded_recipe_and_regenerates() {
     );
 }
 
+const TABLE_SRC: &str = r#"
+service Ping;
+record Video { id: Uuid; title: String; }
+table Videos: Video;
+"#;
+
+/// v0.23 M8: the same `--out` replay, against the TypeScript backend
+/// and a `table`-bearing program — proves `backfill::migrations_dir`
+/// resolves through `TsBackend::target_info().migrations_dir`
+/// ("migrations", matching Rust's value but *not* Python's own
+/// "app/migrations") rather than falling back to some hardcoded
+/// path, and that the replayed regeneration doesn't move or lose the
+/// migration file once a new target's directory convention is in
+/// play. Today this is an identity check (TS's value happens to
+/// equal Rust's), but it's the same seam a future Java backend's own
+/// (likely different) convention would need to pass through
+/// correctly, so it's tested now rather than assumed.
+#[test]
+fn out_replay_resolves_the_typescript_target_migrations_dir() {
+    let tmp = TempDir::new("out-replay-ts-migrations");
+    let entry = tmp.0.join("main.ciac");
+    let out = tmp.0.join("out");
+    std::fs::write(&entry, TABLE_SRC).expect("write entry");
+
+    let build = ciac()
+        .args([
+            "build",
+            entry.to_str().unwrap(),
+            "-t",
+            "typescript",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(build.status.success(), "{build:?}");
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "TS target's migrations_dir must resolve to migrations/, not app/migrations/ (Python's value)"
+    );
+
+    let result = ciac()
+        .args([
+            "rename",
+            entry.to_str().unwrap(),
+            "Video",
+            "Clip",
+            "--apply",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(result.status.success(), "{result:?}");
+
+    let schemas = std::fs::read_to_string(out.join("src/schemas.ts")).unwrap();
+    assert!(schemas.contains("Clip"));
+    assert!(!schemas.contains("Video"));
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "the replayed regeneration must not lose the migration at its resolved path"
+    );
+}
+
+/// v0.24 M8: the same `--out` replay, against the Go backend —
+/// proves `backfill::migrations_dir` resolves through
+/// `GoBackend::target_info().migrations_dir` ("migrations", matching
+/// Rust's/TS's own value) and that the replayed regeneration survives
+/// a fourth target's own directory convention.
+#[test]
+fn out_replay_resolves_the_go_target_migrations_dir() {
+    let tmp = TempDir::new("out-replay-go-migrations");
+    let entry = tmp.0.join("main.ciac");
+    let out = tmp.0.join("out");
+    std::fs::write(&entry, TABLE_SRC).expect("write entry");
+
+    let build = ciac()
+        .args([
+            "build",
+            entry.to_str().unwrap(),
+            "-t",
+            "go",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(build.status.success(), "{build:?}");
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "Go target's migrations_dir must resolve to migrations/, not app/migrations/ (Python's value)"
+    );
+
+    let result = ciac()
+        .args([
+            "rename",
+            entry.to_str().unwrap(),
+            "Video",
+            "Clip",
+            "--apply",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(result.status.success(), "{result:?}");
+
+    let schemas = std::fs::read_to_string(out.join("internal/schemas/schemas.go")).unwrap();
+    assert!(schemas.contains("Clip"));
+    assert!(!schemas.contains("Video"));
+    assert!(
+        out.join("migrations").join("0001_migration.sql").is_file(),
+        "the replayed regeneration must not lose the migration at its resolved path"
+    );
+}
+
+/// v0.25 M2: the same `--out` replay, against the Java backend —
+/// proves `backfill::migrations_dir` resolves through
+/// `JavaBackend::target_info().migrations_dir`
+/// ("src/main/resources/db/migration") *and*, unlike every other
+/// current target, that the replay survives `migration_filename`'s
+/// first genuinely non-identity transformation
+/// (`0001_migration.sql` -> `V0001__migration.sql`, Flyway's own
+/// required naming) — the factory hook's first real consumer of the
+/// non-identity path, tested here rather than assumed identity-safe
+/// the way Go's/TS's own replay tests could get away with.
+#[test]
+fn out_replay_resolves_the_java_target_migrations_dir() {
+    let tmp = TempDir::new("out-replay-java-migrations");
+    let entry = tmp.0.join("main.ciac");
+    let out = tmp.0.join("out");
+    std::fs::write(&entry, TABLE_SRC).expect("write entry");
+
+    let build = ciac()
+        .args([
+            "build",
+            entry.to_str().unwrap(),
+            "-t",
+            "java",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(build.status.success(), "{build:?}");
+    let migration = out
+        .join("src/main/resources/db/migration")
+        .join("V0001__migration.sql");
+    assert!(
+        migration.is_file(),
+        "Java target's migration_filename must transform 0001_migration.sql into \
+         V0001__migration.sql (Flyway's required naming), not keep the identity mapping"
+    );
+
+    let result = ciac()
+        .args([
+            "rename",
+            entry.to_str().unwrap(),
+            "Video",
+            "Clip",
+            "--apply",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("ciac runs");
+    assert!(result.status.success(), "{result:?}");
+
+    let schemas =
+        std::fs::read_to_string(out.join("src/main/java/com/ciac/ping/schemas/Clip.java"))
+            .expect("renamed record's schema file must exist at the new name");
+    assert!(schemas.contains("Clip"));
+    assert!(
+        !out.join("src/main/java/com/ciac/ping/schemas/Video.java")
+            .exists(),
+        "the old-named schema file must not survive the replayed regeneration"
+    );
+    assert!(
+        migration.is_file(),
+        "the replayed regeneration must not lose the migration at its Flyway-transformed path"
+    );
+}
+
 #[test]
 fn out_with_a_legacy_manifest_refuses_and_leaves_source_untouched() {
     let tmp = TempDir::new("out-legacy");

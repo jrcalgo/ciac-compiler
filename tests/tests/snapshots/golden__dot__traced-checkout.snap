@@ -1,20 +1,23 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 23
 expression: ir.to_dot()
 ---
 digraph TracedCheckout {
     rankdir=LR;
     n0 [label="stream Placed", shape=parallelogram];
     n1 [label="tracing default OpenTelemetry", shape=note];
-    n2 [label="api Charge", shape=rarrow];
-    n3 [label="queue default Nats", shape=cds];
-    n4 [label="tracing default OpenTelemetry", shape=note];
-    n5 [label="api Submit", shape=rarrow];
-    n6 [label="worker Ship", shape=component];
-    n7 [label="service ShipOrder", shape=box];
-    n0 -> n3 [label="DependsOn", style=dotted];
-    n0 -> n6 [label="AsyncMessage", style=dashed];
-    n5 -> n2 [label="ServiceCall", style=solid];
-    n5 -> n0 [label="AsyncMessage", style=dashed];
-    n6 -> n7 [label="RequestFlow", style=solid];
+    n2 [label="logging default Structured", shape=note];
+    n3 [label="api Charge", shape=rarrow];
+    n4 [label="queue default Nats", shape=cds];
+    n5 [label="tracing default OpenTelemetry", shape=note];
+    n6 [label="logging default Structured", shape=note];
+    n7 [label="api Submit", shape=rarrow];
+    n8 [label="worker Ship", shape=component];
+    n9 [label="service ShipOrder", shape=box];
+    n0 -> n4 [label="DependsOn", style=dotted];
+    n0 -> n8 [label="AsyncMessage", style=dashed];
+    n7 -> n3 [label="ServiceCall", style=solid];
+    n7 -> n0 [label="AsyncMessage", style=dashed];
+    n8 -> n9 [label="RequestFlow", style=solid];
 }

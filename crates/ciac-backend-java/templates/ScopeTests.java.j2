@@ -1,0 +1,286 @@
+// ScopeTests.java -- Generated behavioral test for scope enforcement.
+// Regenerated on every build. Drives the real Spring context via
+// MockMvc -- no live listener needed (db/cache/queue pools stay lazy;
+// a request that clears the auth layer but then touches unreachable
+// infrastructure may still come back as a 5xx, which is still proof
+// the auth layer itself let it through -- the same claim boundary
+// every other target's own scope test documents).
+//
+// no-token/malformed-token are scheme-agnostic (gated below on
+// hasAuthStep/hasAuth, not on scheme) -- an oauth2 project gets them
+// here too; `OAuthRigTests` covers the oauth2-only cases
+// (`26UpdatePlan.md` M5, closing the "future work" this file's own
+// v0.25 M6 comment used to disclose).
+package com.ciac.{{ java_package }}.routes;
+
+{%- if c.auth_scheme == "jwt" %}
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.MACSigner;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+import java.nio.charset.StandardCharsets;
+import java.util.Date;
+{%- endif %}
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+{%- if c.auth_scheme == "jwt" %}
+import org.springframework.beans.factory.annotation.Value;
+{%- endif %}
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class ScopeTests {
+    @Autowired MockMvc mvc;
+{%- if c.auth_scheme == "jwt" %}
+
+    @Value("${JWT_SECRET:change-me-please-use-a-real-32-byte-secret-key}")
+    String jwtSecret;
+
+    private String bearer(String scope) throws Exception {
+        JWTClaimsSet claims =
+                new JWTClaimsSet.Builder()
+                        .subject("test")
+                        .claim("scope", scope)
+                        .expirationTime(new Date(System.currentTimeMillis() + 3600_000))
+                        .build();
+        SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
+        jwt.sign(new MACSigner(jwtSecret.getBytes(StandardCharsets.UTF_8)));
+        return "Bearer " + jwt.serialize();
+    }
+
+    // `expDeltaMillis` in the past mints an already-expired token
+    // (`26UpdatePlan.md` M4's `expired_token` case).
+    private String bearerExp(String scope, long expDeltaMillis) throws Exception {
+        JWTClaimsSet claims =
+                new JWTClaimsSet.Builder()
+                        .subject("test")
+                        .claim("scope", scope)
+                        .expirationTime(new Date(System.currentTimeMillis() + expDeltaMillis))
+                        .build();
+        SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
+        jwt.sign(new MACSigner(jwtSecret.getBytes(StandardCharsets.UTF_8)));
+        return "Bearer " + jwt.serialize();
+    }
+{%- endif %}
+{% macro dummy_field(field) -%}
+{%- if field.type_kind.kind == "enum" -%}
+"{{ field.type_kind.variants[0] }}"
+{%- elif field.type_kind.kind == "int" -%}
+0
+{%- elif field.type_kind.kind == "float" -%}
+0.0
+{%- elif field.type_kind.kind == "bool" -%}
+false
+{%- elif field.type_kind.kind == "uuid" or field.type_kind.kind == "reference" -%}
+"00000000-0000-0000-0000-000000000000"
+{%- elif field.type_kind.kind == "timestamp" -%}
+"1970-01-01T00:00:00Z"
+{%- elif field.type_kind.kind == "json" -%}
+{}
+{%- else -%}
+"x"
+{%- endif -%}
+{%- endmacro %}
+{%- macro dummy_json(record, skip_id) -%}
+{%- if record -%}
+{
+{%- for field in record.fields if not (skip_id and field.name == "id") -%}
+{%- if not loop.first %}, {% endif -%}
+"{{ field.name }}": {{ dummy_field(field) }}
+{%- endfor -%}
+}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro dummy_body(resource) -%}
+{{ dummy_json(resource.record, true) }}
+{%- endmacro -%}
+{%- macro dummy_api_body(api) -%}
+{%- if api.payload -%}
+{{ dummy_json(c.records | selectattr("name", "equalto", api.payload.class_name) | first, false) }}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{% for api in c.apis %}
+{%- if api.has_auth_step %}
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsNoToken() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsMalformedToken() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", "Bearer not-a-jwt")
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- if api.scope and c.auth_scheme == "jwt" %}
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsMissingScope() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", bearer("not:{{ api.scope }}"))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void {{ api.snake | java_camel }}AcceptsRequiredScope() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", bearer("{{ api.scope }}"))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect((result) -> {
+                    int code = result.getResponse().getStatus();
+                    if (code == 401 || code == 403) {
+                        throw new AssertionError(
+                                "expected neither 401 nor 403 (mechanism proof only), got " + code);
+                    }
+                });
+    }
+
+    @Test
+    void {{ api.snake | java_camel }}RejectsExpiredToken() throws Exception {
+        mvc.perform(
+                        {{ api.method_lower }}("{{ api.route }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", bearerExp("{{ api.scope }}", -3600_000))
+{%- if api.has_body %}
+                                .content("""
+{{ dummy_api_body(api) }}
+""")
+{%- endif %})
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- endfor %}
+{% for resource in c.resources %}
+{%- if resource.has_auth %}
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsNoToken() throws Exception {
+        mvc.perform(get("/{{ resource.plural }}")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsMalformedToken() throws Exception {
+        mvc.perform(get("/{{ resource.plural }}").header("Authorization", "Bearer not-a-jwt"))
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- if resource.read_scope and c.auth_scheme == "jwt" %}
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsMissingReadScope() throws Exception {
+        mvc.perform(get("/{{ resource.plural }}").header("Authorization", bearer("not:{{ resource.read_scope }}")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}ListAcceptsReadScope() throws Exception {
+        mvc.perform(get("/{{ resource.plural }}").header("Authorization", bearer("{{ resource.read_scope }}")))
+                .andExpect((result) -> {
+                    int code = result.getResponse().getStatus();
+                    if (code == 401 || code == 403) {
+                        throw new AssertionError(
+                                "expected neither 401 nor 403 (mechanism proof only), got " + code);
+                    }
+                });
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}ListRejectsExpiredReadToken() throws Exception {
+        mvc.perform(
+                        get("/{{ resource.plural }}")
+                                .header("Authorization", bearerExp("{{ resource.read_scope }}", -3600_000)))
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- if resource.write_scope and c.auth_scheme == "jwt" %}
+
+    @Test
+    void {{ resource.name | java_camel }}CreateRejectsMissingWriteScope() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", bearer("not:{{ resource.write_scope }}"))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}CreateAcceptsWriteScope() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", bearer("{{ resource.write_scope }}"))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect((result) -> {
+                    int code = result.getResponse().getStatus();
+                    if (code == 401 || code == 403) {
+                        throw new AssertionError(
+                                "expected neither 401 nor 403 (mechanism proof only), got " + code);
+                    }
+                });
+    }
+
+    @Test
+    void {{ resource.name | java_camel }}CreateRejectsExpiredWriteToken() throws Exception {
+        mvc.perform(
+                        post("/{{ resource.plural }}")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Authorization", bearerExp("{{ resource.write_scope }}", -3600_000))
+                                .content("""
+{{ dummy_body(resource) }}
+"""))
+                .andExpect(status().isUnauthorized());
+    }
+{%- endif %}
+{%- endfor %}
+}

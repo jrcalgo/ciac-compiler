@@ -1,8 +1,11 @@
 ---
 source: tests/tests/host_syntax_identity.rs
+assertion_line: 46
 expression: rendered
 ---
-(transaction (expr-stmt (db-insert Orders order))
+(transaction (sim (expr-stmt (db-insert Orders order))
 (expr-stmt (if (< (field-access order total) 0) (then (fail InvalidOrder "order total must not be negative")) (else (unit))))
-(expr-stmt (db-insert OrderAudits (record-cons OrderAudit (id (uuid-new)) (note "order placed") (total (field-access order total))))))
+(expr-stmt (db-insert OrderAudits (record-cons OrderAudit (id (uuid-new)) (note "order placed") (total (field-access order total)))))) (real (expr-stmt (db-insert-tx Orders order))
+(expr-stmt (if (< (field-access order total) 0) (then (fail InvalidOrder "order total must not be negative")) (else (unit))))
+(expr-stmt (db-insert-tx OrderAudits (record-cons OrderAudit (id (uuid-new)) (note "order placed") (total (field-access order total)))))))
 (return order)

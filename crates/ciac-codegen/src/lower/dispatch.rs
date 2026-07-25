@@ -105,8 +105,11 @@ pub enum Dest {
 /// Applies `dest` to an already-lowered scalar `value`, pushing
 /// exactly one line — the generalized `apply_sink`. Exposed so a
 /// host's own statement-shaped leaves (`db_update_tail`, `query_tail`,
-/// ...) can reuse it instead of re-deriving the three-way dispatch.
-pub fn apply_dest<H: HostSyntax>(
+/// ...) can reuse it instead of re-deriving the three-way dispatch —
+/// `?Sized` so `HostSyntax`'s own default `..._tail` methods (M4's
+/// error-idiom amendment) can call it on `&self` without adding a
+/// `Self: Sized` bound to the trait itself.
+pub fn apply_dest<H: HostSyntax + ?Sized>(
     host: &H,
     dest: &Dest,
     value: &str,
@@ -441,11 +444,21 @@ fn lower_predicate<H: HostSyntax>(
 /// `Expression`-orientation only (Rust today): the four block-shaped
 /// [`HirExpr`] forms lower directly as nested values here; everything
 /// else delegates to [`lower_scalar`]. A generic-ized `rust_expr`.
+///
+/// `in_tx` (`26UpdatePlan.md` M1) is the Expression-orientation analog
+/// of [`lower_tail`]'s own `in_tx` — threaded through this function and
+/// [`lower_block_expr`]/[`lower_stmt_expr`] exactly the way `in_tx`
+/// already threads through [`lower_tail`]/[`lower_stmt`]/
+/// [`lower_block_stmt`] for `Statement` orientation. It reaches only
+/// the four db-verb leaves that can mutate/query state (`db.get`
+/// intentionally excepted — see [`HostSyntax::db_get`]'s doc); every
+/// other leaf call below simply passes it along unread.
 pub fn lower_expr_any<H: HostSyntax>(
     host: &H,
     ir: &NormalizedIr,
     body: &HandlerBody,
     expr: &HirExpr,
+    in_tx: bool,
 ) -> String {
     match expr {
         HirExpr::If {
@@ -455,8 +468,8 @@ pub fn lower_expr_any<H: HostSyntax>(
             ..
         } => {
             let cond_s = lower_scalar(host, ir, body, cond);
-            let then_s = lower_block_expr(host, ir, body, then_branch, Wrap::Plain);
-            let else_s = lower_block_expr(host, ir, body, else_branch, Wrap::Plain);
+            let then_s = lower_block_expr(host, ir, body, then_branch, Wrap::Plain, in_tx);
+            let else_s = lower_block_expr(host, ir, body, else_branch, Wrap::Plain, in_tx);
             host.if_expr(&cond_s, &then_s, &else_s)
         }
         HirExpr::Match {
@@ -469,7 +482,7 @@ pub fn lower_expr_any<H: HostSyntax>(
                 .iter()
                 .map(|arm| MatchArm {
                     variant: arm.variant.clone(),
-                    body: lower_block_expr(host, ir, body, &arm.body, Wrap::Plain),
+                    body: lower_block_expr(host, ir, body, &arm.body, Wrap::Plain, in_tx),
                 })
                 .collect();
             host.match_expr(&enum_name, &scrut_s, &rendered_arms)
@@ -480,7 +493,7 @@ pub fn lower_expr_any<H: HostSyntax>(
             ..
         } => {
             let value_s = lower_scalar(host, ir, body, &args[0]);
-            host.db_insert_expr(*table, &value_s)
+            host.db_insert_expr(*table, &value_s, in_tx)
         }
         HirExpr::VerbCall {
             verb: Verb::DbUpdate(table),
@@ -489,7 +502,7 @@ pub fn lower_expr_any<H: HostSyntax>(
         } => {
             let key_s = lower_scalar(host, ir, body, &args[0]);
             let value_s = lower_scalar(host, ir, body, &args[1]);
-            host.db_update_expr(*table, &key_s, &value_s)
+            host.db_update_expr(*table, &key_s, &value_s, in_tx)
         }
         HirExpr::VerbCall {
             verb: Verb::DbDelete(table),
@@ -497,13 +510,13 @@ pub fn lower_expr_any<H: HostSyntax>(
             ..
         } => {
             let key_s = lower_scalar(host, ir, body, &args[0]);
-            host.db_delete_expr(*table, &key_s)
+            host.db_delete_expr(*table, &key_s, in_tx)
         }
         HirExpr::Query {
             verb, predicate, ..
         } => {
             let lowered = lower_predicate(host, ir, body, predicate);
-            host.query_expr(*verb, lowered.as_ref())
+            host.query_expr(*verb, lowered.as_ref(), in_tx)
         }
         _ => lower_scalar(host, ir, body, expr),
     }
@@ -520,6 +533,7 @@ pub fn lower_block_expr<H: HostSyntax>(
     body: &HandlerBody,
     stmts: &[HirStmt],
     wrap: Wrap,
+    in_tx: bool,
 ) -> String {
     if stmts.is_empty() {
         // Original `rust_block`'s empty-block short-circuit collapses
@@ -544,6 +558,7 @@ pub fn lower_block_expr<H: HostSyntax>(
             body,
             stmt,
             if is_last { wrap } else { Wrap::None },
+            in_tx,
         ));
         if stmt_diverges(stmt) {
             break;
@@ -552,13 +567,14 @@ pub fn lower_block_expr<H: HostSyntax>(
     lines.join("\n")
 }
 
-/// `rust_stmt`, generic-ized.
+/// `rust_stmt`, generic-ized. `in_tx` — see [`lower_expr_any`]'s doc.
 fn lower_stmt_expr<H: HostSyntax>(
     host: &H,
     ir: &NormalizedIr,
     body: &HandlerBody,
     stmt: &HirStmt,
     wrap: Wrap,
+    in_tx: bool,
 ) -> String {
     match stmt {
         HirStmt::Let { slot, value } => {
@@ -567,38 +583,45 @@ fn lower_stmt_expr<H: HostSyntax>(
                 // never actually produces anything to bind — a `let`
                 // here would be an unused-variable warning, promoted
                 // to a hard error by `-D warnings`. Just run it.
-                format!("{};", lower_expr_any(host, ir, body, value))
+                format!("{};", lower_expr_any(host, ir, body, value, in_tx))
             } else {
                 host.let_binding(
                     &local_name(body, *slot),
-                    &lower_expr_any(host, ir, body, value),
+                    &lower_expr_any(host, ir, body, value, in_tx),
                 )
             }
         }
         HirStmt::Expr(e) => {
-            let e_s = lower_expr_any(host, ir, body, e);
+            let e_s = lower_expr_any(host, ir, body, e, in_tx);
             host.wrap_tail(&e_s, wrap)
         }
         HirStmt::Return(None) => host.return_stmt(None, ""),
         HirStmt::Return(Some(e)) => {
-            let e_s = lower_expr_any(host, ir, body, e);
+            let e_s = lower_expr_any(host, ir, body, e, in_tx);
             host.return_stmt(Some(&e_s), "")
         }
         HirStmt::Fail { error, args } => {
             let arg_strs: Vec<String> = args
                 .iter()
-                .map(|a| lower_expr_any(host, ir, body, a))
+                .map(|a| lower_expr_any(host, ir, body, a, in_tx))
                 .collect();
             host.fail(*error, &arg_strs, "")
         }
         HirStmt::Publish { stream, value } => {
             let subject = stream_subject(ir, *stream);
-            let value_s = lower_expr_any(host, ir, body, value);
+            let value_s = lower_expr_any(host, ir, body, value, in_tx);
             host.publish(&subject, &value_s, &value.ty(), "")
         }
         HirStmt::Transaction { body: inner } => {
-            let inner_s = lower_block_expr(host, ir, body, inner, Wrap::None);
-            host.transaction_expr(&inner_s)
+            // `26UpdatePlan.md` M1: lowered twice (sema forbids nesting
+            // — `transaction` blocks cannot contain another, checked
+            // recursively through `if`/`match` — so `in_tx` here is
+            // always `false`, and this is the only place that ever
+            // passes `true`). See `HostSyntax::transaction_expr`'s doc
+            // for why both renders are needed.
+            let world_s = lower_block_expr(host, ir, body, inner, Wrap::None, false);
+            let real_s = lower_block_expr(host, ir, body, inner, Wrap::None, true);
+            host.transaction_expr(&world_s, &real_s)
         }
     }
 }
@@ -677,6 +700,119 @@ pub fn lower_tail<H: HostSyntax>(
         } => {
             let lowered = lower_predicate(host, ir, body, predicate);
             host.query_tail(*verb, lowered.as_ref(), dest, indent, in_tx)
+        }
+        // The error-idiom amendment (`24UpdatePlan.md` M4): every
+        // "simple verb" gets its own tail-dispatch arm here instead of
+        // falling to the generic `_ =>` scalar-then-apply_dest path
+        // below, mirroring how `DbInsert`/`DbUpdate`/`DbDelete`/`Query`
+        // already do. `HostSyntax`'s own default for each new
+        // `..._tail` method reproduces the old fallback computation
+        // exactly (see that trait's doc comment), so this is a pure
+        // routing change for every host that doesn't override one —
+        // in_tx is not threaded here: none of these are database-
+        // transactional operations, matching `db_get`'s own existing
+        // no-`in_tx` signature above.
+        HirExpr::VerbCall {
+            verb: Verb::DbGet(table),
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.db_get_tail(*table, &key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::CacheGet,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.cache_get_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::CacheSet,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            let value_s = lower_scalar(host, ir, body, &args[1]);
+            host.cache_set_tail(&key_s, &value_s, &args[1].ty(), dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::CacheDelete,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.cache_delete_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStorePut,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            let value_s = lower_scalar(host, ir, body, &args[1]);
+            host.object_store_put_tail(&key_s, &value_s, &args[1].ty(), dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStoreGet,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.object_store_get_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStoreDelete,
+            args,
+            ..
+        } => {
+            let key_s = lower_scalar(host, ir, body, &args[0]);
+            host.object_store_delete_tail(&key_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::ObjectStoreList,
+            args,
+            ..
+        } => {
+            let prefix_s = lower_scalar(host, ir, body, &args[0]);
+            host.object_store_list_tail(&prefix_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::EmailSend,
+            args,
+            ..
+        } => {
+            let to_s = lower_scalar(host, ir, body, &args[0]);
+            let subject_s = lower_scalar(host, ir, body, &args[1]);
+            let body_s = lower_scalar(host, ir, body, &args[2]);
+            host.email_send_tail(&to_s, &subject_s, &body_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::SearchIndex,
+            args,
+            ..
+        } => {
+            let doc_id_s = lower_scalar(host, ir, body, &args[0]);
+            let document_s = lower_scalar(host, ir, body, &args[1]);
+            host.search_index_tail(&doc_id_s, &document_s, &args[1].ty(), dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::SearchQuery,
+            args,
+            ..
+        } => {
+            let query_s = lower_scalar(host, ir, body, &args[0]);
+            host.search_query_tail(&query_s, dest, indent)
+        }
+        HirExpr::VerbCall {
+            verb: Verb::HttpCall,
+            args,
+            ..
+        } => {
+            let url_s = lower_scalar(host, ir, body, &args[0]);
+            let json_s = lower_scalar(host, ir, body, &args[1]);
+            host.http_call_tail(&url_s, &json_s, &args[1].ty(), dest, indent)
         }
         _ => {
             let e = lower_scalar(host, ir, body, expr);
@@ -774,7 +910,7 @@ fn lower_stmt<H: HostSyntax>(
 /// `lower_body`): the function body's own tail gets `Ok(..)`-wrapped.
 pub fn lower_body_expr<H: HostSyntax>(host: &H, ir: &NormalizedIr, body: &HandlerBody) -> String {
     let stmts = body.body.as_deref().unwrap_or(&[]);
-    lower_block_expr(host, ir, body, stmts, Wrap::Wrapped)
+    lower_block_expr(host, ir, body, stmts, Wrap::Wrapped, false)
 }
 
 /// Entry point for `Statement`-oriented backends (replaces a private

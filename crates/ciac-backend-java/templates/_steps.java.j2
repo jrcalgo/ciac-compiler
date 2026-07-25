@@ -1,0 +1,49 @@
+{#- Shared pipeline-step emission, {% import %}-ed by ApiController.java.j2,
+    Worker.java.j2, and Job.java.j2 (mirrors every other backend's own
+    "one shared macro" choice, made simpler here than Go's own version:
+    Java has real exceptions, so a step that fails just throws --
+    there is no `if v, err := ...; err != nil` dance to make every
+    step's error path explicit, and `result` flows through the
+    pipeline as plain `Object` for the identical reason Go's own `any`
+    does (a `handler`/`call` step's output has no static relationship
+    to its input beyond "whatever the target declares").
+
+    `call`/`match` steps render plausible code (mirroring every other
+    target's own M3-era templates, which did the same before their
+    own `call` infrastructure existed) but are unreachable by any
+    25UpdatePlan.md M3 example -- inert until M6/M7 exercise it.
+
+    `handler` steps call a constructor-injected Spring bean field
+    (`{{ step.handler.class_name | java_camel }}`) rather than
+    constructing one inline the way Go's `services.New{Class}(st)`
+    does -- the caller (ApiController/Worker/Job) injects one field
+    per distinct handler in `ctx.handlers`/`worker.handlers`/
+    `job.handlers`, and Spring resolves each `@Component`-annotated
+    `services.<Class>`/`logic.<Class>` bean by type. Every handler
+    (classic or typed, M4) exposes the identical `handle` method name
+    -- a typed handler's own concrete parameter type means the call
+    needs an explicit cast back from the pipeline's `Object result`,
+    a classic handler's `Object handle(Object)` needs none. -#}
+{% macro emit_step(step, indent, payload_type) %}
+{%- if step.kind == "handler" %}
+{{ indent }}result = {{ step.handler.class_name | java_camel }}.handle({% if step.handler.is_typed_handler %}({{ payload_type }}) {% endif %}result);
+{%- elif step.kind == "publish" %}
+{{ indent }}queue.publishJson("{{ step.subject }}", result);
+{%- elif step.kind == "call" %}
+{{ indent }}result = {{ step.call.class_name | java_camel }}.{{ step.call.method | java_camel }}(result);
+{%- elif step.kind == "match" %}
+{{ indent }}switch (String.valueOf(((java.util.Map<?, ?>) result).get("{{ step.field }}"))) {
+{%- for arm in step.arms %}
+{%- if arm.label %}
+{{ indent }}    case "{{ arm.label }}" -> {
+{%- else %}
+{{ indent }}    default -> {
+{%- endif %}
+{%- for inner in arm.steps %}
+{{ emit_step(inner, indent ~ "        ", payload_type) }}
+{%- endfor %}
+{{ indent }}    }
+{%- endfor %}
+{{ indent }}}
+{%- endif %}
+{%- endmacro %}

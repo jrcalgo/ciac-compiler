@@ -1,0 +1,38 @@
+# Supply-chain policy for the ciac workspace (26UpdatePlan.md M6).
+#
+# Enforced by `cargo deny check` in the workspace-audit CI job.
+# Severity >= high fails CI. Any advisory accepted as unfixable must
+# be added to [advisories].ignore with both a `reason` and an
+# `# expires: YYYY-MM-DD` comment; scripts/check-deny-ignores.sh
+# fails CI on any ignore missing either, or past its expiry.
+
+[advisories]
+version = 2
+yanked = "deny"
+# Every ignore entry MUST carry `reason` and an `# expires: YYYY-MM-DD`
+# comment; the workspace-audit job greps for entries missing either
+# and fails — exceptions are not allowed to rot silently.
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # notify's sole license (file-watcher behind `ciac dev`)
+    "CC0-1.0",
+    # webpki-roots' sole license (transitive via ureq, --live probing)
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"   # report, don't fail: dupes are a
+                              # diet concern, not a security gate
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -57,7 +58,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 async-nats = "0.38"
 futures = "0.3"
@@ -1040,7 +1041,7 @@ pub fn init() {
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
     tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().json())
         .with(otel_layer)
         .init();
 }
@@ -2241,7 +2242,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
@@ -2531,7 +2532,7 @@ pub fn init() {
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
     tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().json())
         .with(otel_layer)
         .init();
 }

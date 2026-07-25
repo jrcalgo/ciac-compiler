@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1333,20 +1334,37 @@ impl<'a> HandleOrderCreated<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, order: Order) -> anyhow::Result<Order> {
-// NOTE: this block is not yet atomic on the Rust backend (see docs/language.md)
-{
-    let __row = ProcessedOrder { id: uuid::Uuid::new_v4().to_string(), order_id: order.id.clone() }.clone();
-    if let Some(world) = self.world {
-        world.db_insert_checked("processed_orders", serde_json::to_value(&__row)?)?;
-    } else {
-        sqlx::query("INSERT INTO processed_orders (id, order_id) VALUES ($1, $2)")
-        .bind(&__row.id)
-        .bind(&__row.order_id)
-            .execute(self.db)
-            .await?;
-    }
-    __row
-};
+if self.world.is_some() {
+    {
+        let __row = ProcessedOrder { id: uuid::Uuid::new_v4().to_string(), order_id: order.id.clone() }.clone();
+        if let Some(world) = self.world {
+            world.db_insert_checked("processed_orders", serde_json::to_value(&__row)?)?;
+        } else {
+            sqlx::query("INSERT INTO processed_orders (id, order_id) VALUES ($1, $2)")
+            .bind(&__row.id)
+            .bind(&__row.order_id)
+                .execute(self.db)
+                .await?;
+        }
+        __row
+    };
+} else {
+    let mut __tx = self.db.begin().await?;
+    {
+        let __row = ProcessedOrder { id: uuid::Uuid::new_v4().to_string(), order_id: order.id.clone() }.clone();
+        if let Some(world) = self.world {
+            world.db_insert_checked("processed_orders", serde_json::to_value(&__row)?)?;
+        } else {
+            sqlx::query("INSERT INTO processed_orders (id, order_id) VALUES ($1, $2)")
+            .bind(&__row.id)
+            .bind(&__row.order_id)
+                .execute(&mut *__tx)
+                .await?;
+        }
+        __row
+    };
+    __tx.commit().await?;
+}
 return Ok(order);
     }
 }
@@ -1392,20 +1410,37 @@ impl<'a> PlaceOrder<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, order: Order) -> anyhow::Result<Order> {
-// NOTE: this block is not yet atomic on the Rust backend (see docs/language.md)
-{
-    let __row = order.clone();
-    if let Some(world) = self.world {
-        world.db_insert_checked("orders", serde_json::to_value(&__row)?)?;
-    } else {
-        sqlx::query("INSERT INTO orders (id, total) VALUES ($1, $2)")
-        .bind(&__row.id)
-        .bind(&__row.total)
-            .execute(self.db)
-            .await?;
-    }
-    __row
-};
+if self.world.is_some() {
+    {
+        let __row = order.clone();
+        if let Some(world) = self.world {
+            world.db_insert_checked("orders", serde_json::to_value(&__row)?)?;
+        } else {
+            sqlx::query("INSERT INTO orders (id, total) VALUES ($1, $2)")
+            .bind(&__row.id)
+            .bind(&__row.total)
+                .execute(self.db)
+                .await?;
+        }
+        __row
+    };
+} else {
+    let mut __tx = self.db.begin().await?;
+    {
+        let __row = order.clone();
+        if let Some(world) = self.world {
+            world.db_insert_checked("orders", serde_json::to_value(&__row)?)?;
+        } else {
+            sqlx::query("INSERT INTO orders (id, total) VALUES ($1, $2)")
+            .bind(&__row.id)
+            .bind(&__row.total)
+                .execute(&mut *__tx)
+                .await?;
+        }
+        __row
+    };
+    __tx.commit().await?;
+}
 return Ok(order);
     }
 }

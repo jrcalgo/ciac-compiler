@@ -22,6 +22,9 @@ pub(crate) fn backends() -> Vec<Box<dyn Backend>> {
     vec![
         Box::new(ciac_backend_python::PythonBackend),
         Box::new(ciac_backend_rust::RustBackend),
+        Box::new(ciac_backend_ts::TsBackend),
+        Box::new(ciac_backend_go::GoBackend),
+        Box::new(ciac_backend_java::JavaBackend),
     ]
 }
 
@@ -325,6 +328,7 @@ pub(crate) fn build_inner(
         let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -377,6 +381,7 @@ pub(crate) fn build_inner(
         let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -481,6 +486,7 @@ pub(crate) fn replay_recipe(
         let mut manifest = build_manifest(
             &project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -985,6 +991,7 @@ fn materialize_generated(
         let mut manifest = build_manifest(
             project,
             env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION,
             source_hash,
             backend.id(),
         );
@@ -1129,16 +1136,17 @@ fn sim_inner(
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<crate::json_out::SimResult> {
     // v0.22 M1: resolved through the *built-in* registry only (not the
-    // external-protocol fallback `generate()` uses) — the refusal below
-    // is unchanged from pre-registry `target != "python" && target !=
-    // "rust"`, since only `python`/`rust` are registered today.
+    // external-protocol fallback `generate()` uses) -- `backends()`
+    // (v0.23 M9: python/rust/typescript) is the actual source of
+    // truth for which targets exist at all; whether one of them can
+    // simulate is a separate question this function checks next via
+    // `SimSupport`, not this lookup.
     let sim_backend = backends()
         .into_iter()
         .find(|b| b.id() == target)
         .ok_or_else(|| {
             anyhow!(
-                "`ciac sim` only drives the python/rust targets in v0.17 (got `{target}`); \
-             see docs/simulation.md for the disclosed scope"
+                "`ciac sim`: unknown target `{target}`; see `ciac targets` for the registered set"
             )
         })?;
     let sim_support = sim_backend.target_info().sim;
@@ -1152,12 +1160,14 @@ fn sim_inner(
         bail!("--record/--replay require exactly one --scenario");
     }
     if matches!(sim_support, SimSupport::Narrow { .. }) && (record.is_some() || replay.is_some()) {
-        // v0.17 M11's runner is a plain scenario interpreter (no plan/
-        // source-hash arguments, no replay tape) -- disclosed, not
-        // silently ignored.
+        // Every `Narrow` target's generated runner (Rust's, v0.17 M11;
+        // TypeScript's, v0.23 M9) is a plain scenario interpreter (no
+        // plan/source-hash arguments, no replay tape) -- disclosed,
+        // not silently ignored. Target-generic message for the same
+        // reason the `unsupported` refusal above is (v0.23 M9).
         bail!(
-            "`ciac sim --target rust` does not yet support --record/--replay (v0.17 M11 \
-             disclosed scope); see docs/simulation.md"
+            "`ciac sim --target {target}` does not yet support --record/--replay (disclosed \
+             scope); see docs/simulation.md"
         );
     }
 
@@ -1214,9 +1224,15 @@ fn sim_inner(
     if let SimSupport::Narrow { unsupported } = sim_support {
         let unsupported = unsupported(&ir);
         if !unsupported.is_empty() {
+            // Target-generic on purpose (v0.23 M9): this refusal fires
+            // for every `Narrow` target, not just Rust's own v0.17 M11
+            // one this message used to name unconditionally -- a real
+            // bug caught live when TypeScript became the second
+            // `Narrow` target and this message kept saying "rust" and
+            // "v0.17 M11" while actually refusing a `--target
+            // typescript` run.
             bail!(
-                "`ciac sim --target rust` cannot simulate this program (v0.17 M11 disclosed \
-                 scope):\n{}",
+                "`ciac sim --target {target}` cannot simulate this program (disclosed scope):\n{}",
                 unsupported
                     .iter()
                     .map(|reason| format!("  - {reason}"))
@@ -1228,15 +1244,43 @@ fn sim_inner(
     let plan = ciac_sim::SimPlan::from_ir(&ir, source_hash.clone());
     let plan_hash = plan.plan_hash();
 
-    // v0.22 M1: `Narrow` runs the generated-runner drive v0.17 M11
-    // built (today: Rust's); `Full` keeps the bounded-child-protocol
-    // drive (today: Python's). Behavior identical to the pre-registry
-    // `target == "rust"` dispatch since Rust is still the only `Narrow`
-    // target.
-    let scenario_outcomes = if matches!(sim_support, SimSupport::Narrow { .. }) {
-        sim_drive_rust(out, scenarios, wall_timeout)?
-    } else {
-        sim_drive_python(
+    // v0.22 M1: `Narrow` runs a generated-runner drive (Rust's own,
+    // v0.17 M11; TypeScript's, v0.23 M9); `Full` keeps the
+    // bounded-child-protocol drive (today: Python's). Two `Narrow`
+    // targets share the same *shape* of driver (compile/build the
+    // project's own generated runner, then execute it once per
+    // scenario and parse its one-line JSON reply) but need different
+    // toolchains to do it, so this dispatches on `target` itself
+    // rather than trying to make one function branch internally.
+    let scenario_outcomes = match sim_support {
+        // target-literal-ok: `sim_drive_rust`/`sim_drive_typescript` are
+        // genuinely different toolchains (cargo/npm), not a
+        // `TargetInfo`-describable difference like `db_url_scheme` or a
+        // `ValidateStep` list -- unlike the seam v0.22 M1's registry
+        // closed (per-target string matches that *could* have been one
+        // shared, data-driven code path), driving "the project's own
+        // compiled runner binary" vs "the project's own compiled JS
+        // entry point" are two different `std::process::Command`
+        // recipes with no shared shape to factor `TargetInfo` around.
+        SimSupport::Narrow { .. } if target == "rust" => {
+            sim_drive_rust(out, scenarios, wall_timeout)?
+        }
+        // target-literal-ok: see the sibling arm above.
+        SimSupport::Narrow { .. } if target == "typescript" => {
+            sim_drive_typescript(out, scenarios, wall_timeout)?
+        }
+        // target-literal-ok: see the sibling arm above.
+        SimSupport::Narrow { .. } if target == "go" => sim_drive_go(out, scenarios, wall_timeout)?,
+        // target-literal-ok: see the sibling arm above.
+        SimSupport::Narrow { .. } if target == "java" => {
+            sim_drive_java(out, scenarios, wall_timeout)?
+        }
+        SimSupport::Narrow { .. } => bail!(
+            "`ciac sim` has no generated-runner driver wired for target `{target}` (its \
+             `TargetInfo::sim` claims `Narrow` support, but `sim_inner` doesn't know how to \
+             drive it -- this is a real gap in the CLI, not a disclosed scope limit)"
+        ),
+        SimSupport::Full => sim_drive_python(
             out,
             scenarios,
             record,
@@ -1245,7 +1289,8 @@ fn sim_inner(
             &plan,
             &plan_hash,
             wall_timeout,
-        )?
+        )?,
+        SimSupport::None { .. } => unreachable!("refused above by the `SimSupport::None` check"),
     };
 
     Ok(crate::json_out::SimResult {
@@ -1439,6 +1484,268 @@ fn sim_drive_rust(
             .with_context(|| {
                 format!(
                     "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// Drives every `--scenario` against a generated TypeScript project's
+/// own `src/sim_runner.ts` (v0.23 M9) -- same generated-runner shape as
+/// [`sim_drive_rust`] (the runner is generated code baked into the
+/// project itself, compiled and run once per scenario, one-line JSON
+/// reply on stdout), different toolchain: `npm ci` then `npm run
+/// build` (tsc) instead of `cargo build`, `node dist/sim_runner.js --`
+/// instead of `cargo run --bin sim_runner --`. Unlike Rust's `ciac
+/// verify`, `sim_inner` never runs a target's full `validate` sequence
+/// before driving the runner, so this installs dependencies itself
+/// rather than assuming a prior `npm ci` already happened.
+fn sim_drive_typescript(
+    out: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let projects = find_project_dirs(out, "package.json")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!(
+            "no generated typescript project found under {}",
+            out.display()
+        ),
+        [one] => one.clone(),
+        many => bail!(
+            "`ciac sim` only supports a single-service TypeScript project in v0.23 (found {} \
+             under {}); see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+    if !project_dir.join("src/sim_runner.ts").exists() {
+        bail!(
+            "no `src/sim_runner.ts` in {} -- this program declares nothing v0.23 M9's \
+             simulation world can fake (no `db`/`queue` use); see docs/simulation.md",
+            project_dir.display()
+        );
+    }
+    run_in(&project_dir, "npm", &["ci"])?;
+    run_in(&project_dir, "npm", &["run", "build"])?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("node");
+        cmd.arg("dist/sim_runner.js")
+            .arg(&scenario_abs)
+            .current_dir(&project_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run sim_runner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "sim_runner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// Drives every `--scenario` against a generated Go project's own
+/// `cmd/sim_runner/main.go` (v0.24 M9) -- same generated-runner shape
+/// as [`sim_drive_rust`]/[`sim_drive_typescript`] (the runner is
+/// generated code baked into the project itself, compiled and run once
+/// per scenario, one-line JSON reply on stdout), different toolchain:
+/// `go build` then `go run` the runner's own package path. `cmd/
+/// sim_runner` is a second `main` package Go's own `go build ./...`/`go
+/// vet ./...`/`go test ./...` already discover automatically (the same
+/// way Cargo auto-discovers `src/bin/sim_runner.rs`), so unlike Rust's
+/// `--bin sim_runner` flag, no special package selector is needed
+/// beyond the package path itself.
+fn sim_drive_go(
+    out: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let projects = find_project_dirs(out, "go.mod")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!("no generated go project found under {}", out.display()),
+        [one] => one.clone(),
+        many => bail!(
+            "`ciac sim` only supports a single-service Go project in v0.24 (found {} under {}); \
+             see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+    if !project_dir.join("cmd/sim_runner/main.go").exists() {
+        bail!(
+            "no `cmd/sim_runner/main.go` in {} -- this program declares nothing v0.24 M9's \
+             simulation world can fake (no `db`/`queue` use); see docs/simulation.md",
+            project_dir.display()
+        );
+    }
+    run_in(
+        &project_dir,
+        "go",
+        &["build", "-o", "/dev/null", "./cmd/sim_runner"],
+    )?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("go");
+        cmd.arg("run")
+            .arg("./cmd/sim_runner")
+            .arg(&scenario_abs)
+            .current_dir(&project_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run sim_runner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "sim_runner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// Whether `project_dir` has a generated `SimRunner.java` anywhere
+/// under `src/test/java` -- unlike Go's fixed `cmd/sim_runner/
+/// main.go` path, Java's own runner lives at a package-qualified path
+/// (`src/test/java/com/ciac/<pkg>/sim/SimRunner.java`) `commands.rs`
+/// doesn't otherwise know, so this walks rather than checking one
+/// literal path.
+fn java_sim_runner_exists(project_dir: &Path) -> bool {
+    fn walk(path: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                if walk(&child) {
+                    return true;
+                }
+            } else if child.file_name().is_some_and(|n| n == "SimRunner.java") {
+                return true;
+            }
+        }
+        false
+    }
+    walk(&project_dir.join("src/test/java"))
+}
+
+/// Drives every `--scenario` against a generated Java project's own
+/// `src/test/java/.../sim/SimRunner.java` (v0.25 M9) -- the same
+/// shape as `sim_drive_rust`/`sim_drive_typescript`/`sim_drive_go`
+/// (the runner is generated code baked into the project itself,
+/// compiled and run once per scenario, one-line JSON reply on
+/// stdout), different toolchain: `./mvnw test-compile` (build once --
+/// `SimRunner` is test-scoped, since `MockMvc`/`spring-test` never sit
+/// on the packaged application's own classpath) then `./mvnw
+/// exec:java` (the pom's own `exec-maven-plugin`, preconfigured with
+/// `SimRunner`'s main class and the `test` classpath scope) once per
+/// scenario.
+fn sim_drive_java(
+    out: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let projects = find_project_dirs(out, "pom.xml")?;
+    let project_dir = match projects.as_slice() {
+        [] => bail!("no generated java project found under {}", out.display()),
+        [one] => one.clone(),
+        many => bail!(
+            "`ciac sim` only supports a single-service Java project in v0.25 (found {} under {}); \
+             see docs/simulation.md",
+            many.len(),
+            out.display()
+        ),
+    };
+    if !java_sim_runner_exists(&project_dir) {
+        bail!(
+            "no `SimRunner.java` under {} -- this program declares nothing v0.25 M9's simulation \
+             world can fake (no `db`/`queue` use); see docs/simulation.md",
+            project_dir.display()
+        );
+    }
+    run_in(&project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let scenario_arg = format!("-Dexec.args={}", scenario_abs.display());
+        let mut cmd = Command::new("./mvnw");
+        cmd.arg("-q")
+            .arg("-B")
+            .arg("exec:java")
+            .arg(&scenario_arg)
+            .current_dir(&project_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run SimRunner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "SimRunner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse SimRunner's result for scenario {}: {last_line:?}",
                     scenario_path.display()
                 )
             })?;
@@ -2053,6 +2360,12 @@ pub fn targets(json: bool) -> Result<ExitCode> {
 #[derive(serde::Serialize)]
 struct TargetsDoc {
     targets_version: u32,
+    /// The compiler's own version (26UpdatePlan.md M8), distinct from
+    /// `language_version` below.
+    ciac_version: &'static str,
+    /// The frozen CIaC language surface version this compiler build
+    /// implements (`LANGUAGE_VERSION`, via `ciac_syntax`).
+    language_version: &'static str,
     targets: Vec<TargetEntry>,
 }
 
@@ -2069,14 +2382,17 @@ struct TargetEntry {
     validate: Vec<ValidateStepEntry>,
     sim: SimEntry,
     /// Provider capabilities this target fully implements, keyed by
-    /// capability name (v0.22 M4). Sourced from `vocab::PROVIDERS`
-    /// today, not yet derived from `Backend::supports()` — both
-    /// bundled backends' `supports()` is an unconditional `true` (no
-    /// per-component discrimination exists yet to derive from), the
-    /// same disposition M2 recorded for `vocab::BOTH`. `PROVIDERS` is
-    /// hand-maintained but audited truthful; upgrading this to a real
-    /// `supports()`-derived matrix is the natural continuation once a
-    /// target's `supports()` actually discriminates.
+    /// capability name (v0.22 M4). Sourced from `vocab::PROVIDERS`, not
+    /// derived from `Backend::supports()`: `supports()` gates at
+    /// `Component` (capability-kind) granularity, coarser than this
+    /// field's per-provider one (it can say "this target supports
+    /// `auth`", never "...specifically JWT, not OAuth2"), and every
+    /// internal target's `supports()` is now unconditional `true`
+    /// besides — a derivation would carry zero discriminating
+    /// information regardless of target count. `PROVIDERS` stays
+    /// hand-maintained, audited truthful against the real generated
+    /// templates (`26UpdatePlan.md` M7 widened it from python/rust-only
+    /// to all five internal targets on exactly that audit).
     capabilities: BTreeMap<&'static str, Vec<&'static str>>,
 }
 
@@ -2143,6 +2459,8 @@ fn targets_doc() -> TargetsDoc {
         .collect();
     TargetsDoc {
         targets_version: 1,
+        ciac_version: env!("CARGO_PKG_VERSION"),
+        language_version: ciac_syntax::LANGUAGE_VERSION,
         targets,
     }
 }
@@ -2756,6 +3074,8 @@ mod tests {
     fn targets_json_is_stable_shape() {
         let json = serde_json::to_value(super::targets_doc()).unwrap();
         assert_eq!(json["targets_version"], 1);
+        assert_eq!(json["ciac_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(json["language_version"], ciac_syntax::LANGUAGE_VERSION);
         let targets = json["targets"].as_array().expect("targets array");
         assert!(targets.iter().any(|t| t["id"] == "python"), "{targets:?}");
         assert!(targets.iter().any(|t| t["id"] == "rust"), "{targets:?}");

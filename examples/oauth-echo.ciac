@@ -2,6 +2,12 @@
 // validated against the issuer's JWKS ({issuer}/.well-known/jwks.json),
 // with an optional expected audience. Both backends implement it; the
 // generated app never handles login flows, only token validation.
+//
+// `scope: "echo:write"` (`26UpdatePlan.md` M4) makes this the no-infra
+// OAuth2 scope rig's corpus carrier: a real RS256 keypair and an
+// in-process JWKS stub prove the same enforcement mechanism the JWT
+// suite has always tested, with real cryptography instead of a live
+// issuer.
 service OauthEcho;
 
 use {
@@ -19,6 +25,7 @@ record Message {
 api Echo: Message {
     method: POST;
     path: "/echo";
+    scope: "echo:write";
 }
 
 pipeline Echo: Auth -> Return;

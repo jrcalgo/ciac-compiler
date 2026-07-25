@@ -1,0 +1,42 @@
+package state
+
+import (
+	"testing"
+
+	"go.uber.org/goleak"
+
+	"{{ c.package }}/internal/config"
+)
+
+// TestNewLeaksNoGoroutines is the "no infrastructure running" quality
+// bar (docs/backends.md) as a tested property from day one, not a
+// review-time convention: constructing AppState against config that
+// points at nothing reachable must not open a connection or block.
+{%- if c.has_db %}
+//
+// database/sql.Open (called by internal/db.Open) is lazy in the sense
+// that matters here -- it never dials -- but it does unconditionally
+// start one long-lived supervisory goroutine per pool
+// (connectionOpener), which never performs I/O and only wakes when a
+// connection is actually requested. That goroutine is real,
+// documented stdlib behavior, not a hidden infrastructure dependency,
+// so it is the one goroutine this test allows; anything else --
+// including any goroutine that actually attempts to dial -- still
+// fails it.
+{%- endif %}
+func TestNewLeaksNoGoroutines(t *testing.T) {
+{%- if c.has_db %}
+	defer goleak.VerifyNone(t, goleak.IgnoreTopFunction("database/sql.(*DB).connectionOpener"))
+{%- else %}
+	defer goleak.VerifyNone(t)
+{%- endif %}
+
+	cfg := config.FromEnv()
+	st, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if st == nil {
+		t.Fatal("New returned a nil state")
+	}
+}

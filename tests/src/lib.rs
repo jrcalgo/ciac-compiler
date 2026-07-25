@@ -69,8 +69,32 @@ pub fn project_dump(project: &ciac_codegen::GeneratedProject) -> String {
     out
 }
 
-/// The registered backends, mirroring the CLI registry.
+/// The registered backends, mirroring the CLI registry — every target,
+/// at whatever `supports()` gate its own milestone plan has reached.
+/// Registry-driven suites (`conformance.rs`, `golden.rs`,
+/// `targets_cli.rs`) want this: they assert properties that hold
+/// automatically for whatever's registered, gate or no gate.
 pub fn backends() -> Vec<Box<dyn ciac_codegen::Backend>> {
+    vec![
+        Box::new(ciac_backend_python::PythonBackend),
+        Box::new(ciac_backend_rust::RustBackend),
+        Box::new(ciac_backend_ts::TsBackend),
+        Box::new(ciac_backend_go::GoBackend),
+        Box::new(ciac_backend_java::JavaBackend),
+    ]
+}
+
+/// The two backends `gating.rs`'s "both backends" suite means by that
+/// name: Python and Rust reached full ontology parity across v0.11-
+/// v0.17, before any third target existed, and those tests assert a
+/// historical claim about exactly these two, not "every backend the
+/// registry happens to contain today" — a fresh target (TypeScript,
+/// Go, Java) is *expected* to fail most of them until its own
+/// milestone plan un-gates the construct in question; that is what
+/// `supports()`'s narrow-then-widen discipline means; `backends()`'s
+/// growing registry must not make this suite flaky as new targets
+/// land mid-arc.
+pub fn full_parity_backends() -> Vec<Box<dyn ciac_codegen::Backend>> {
     vec![
         Box::new(ciac_backend_python::PythonBackend),
         Box::new(ciac_backend_rust::RustBackend),

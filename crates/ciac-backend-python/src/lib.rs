@@ -425,5 +425,14 @@ fn emit_service(
         at("tests/test_smoke.py"),
         render("test_smoke.py.j2", empty())?,
     );
+    // The no-infra OAuth2 rig (`26UpdatePlan.md` M4): real RS256
+    // signing against an in-process JWKS stub, gated the same way the
+    // JWT scope suite is gated on `c.scopes` in `test_smoke.py.j2`.
+    if ctx.auth_scheme == "oauth2" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at("tests/test_oauth_rig.py"),
+            render("test_oauth_rig.py.j2", empty())?,
+        );
+    }
     Ok(())
 }

@@ -4,6 +4,11 @@
 // generator's trace-continuity check (v0.15) hits `Checkout.Submit`
 // and asserts the collector saw one trace id spanning both services'
 // spans and the broker hop between them.
+//
+// `logging Structured;` (`26UpdatePlan.md` M3) rides the same
+// observability surface: the capability's first five-target exercise,
+// closing Java's own gap (`Component::Logging` refused with CIAC0011
+// through v0.25 while this backend's own module doc claimed support).
 project TracedCheckout;
 
 record Order {
@@ -16,6 +21,7 @@ stream Placed: Order;
 service Payments {
     use {
         tracing OpenTelemetry;
+        logging Structured;
     }
 
     api Charge: Order {
@@ -30,6 +36,7 @@ service Checkout {
     use {
         queue NATS;
         tracing OpenTelemetry;
+        logging Structured;
     }
 
     api Submit: Order {

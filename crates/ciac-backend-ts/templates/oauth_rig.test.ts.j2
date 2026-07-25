@@ -1,0 +1,247 @@
+// Generated behavioral test for the no-infra OAuth2 scope rig. Real
+// RS256 signing against a real (if tiny) in-process JWKS server --
+// see `oauth-stub.ts`. `scope.test.ts`'s own `no_token`/
+// `malformed_token` cases already cover this service; this file
+// covers the scheme-specific cases only (`26UpdatePlan.md` M5).
+
+import { describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { createState } from "../src/state.js";
+import { buildApp } from "../src/main.js";
+import { getOAuthStub, mint } from "./oauth-stub.js";
+
+async function app() {
+  await getOAuthStub();
+  const state = createState(loadConfig());
+  return buildApp(state);
+}
+{% macro dummy_field(field) -%}
+{%- if field.type_kind.kind == "enum" -%}
+"{{ field.type_kind.variants[0] }}"
+{%- elif field.type_kind.kind == "int" -%}
+0
+{%- elif field.type_kind.kind == "float" -%}
+0.0
+{%- elif field.type_kind.kind == "bool" -%}
+false
+{%- elif field.type_kind.kind == "uuid" or field.type_kind.kind == "reference" -%}
+"00000000-0000-0000-0000-000000000000"
+{%- elif field.type_kind.kind == "timestamp" -%}
+"1970-01-01T00:00:00Z"
+{%- elif field.type_kind.kind == "json" -%}
+{}
+{%- else -%}
+"x"
+{%- endif -%}
+{%- endmacro %}
+{%- macro dummy_json(record, skip_id) -%}
+{%- if record -%}
+{
+{%- for field in record.fields if not (skip_id and field.name == "id") -%}
+{%- if not loop.first %}, {% endif -%}
+"{{ field.name }}": {{ dummy_field(field) }}
+{%- endfor -%}
+}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro dummy_body(resource) -%}
+{{ dummy_json(resource.record, true) }}
+{%- endmacro -%}
+{%- macro dummy_api_body(api) -%}
+{%- if api.payload -%}
+{{ dummy_json(c.records | selectattr("name", "equalto", api.payload.class_name) | first, false) }}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{% for api in c.apis %}
+{%- if api.scope %}
+
+describe("{{ api.snake }} oauth2 scope rig", () => {
+  it("rejects a token missing the required scope", async () => {
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+      headers: { authorization: await mint({ scope: "not:{{ api.scope }}" }) },
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("accepts a token carrying the required scope", async () => {
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+      headers: { authorization: await mint({ scope: "{{ api.scope }}" }) },
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).not.toBe(401);
+    expect(response.statusCode).not.toBe(403);
+  });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+      headers: { authorization: await mint({ scope: "{{ api.scope }}", expDelta: -3600 }) },
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a token signed by a key the stub JWKS never served", async () => {
+    const stub = await getOAuthStub();
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+      headers: { authorization: await mint({ scope: "{{ api.scope }}", key: stub.wrongKey }) },
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a token from the wrong issuer", async () => {
+    const response = await (await app()).inject({
+      method: "{{ api.method_upper }}",
+      url: "{{ api.route }}",
+      headers: {
+        authorization: await mint({ scope: "{{ api.scope }}", issuer: "http://wrong-issuer.example" }),
+      },
+{%- if api.has_body %}
+      payload: {{ dummy_api_body(api) }},
+{%- endif %}
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+{%- endif %}
+{%- endfor %}
+{% for resource in c.resources %}
+{%- if resource.read_scope %}
+
+describe("{{ resource.snake }} read oauth2 scope rig", () => {
+  it("rejects a token missing the read scope", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "not:{{ resource.read_scope }}" }) },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("accepts a token carrying the read scope", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "{{ resource.read_scope }}" }) },
+    });
+    expect(response.statusCode).not.toBe(401);
+    expect(response.statusCode).not.toBe(403);
+  });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "{{ resource.read_scope }}", expDelta: -3600 }) },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a token signed by a key the stub JWKS never served", async () => {
+    const stub = await getOAuthStub();
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "{{ resource.read_scope }}", key: stub.wrongKey }) },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a token from the wrong issuer", async () => {
+    const response = await (await app()).inject({
+      method: "GET",
+      url: "/{{ resource.plural }}",
+      headers: {
+        authorization: await mint({
+          scope: "{{ resource.read_scope }}",
+          issuer: "http://wrong-issuer.example",
+        }),
+      },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+{%- endif %}
+{%- if resource.write_scope %}
+
+describe("{{ resource.snake }} write oauth2 scope rig", () => {
+  it("rejects a token missing the write scope", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "not:{{ resource.write_scope }}" }) },
+      payload: {{ dummy_body(resource) }},
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("accepts a token carrying the write scope", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "{{ resource.write_scope }}" }) },
+      payload: {{ dummy_body(resource) }},
+    });
+    expect(response.statusCode).not.toBe(401);
+    expect(response.statusCode).not.toBe(403);
+  });
+
+  it("rejects an expired token", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "{{ resource.write_scope }}", expDelta: -3600 }) },
+      payload: {{ dummy_body(resource) }},
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a token signed by a key the stub JWKS never served", async () => {
+    const stub = await getOAuthStub();
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/{{ resource.plural }}",
+      headers: { authorization: await mint({ scope: "{{ resource.write_scope }}", key: stub.wrongKey }) },
+      payload: {{ dummy_body(resource) }},
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects a token from the wrong issuer", async () => {
+    const response = await (await app()).inject({
+      method: "POST",
+      url: "/{{ resource.plural }}",
+      headers: {
+        authorization: await mint({
+          scope: "{{ resource.write_scope }}",
+          issuer: "http://wrong-issuer.example",
+        }),
+      },
+      payload: {{ dummy_body(resource) }},
+    });
+    expect(response.statusCode).toBe(401);
+  });
+});
+{%- endif %}
+{%- endfor %}

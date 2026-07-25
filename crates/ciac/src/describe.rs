@@ -19,6 +19,7 @@ pub const DESCRIBE_VERSION: u32 = 1;
 pub struct Describe {
     pub describe_version: u32,
     pub ciac_version: &'static str,
+    pub language_version: &'static str,
     pub keywords: Vec<Entry>,
     pub capabilities: Vec<CapabilityEntry>,
     pub providers: Vec<ProviderEntry>,
@@ -61,6 +62,7 @@ pub fn build() -> Describe {
     Describe {
         describe_version: DESCRIBE_VERSION,
         ciac_version: env!("CARGO_PKG_VERSION"),
+        language_version: ciac_syntax::LANGUAGE_VERSION,
         keywords: vocab::KEYWORDS
             .iter()
             .map(|(name, doc)| Entry {
@@ -148,6 +150,7 @@ mod tests {
         for key in [
             "describe_version",
             "ciac_version",
+            "language_version",
             "keywords",
             "capabilities",
             "providers",

@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 14
 expression: json
 ---
 {
@@ -30,7 +31,7 @@ expression: json
       "config": {
         "method": "Post",
         "path": "/echo",
-        "scope": null
+        "scope": "echo:write"
       }
     }
   ],

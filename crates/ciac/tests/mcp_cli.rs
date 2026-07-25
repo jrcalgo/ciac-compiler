@@ -131,6 +131,144 @@ fn mcp_round_trip_initialize_tools_list_and_tool_calls() {
     assert_eq!(envelope["command"], "check");
     assert_eq!(envelope["success"], json!(true), "{envelope}");
 
+    // v0.23 M8: `build` and `verify` against the TypeScript backend —
+    // the same envelopes `ciac build`/`ciac verify --target
+    // typescript` print, proving the MCP surface (not just the CLI)
+    // reaches this target's real npm/tsc/eslint/vitest validate
+    // sequence. `node_modules` is removed afterward to respect this
+    // session's disk allowance, same discipline the scaffold test
+    // below doesn't need (it never runs `npm ci`).
+    let ts_out = std::env::temp_dir().join(format!("ciac-mcp-ts-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&ts_out);
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 40, "method": "tools/call",
+        "params": { "name": "build", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "typescript", "out": ts_out.to_str().unwrap(),
+        } }
+    }));
+    let built = server.recv();
+    assert_eq!(built["result"]["isError"], json!(false), "{built}");
+    let text = built["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("build text is JSON");
+    assert_eq!(envelope["command"], "build");
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    assert!(ts_out.join("src/main.ts").is_file());
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+        "params": { "name": "verify", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "typescript", "out": ts_out.to_str().unwrap(),
+        } }
+    }));
+    let verified = server.recv();
+    let text = verified["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("verify text is JSON");
+    assert_eq!(envelope["command"], "verify");
+    assert_eq!(
+        verified["result"]["isError"],
+        json!(false),
+        "verify should succeed: {envelope}"
+    );
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    std::fs::remove_dir_all(ts_out.join("node_modules")).ok();
+
+    // v0.24 M8: `build` and `verify` against the Go backend — the
+    // same envelopes `ciac build`/`ciac verify --target go` print,
+    // proving the MCP surface reaches this target's real
+    // gofmt/go-vet/go-build/go-test validate sequence too. No
+    // `node_modules`-equivalent cleanup needed: the Go module cache
+    // lives outside the generated project directory (`GOMODCACHE`,
+    // shared across runs), not inside it.
+    let go_out = std::env::temp_dir().join(format!("ciac-mcp-go-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&go_out);
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 42, "method": "tools/call",
+        "params": { "name": "build", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "go", "out": go_out.to_str().unwrap(),
+        } }
+    }));
+    let built = server.recv();
+    assert_eq!(built["result"]["isError"], json!(false), "{built}");
+    let text = built["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("build text is JSON");
+    assert_eq!(envelope["command"], "build");
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    assert!(go_out.join("cmd/api/main.go").is_file());
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 43, "method": "tools/call",
+        "params": { "name": "verify", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "go", "out": go_out.to_str().unwrap(),
+        } }
+    }));
+    let verified = server.recv();
+    let text = verified["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("verify text is JSON");
+    assert_eq!(envelope["command"], "verify");
+    assert_eq!(
+        verified["result"]["isError"],
+        json!(false),
+        "verify should succeed: {envelope}"
+    );
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    std::fs::remove_dir_all(&go_out).ok();
+
+    // 25UpdatePlan.md M8: `build` and `verify` against the Java
+    // backend — the same envelopes `ciac build`/`ciac verify --target
+    // java` print, proving the MCP surface reaches this target's real
+    // `./mvnw -q -B verify` validate sequence (compile, Spotless/
+    // google-java-format check, tests) too. No `node_modules`-
+    // equivalent cleanup needed: the Maven local repository lives
+    // outside the generated project directory (`~/.m2/repository`,
+    // shared across runs), not inside it.
+    let java_out = std::env::temp_dir().join(format!("ciac-mcp-java-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&java_out);
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 44, "method": "tools/call",
+        "params": { "name": "build", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "java", "out": java_out.to_str().unwrap(),
+        } }
+    }));
+    let built = server.recv();
+    assert_eq!(built["result"]["isError"], json!(false), "{built}");
+    let text = built["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("build text is JSON");
+    assert_eq!(envelope["command"], "build");
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    assert!(java_out
+        .join("src/main/java/com/ciac/ping/Application.java")
+        .is_file());
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 45, "method": "tools/call",
+        "params": { "name": "verify", "arguments": {
+            "file": ping.to_str().unwrap(), "target": "java", "out": java_out.to_str().unwrap(),
+        } }
+    }));
+    let verified = server.recv();
+    let text = verified["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    let envelope: Value = serde_json::from_str(text).expect("verify text is JSON");
+    assert_eq!(envelope["command"], "verify");
+    assert_eq!(
+        verified["result"]["isError"],
+        json!(false),
+        "verify should succeed: {envelope}"
+    );
+    assert_eq!(envelope["success"], json!(true), "{envelope}");
+    std::fs::remove_dir_all(&java_out).ok();
+
     // `explain`: the same text `ciac explain CIAC0006` prints.
     server.send(json!({
         "jsonrpc": "2.0", "id": 5, "method": "tools/call",

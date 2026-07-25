@@ -75,6 +75,28 @@ fn sema_accepted_schedules_parse_with_the_generated_rust_runtime() {
     }
 }
 
+/// v0.25 M3: Spring's own `CronExpression` parser (unlike Rust's
+/// `cron` crate) already accepts CIaC's weekday `0`-`7` convention
+/// natively — verified live, separately, by actually parsing every
+/// shape below with `org.springframework.scheduling.support.
+/// CronExpression` before writing this translation. This Rust-side
+/// test proves the *string transformation* `spring_cron` performs
+/// (a literal `"0 "` seconds-field prefix, nothing else) is applied
+/// correctly to every schedule sema accepts — the two proofs together
+/// are this milestone's "equivalence-tested against the same cases
+/// the Rust translation carries."
+#[test]
+fn sema_accepted_schedules_translate_to_the_expected_spring_cron_shape() {
+    for schedule in VALID_SCHEDULES {
+        let translated = ciac_backend_java::filters::spring_cron(schedule);
+        assert_eq!(
+            translated,
+            format!("0 {schedule}"),
+            "spring_cron must be exactly a literal seconds-field prefix for {schedule:?}"
+        );
+    }
+}
+
 #[test]
 fn sema_rejects_invalid_schedules_with_invalid_cron_code() {
     for schedule in INVALID_SCHEDULES {

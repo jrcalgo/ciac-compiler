@@ -1,0 +1,21 @@
+FROM golang:1.24 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
+{%- if c.workers or c.jobs or c.consumers %}
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/workers ./cmd/workers
+{%- endif %}
+
+FROM gcr.io/distroless/static-debian12
+
+COPY --from=build /out/api /app/api
+{%- if c.workers or c.jobs or c.consumers %}
+COPY --from=build /out/workers /app/workers
+{%- endif %}
+{%- if c.tables %}
+COPY --from=build /src/migrations /migrations
+{%- endif %}
+
+WORKDIR /
+EXPOSE 8000
+ENTRYPOINT ["/app/api"]

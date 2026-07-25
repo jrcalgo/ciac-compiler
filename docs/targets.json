@@ -1,5 +1,7 @@
 {
   "targets_version": 1,
+  "ciac_version": "0.24.0",
+  "language_version": "1.0.0",
   "targets": [
     {
       "id": "python",
@@ -84,6 +86,216 @@
         {
           "program": "cargo",
           "purpose": "unit and generated tests pass"
+        }
+      ],
+      "sim": {
+        "level": "narrow"
+      },
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
+    },
+    {
+      "id": "typescript",
+      "description": "TypeScript (Node 20+) project using Fastify (v0.23 M1: plain api routes only)",
+      "kind": "internal",
+      "project_marker": "package.json",
+      "validate": [
+        {
+          "program": "npm",
+          "purpose": "install dependencies from the checked-in lockfile"
+        },
+        {
+          "program": "npx",
+          "purpose": "type-checks"
+        },
+        {
+          "program": "npx",
+          "purpose": "lint"
+        },
+        {
+          "program": "npx",
+          "purpose": "test"
+        }
+      ],
+      "sim": {
+        "level": "narrow"
+      },
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
+    },
+    {
+      "id": "go",
+      "description": "Go 1.24+ project using net/http, database/sql, go-redis, and nats.go",
+      "kind": "internal",
+      "project_marker": "go.mod",
+      "validate": [
+        {
+          "program": "go",
+          "purpose": "compiles to a static binary"
+        },
+        {
+          "program": "go",
+          "purpose": "lints"
+        },
+        {
+          "program": "gofmt",
+          "purpose": "formatting is golden bytes, not a post-pass (empty output required)"
+        },
+        {
+          "program": "go",
+          "purpose": "unit tests pass"
+        }
+      ],
+      "sim": {
+        "level": "narrow"
+      },
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
+    },
+    {
+      "id": "java",
+      "description": "Java 21 project using Spring Boot 3.x (Spring MVC, virtual threads)",
+      "kind": "internal",
+      "project_marker": "pom.xml",
+      "validate": [
+        {
+          "program": "./mvnw",
+          "purpose": "compiles, formats (Spotless), and tests in one invocation (Pillar 8)"
         }
       ],
       "sim": {

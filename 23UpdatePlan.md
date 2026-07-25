@@ -815,6 +815,66 @@ documented in the generated README's requirements line.
    this proof is live, not delegated). Goldens begin; `supports()`
    gated to M1 scope; cold/warm `npm ci` times recorded for the CI
    budget ledger.
+
+   **Shipped (v0.23 M1):** `crates/ciac-backend-ts` — `TsBackend`
+   with `TargetInfo` (`project_marker: "package.json"`, `validate`:
+   `npm ci` → `tsc --noEmit` → `eslint .` → `vitest run`,
+   `ci_test_steps` via `actions/setup-node@v4`, `dev.rebuild: npm run
+   build`, `sim: None` until M9). `supports()` is gated to exactly
+   `Component::Api` — the single-construct scope `examples/ping.ciac`
+   exercises; every other component (db/cache/queue/service/worker/
+   job/channel/auth/...) stays `CIAC0011`-refused until its own
+   milestone. `ciac build examples/ping.ciac --target typescript`
+   live-verified end to end against the real toolchain: `npm ci`
+   (0 vulnerabilities), `npx tsc --noEmit`, `npx eslint .`, `npx
+   vitest run` (1/1) all pass on the actually-generated project, and
+   the built server (`npm run build && node dist/main.js`) answers
+   real HTTP requests — `/health` → `{"status":"ok"}`, `/openapi.json`
+   → the real embedded doc, `POST /echo` → `{"status":"accepted",
+   "data":{...}}`, the identical envelope shape Python/Rust already
+   produce. `npm ci` timing (this sandbox, not representative of CI
+   hardware): ~3.8s with an empty npm cache, ~3.3s with npm's package
+   cache warm from a prior install.
+
+   Ecosystem picks actually pinned (real current-as-of-execution
+   versions, not the plan's illustrative ones): Fastify 5.10.0, pino
+   10.3.1, TypeScript 5.9.3 (latest stable 5.x — 7.x exists but is a
+   different, Go-ported compiler outside this plan's stated "5.x"
+   decision), eslint 10.7.0 + `@eslint/js` 10.0.1 +
+   typescript-eslint 8.64.0, vitest 4.1.10 (not the initially-tried
+   3.2.4: `npm audit` found a real critical CVE, GHSA-5xrq-8626-4rwp,
+   in vitest <3.2.6's UI server — disclosed and avoided, not shipped).
+   `@types/node` pinned to 22.20.1 specifically to satisfy vite's
+   (vitest's own dependency) peer-range floor of `>=22.12.0` cleanly
+   — `npm ci` reports zero warnings, not just zero vulnerabilities.
+
+   Two real bugs the live proof caught, not hypothesized: (1) the
+   route template's `state` plugin argument was unconditionally
+   unused at M1 scope (no db/handler/publish step exists yet to read
+   it) but only suppressed for bodyless apis — `eslint`
+   (`no-unused-vars`) failed on `Echo`'s typed-body case; fixed to
+   suppress unconditionally, with a comment explaining exactly when
+   that stops being true (M2 onward). (2) `tests/src/lib.rs`'s
+   `backends()` — the registry `conformance.rs`/`golden.rs`/
+   `targets_cli.rs` correctly iterate registry-agnostically — was
+   *also* being reused by `gating.rs`'s six `..._on_both_backends`
+   tests and by three unguarded `generate()` loops in `blueprints.rs`/
+   `determinism.rs`/`modules.rs` that never called `check_support`
+   first. Both are real, disclosed fixes, not TS-specific patches:
+   added `full_parity_backends()` (Python+Rust only) for the tests
+   whose names and intent are genuinely about those two mature
+   backends, and added the missing `check_support` guard to the three
+   loops that were silently relying on "every backend supports
+   everything" — true only by accident before a narrowly-gated third
+   target existed, and exactly the kind of latent gap 22UpdatePlan.md's
+   own conformance harness was built to catch structurally rather than
+   ad hoc. `docs/targets.json` regenerated (new `typescript` entry,
+   `capabilities: {}` — correctly empty, since `vocab::PROVIDERS`
+   only lists python/rust as of 22 M4's own disclosed disposition). A
+   new golden (`gen__typescript__ping`) is the only accepted snapshot
+   diff. Full verification green: `cargo fmt --check`, `cargo clippy
+   -D warnings`, `cargo test --workspace` (all suites, zero
+   failures).
 2. **M2 — Records, schemas, models, CRUD, keyed store, migrations.**
    schemas.ts (zod + enums + error classes), models.ts (drizzle
    tables), db.ts (engine-keyed pools + migration runner), typed
@@ -824,6 +884,98 @@ documented in the generated README's requirements line.
    the same zero-infra proof v0.13 M3 used); crud-notes/mysql-notes
    verify statically local, capability round-trips CI-delegated as
    always.
+
+   **Shipped (v0.23 M2):** `schemas.ts` (zod schemas + `z.infer` types
+   + error classes, from `c.records`), `models.ts` (Drizzle table
+   objects for CRUD resources and `table` declarations, column
+   builders called through a real Rust filter — `drizzle_column` in
+   `filters.rs` — rather than picked in Jinja, mirroring the
+   Postgres/MySQL/SQLite `FieldTypeKind` mapping decided in Pillar 2),
+   `db.ts` (hand-written per-engine `CREATE TABLE IF NOT EXISTS` DDL
+   for CRUD resources reached through Drizzle's `$client` escape hatch
+   — there is no declarative-sync API outside drizzle-kit — plus a
+   hand-rolled `_ciac_migrations`-ledger runner for `table` decls,
+   mirroring Python's own runner shape since none of the three drivers'
+   own migration tooling matches CIaC's plain-numbered-`.sql`-file
+   contract), one `stores/<resource>.ts` class per CRUD resource (typed
+   and untyped/keyed-document, Redis cache-aside where `has_cache`,
+   using Drizzle's query builder directly rather than raw placeholder
+   SQL — sidestepping the `sqlph`/bind-order machinery entirely for
+   this pre-built REST layer, since Drizzle already generates correct
+   per-engine SQL from a single portable call), and one
+   `routes/<resource>.ts` Fastify plugin per resource (create/list/
+   get/update/delete, Zod validation via `{{Name}}Schema.omit({id:
+   true})` reused straight from `schemas.ts` rather than a second
+   generated schema). `state.ts` gained one `AppState` field per named
+   db/cache instance — `pg.Pool`/`mysql2`'s pool are lazy by
+   construction (no connection until a query runs), `ioredis` is
+   built with `lazyConnect: true`, and `better-sqlite3` only ever
+   touches a local file — so the M1 "AppState touches zero
+   infrastructure" bar (tested since M1) still holds with real
+   capability instances present. `TsBackend::supports()` widened to
+   `Database` (all 3 engines), `Cache`, and a classic binding-style
+   `Service { signature: None }` — CRUD/keyed-store resources compile
+   to exactly that component triple; a *typed* `service` still stays
+   refused until M4.
+
+   Two real, non-hypothetical type errors the live `tsc --noEmit`
+   proof caught, both fixed by *not* trusting a plausible-looking
+   type annotation: (1) `ReturnType<typeof drizzle>` on an AppState
+   field looked right but is wrong for `drizzle-orm/mysql2`
+   specifically — being a generic function with a defaulted type
+   parameter, `ReturnType` resolves the *default* instantiation
+   (`$client: <callback-style mysql2 Pool>`), not the one the real
+   call site narrows to when handed an actual `mysql2/promise` `Pool`
+   — so the field type and the constructed value structurally
+   disagreed. Fixed by spelling the field type as the concrete
+   intersection (`MySql2Database & { $client: mysql.Pool }`) at every
+   one of the three engines, not just the one that happened to break
+   first. (2) `import Database from "better-sqlite3"; ...: Database`
+   — the default import is a namespace, not a usable type in this
+   project's module setup (`Cannot use namespace 'Database' as a
+   type`); fixed by importing the constructor and the `Database`
+   *type* under separate names (`import SqliteDatabase, { type
+   Database } from "better-sqlite3"`). Both fixes are disclosed
+   because they'd have shipped silently wrong if the M2 gate had been
+   "renders without a template error" instead of a real `tsc`
+   pass — exactly the trust-the-tool-not-the-plausible-guess
+   discipline the M1 vitest-CVE and eslint fixes already established.
+
+   Live proof, real toolchain, zero Docker: `sqlite-notes` — `npm ci`
+   (0 vulnerabilities), `npx tsc --noEmit`, `npx eslint .`, `npx
+   vitest run` (1/1) all pass on the generated project; `npm run
+   build && node dist/main.js` answers a real HTTP CRUD round-trip
+   against an actual SQLite file — `POST /notes` → 201 with a
+   server-generated id, `GET /notes` lists it, `GET /notes/:id`
+   fetches it, `PUT /notes/:id` updates it, `DELETE /notes/:id` → 204,
+   a subsequent `GET /notes/:id` → 404. `mysql-notes` (db + cache, no
+   auth) and the multi-service `inventory-system` golden verify
+   statically (`npm ci`, `tsc --noEmit`, `eslint .` all clean); a live
+   MySQL/Redis round-trip is CI-delegated per the plan's own stated
+   allowance (no local MySQL/Redis daemon in this sandbox). As a
+   disclosed, real deviation from this milestone's own checklist row —
+   not a silent gap — `crud-notes.ciac` (needs `auth JWT`) stays
+   `CIAC0011`-refused this pass: auth is genuinely out of scope until
+   M6, verified by a real `ciac build --target typescript` run against
+   it that fails with exactly that code, not by inspection. Full
+   verification green: `cargo fmt --check`, `cargo clippy -D
+   warnings`, `cargo test --workspace` (61 suites, zero failures); 4
+   new/updated goldens accepted (`ping` — trivial, from the M2
+   `state.test.ts` engine-aware env-var fix below — plus new
+   `sqlite-notes`/`mysql-notes`/`inventory-system` trees).
+
+   One more real fix, found by the same live proof rather than
+   guessed: M1's `state.test.ts` unconditionally set
+   `DATABASE_URL=postgres://unreachable-host:1/db` regardless of which
+   engine(s) the generated project actually declares. Harmless while
+   no backend had a real db instance to construct against it, but once
+   `sqlite-notes` generated a real `better-sqlite3` `AppState` field,
+   that Postgres-shaped URL got handed straight to
+   `new Database(path)` as a literal (non-existent) filesystem path,
+   failing the "never touches the network" test for a reason that had
+   nothing to do with the network. Fixed by generating one
+   engine-appropriate unreachable URL per declared instance instead of
+   a single hardcoded one.
 3. **M3 — Broker, workers, jobs, channels.** nats.js + kafkajs,
    worker retry loop delegating to exported `handleMessageOnce`,
    croner jobs with `handleTickOnce`, WS/SSE channels, publish sites
@@ -831,6 +983,122 @@ documented in the generated README's requirements line.
    kafka-pipeline, scheduled-cleanup, realtime-progress verify
    (static local; broker delivery CI-delegated per the standing
    v0.11 M3 disclosure).
+
+   **Shipped (v0.23 M3):** `queue.ts` (a `Queue` class per broker —
+   kafkajs `Kafka`/`Producer`/`Consumer` or `@nats-io/transport-node`'s
+   `NatsConnection`, both genuinely lazy — plus the shared
+   `publish(state, subject, payload)` free function every generated
+   call site goes through, the seam a future simulation runner (M9)
+   can intercept), `service.ts.j2` (seeded, classic binding-style
+   `handle()` methods pipeline steps invoke — `crates/
+   ciac-backend-python`/`-rust`'s own `service.py.j2`/`service.rs.j2`
+   shape), `client.ts.j2` (typed HTTP clients for `call` steps, using
+   the Node-global `fetch` rather than pulling in a dependency,
+   unwrapping the `{status, data}` envelope and validating the
+   response through the same Zod schema `schemas.ts` already
+   generates), `worker.ts.j2`/`consumer.ts.j2` (NATS queue-group vs.
+   Kafka consumer-group branching, the exported `handleMessageOnce`
+   seam, a retry loop with no backoff — matching Python's/Rust's own
+   choice exactly), `job.ts.j2` (croner, which — like Python's
+   croniter and unlike Rust's `cron` crate — accepts the source
+   5-field expression verbatim and owns its own scheduling loop, so
+   `handleTickOnce` needs no hand-rolled sleep-until-next code at
+   all), and `channel.ts.j2` (`@fastify/websocket` or a hand-rolled
+   SSE stream; fan-out is broker-native — a plain NATS subscription
+   naturally delivers a copy of every message to every subscriber, and
+   Kafka gets a fresh per-connection consumer group instead of the
+   shared queue-group workers use). `TsBackend::supports()` widened to
+   `Queue`, `Stream`, `Worker` (both pipeline-bearing workers and bare
+   `events X;` consumers — the same `Component::Worker` shape,
+   distinguished only downstream in `ciac-codegen::model`), `Job` +
+   `Scheduler`, and `Channel` + `Realtime`.
+
+   Pipeline-step codegen (`_steps.ts.j2`, a shared minijinja macro
+   `{% import %}`-ed by `route_api.ts.j2`/`worker.ts.j2`/`job.ts.j2` —
+   a deliberate difference from Python's/Rust's own per-file
+   duplication of the same macro, made possible and simple by
+   minijinja's `import`) is real M3 work, not carried over from M1/M2:
+   M1's `route_api.ts.j2` only ever emitted a hardcoded `{status:
+   "accepted", data: result}` echo, correct only because `ping.ciac`'s
+   pipeline is the trivial one-step `Return`. Auditing the actually-
+   exercised surface before calling M3 done surfaced a real gap this
+   pass had to close, not defer: `examples/inventory-system.ciac` (in
+   the registry-agnostic golden suite since M2, since `crud`/`db`/
+   `cache` alone were already enough to generate it) has a real `call
+   Catalog.Price` pipeline step that M1/M2's stub silently ignored —
+   accepted `Component::Api` unconditionally but never implemented
+   `call`. Fixed by implementing the shared step macro's full
+   vocabulary (`handler`/`publish`/`call`/`match`, with `return`
+   deliberately a no-op — matching Python's own `emit_steps`, which
+   has no arm for it either, since the envelope wrap-and-return
+   happens once, unconditionally, after the whole step list) and
+   `client.ts.j2`, rather than leaving `call` silently wrong now that
+   `Api`/`Worker`/`Job` are gated broadly by component kind, not by
+   which step kinds a given pipeline happens to use.
+
+   Two real, live-caught bugs, both disclosed rather than smoothed
+   over: (1) `client.ts.j2` imported a record's Zod schema
+   (`ItemSchema`) but not the inferred TypeScript *type* (`Item`) the
+   method's own return signature needed — `tsc --noEmit` on the
+   generated `gateway` service failed with `Cannot find name 'Item'`;
+   fixed by importing both under one line
+   (`import { ItemSchema, type Item } from "../schemas.js"`). (2) Five
+   real `eslint` findings across the four new examples on first run,
+   not zero: `@typescript-eslint/no-explicit-any` on the `result as
+   any` cast `_steps.ts.j2` needs at each step's untyped input
+   boundary (a real, load-bearing rule in this project's
+   `tseslint.configs.recommended`, not assumed absent — fixed with a
+   documented `eslint-disable-next-line`); `no-useless-assignment` +
+   `@typescript-eslint/no-unused-vars` on a worker's/job's final
+   `result` reassignment, since unlike an api route a worker has no
+   envelope to return it into (fixed with a trailing `void result;`);
+   `prefer-const` on pipelines whose steps never reassign `result`
+   (e.g. `publish X -> Return` alone) — fixed with a new Rust filter,
+   `reassigns_result`, recursing into `match` arms to decide `let` vs.
+   `const` per pipeline rather than always guessing `let`; and an
+   unused `state` parameter in `buildApp` for `scheduled-cleanup`
+   (which declares no `api`/`crud`/`channel` at all) — fixed with the
+   same conditional `void state;` pattern M1 already established.
+   `nats`, the plan's own illustrative NATS package name, turned out
+   to be deprecated as of a recent registry check ("Package moved.
+   Use @nats-io/transport-node") — pinned the real current successor
+   instead of the stale name, the same real-current-versions
+   discipline M1's vitest-CVE avoidance already established.
+
+   Live proof, real toolchain: all four new examples (`event-pipeline`,
+   `kafka-pipeline`, `scheduled-cleanup`, `realtime-progress`) plus
+   `inventory-system` and `audited-crud` (both now exercising real
+   `db`/`cache`/`service`/`call` content for the first time) pass
+   `npm ci` (0 vulnerabilities), `npx tsc --noEmit`, and `npx eslint .`
+   clean on the generated output. Two genuinely live, zero-mocking
+   proofs beyond static verification, using the sandbox's real local
+   Postgres/Redis servers (started directly, no Docker) rather than
+   stopping at "it type-checks": `scheduled-cleanup`'s built
+   `dist/workers/cleanup.js` — `handleTickOnce` executes the real
+   seeded `PruneExpired` service through the classic-binding call path
+   without throwing, and `run()` constructs a real `croner` `Cron`
+   reporting the correct next 03:00 fire time; and
+   `inventory-system`'s `call` step — with a real `catalog` server
+   running against live Postgres/Redis, `gateway`'s compiled
+   `CatalogClient.price()` made a genuine HTTP round trip, unwrapped
+   the `{status, data}` envelope, and validated the response through
+   `ItemSchema.parse()`. Broker delivery itself (an actual NATS/Kafka
+   server publishing and being consumed) stays CI-delegated as
+   disclosed — this sandbox has no local broker binary, matching the
+   standing v0.11 M3 precedent exactly (Postgres/Redis do have local
+   binaries here, so those *are* live-proofed rather than
+   CI-deferred). Traceparent propagation is genuinely deferred, not
+   silently skipped: none of the four new examples declare
+   `tracing OpenTelemetry`, and Pillar 8/M7 is where TS tracing lands
+   for the first time (mirroring Python's/Rust's own asymmetry —
+   worker pipelines and the publish path propagate it, `channel`/bare
+   `events` consumers never have). Full verification green: `cargo fmt
+   --check`, `cargo clippy -D warnings`, `cargo test --workspace` (61
+   suites, zero failures); 9 new/updated goldens accepted (4 new M3
+   examples, `inventory-system` and `audited-crud` now generating real
+   content for the first time, plus trivial `ping`/`sqlite-notes`/
+   `mysql-notes` diffs from the `main.ts.j2` `buildApp` signature
+   change).
 4. **M4 — Typed handlers: `HostSyntax` for TypeScript.** Implement
    the ~30 leaves per Pillar 2's specs and Pillar 4's verb table;
    real transactions; builtins (`crypto.randomUUID()`, `new Date()`);
@@ -839,6 +1107,215 @@ documented in the generated README's requirements line.
    verify; the cross-backend behavioral equivalence test extends to
    three targets (including the Int-division and Json-indexing cases
    Pillar 2 flags).
+
+   **Shipped (v0.23 M4):** `crates/ciac-backend-ts/src/lower.rs` — a
+   full `TsSyntax` (`Orientation::Statement`, the same mode Python
+   exercises, since a `{}` block isn't an expression in TS the way it
+   is in Rust) implementing every `HostSyntax` leaf: scalar/literal
+   leaves near-verbatim from Python's shapes; `if_tail` a plain
+   `if {} else {}`; `match_tail` a real `switch` statement (Pillar 2's
+   decision, not Python's if/elif-chain transcription); the four
+   statement-shaped `db.*` verbs (`db.insert/update/delete`,
+   `db.query`/`count`/`delete_where`) as raw parameterized SQL reached
+   through Drizzle's `$client` escape hatch — following the *Rust*
+   backend's bind-order/`sqlph` discipline, not Python's ORM-chain
+   shape, per Pillar 4's explicit "adds zero new placeholder logic";
+   `transaction_stmt` with **real atomicity**, exceeding Rust's
+   disclosed non-atomic gap — Postgres/MySQL check out a dedicated
+   connection and run `BEGIN`/`COMMIT`/`ROLLBACK` by hand (a pool's
+   `.query()` alone is not transactional), SQLite uses better-sqlite3's
+   native synchronous `.transaction()` wrapper. `crates/
+   ciac-backend-ts/templates/logic.ts.j2` (compiler-owned
+   `src/logic/<h>.ts` / seeded `src/services/<h>.ts`, mirroring
+   `service.ts.j2`'s single-`state`-constructor-parameter shape rather
+   than Python's/Rust's per-dependency constructor injection — already
+   established since M2/M3, not a new decision). `TsBackend::supports()`
+   widened `Component::Service` to accept `signature: Some(..)`
+   (dropping the M1–M3 `signature: None` restriction) — `db`/`cache`
+   (already open since M2) are the only capabilities a typed handler
+   can actually reach this milestone.
+
+   **Scope boundary, disclosed rather than silently narrowed:**
+   `Component::ObjectStore`/`Email`/`Search`/`ExternalHttp`/`Auth` stay
+   `CIAC0011`-refused. This is not an oversight — 23UpdatePlan.md's own
+   capability-parity checklist (line ~759) places the S3/email/search/
+   external_http *wrapper clients* at M7 and auth at M6; M4's job per
+   Pillar 4's verb table is the `HostSyntax` *leaf* lowering for every
+   verb (so `object_store.put`/`email.send`/`search.index`/`http.call`
+   compile correctly — implemented to the trait's letter, verified by
+   `cargo build`/`clippy`, using a forward-compatible `this.state.
+   <camelCase>` access pattern the M7 wrapper wiring is expected to
+   land under), not standing up the wrapper modules themselves. Verified
+   live, not by inspection: `ciac build --target typescript` against
+   `typed-handlers.ciac` (needs `object_store`), `typed-video.ciac`
+   (needs `auth`), and `extras-verbs.ciac` (needs `object_store`) each
+   fail with exactly `CIAC0011` and the correct capability name — the
+   same disclosed-deviation pattern M2 used for `crud-notes.ciac` and
+   M3 used for traceparent. `domain-orders.ciac` and `query-verbs.ciac`
+   (both db-only) are this milestone's real proving examples instead,
+   plus three more examples that turned out to be in-scope once typed
+   handlers un-gated (`modular-video.ciac`, `sim-vertical-slice.ciac`,
+   `sim-broker-slice.ciac` — none declare `object_store`/`auth`/etc.,
+   discovered by running the golden suite, not hand-picked).
+
+   Five real, live-caught bugs, all disclosed and fixed rather than
+   patched around:
+
+   1. **Duplicate `const` declarations in one block scope.** The first
+      generated `domain-orders.ciac` output failed with a real
+      `SyntaxError`: `PlaceOrder`'s `transaction {}` block calls
+      `db.insert` twice (`Orders` then `OrderAudits`), and the initial
+      `db_insert_tail` leaf declared `const __row = ..;` at the same
+      scope both times. Fixed with a per-handler `Cell<u32>` fresh-name
+      counter (`__row0`, `__row1`, ...) for every temp a leaf declares
+      directly into the caller's block (not inside its own IIFE, which
+      already has its own scope).
+   2. **`import type` erasing a value used at runtime.** `PlaceOrder`'s
+      `fail InvalidOrder(..)` lowers to `throw new InvalidOrder(..)` —
+      a real value construction — but every `schemas.ts` import was
+      blanket-emitted as `import type { X }`, which TypeScript erases
+      entirely at compile time; `tsc` stayed clean (structural typing
+      never needed the name) but the class reference would have been
+      `undefined` at runtime. Fixed by splitting `schema_imports` into
+      error records (plain `import { X }`, since `fail`/`throw new`
+      needs the value) versus everything else (`import type { X }`,
+      the common case).
+   3. **Hardcoded `../services/` import path for typed-handler call
+      sites.** `route_api.ts.j2`/`worker.ts.j2`/`job.ts.j2` imported
+      every pipeline handler from `../services/<module>.js`
+      unconditionally — correct for classic/`extern` handlers, wrong
+      for the new compiler-owned `src/logic/` package `db_insert_tail`
+      needs `checkout.ts` etc. to actually import
+      `PlaceOrder`/`CreateCustomer`/`AddLineItem` from — a real
+      `TS2307: Cannot find module` on the very first generated
+      project. Fixed by using the already-shared, target-neutral
+      `HandlerRef.handler_package` field (`"services"` vs `"logic"`,
+      the exact field Python's `app.<package>`/Rust's
+      `crate::<package>` already key off) instead of a literal.
+   4. **A pre-existing `schemas.ts.j2` bug, latent since M2, only now
+      exercised.** Every error record's `super(..)` call built its
+      message from adjacent template-literal fragments joined by `+`
+      — except the *last* field's fragment, which had no trailing `+`
+      before the closing `` `)` `` literal. Two adjacent template
+      literals with nothing between them is valid JS syntax with a
+      different meaning (a tagged template: the first literal used as
+      a *function* tagging the second) — `tsc` caught it as `Type
+      'String' has no call signatures`, not a syntax error. Latent
+      since M2 (`schemas.ts.j2` has generated `is_error` classes since
+      then) because no earlier TS-supported example had ever declared
+      an `error` record with fields until `domain-orders.ciac`'s
+      `InvalidOrder`. Fixed by joining every field fragment with `+`
+      unconditionally, including the last.
+   5. **Structural typing silently dropping an import.** `OrderAudit`
+      (a record-construction target inside `PlaceOrder`, never bound
+      to a typed local) triggered `@typescript-eslint/no-unused-vars`
+      even though `record_cons` genuinely constructs one: an
+      *unannotated* object literal never spells its record's name
+      anywhere, so the import genuinely went unused by TS's structural
+      typing. Fixed by wrapping every `record_cons` result in
+      `satisfies {record_name}` (not `as`, which would widen away the
+      literal field types) — a real correctness improvement (the
+      constructed shape is now checked against its declared record),
+      not just an eslint placation.
+
+   One more real design point, resolved rather than assumed: a HIR
+   `Let` bound to an `if`/`match` expression threads the same
+   `Dest::Assign(name)` into every branch, and unlike Python (whose
+   `if`/`else` share the enclosing scope), TS's `if {} else {}`
+   introduces a real block scope — a `let`/`const` declared *inside*
+   each branch would be invisible after the block. Resolved by having
+   `render()` scan the HIR once for exactly the `Let`s whose value is
+   an `if`/`match` (`collect_branching_lets`), hoisting only those into
+   one `let` declaration above the branch and using a bare `name =
+   value;` at each branch's own assignment site; every other `Let`
+   (the common case — a straight-line value with no branching) gets a
+   plain `const name = value;` at its one assignment site instead.
+   Getting this wrong either way is real, live-caught: an unconditional
+   hoist tripped `eslint`'s `prefer-const` on `query-verbs.ciac`'s
+   `Replace` (`let n = Note {...}` never branches), the naive
+   unconditional non-hoisted form would have shipped a real scoping bug
+   for the branching case (unexercised by any of this milestone's own
+   examples, but exercised for real once `typed-handlers.ciac`'s
+   `let ready = if inserted.status == Pending {...} else {...};`
+   un-gates at M7).
+
+   A sixth fix, one line, in the shared (not TS-only) `models.ts.j2`:
+   conformance's C4b (every declared topology fact — including a raw
+   `table` declaration's own name — must appear verbatim in every
+   supporting target's output) failed for `domain-orders.ciac` once TS
+   newly supported it, because `table` declarations were exported as
+   `{{ table.snake }}Table` (e.g. `customersTable`) rather than the
+   declared name itself. Fixed to export `{{ table.class_name }}`
+   (`Customers`), matching Python's `class Customers(Base):`/Rust's
+   `struct Customers` naming exactly — CRUD resources' own `<snake>
+   Table` convention is untouched (C4b only checks `table` decls, and
+   CRUD resource names were never part of this fact set).
+
+   Live proof, real toolchain and real local infrastructure, not
+   assumed: `domain-orders` (Postgres) and `query-verbs` (SQLite) both
+   pass `npm ci` (0 vulnerabilities), `npx tsc --noEmit`, `npx eslint .`,
+   `npx vitest run` clean; `modular-video`/`sim-vertical-slice`/
+   `sim-broker-slice` verify statically the same way. Two genuinely
+   live, zero-mocking proofs beyond static verification:
+
+   - **`domain-orders`' transaction rollback, against a real local
+     Postgres server.** `POST /orders` with a negative `total` returns
+     500 (`InvalidOrder`), and both the `Orders` write that happened
+     *before* the failing `if` and the never-reached `OrderAudits`
+     write are absent afterward (`SELECT count(*)` on both tables:
+     `0`) — the dedicated-connection `BEGIN`/`ROLLBACK` genuinely
+     undoes a write that already succeeded, exactly the "real
+     atomicity, exceeding Rust's disclosed gap" claim, not just parsed
+     syntax. A second `POST /orders` with a positive total commits
+     both writes (`1` row each); a direct `DELETE FROM customers`
+     against the referenced customer fails with a real Postgres FK
+     violation (`on_delete: restrict`), proving v0.16's relations
+     still enforce correctly through raw SQL.
+   - **`query-verbs`' full verb set, against a real local SQLite
+     file.** Two rows seeded directly into the file, then `db.query`/
+     `db.count` (both with a `Bool` predicate — the sqlite `0/1`↔
+     `boolean` coercion `bind_expr`/`map_row_field` add is what makes
+     `active: true`/`false` round-trip as real JS booleans, not raw
+     integers), `db.update` (renaming a row and flipping its `active`
+     flag), `db.delete_where` (bulk delete, returns the correct
+     affected-row count), and `db.delete` (single-key, `false` on a
+     nonexistent id) all round-trip correctly over real HTTP requests
+     against the real file.
+
+   Explicitly not attempted this pass, disclosed rather than silently
+   skipped: a generated per-handler behavioral unit test analogous to
+   Python's `render_test` (mocked-dependency assertions on call
+   counts) — real, substantial additional scope with its own mocking
+   machinery; the live HTTP round-trips above cover the same ground at
+   the system level instead. `MySQL`-engine typed handlers compile
+   (every `db_engine` branch is written and type-checked) but aren't
+   live-proofed this pass — no locally-tested example binds a typed
+   handler to a MySQL instance; matches the standing MySQL
+   live-proof-deferred-to-CI precedent from M2/M3.
+
+   The cross-backend equivalence test (`tests/tests/
+   typed_handler_equivalence.rs`) extends to three targets via a
+   second canonical example (`DIVISION_EXAMPLE`, `db`-only — the
+   original `CANONICAL_EXAMPLE` needs `object_store`, which TS can't
+   join this milestone without changing what it tests) asserting the
+   two named divergence cases directly: `Int / Int` (Python's `/`
+   stays true division; Rust's native `/` and TS's `Math.trunc(a / b)`
+   both truncate toward zero) and `Json` indexing (Python's bare
+   `base[key]`; TS's optional-chained access plus an explicit thrown
+   `KeyError`-shaped error, since JS has no equivalent built-in) — a
+   disclosed, pragmatic scope reduction from the "specified" section's
+   full JSON-fixture/three-runner-mechanism design, which doesn't
+   exist yet even for the two established targets; growing today's
+   real, working structural-parity mechanism to a third target is the
+   concrete step available now.
+
+   Full verification green: `cargo fmt --check`, `cargo clippy -D
+   warnings`, `cargo test --workspace` (all suites, zero failures,
+   including conformance's C3/C4a/C4b now checking TS alongside
+   Python/Rust for every example all three support); 5 new/updated
+   goldens accepted (`domain-orders`, `query-verbs` new; `modular-video`,
+   `sim-vertical-slice`, `sim-broker-slice` newly generating real TS
+   content now that typed handlers are open).
 5. **M5 — CHECKPOINT: factory acceptance + go/no-go.** Measure
    non-template LOC and template LOC against 22UpdatePlan.md M6's
    cost model and Pillar 8's template estimate; run the conformance
@@ -848,12 +1325,232 @@ documented in the generated README's requirements line.
    22's deliverables before Go/Java consume them; "pause and amend
    the factory" is a valid, planned outcome, and this checkpoint
    existing is the reason TS goes first.
+
+   **Shipped (v0.23 M5) — the measured cost table**, against
+   `docs/backends.md`'s own "What a backend costs today" baseline
+   (Python's/Rust's post-factory numbers) and this plan's own Pillar 8
+   template estimate (~33 templates, ~2,700–3,000 lines):
+
+   | | Rust (post-factory) | Python (post-factory) | TypeScript (measured, M1–M4) |
+   | --- | --- | --- | --- |
+   | `lower.rs` (leaves + `render`) | 577 | 869 (incl. ~320-line `render_test` family) | **1,098** |
+   | `lib.rs` (emission wiring) | ~509 | ~374 | **501** |
+   | `filters.rs` (neutral-field mapping) | n/a (folded into `lower.rs`) | n/a | **206** |
+   | templates | ~2,800 (audit baseline) | ~2,800 (audit baseline) | **5,608** across 28 files (Pillar 8 estimated ~33 files / ~2,700–3,000 lines for the *full* arc, M1–M9) |
+   | edits outside the crate | 1 (registry line) | 1 (registry line) | **1** (`crates/ciac/src/commands.rs:25`, held by the same grep-fence test) |
+
+   **The `lower.rs` overrun, measured and explained, not hand-waved:**
+   159 of TS's 1,098 lines are doc comments (vs. 67 Python / 71 Rust —
+   this session's disclosure-heavy commenting style, consistent with
+   every prior milestone's notes, accounts for a real but partial
+   share); net of comments and blank lines, TS's leaf code is still
+   ~909 lines against Python's ~802 and Rust's ~506. The remaining gap
+   has one concrete, structural cause rather than a design mistake:
+   Rust's `sqlx` gives every engine (`Postgres`/`MySQL`/`SQLite`) the
+   *same* call shape (`sqlx::query(..).bind(..).execute(self.db)
+   .await?`) and only the SQL *text* varies (`sqlph`'s placeholder
+   rewrite); the Node ecosystem has no `sqlx`-equivalent unifying
+   driver, so `pg`/`mysql2`/`better-sqlite3` each have genuinely
+   different call shapes at every verb site (sync `.prepare().run()`
+   vs. async `.query()`, `[rows]` array destructuring vs. `.rows`,
+   `.changes` vs. `.rowCount` vs. `affectedRows`) — a real 3-way branch
+   Pillar 4's own text anticipated ("adds zero new placeholder logic")
+   but that undersold the call-shape divergence specifically. On top
+   of that, TS's raw-driver reads/writes need explicit per-field
+   type coercion for SQLite (`boolean`↔`0/1`, `Date`↔`TEXT`,
+   `object`↔`TEXT`-as-JSON — live-verified necessary: better-sqlite3
+   rejects a bare JS `boolean` bind param outright) that neither
+   Python's ORM (SQLAlchemy maps types itself) nor Rust's `sqlx`
+   (compile-time-checked `FromRow`/bind traits) need hand-written.
+   Both are genuine, disclosed, ecosystem-shaped costs — not scope
+   creep, and not something a future milestone should try to "fix"
+   away, since the alternative (a bespoke query-builder abstraction
+   unifying the three drivers) would be strictly more code and more
+   risk than the current straightforward-if-verbose per-engine
+   branching.
+
+   **The templates overrun, measured and explained:** 5,608 lines
+   across 28 files already exceeds Pillar 8's ~2,700–3,000-line
+   estimate for the *entire* arc (M1–M9, ~33 files) at only 28/33
+   files landed. Comments/blank lines account for a small share (130
+   comment lines + 116 blank lines, ~4.4% of the total) — this is a
+   real, measured estimate miss, not a comment-padding artifact. Read
+   against `docs/backends.md`'s own established baseline (~2,800
+   lines/backend for Python's/Rust's *complete*, mature template sets)
+   rather than Pillar 8's own pre-registered guess, TS's 5,608 lines
+   for 28 files is proportionally still ahead of pace (Python/Rust
+   land their full provider surface — auth, all five ontology
+   capabilities, sim — in ~2,800 lines total; TS is at double that
+   with auth/ontology/sim still unbuilt) — a genuine cost-model miss
+   worth flagging plainly rather than reconciled away with a
+   different denominator.
+
+   **Conformance harness, run for real across all three targets:**
+   `cargo test --workspace` (including `tests/tests/conformance.rs`'s
+   `c3_openapi_is_byte_identical_across_targets`,
+   `c4a_migration_sql_is_byte_identical_across_targets`, and
+   `c4b_declared_topology_appears_in_every_target`) is green with
+   TypeScript registered — the moment M1 added the registry line, C3/
+   C4 began checking TS's OpenAPI/migration-SQL/topology output
+   against Python's and Rust's for every example all three support,
+   catching two real bugs this same milestone (the `models.ts.j2`
+   table-naming gap C4b caught, and the transitively-exercised handler
+   import paths C3's byte-identity would have caught downstream had
+   `tsc`/`eslint` not already caught it first). C1/C2/C5 (this plan's
+   own numbering, inherited from 22UpdatePlan.md's prose) have no
+   dedicated named test functions the way C3/C4a/C4b do — they're
+   satisfied by the pre-existing golden/gating/blueprint/determinism/
+   modules suites, all green with TS included since M1's `full_parity_
+   backends()` split (documented in M1's own shipped notes) correctly
+   scopes the Python/Rust-only assertions away from TS-inclusive ones.
+   `ciac targets --json` lists `typescript` with `capabilities: {}`
+   (unchanged from M1 — still correctly empty, since `vocab::PROVIDERS`
+   lists only python/rust per 22 M4's own disclosed disposition, not
+   yet extended this arc).
+
+   **Go/no-go verdict: GO.** Nothing measured here is a capability gap,
+   a correctness gap, or a structural blocker — every miss is a line-
+   count overrun with a concrete, disclosed, ecosystem-shaped cause
+   (no `sqlx`-equivalent unifying driver in Node; more explicit
+   per-engine branching than either existing backend needs). The
+   factory's *structural* promise — `TargetInfo`, the backend-owned-
+   filter pattern, the shared scanner, the shared `HostSyntax`
+   dispatcher, the conformance harness, `Emit`/skeleton — held exactly
+   as `docs/backends.md`'s handoff section described: a third backend
+   really did consume all of it unchanged, and the map's brevity (one
+   registry line) really did stay the acceptance test. What the
+   factory's *line-count* promise underestimated is real and should be
+   carried forward as a corrected budget for 24/25UpdatePlan.md (Go/
+   Java), not discovered again the hard way: expect a `lower.rs`
+   noticeably larger than Rust's 577-line figure whenever the target
+   language's database ecosystem lacks a `sqlx`-equivalent unifying
+   driver (true for Go's `database/sql` + per-engine driver split too
+   — worth Go's own author checking this before, not after, writing
+   its `lower.rs`), and expect the full template set to land closer to
+   ~5,500–6,000 lines than the ~2,800-line Python/Rust baseline once
+   auth/ontology/sim are in. 24UpdatePlan.md may proceed; its own cost
+   table should cite these corrected figures, not Pillar 8's original
+   estimate, as its starting budget.
 6. **M6 — Auth, scopes, scope tests.** jose HS/RS + JWKS,
    requireScope hooks, generated `tests/scope.test.ts` via
    fastify.inject (JWT-only, standing OAuth2 exclusion comment).
    order-system verifies with the suite green under zero
    infrastructure; oauth-echo verifies statically with the
    documented OAuth2 posture.
+
+   **Shipped (v0.23 M6):** `src/auth.ts.j2` — `verifyToken`
+   (`jwtVerify` against a static HS256 secret for JWT, a lazily-
+   constructed `createRemoteJWKSet` for OAuth2/RS256, mirroring the
+   db pools'/broker client's own lazy-construction discipline so
+   `AppState` never makes a network call a route never needs) and
+   `requireScope` (space-joined `scope` string or `scp` array, both
+   real-issuer conventions, matching Python's/Rust's own two-shape
+   check) plus `AuthError` with a real `.statusCode`. Fastify natively
+   respects a thrown error's own `statusCode` (live-verified against
+   a real Fastify instance) — no `setErrorHandler` needed just for
+   401/403, since a scope check is mechanism, not the disclosed
+   cross-target domain-error-mapping gap. `route_api.ts.j2`/
+   `route_resource.ts.j2` call `verifyToken` on every auth-gated
+   route and `requireScope` only where a scope is actually declared
+   (`api.scope`/`resource.read_scope`/`resource.write_scope`).
+   `scope.test.ts.j2` mirrors Rust's `scope_tests.rs.j2` shape
+   exactly — `fastify.inject()` in place of `tower::ServiceExt::
+   oneshot`, `jose`'s `SignJWT` to mint tokens locally, dummy-value
+   macros keyed off `FieldTypeKind`'s internally-tagged shape — and
+   is gated identically: `ctx.auth_scheme == "jwt" && !ctx.scopes.
+   is_empty()`, so a JWT service with no declared scope (typed-video,
+   crud-notes) correctly gets `auth.ts` but no `scope.test.ts`, and
+   an OAuth2 service (oauth-echo) never gets one regardless of scope
+   count. The lib.rs gate comment discloses the same live reason
+   Rust's does: real RS256 verification needs a real issuer's JWKS
+   regardless of how lazily it's fetched — a lazy client just moves
+   *when* the network call happens, not whether it's needed — so a
+   true no-infrastructure OAuth2 scope proof needs a fake auth
+   adapter, disclosed future work this milestone didn't build.
+
+   Four real bugs found live and fixed, all via generating and
+   type-checking order-system/typed-video/oauth-echo against `tsc`
+   and `eslint` (not hypothesized):
+   1. The `publish()` `HostSyntax` leaf called a nonexistent
+      `AppState.publish` method — `queue.ts.j2` only ever defined a
+      free function `publish(state, subject, payload: Buffer)`, never
+      an `AppState` method, and it takes a `Buffer` not a raw string.
+      M4 never caught this because no earlier example called
+      `publish` from inside a typed handler body (only from a
+      pipeline step, wired separately) until order-system's
+      `receive_order_event` handler (from the `std/webhook.ciac`
+      blueprint) did. Fixed in `lower.rs` to call the real free
+      function with `Buffer.from(JSON.stringify(...))`; `logic.ts.j2`
+      gained a conditional `import { publish } from "../queue.js"`
+      gated on a new `LogicFileCtx.needs_queue` field.
+   2. `crud Clip: Video;` in typed-video.ciac — a CRUD resource whose
+      declared name differs from the record it binds — broke
+      `route_resource.ts.j2`'s schema import, which assumed
+      `resource.name` always matched the schema `schemas.ts` actually
+      generates (keyed by *record* name, one schema per `record`
+      declaration). Dormant since M2 since no earlier example had a
+      differently-named crud-to-record binding. Fixed by importing
+      `{{ resource.record.name }}Schema` instead of
+      `{{ resource.name }}Schema` (confirmed `resource_store.ts.j2`
+      has no equivalent bug — it defines its own local
+      `{{ resource.name }}Row`/`Payload` interfaces, never importing
+      from `schemas.ts`). This same bug, previously silent, also
+      affected `audited-crud.ciac`'s `ResourceUser`/`ResourceVideo`
+      resources once their goldens regenerated under the fix.
+   3. `auth.ts.j2` unconditionally imported `createRemoteJWKSet` from
+      `jose` even on JWT-only services that never reference it —
+      `@typescript-eslint/no-unused-vars` caught it on every M6
+      example. Fixed with a scheme-conditional import (only pull
+      `createRemoteJWKSet` in when `c.auth_scheme == "oauth2"`).
+   4. `route_api.ts.j2`/`route_resource.ts.j2` unconditionally
+      imported `requireScope` alongside `verifyToken` whenever a
+      route was auth-gated, even on routes with no declared scope
+      (which only call `verifyToken` and `void claims`) — same
+      eslint unused-import failure, caught on typed-video (no route
+      scope), oauth-echo, and order-system's unscoped routes. Fixed
+      by conditioning the `requireScope` import on the presence of an
+      actual scope (`api.scope`, or `resource.read_scope ||
+      resource.write_scope`).
+
+   Live proof: all three M6 examples (order-system, typed-video,
+   oauth-echo) generated via the real `ciac build --target
+   typescript` binary, `npm ci`, `npx tsc --noEmit` clean, `npx
+   eslint .` clean, `npx vitest run` green — order-system's 9 tests
+   across `tests/state.test.ts` + the new `tests/scope.test.ts`
+   confirm the zero-infrastructure scope-enforcement proof: a request
+   with a missing/wrong scope gets a real `403` before any db/cache
+   client is touched (asserted directly), and a request with the
+   granted scope clears the scope check and reaches the (expected,
+   no-infra) `ECONNREFUSED`/`500` from the unreachable local Postgres
+   — never a `401`/`403` — proving the check itself, not the full
+   round-trip, which is exactly what the milestone's "zero
+   infrastructure" claim is about. typed-video and oauth-echo each
+   correctly emit `auth.ts` with no `scope.test.ts` (no declared
+   scope; OAuth2 scheme, respectively), matching the disclosed gate
+   exactly. `routed-media.ciac`, an existing example with a real
+   declared scope (`"videos:write"`), newly un-gates on TS this
+   milestone and correctly receives both `auth.ts` and
+   `scope.test.ts` in its golden.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green. One stale gating
+   assertion from M3 (`supports_v0_23_m3_scope`, asserting
+   `Component::Auth` was refused) was caught by the test suite and
+   updated to assert both schemes now supported, renamed
+   `supports_v0_23_m6_scope`. Golden acceptance: every TypeScript
+   example's snapshot churned (the `jose` dependency addition and a
+   `package-lock.json` transitive bump — `fast-uri` 4.1.0→4.1.1 from
+   npm's registry state moving since M5's lockfile capture — touch
+   every TS project regardless of auth use), plus six examples
+   gained their first-ever TypeScript golden now that Auth is
+   supported: order-system, typed-video, oauth-echo (this
+   milestone's own proving set), crud-notes, routed-media, and
+   video-platform (existing `auth JWT;` examples that were silently
+   skipped by the golden harness's `check_support`-gated loop until
+   now). All diffs reviewed by hand before accepting — the schema-
+   import rename (bug 2) is visible directly in audited-crud's
+   diff, confirming the fix rather than just the dependency churn.
 7. **M7 — Ontology remainder + call clients + observability
    completion.** S3/email/search/external_http wrappers, typed call
    clients (reuse-or-fork decision recorded), OTel end-to-end with
@@ -862,6 +1559,165 @@ documented in the generated README's requirements line.
    verify; `--system` CI rows added (typescript × inventory-system,
    × mysql-notes, × sim-vertical-slice) with the standing
    Docker-delegation note.
+
+   **Shipped (v0.23 M7):** `object_store.ts`/`email.ts`/`search.ts`/
+   `http_clients.ts` — one shared wrapper module per ontology
+   capability *kind* (not per named instance, matching Rust's own
+   module shape), gated on `Ctx.has_object_store`/`has_email`/
+   `has_search`/`has_external_http`: `@aws-sdk/client-s3` against
+   MinIO (`forcePathStyle: true`, path-style so MinIO works with no
+   extra config), `nodemailer` SMTP against Mailpit, `@opensearch-
+   project/opensearch`, and a dependency-free `fetch`-based
+   `ExternalHttp` (matching `client.ts.j2`'s own established "no HTTP
+   client dependency needed" precedent — the M5-era typed call
+   clients, already generated and untested until this milestone's
+   examples finally exercised them, needed no changes at all).
+   `state.ts.j2`/`config.ts.j2` gained the same per-instance loop
+   shape `db_instances`/`cache_instances` already used, reusing the
+   target-neutral `Ctx.object_store_instances`/`email_instances`/
+   `search_instances`/`external_http_instances` (`OntologyInstanceCtx`)
+   `ciac-codegen::model` already computed for Python/Rust — no shared
+   model changes needed, confirming 22UpdatePlan.md's factory promise
+   held for this capability set too.
+
+   The `HostSyntax` leaves M4 left "implemented to the trait's letter,
+   untested" (hardcoded `this.state.objectStore`/`.email`/`.search`/
+   `.http`, camelCase, inconsistent with the `db`/`cache` fields'
+   established snake_case `AppState` naming) were corrected to resolve
+   the handler's actually-bound instance via `context::extras_of`,
+   exactly mirroring how `db_field`/`cache_field` already resolve
+   through `context::access_of` — `TsSyntax` gained
+   `object_store_field`/`email_field`/`search_field`/`http_field:
+   Option<String>`, each just `ExtraDepCtx.rust_state_field` reused
+   as-is (already the raw, language-agnostic `AppState` property name
+   despite its `rust_` prefix). Live-caught the naming bug immediately:
+   `extras-verbs.ciac`'s `external_http upstream { .. }` binds to
+   `this.state.http_upstream`, not a bare `this.state.http` — the
+   hardcoded M4 leaf would have silently compiled against a
+   nonexistent field name shape mismatch had a real named
+   `external_http` instance ever reached it before now.
+
+   OTel: `NodeTracerProvider` + `BatchSpanProcessor` +
+   `OTLPTraceExporter` (`@opentelemetry/exporter-trace-otlp-grpc`,
+   gRPC/4317 — the same collector port Python's `OTLPSpanExporter`/
+   Rust's `opentelemetry_otlp` `with_tonic()` already target, not the
+   HTTP/protobuf exporter, so the shared `otel-collector` config needs
+   no target-specific receiver) plus `@fastify/otel` (the officially
+   Fastify-maintained instrumentation — `@opentelemetry/
+   instrumentation-fastify` is itself deprecated in its package's own
+   README in favor of it), `HttpInstrumentation`,
+   `PgInstrumentation` (gated on `c.has_postgres_db`, matching
+   Python's own per-driver `SQLAlchemyInstrumentor` precedent — MySQL/
+   SQLite get no auto-instrumentation on any target today), and
+   `UndiciInstrumentation` — the last one is what makes outbound
+   `fetch` (both the M5 typed call clients and the new
+   `ExternalHttp`) get client spans and `traceparent` propagation "for
+   free", the same free outbound propagation Python's
+   `HTTPXClientInstrumentor`/Rust's `opentelemetry_http` give their
+   own clients. `observability.ts`'s new `traced(name, headers, fn)`
+   helper is the consume-side half of the broker-hop propagation:
+   `queue.ts`'s `publish()` now injects the active span's W3C
+   `traceparent` into a plain string carrier (via `@opentelemetry/
+   api`'s `propagation.inject`) before handing it to
+   `Queue.publish`'s new optional `headers` parameter — real NATS
+   `MsgHdrs` via the `headers()` factory, or a plain object passed
+   straight through to kafkajs's own `IHeaders` — and `worker.ts.j2`/
+   `consumer.ts.j2`'s consume loops (both broker engines) extract that
+   carrier back out of the received message and wrap the handler call
+   in `traced("worker.<name>", ..)`/`traced("consumer.<name>", ..)`,
+   the same span-naming convention Rust's `tracing::info_span!
+   ("worker.{name}")` already established — byte-for-byte the same
+   header contract v0.15 M3/M4 settled, just carried over a different
+   wire representation per broker engine (`MsgHdrs` vs `IHeaders`)
+   the way the publish side already had to. `prom-client`'s default
+   registry (`collectDefaultMetrics`) mounts at `/metrics` gated on
+   `c.has_metrics`, matching Python's `prometheus_client`/Rust's
+   `metrics-exporter-prometheus` shape. `main.ts`/`workers_main.ts`
+   call `configureTracing()` once at process startup (mirroring
+   Rust's single `observability::init()` call site) — never inside
+   `buildApp()` itself, so `state.test.ts`/`scope.test.ts`'s
+   zero-infrastructure suites stay untouched by a live OTLP endpoint
+   requirement.
+
+   Three real bugs found live (via `tsc`/`eslint` against the five
+   newly-un-gated examples), all fixed:
+   1. `@fastify/otel`'s default export resolved to the whole CJS
+      namespace object under this project's `esModuleInterop`
+      settings (`TS2351: This expression is not constructable`) — its
+      own `.d.ts` exposes the class as both `export { X as default }`
+      *and* a plain named export `export { X }`; switching to the
+      named import (`import { FastifyOtelInstrumentation } from
+      "@fastify/otel"`) sidesteps the interop mismatch entirely.
+   2. `logic.ts.j2`'s `extern` handler stub never referenced its own
+      params (`throw new Error("not implemented")` only) —
+      `@typescript-eslint/no-unused-vars` on `typed-handlers.ciac`'s
+      `extern handler Notify(v: Video)`, the first `extern` handler
+      with a named param this arc's examples exercised (v0.7 M6's own
+      `typed-handlers.ciac` predates this backend by two major
+      versions but only just reached TS this milestone). Fixed with a
+      `void <param>;` line per param, gated on `handler.is_extern`,
+      mirroring Rust's own `#[allow(unused_variables)]` stub
+      precedent in spirit if not mechanism.
+   3. `route_api.ts.j2`'s `void state;` fallback only fired when
+      `api.steps` was empty, but a `Return`-only pipeline (`traced-
+      checkout.ciac`'s `Payments.Charge`) still produces one
+      `api.steps` entry (a `Return`-kind step that renders no text of
+      its own — the trailing `return { status, data: result }` is
+      already hardcoded outside the loop) — so `state` went truly
+      unused with no `void` to cover it. Fixed by making `void state;`
+      unconditional: harmless when a later step genuinely reads
+      `state` (a redundant statement, not a lint conflict), correct
+      when nothing does.
+
+   Live proof: all seven examples (`ontology-growth`, `typed-
+   handlers`, `extras-verbs`, `multi-service-media` [5 services],
+   `inventory-system` [2 services], `traced-checkout` [2 services],
+   `dev-identity`) generated through the real `ciac build --target
+   typescript` binary, `npm ci`, `npx tsc --noEmit` clean, `npx eslint
+   .` clean, `npx vitest run` green — 13 project directories in
+   total across the multi-service systems, all independently
+   installed and checked. `extras-verbs.ciac`'s golden confirms every
+   one of the four capability leaves reaches its correctly-resolved
+   field: `this.state.object_store`/`.email`/`.search` (default
+   instances) and `this.state.http_upstream` (the named
+   `external_http upstream { .. }` instance) — the exact naming bug
+   description above, caught in the golden diff itself, not just
+   inferred. `dev-identity.ciac` (`auth OAuth2` + `users Keycloak`,
+   no ontology capabilities at all) confirms the new
+   `Component::Users`/dev-issuer-default path needed no TS-specific
+   code — `ciac-codegen::model`'s existing target-neutral
+   `KEYCLOAK_DEV_ISSUER` default computation carried over unchanged,
+   as expected. No live Jaeger/collector round-trip was attempted
+   (the sandbox this milestone was built in has no Docker daemon,
+   confirmed via `docker ps`) — "the trace test" this milestone
+   proves is structural and static: real `tsc` compilation of the
+   full OTel wiring, byte-for-byte header-contract parity with
+   Python's/Rust's own publish/consume shape (verified by direct
+   comparison of the generated `queue.ts`/`worker.ts` against
+   `queue.py.j2`/`worker.py.j2` and `queue.rs.j2`/`worker.rs.j2`), and
+   the same `Instrument`/span-naming convention — not an actual
+   collected-trace assertion, which stays Docker-delegated to CI like
+   every other `--system` claim this arc already discloses.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green with no code-side test
+   changes needed (the shared `check_support`-gated golden harness
+   picked up all newly-unlocked examples automatically, same M6
+   pattern). Golden acceptance: `package.json`/`package-lock.json`
+   churn on every existing TS example (17 new dependencies — S3,
+   SMTP, OpenSearch, the full OTel Node SDK + instrumentation set,
+   `@fastify/otel`, `prom-client` — added unconditionally, matching
+   this backend's established "fixed dependency set" precedent from
+   M1 rather than per-capability-conditional `package.json`), plus
+   seven brand-new TypeScript goldens for the milestone's own proving
+   examples. `--system` CI rows added for `typescript ×
+   inventory-system`/`× mysql-notes`/`× sim-vertical-slice` in
+   `.github/workflows/ci.yml`, alongside the existing python/rust
+   rows, with the same Docker-delegation disclosure comment those
+   already carry; local codegen + `tsc`/`eslint`/`vitest` for all
+   three confirmed clean before adding the rows (live compose
+   execution untested locally for the same no-Docker reason above).
 8. **M8 — Whole-repo integration.** Every example either verifies or
    is explicitly reason-gated (target: zero gates — TS supports the
    full provider table); golden suite complete; generated docs
@@ -870,6 +1726,84 @@ documented in the generated README's requirements line.
    against a TS tree (migrations_dir path resolution — identity
    here, but the test guards the factory's mapping for Java);
    `generated-typescript` CI job (npm-cached).
+
+   **Shipped (v0.23 M8):** `TsBackend::supports` collapsed to the same
+   unconditional `let _ = component; true` Rust's own has carried
+   since v0.13 — every one of the 20 `Component` variants reaches
+   this backend now (confirmed exhaustively, not just by the
+   milestone narrative: M7's `matches!` arm already listed all 20
+   before this milestone trimmed it down to Rust's own style), so
+   zero gated examples remain and there was nothing left to name a
+   reason for. Verified with a real, disk-budget-aware sweep — not
+   just golden generation — across all 26 examples' full project
+   trees (33 `package.json` directories once every multi-service
+   system's per-service subdirectories are counted): `ciac build`,
+   `npm ci`, `npx tsc --noEmit`, `npx eslint .`, `npx vitest run`, all
+   real, all clean, `node_modules` removed after each to stay inside
+   the session's disk allowance (a real constraint hit mid-sweep —
+   `node_modules` accumulated across all 33 directories exceeds the
+   budget if kept simultaneously). `audited-crud.ciac`'s two services
+   (`catalog`/`accounts`) were the only ones not already directly
+   proven in an earlier milestone's own example set; everything else
+   re-confirms milestones M1–M7 already established.
+
+   Golden suite: already complete as of M7 (all 26 examples have a
+   TypeScript golden; `comm -23` against the full example list came
+   back empty) — no template changes landed this milestone, so no
+   golden churn either.
+
+   Docs: `docs/language.md`'s provider table gained a TypeScript
+   column (all 14 capability rows), matching v0.11 M6's own "docs
+   multi-provider tables" precedent from when Rust closed its own
+   remaining gaps; `README.md`'s CIaC-concept table gained the same
+   column, and its four `--target python\|rust` CLI usage lines
+   became `python\|rust\|typescript`.
+
+   `ciac dev`: `dev_survives_compile_errors_and_regenerates_on_fix_typescript`
+   added to `dev_cli.rs`, the same watch/break/fix session as the
+   existing Python test, against `-t typescript`. Confirms `--no-
+   docker`'s early return never shells out to `npm` at all (the test
+   has no `node_modules` on disk and would fail loudly if it tried) —
+   the target-neutral watch/rebuild loop itself (unchanged since
+   v0.13 M4) needed zero TS-specific code, exactly the factory promise
+   this whole arc has been checking milestone by milestone.
+
+   MCP: `mcp_cli.rs`'s existing round-trip test gained real `build`
+   and `verify` `tools/call` invocations against `target: typescript`
+   (previously only checked for the tool's *presence* in `tools/
+   list`, never actually invoked with this target) — `verify` runs
+   the genuine `npm ci`/`tsc`/`eslint`/`vitest` sequence through the
+   MCP surface, not just the CLI, confirming the same envelope shape
+   `ciac verify --target typescript` prints on the command line.
+   `node_modules` removed afterward, same disk discipline as the
+   sweep above.
+
+   Evolution/rename-replay: `rename_cli.rs` gained
+   `out_replay_resolves_the_typescript_target_migrations_dir` — a
+   `table`-bearing program built with `-t typescript`, confirming
+   `backfill::migrations_dir` resolves through `TsBackend::
+   target_info().migrations_dir` to `"migrations"`, distinct from
+   Python's own `"app/migrations"` (Rust and TS happen to share the
+   same value; Python doesn't) — a real divergence in the wild, not a
+   hypothetical one invented to justify the test. Then the same
+   `--out` rename replay `out_replays_the_recorded_recipe_and_
+   regenerates` already exercises for Python confirms the migration
+   file survives at its correctly-resolved path across the replayed
+   regeneration.
+
+   `generated-typescript` CI job added to `.github/workflows/ci.yml`,
+   mirroring `generated-python`'s per-example `ciac verify --target
+   typescript` loop (no CIAC0011-skip branch needed, unlike
+   `generated-rust`'s own job, since there are no gates left to skip)
+   with `actions/setup-node`'s npm cache and a `node_modules` cleanup
+   after each example for the same disk reason `generated-rust`'s own
+   shared `CARGO_TARGET_DIR` comment already discloses for its dep
+   tree.
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green (including the new
+   `dev_cli`/`mcp_cli`/`rename_cli` cases) with zero golden churn.
 9. **M9 — Simulation slice (gated bet) + version + retrospective.**
    Pillar 9's slice: world.ts, world-guards, sim_runner.ts template,
    `SimSupport::Narrow` wiring, both canonical scenario outcomes
@@ -877,6 +1811,219 @@ documented in the generated README's requirements line.
    docs/simulation.md + backends.md updated. Workspace version bump;
    whole-arc analysis including the factory-cost verdict that gates
    24UpdatePlan.md.
+
+   **Shipped (v0.23 M9):** `world.ts` (new template): a hand-written
+   `SimWorld` class (`FailureEngine`/`FakeDatabase`/`FakeQueue`),
+   occupying the exact position Python's `sim/pyrunner/world.py`
+   restatement already does, since TypeScript can no more
+   `include_str!` Rust's `crates/ciac-sim/src/world.rs` than Python
+   can — emitted only when `c.has_db or c.queue_engine`, mirroring
+   Rust's own `world.rs`/`sim_runner.rs` emission gate exactly.
+   `state.ts.j2` gained an `AppState.world?: SimWorld` field and
+   `createSimulationState(config, world)`; `queue.ts.j2`'s shared
+   `publish()` free function gained the world-guard (checked first,
+   skips the real broker client and — deliberately — the tracing
+   header injection, since there is no real collector round-trip to
+   propagate through a fake broker).
+
+   `db.insert`'s `HostSyntax` leaf (`db_insert_tail` in
+   `ciac-backend-ts/src/lower.rs`) gained the identical world-guard
+   Rust's own `db_insert_expr` has, including the fact the failure
+   effect it checks is named `"db.commit"`, not `"db.insert"` — the
+   shared `FailureRule` vocabulary both backends' scenarios use.
+   `transaction_stmt` needed a real design decision the plan's own
+   sketch didn't spell out: TypeScript's `transaction {}` blocks are
+   *really* atomic in production (checked-out connection,
+   `BEGIN`/`COMMIT`/`ROLLBACK` by hand — a real gap Rust's own
+   production backend still discloses as non-atomic generally), so
+   simply reusing `db_insert_tail`'s per-statement world-check
+   wasn't enough on its own — the transaction wrapper itself would
+   still try to open a real, live database connection under
+   simulation. Resolved by guarding only the connect/`BEGIN`/`COMMIT`/
+   `ROLLBACK`/release calls with `if (!this.state.world)`, leaving the
+   transaction body (`inner_lines`) emitted exactly once either way:
+   under simulation the real connection is never opened at all (no
+   live-database dependency survives), and the body's own per-
+   statement world-check does the actual routing. This is a narrower,
+   *disclosed* simplification that applies only under simulation —
+   production TypeScript's real atomicity is unchanged — matching the
+   same "transaction atomicity does not extend into `ciac sim`" gap
+   Rust's own backend already has in production generally, not a new
+   divergence invented for this milestone.
+
+   Two live-caught `tsc` bugs the design above didn't anticipate,
+   both fixed and disclosed rather than worked around: (1) `Awaited<
+   ReturnType<typeof this.state.field.$client.connect>>` resolved to
+   `void` — `pg.Pool.connect`/`mysql2`'s pool connect are *overloaded*
+   (a zero-arg promise form and a callback form), and a bare `typeof
+   method` reference has no call-site argument count for `tsc` to
+   resolve the overload against, so it picked the callback form's
+   `void` return. Fixed by routing through a zero-arg wrapper closure
+   (`const __connect = () => ...connect();`) — a real call expression
+   gives `tsc` the argument count it needs. (2) `app.inject()`'s
+   return type collapsed to a bogus `void & Promise<Response> &
+   Chain` intersection once `sim_runner.ts`'s own hand-rolled
+   `HTTPMethods` import (from `fastify`, structurally similar to but
+   nominally distinct from `light-my-request`'s own `InjectOptions
+   ["method"]`) failed to satisfy `InjectOptions`, breaking Fastify's
+   own overload resolution for `inject()` as a downstream consequence.
+   Fixed by importing `InjectOptions` itself (also re-exported from
+   `fastify`) and typing the route table's `method` field as
+   `InjectOptions["method"]` directly, instead of naming an equivalent
+   type by hand.
+
+   A third bug, not a type error but a protocol violation caught by
+   the live scenario run itself: pino's structured "request completed"
+   log lines share stdout with `sim_runner`'s own one-line
+   `SimScenarioOutcome` JSON reply, and pino's writer flushes
+   asynchronously — under `virtual-week`'s 100-request scenario, a
+   stray log line landed *after* the runner's own final `console.log`,
+   so `ciac sim`'s "last line on stdout" parser picked up a pino log
+   instead of the outcome JSON and failed to parse it. Fixed at the
+   source rather than papered over in the parser: `main.ts.j2`'s
+   `buildApp(state, opts?: { logger?: boolean })` gained an optional
+   override (every other caller — production startup, `scope.test.ts`
+   — omits it and keeps today's logging unchanged); `sim_runner.ts.j2`
+   passes `{ logger: false }`.
+
+   `sim_runner.ts.j2` (new template, generated only alongside
+   `world.ts`): a generic scenario interpreter — unlike Python's
+   hand-written per-scenario drivers, TypeScript (like Rust) needs
+   concrete per-program route/worker/job names baked in at codegen
+   time, so it is generated code, not a scratch-directory runner
+   written out at CLI-invocation time. Structural scenario parsing
+   only (`simulation_version`/non-empty `steps`, matching Rust's own
+   `Scenario::validate` scope) via hand-written TypeScript interfaces
+   restating `ciac_sim::scenario`'s shape, the same restatement
+   position `world.ts` occupies for the same vendoring-impossibility
+   reason. `request` steps drive `app.inject()` (Fastify's real
+   request-handling path, no live listener — the same "real code, no
+   Docker" property `tower::ServiceExt::oneshot` gives Rust); `drain`
+   dispatches by `if`/`else if` on subject string against each
+   worker's own `handleMessageOnce` with its own retry budget,
+   identical single-global-buffer scope to Rust's (no independent
+   per-`(subject, group)` cursors); `advance` computes cron-due
+   instants via `croner`'s own `Cron(schedule, { paused: true
+   }).nextRun(cursor)`, looped until exceeding the target instant —
+   no seconds-field/weekday translation needed (the same "schedule
+   translation: none needed (croner)" divergence-ledger row this
+   arc's earlier milestones already established); `expect` covers all
+   five variants (`response`/`row`/`worker_attempts`/`job_runs`/
+   `quiescence`), `response.json` compared via a canonical
+   (key-sorted) JSON string rather than raw `JSON.stringify` so
+   response-key ordering can't produce a false mismatch; `publish`
+   steps refuse with the same "disclosed scope" message Rust's own
+   runner gives. One JSON line on stdout
+   (`{scenario, passed, error, worker_attempts, job_runs}`), matching
+   `SimScenarioOutcome` field-for-field.
+
+   `unsupported_sim_capabilities` (new, `ciac-backend-ts::lib.rs`):
+   near-verbatim port of Rust's own function of the same name, over
+   the identical shared `ciac_codegen::lower::scan` both backends'
+   `render()` already call — required re-exporting `scan` from this
+   backend's own `lower` module (`pub(crate) use
+   ciac_codegen::lower::scan;`, matching a line Rust's own `lower.rs`
+   already had that TS's `lower.rs` was missing, since TS's `render()`
+   only ever called it via the `self`-imported module alias
+   internally, never needing a bare re-export until `lib.rs` needed
+   one too). `TARGET_INFO.sim` is now `SimSupport::Narrow {
+   unsupported: unsupported_sim_capabilities }`, replacing the M1-era
+   `SimSupport::None { reason: "... lands in M9 (gated bet)" }`
+   placeholder this whole arc carried until now.
+
+   `ciac sim --target typescript` wired into `crates/ciac/src/
+   commands.rs`: a new `sim_drive_typescript` (same shape as
+   `sim_drive_rust` — find the single `package.json` project,
+   confirm `src/sim_runner.ts` exists, `npm ci && npm run build`
+   once, then `node dist/sim_runner.js <scenario>` once per
+   `--scenario`, parsing the last stdout line as `SimScenarioOutcome`)
+   and a three-way dispatch on `sim_support`/`target` replacing the
+   old binary `Narrow`-means-Rust `if`. Two real, pre-existing bugs
+   this dispatch change surfaced and fixed, not introduced: both of
+   `sim_inner`'s refusal messages ("cannot simulate this program",
+   "does not yet support --record/--replay") hardcoded the literal
+   string `"rust"` and `"v0.17 M11"` regardless of which target was
+   actually being refused — harmless while Rust was the only `Narrow`
+   target, actively misleading once TypeScript became the second one
+   (live-caught: refusing `order-system.ciac --target typescript`
+   printed "`ciac sim --target rust` cannot simulate..."). Fixed by
+   making both messages target-generic, interpolating the real
+   `target` variable and dropping the milestone-number attribution
+   that no longer identified a single owner. The "unknown target"
+   refusal's own stale "only drives the python/rust targets in v0.17"
+   text (already wrong since M1 registered TypeScript as a full
+   backend) was corrected alongside it. `target ==
+   "rust"`/`"typescript"` in the new match arms are genuine, disclosed
+   `target-literal-ok` survivors of the v0.22 M1 grep fence
+   (`target_literal_fence.rs`) — driving a compiled Rust binary vs. a
+   compiled JS entry point are two different `std::process::Command`
+   recipes with no shared `TargetInfo`-describable shape to factor the
+   difference through, unlike the scattered per-target `match` sites
+   that fence exists to prevent from regrowing.
+
+   Live proof, not just golden generation: `ciac sim --target
+   typescript` against both checked-in scenarios reproduces the exact
+   canonical outcomes —
+   `{"worker_attempts":{"ProcessOrder":3},"job_runs":{"Reconcile":1}}`
+   for `vertical-slice` and
+   `{"worker_attempts":{"ProcessOrder":100},"job_runs":{"Reconcile":7}}`
+   for `virtual-week`, byte-for-byte via `--json`. The refusal case
+   (`order-system.ciac --target typescript`) names its reasons
+   exactly: `declares \`auth\`` plus `calls verb(s) the simulation
+   world does not fake: cache.delete, cache.set, db.count,
+   db.update` — matching the exit checklist's "auth + each unguarded
+   verb" bar precisely. A regression check confirmed Rust's own `ciac
+   sim --target rust` path is unaffected by the shared dispatch/
+   message changes (same vertical-slice scenario, same outcome, run
+   after the refactor).
+
+   Docs: `docs/simulation.md`'s status table and prose gained a
+   TypeScript column/paragraph paralleling Rust's own (including the
+   `transaction {}` simplification and the `{ logger: false }`
+   wrinkle); a new "TypeScript's protocol mirrors Rust's own,
+   line-for-line" subsection paralleling "Rust's protocol is
+   different, not the same runner ported"; the CLI example section
+   gained a `-t typescript` row; "single-service, both targets"
+   became "every target," and the mixed-target/non-Rust-backend
+   phrasing in "Explicit non-goals" was generalized rather than left
+   naming only the two targets that existed when it was written.
+   `docs/backends.md`'s Simulation section gained a paragraph
+   describing TypeScript's identical two-part shape (lazy-init
+   precondition already met since M1/M2; `SimWorld`/`sim_runner.ts`/
+   `unsupported_sim_capabilities` this milestone). CI:
+   `sim-vertical-slice × typescript` — already present as a
+   `--system` row since M7 — moved into the same ratchet comment
+   block as the python/rust rows it belongs beside (the M7-era
+   comment above it never mentioned this row was *also* the fidelity
+   ratchet the plan's own M9 exit criteria names; this milestone
+   corrects that, rather than adding a duplicate row).
+
+   `docs/targets.json` regenerated (`typescript`'s `sim.level` field:
+   `"none"` → `"narrow"`) — caught live by
+   `targets_cli.rs::checked_in_targets_json_matches_the_derived_one`,
+   the drift test doing exactly its job rather than being bypassed.
+   Golden churn across all 26 TypeScript examples (`state.ts`/
+   `queue.ts` changed universally; `world.ts`/`sim_runner.ts` new for
+   the `db`/`queue`-bearing subset) reviewed before accepting, not
+   blind — every diff traced to one of the changes named above, no
+   unexplained deltas.
+
+   Workspace version bumped `0.20.0` → `0.21.0` (root `Cargo.toml`'s
+   `[workspace.package]` version plus its nine internal path-
+   dependency version pins; `docs/language.md`'s title; `editors/
+   vscode/package.json`'s extension version), following the "number
+   assigned at execution" convention v0.22 M6 established — the
+   workspace version tracks sequential shipped arcs, not the
+   `NNUpdatePlan.md` filename's own number (which drifted from the
+   version number several arcs before this one; v0.22's own arc
+   bumped `0.19.0` → `0.20.0`, not `0.22.0`).
+
+   Full workspace verification: `cargo fmt --all --check` clean,
+   `cargo clippy --workspace --all-targets -- -D warnings` zero
+   warnings, `cargo test --workspace` green (61 test binaries, zero
+   failures) including `cargo insta test --accept`'s reviewed golden
+   churn and the `target_literal_fence` re-check after the
+   `target-literal-ok` annotations landed.
 
 ### Per-milestone exit checklists
 
@@ -1022,3 +2169,116 @@ contract notes TS forced (none are expected from TS; Go pre-declares
 its error-idiom amendment) — Go begins by reconciling against those
 actuals, exactly as v0.17 M1 reconciled against real v0.16 output
 rather than its own plan's prose.
+
+## Whole-arc retrospective (v0.23, M1–M9 complete)
+
+**What shipped, in one pass, plain terms:** a third bundled backend —
+TypeScript on Fastify/Drizzle/Zod/croner — reached full provider
+parity with Python and Rust (all 20 `Component` variants, all 26
+examples, `TsBackend::supports()` now the same unconditional `true`
+Rust's own carries) across nine milestones: skeleton-to-ping (M1),
+db/cache/keyed-store/migrations (M2), broker/workers/jobs/channels
+(M3), typed handlers and the full `HostSyntax` leaf set (M4), a
+checkpoint that graded the factory's real cost against 22UpdatePlan.md's
+predictions and issued a go/no-go (M5), auth/scopes (M6), the ontology
+remainder plus observability (M7), whole-repo integration — dev/MCP/
+evolution/CI (M8), and finally the gated-bet simulation slice this
+milestone closes (M9). Every milestone's own shipped-notes section
+above is the detailed record; this section is the arc-level summary
+22UpdatePlan.md's own M6 asked for.
+
+**The factory-cost verdict, measured (extends M5's own table, does not
+repeat it):** M5's checkpoint already found the 22UpdatePlan.md
+factory's real cost for a `sqlx`-equivalent-free target running
+noticeably higher than Rust's own baseline — TypeScript needed a
+hand-rolled Drizzle `$client` raw-SQL escape hatch and its own bind-
+order discipline, not a free ride on `ciac_codegen::template::sqlph`
+alone. M9 adds one more data point in the same direction, from a
+different corner of the factory: **the shared `HostSyntax` trait
+needed zero contract changes for the sim slice** (`db_insert_tail`/
+`transaction_stmt`/`handle` are all TS-local leaf implementations;
+`ciac_codegen::lower`'s trait definition and walker are untouched by
+this milestone), confirming 22UpdatePlan.md's own M3 finding that the
+scanner half of the ontology seam (`unguarded_verbs`, `scan()`) is
+genuinely target-neutral — but the sim slice's *design effort* still
+landed almost entirely in TS-specific territory anyway, for a reason
+the plan's own sketch didn't anticipate: TypeScript's `transaction {}`
+is *really* atomic in production, a strictly stronger guarantee than
+Rust's own disclosed-non-atomic implementation, and reconciling that
+stronger guarantee with a simulation world that has no live database
+to be atomic *against* required a genuine new invention (guard the
+connection lifecycle, not the statement) that Rust's own simpler
+design never had to make. The lesson for 24UpdatePlan.md (Go): a
+target's *production* correctness choices that exceed Rust's own
+disclosed gaps are exactly where a gated-bet sim slice's design cost
+concentrates — not in the shared scanner/gate machinery, which ports
+close to verbatim (this milestone's `unsupported_sim_capabilities` is
+close to a line-for-line copy of Rust's own, module-path re-export
+included).
+
+One narrow, disclosed observation from building `unsupported_sim_
+capabilities` that predates this milestone and isn't this milestone's
+to fix: the capability-coverage gate (both Rust's own, v0.17 M11, and
+this arc's TypeScript port) only scans typed-handler (`Component::
+Service { signature: Some(_) }`) verb calls for `unguarded_verbs` —
+classic/seeded `resource` routes (keyed-document CRUD, a different,
+older codegen path) are not scanned at all. No example in this repo
+combines `resource` with a `db`/`queue` instance in a way that would
+expose the gap today (verified by inspection, not by trying to break
+it live), so it is recorded here as a known, narrow blind spot in the
+*shared* gate design inherited unchanged from Rust's own v0.17 M11
+work — not a TypeScript-specific gap, and not attempted here, since
+fixing it would mean auditing Rust's own already-shipped sim slice
+too, out of this milestone's scope.
+
+**What was deliberately not shipped, and why that was the right
+call:** multi-service simulation (one driver process per service,
+coordinated through a shared virtual clock) — real future work for
+every target, not attempted here, matching Rust's own still-open gap
+from v0.17 M11 rather than a new TypeScript-specific deferral.
+`--record`/`--replay` for the TypeScript runner — the same disclosed
+gap Rust's own generated-runner protocol has (a plain scenario
+interpreter, not the bounded child protocol Python's embedded runner
+implements); extending either target's generated runner with a
+replay-tape format is real, scoped, future work, not guessed at here.
+`publish` scenario steps (publishing directly to a stream, bypassing
+an API) remain refused with a named "disclosed scope" error on both
+generated-runner targets — no example in the checked-in scenario set
+needs one, so inventing the semantics now would be speculative rather
+than evidenced.
+
+**Deviations from this plan's original text, all disclosed in
+place:** M9's own sketch (Pillar 9) showed `driveWithRetries` as an
+implied shared helper function; the shipped `sim_runner.ts.j2`
+instead inlines the retry loop per worker inside `drain()` (functionally
+identical — same retry-budget semantics, same attempt counting — just
+not factored into a named helper), since the per-worker code needed
+direct access to that worker's own `MAX_RETRIES`/`handleMessageOnce`
+export names, which the generated dispatch already threads through
+template loop variables rather than a runtime parameter. Two literal
+`target == "rust"`/`target == "typescript"` survivors were added to
+`crates/ciac/src/commands.rs`'s `sim_inner` dispatch, each marked
+`target-literal-ok` per the v0.22 M1 grep fence's own escape hatch —
+a real, disclosed, small cost of the registry-driven design meeting a
+case (two `Narrow` targets needing two genuinely different
+`std::process::Command` toolchains) the fence's own precedent
+(`sim_drive_python`'s `"python"` interpreter-name literal) already
+anticipated could happen, not a regrowth of the scattered-`match`
+pattern the fence exists to prevent. Two pre-existing bugs (not
+introduced by this milestone, but only reachable once a second
+`Narrow` target existed to expose them) were found and fixed rather
+than worked around: `sim_inner`'s two refusal messages hardcoded
+`"rust"`/`"v0.17 M11"` unconditionally; both are now target-generic.
+
+**Handoff to 24UpdatePlan.md (Go):** this arc's own M5 checkpoint
+already delivered the measured cost table 22UpdatePlan.md's handoff
+sentence asked for; this milestone adds the sim-slice data point
+above to it. No `HostSyntax` contract changes landed this arc (the
+trait and shared walker are exactly as 22UpdatePlan.md/23UpdatePlan.md
+M1 left them) — Go inherits a stable, twice-proven leaf-implementation
+contract, not a moving target. Go's own gated-bet sim slice (if and
+when it lands) should expect its design cost to concentrate wherever
+Go's own production semantics diverge from Rust's disclosed baseline,
+exactly as this milestone's `transaction {}` finding predicts —
+worth checking Go's own transaction/atomicity story against Rust's
+disclosed-non-atomic one early, not late, given what it cost here.

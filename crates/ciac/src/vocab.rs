@@ -22,14 +22,27 @@ pub struct Capability {
 }
 
 // target-literal-ok: v0.22 M1 deliberately deferred deriving `targets`
-// from `Backend::supports()` to M4 (`22UpdatePlan.md` Pillar 1/4) —
-// `supports()` is unconditionally `true` on both bundled backends
-// today (no per-component discrimination to derive from yet), so a
-// derivation now would carry zero information over this literal and
-// would force `PROVIDERS` off `const` (every consumer touches it as
-// compile-time data). M4's `ciac targets --json` + docs-drift-test
-// milestone is where this becomes real, registry-derived data.
-const BOTH: &[&str] = &["python", "rust"];
+// from `Backend::supports()` (`supports()` gates at `Component`
+// granularity — one arm per capability *kind*, not per-provider, so it
+// can say "this target supports `auth`" but not "...specifically JWT
+// and OAuth2" the way this table needs); `PROVIDERS` stays hand-
+// maintained, const, and audited truthful instead. `26UpdatePlan.md`
+// M7 widened this from python/rust-only to all five internal targets,
+// verified per provider against the real generated-project templates
+// and each backend's own `supports()` match arms (not assumed from the
+// old two-target default): TypeScript/Go/Java each reached full,
+// unconditional `Component` parity across `23UpdatePlan.md`-
+// `25UpdatePlan.md`'s own M7-M8 milestones (Go's/Java's `supports()`
+// bodies name this explicitly), and grepping every backend's templates
+// confirms each of these 19 providers by name — MySQL/SQLite, Kafka,
+// Redis, S3/MinIO, SES/SMTP, OpenSearch, WebSocket/SSE, Prometheus,
+// OpenTelemetry — present in all three. `Keycloak`/`Cron` need no
+// per-backend evidence: both comments (Go's M7, Java's M7) confirm the
+// dev-issuer-default and cron-library wiring are already target-
+// neutral, computed once in `ciac-codegen` rather than per-backend.
+// target-literal-ok: naming every internal target is this constant's
+// entire purpose (v0.22 M1 grep fence, 22UpdatePlan.md Pillar 1).
+const ALL_TARGETS: &[&str] = &["python", "rust", "typescript", "go", "java"];
 
 /// Language keywords, in docs/language.md's vocabulary.
 pub const KEYWORDS: &[(&str, &str)] = &[
@@ -122,25 +135,25 @@ pub const CAPABILITIES: &[Capability] = &[
 /// The closed provider registry. `targets` is the per-backend truth
 /// the docs' support tables render from.
 pub const PROVIDERS: &[Provider] = &[
-    Provider { name: "JWT", capability: "auth", targets: BOTH, doc: "Shared-secret HS256 bearer tokens." },
-    Provider { name: "OAuth2", capability: "auth", targets: BOTH, doc: "JWKS-validated RS256 resource server; requires `issuer`, optional `audience`." },
-    Provider { name: "Postgres", capability: "db", targets: BOTH, doc: "PostgreSQL." },
-    Provider { name: "MySQL", capability: "db", targets: BOTH, doc: "MySQL (v0.13: per-engine pools and placeholder styles on both targets)." },
-    Provider { name: "SQLite", capability: "db", targets: BOTH, doc: "A zero-container local file under the app's data/ directory (v0.13)." },
-    Provider { name: "Redis", capability: "cache", targets: BOTH, doc: "Redis." },
-    Provider { name: "NATS", capability: "queue", targets: BOTH, doc: "NATS core (queue groups for workers, plain subscriptions for channels)." },
-    Provider { name: "Kafka", capability: "queue", targets: BOTH, doc: "Apache Kafka (aiokafka / rdkafka); topics reuse the `<service>.<stream>` subject names." },
-    Provider { name: "Structured", capability: "logging", targets: BOTH, doc: "Structured logs (structlog / tracing)." },
-    Provider { name: "Prometheus", capability: "metrics", targets: BOTH, doc: "Prometheus metrics endpoint." },
-    Provider { name: "OpenTelemetry", capability: "tracing", targets: BOTH, doc: "OTLP export to an otel-collector, with Jaeger wired in dev compose." },
-    Provider { name: "S3", capability: "object_store", targets: BOTH, doc: "S3-compatible blob storage (MinIO in dev)." },
-    Provider { name: "SES", capability: "email", targets: BOTH, doc: "AWS SES." },
-    Provider { name: "SMTP", capability: "email", targets: BOTH, doc: "Plain SMTP (Mailpit in dev)." },
-    Provider { name: "OpenSearch", capability: "search", targets: BOTH, doc: "OpenSearch." },
-    Provider { name: "Cron", capability: "scheduler", targets: BOTH, doc: "In-process cron scheduling (default when the provider is omitted)." },
-    Provider { name: "WebSocket", capability: "realtime", targets: BOTH, doc: "WebSocket fan-out." },
-    Provider { name: "SSE", capability: "realtime", targets: BOTH, doc: "Server-sent events (default when the provider is omitted)." },
-    Provider { name: "Keycloak", capability: "users", targets: BOTH, doc: "Dev-only Keycloak container seeded with a realm, a public client, and two dev users (`dev-admin`/`dev-user`); `scripts/token.sh` mints real tokens." },
+    Provider { name: "JWT", capability: "auth", targets: ALL_TARGETS, doc: "Shared-secret HS256 bearer tokens." },
+    Provider { name: "OAuth2", capability: "auth", targets: ALL_TARGETS, doc: "JWKS-validated RS256 resource server; requires `issuer`, optional `audience`." },
+    Provider { name: "Postgres", capability: "db", targets: ALL_TARGETS, doc: "PostgreSQL." },
+    Provider { name: "MySQL", capability: "db", targets: ALL_TARGETS, doc: "MySQL (per-engine pools and placeholder styles per target)." },
+    Provider { name: "SQLite", capability: "db", targets: ALL_TARGETS, doc: "A zero-container local file under the app's data/ directory (v0.13)." },
+    Provider { name: "Redis", capability: "cache", targets: ALL_TARGETS, doc: "Redis." },
+    Provider { name: "NATS", capability: "queue", targets: ALL_TARGETS, doc: "NATS core (queue groups for workers, plain subscriptions for channels)." },
+    Provider { name: "Kafka", capability: "queue", targets: ALL_TARGETS, doc: "Apache Kafka (aiokafka / rdkafka); topics reuse the `<service>.<stream>` subject names." },
+    Provider { name: "Structured", capability: "logging", targets: ALL_TARGETS, doc: "Structured logs (structlog / tracing)." },
+    Provider { name: "Prometheus", capability: "metrics", targets: ALL_TARGETS, doc: "Prometheus metrics endpoint." },
+    Provider { name: "OpenTelemetry", capability: "tracing", targets: ALL_TARGETS, doc: "OTLP export to an otel-collector, with Jaeger wired in dev compose." },
+    Provider { name: "S3", capability: "object_store", targets: ALL_TARGETS, doc: "S3-compatible blob storage (MinIO in dev)." },
+    Provider { name: "SES", capability: "email", targets: ALL_TARGETS, doc: "AWS SES." },
+    Provider { name: "SMTP", capability: "email", targets: ALL_TARGETS, doc: "Plain SMTP (Mailpit in dev)." },
+    Provider { name: "OpenSearch", capability: "search", targets: ALL_TARGETS, doc: "OpenSearch." },
+    Provider { name: "Cron", capability: "scheduler", targets: ALL_TARGETS, doc: "In-process cron scheduling (default when the provider is omitted)." },
+    Provider { name: "WebSocket", capability: "realtime", targets: ALL_TARGETS, doc: "WebSocket fan-out." },
+    Provider { name: "SSE", capability: "realtime", targets: ALL_TARGETS, doc: "Server-sent events (default when the provider is omitted)." },
+    Provider { name: "Keycloak", capability: "users", targets: ALL_TARGETS, doc: "Dev-only Keycloak container seeded with a realm, a public client, and two dev users (`dev-admin`/`dev-user`); `scripts/token.sh` mints real tokens." },
 ];
 
 /// Pipeline steps with built-in meaning (everything else names a handler).

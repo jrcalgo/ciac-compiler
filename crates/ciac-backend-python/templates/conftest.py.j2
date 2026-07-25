@@ -2,6 +2,97 @@
 
 import pytest
 
+{%- if c.auth_scheme == "oauth2" and c.scopes %}
+
+# The no-infra OAuth2 rig (`26UpdatePlan.md` M4): a real RS256 keypair,
+# a real (if tiny) HTTP server serving `/.well-known/jwks.json`, and an
+# issuer-env override -- so the generated `require_auth` dependency
+# does its actual production job (fetch JWKS, match `kid`, verify a
+# real signature) against a stub instead of a live IdP.
+#
+# This block runs at *module import time*, not inside a fixture: pytest
+# loads every `conftest.py` before it imports any `test_*.py` module,
+# and `app.main` reads `OAUTH_ISSUER` through `get_settings()`, which is
+# `@lru_cache`d -- so the override has to land before `app.main`'s own
+# module-level `get_settings()` call runs (`test_smoke.py`'s own
+# `from app.main import app`), which conftest's own import ordering is
+# the only place that reliably holds (Pillar 3's own disclosed
+# "issuer override" contingency: a per-target accommodation, not a new
+# knob).
+import base64
+import json
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+
+def _b64url_uint(n: int) -> str:
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+# Generated per test session rather than embedded (Open question 2,
+# decided): this project's own tests are the only consumer, so there is
+# no "test key leaked into production config" misreading to dodge, and
+# a fresh keypair avoids any temptation to reuse it as a real secret.
+_OAUTH_KID = "test-key-1"
+_oauth_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_oauth_wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_oauth_public_numbers = _oauth_private_key.public_key().public_numbers()
+
+_OAUTH_JWKS = {
+    "keys": [
+        {
+            "kty": "RSA",
+            "kid": _OAUTH_KID,
+            "use": "sig",
+            "alg": "RS256",
+            "n": _b64url_uint(_oauth_public_numbers.n),
+            "e": _b64url_uint(_oauth_public_numbers.e),
+        }
+    ]
+}
+
+
+class _JwksHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path == "/.well-known/jwks.json":
+            body = json.dumps(_OAUTH_JWKS).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, *_args: object) -> None:
+        pass  # silence stdlib's default per-request access log
+
+
+_oauth_jwks_server = HTTPServer(("127.0.0.1", 0), _JwksHandler)
+threading.Thread(target=_oauth_jwks_server.serve_forever, daemon=True).start()
+
+OAUTH_STUB_ISSUER = f"http://127.0.0.1:{_oauth_jwks_server.server_address[1]}"
+os.environ["OAUTH_ISSUER"] = OAUTH_STUB_ISSUER
+
+OAUTH_PRIVATE_KEY_PEM = _oauth_private_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.PKCS8,
+    encryption_algorithm=serialization.NoEncryption(),
+).decode()
+OAUTH_WRONG_KEY_PEM = _oauth_wrong_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.PKCS8,
+    encryption_algorithm=serialization.NoEncryption(),
+).decode()
+OAUTH_KID = _OAUTH_KID
+{%- endif %}
+
 
 @pytest.fixture
 def anyio_backend() -> str:

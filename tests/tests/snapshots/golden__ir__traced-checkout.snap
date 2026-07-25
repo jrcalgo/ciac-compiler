@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 14
 expression: json
 ---
 {
@@ -34,6 +35,13 @@ expression: json
     {
       "id": 2,
       "service": 0,
+      "kind": "Logging",
+      "name": "default",
+      "provider": "Structured"
+    },
+    {
+      "id": 3,
+      "service": 0,
       "kind": "Api",
       "name": "Charge",
       "request": 0,
@@ -44,21 +52,28 @@ expression: json
       }
     },
     {
-      "id": 3,
+      "id": 4,
       "service": 1,
       "kind": "Queue",
       "name": "default",
       "engine": "Nats"
     },
     {
-      "id": 4,
+      "id": 5,
       "service": 1,
       "kind": "Tracing",
       "name": "default",
       "provider": "OpenTelemetry"
     },
     {
-      "id": 5,
+      "id": 6,
+      "service": 1,
+      "kind": "Logging",
+      "name": "default",
+      "provider": "Structured"
+    },
+    {
+      "id": 7,
       "service": 1,
       "kind": "Api",
       "name": "Submit",
@@ -70,7 +85,7 @@ expression: json
       }
     },
     {
-      "id": 6,
+      "id": 8,
       "service": 1,
       "kind": "Worker",
       "name": "Ship",
@@ -80,7 +95,7 @@ expression: json
       }
     },
     {
-      "id": 7,
+      "id": 9,
       "service": 1,
       "kind": "Service",
       "name": "ShipOrder",
@@ -91,31 +106,31 @@ expression: json
     {
       "id": 0,
       "from": 0,
-      "to": 3,
+      "to": 4,
       "kind": "DependsOn"
     },
     {
       "id": 1,
       "from": 0,
-      "to": 6,
+      "to": 8,
       "kind": "AsyncMessage"
     },
     {
       "id": 2,
-      "from": 5,
-      "to": 2,
+      "from": 7,
+      "to": 3,
       "kind": "ServiceCall"
     },
     {
       "id": 3,
-      "from": 5,
+      "from": 7,
       "to": 0,
       "kind": "AsyncMessage"
     },
     {
       "id": 4,
-      "from": 6,
-      "to": 7,
+      "from": 8,
+      "to": 9,
       "kind": "RequestFlow"
     }
   ],
@@ -144,7 +159,7 @@ expression: json
     {
       "name": "Charge",
       "service": 0,
-      "owner": 2,
+      "owner": 3,
       "payload": 0,
       "steps": [
         {
@@ -155,12 +170,12 @@ expression: json
     {
       "name": "Submit",
       "service": 1,
-      "owner": 5,
+      "owner": 7,
       "payload": 0,
       "steps": [
         {
           "step": "Call",
-          "target": 2
+          "target": 3
         },
         {
           "step": "Publish",
@@ -174,12 +189,12 @@ expression: json
     {
       "name": "Ship",
       "service": 1,
-      "owner": 6,
+      "owner": 8,
       "payload": 0,
       "steps": [
         {
           "step": "Handler",
-          "node": 7
+          "node": 9
         }
       ]
     }

@@ -569,6 +569,16 @@ pub struct HandlerRef {
     /// Ontology clients this handler receives (object stores, email,
     /// search, external HTTP), resolved to their bound instances.
     pub extras: Vec<ExtraDepCtx>,
+    /// `true` for a v0.7 typed handler (`Component::Service {
+    /// signature: Some(_), .. }`), inline or `extern` alike — `false`
+    /// for a classic (`signature: None`) handler. Statically- and
+    /// nominally-typed backends whose pipeline value flows through an
+    /// untyped carrier between steps (Go's `any`, TS's own `as any`)
+    /// need this to know whether a `handler` pipeline step's call site
+    /// must assert the carrier back to a concrete type before invoking
+    /// it — a typed handler's `Handle` takes the real declared
+    /// signature, never `any`, unlike a classic handler's.
+    pub is_typed_handler: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1935,6 +1945,13 @@ fn handler_ref(ir: &NormalizedIr, id: NodeId) -> HandlerRef {
         extras,
         bindings,
         py_args: args.join(", "),
+        is_typed_handler: matches!(
+            &node.component,
+            Component::Service {
+                signature: Some(_),
+                ..
+            }
+        ),
     }
 }
 

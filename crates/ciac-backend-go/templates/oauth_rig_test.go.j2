@@ -1,0 +1,242 @@
+// internal/routes/oauth_rig_test.go -- Generated behavioral test for
+// the no-infra OAuth2 scope rig. Real RS256 signing against a real (if
+// tiny) in-process JWKS server -- see `oauth_stub_test.go`.
+// `scope_test.go`'s own no-token/malformed-token cases already cover
+// this service; this file covers the scheme-specific cases only
+// (`26UpdatePlan.md` M5).
+package routes
+
+{%- set needs_bytes = (c.apis | selectattr("scope") | list | length > 0) or (c.resources | selectattr("write_scope") | list | length > 0) %}
+
+import (
+{%- if needs_bytes %}
+	"bytes"
+{%- endif %}
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+{% macro dummy_field(field) -%}
+{%- if field.type_kind.kind == "enum" -%}
+"{{ field.type_kind.variants[0] }}"
+{%- elif field.type_kind.kind == "int" -%}
+0
+{%- elif field.type_kind.kind == "float" -%}
+0.0
+{%- elif field.type_kind.kind == "bool" -%}
+false
+{%- elif field.type_kind.kind == "uuid" or field.type_kind.kind == "reference" -%}
+"00000000-0000-0000-0000-000000000000"
+{%- elif field.type_kind.kind == "timestamp" -%}
+"1970-01-01T00:00:00Z"
+{%- elif field.type_kind.kind == "json" -%}
+{}
+{%- else -%}
+"x"
+{%- endif -%}
+{%- endmacro %}
+{%- macro dummy_json(record, skip_id) -%}
+{%- if record -%}
+{
+{%- for field in record.fields if not (skip_id and field.name == "id") -%}
+{%- if not loop.first %}, {% endif -%}
+"{{ field.name }}": {{ dummy_field(field) }}
+{%- endfor -%}
+}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro dummy_body(resource) -%}
+{{ dummy_json(resource.record, true) }}
+{%- endmacro -%}
+{%- macro dummy_api_body(api) -%}
+{%- if api.payload -%}
+{{ dummy_json(c.records | selectattr("name", "equalto", api.payload.class_name) | first, false) }}
+{%- else -%}
+{}
+{%- endif -%}
+{%- endmacro -%}
+{% for api in c.apis %}
+{%- if api.scope %}
+
+func Test{{ api.snake | go_pascal }}OAuth2ScopeRig(t *testing.T) {
+	mux, cfg := testRouter(t)
+
+	t.Run("rejects a token missing the required scope", func(t *testing.T) {
+		req := httptest.NewRequest("{{ api.method_upper }}", "{{ api.route }}", bytes.NewBufferString(`{% if api.has_body %}{{ dummy_api_body(api) }}{% endif %}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "not:{{ api.scope }}"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("accepts a token carrying the required scope", func(t *testing.T) {
+		req := httptest.NewRequest("{{ api.method_upper }}", "{{ api.route }}", bytes.NewBufferString(`{% if api.has_body %}{{ dummy_api_body(api) }}{% endif %}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ api.scope }}"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+			t.Fatalf("expected neither 401 nor 403 (mechanism proof only), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects an expired token", func(t *testing.T) {
+		req := httptest.NewRequest("{{ api.method_upper }}", "{{ api.route }}", bytes.NewBufferString(`{% if api.has_body %}{{ dummy_api_body(api) }}{% endif %}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ api.scope }}", expDelta: -time.Hour}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a token signed by a key the stub JWKS never served", func(t *testing.T) {
+		req := httptest.NewRequest("{{ api.method_upper }}", "{{ api.route }}", bytes.NewBufferString(`{% if api.has_body %}{{ dummy_api_body(api) }}{% endif %}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ api.scope }}", key: oauthStubInstance.wrongKey}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a token from the wrong issuer", func(t *testing.T) {
+		req := httptest.NewRequest("{{ api.method_upper }}", "{{ api.route }}", bytes.NewBufferString(`{% if api.has_body %}{{ dummy_api_body(api) }}{% endif %}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ api.scope }}", issuer: "http://wrong-issuer.example"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+{%- endif %}
+{%- endfor %}
+{% for resource in c.resources %}
+{%- if resource.read_scope %}
+
+func Test{{ resource.name }}ReadOAuth2ScopeRig(t *testing.T) {
+	mux, cfg := testRouter(t)
+
+	t.Run("rejects a token missing the read scope", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/{{ resource.plural }}", nil)
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "not:{{ resource.read_scope }}"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("accepts a token carrying the read scope", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/{{ resource.plural }}", nil)
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.read_scope }}"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+			t.Fatalf("expected neither 401 nor 403 (mechanism proof only), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects an expired token", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/{{ resource.plural }}", nil)
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.read_scope }}", expDelta: -time.Hour}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a token signed by a key the stub JWKS never served", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/{{ resource.plural }}", nil)
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.read_scope }}", key: oauthStubInstance.wrongKey}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a token from the wrong issuer", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/{{ resource.plural }}", nil)
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.read_scope }}", issuer: "http://wrong-issuer.example"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+{%- endif %}
+{%- if resource.write_scope %}
+
+func Test{{ resource.name }}WriteOAuth2ScopeRig(t *testing.T) {
+	mux, cfg := testRouter(t)
+
+	t.Run("rejects a token missing the write scope", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/{{ resource.plural }}", bytes.NewBufferString(`{{ dummy_body(resource) }}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "not:{{ resource.write_scope }}"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("accepts a token carrying the write scope", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/{{ resource.plural }}", bytes.NewBufferString(`{{ dummy_body(resource) }}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.write_scope }}"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+			t.Fatalf("expected neither 401 nor 403 (mechanism proof only), got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects an expired token", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/{{ resource.plural }}", bytes.NewBufferString(`{{ dummy_body(resource) }}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.write_scope }}", expDelta: -time.Hour}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a token signed by a key the stub JWKS never served", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/{{ resource.plural }}", bytes.NewBufferString(`{{ dummy_body(resource) }}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.write_scope }}", key: oauthStubInstance.wrongKey}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("rejects a token from the wrong issuer", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/{{ resource.plural }}", bytes.NewBufferString(`{{ dummy_body(resource) }}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", mint(t, cfg, mintOpts{scope: "{{ resource.write_scope }}", issuer: "http://wrong-issuer.example"}))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+{%- endif %}
+{%- endfor %}

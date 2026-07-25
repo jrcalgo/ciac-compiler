@@ -17,9 +17,21 @@ async fn app() -> axum::Router {
         .expect("lazy state construction needs no live infra");
     routes::router().with_state(state)
 }
+{%- if c.auth_scheme == "jwt" %}
 
 fn bearer(scope: &str) -> String {
-    let claims = serde_json::json!({"sub": "test", "scope": scope});
+    bearer_exp(scope, 3600)
+}
+
+/// `exp_delta` in the past mints an already-expired token
+/// (`26UpdatePlan.md` M4's `expired_token` case).
+fn bearer_exp(scope: &str, exp_delta: i64) -> String {
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64
+        + exp_delta;
+    let claims = serde_json::json!({"sub": "test", "scope": scope, "exp": exp});
     let secret = Config::from_env().jwt_secret;
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
@@ -29,6 +41,7 @@ fn bearer(scope: &str) -> String {
     .expect("token encodes");
     format!("Bearer {token}")
 }
+{%- endif %}
 {%- macro dummy_json(record, skip_id) -%}
 {%- if record %}{
 {%- for field in record.fields if not (skip_id and field.name == "id") %}
@@ -60,10 +73,54 @@ fn bearer(scope: &str) -> String {
 {%- if api.payload %}{{ dummy_json(c.records | selectattr("name", "equalto", api.payload.class_name) | first, false) }}{% else %}{}{% endif -%}
 {%- endmacro -%}
 {% for api in c.apis %}
-{%- if api.scope %}
+{%- if api.has_auth_step %}
 
 #[tokio::test]
-async fn {{ api.snake }}_rejects_missing_scope() {
+async fn {{ api.snake }}_no_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("{{ api.method_upper }}")
+                .uri("{{ api.route }}")
+{%- if api.has_body %}
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{{ dummy_api_body(api) }}"#))
+{%- else %}
+                .body(Body::empty())
+{%- endif %}
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn {{ api.snake }}_malformed_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("{{ api.method_upper }}")
+                .uri("{{ api.route }}")
+                .header("Authorization", "Bearer not-a-jwt")
+{%- if api.has_body %}
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{{ dummy_api_body(api) }}"#))
+{%- else %}
+                .body(Body::empty())
+{%- endif %}
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+{%- if api.scope and c.auth_scheme == "jwt" %}
+
+#[tokio::test]
+async fn {{ api.snake }}_wrong_scope() {
     // A well-formed body: axum extracts parameters in declaration
     // order, so `Json<..>` extraction (and its own validation) still
     // runs before the handler body's `require_scope` check — an
@@ -90,7 +147,7 @@ async fn {{ api.snake }}_rejects_missing_scope() {
 }
 
 #[tokio::test]
-async fn {{ api.snake }}_accepts_granted_scope() {
+async fn {{ api.snake }}_correct_scope() {
     let response = app()
         .await
         .oneshot(
@@ -111,13 +168,71 @@ async fn {{ api.snake }}_accepts_granted_scope() {
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn {{ api.snake }}_expired_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("{{ api.method_upper }}")
+                .uri("{{ api.route }}")
+                .header("Authorization", bearer_exp("{{ api.scope }}", -3600))
+{%- if api.has_body %}
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{{ dummy_api_body(api) }}"#))
+{%- else %}
+                .body(Body::empty())
+{%- endif %}
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+{%- endif %}
 {%- endif %}
 {%- endfor %}
 {% for resource in c.resources %}
-{%- if resource.read_scope %}
+{%- if resource.has_auth %}
 
 #[tokio::test]
-async fn {{ resource.snake }}_read_rejects_missing_scope() {
+async fn {{ resource.snake }}_no_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/{{ resource.plural }}")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn {{ resource.snake }}_malformed_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/{{ resource.plural }}")
+                .header("Authorization", "Bearer not-a-jwt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+{%- endif %}
+{%- if resource.read_scope and c.auth_scheme == "jwt" %}
+
+#[tokio::test]
+async fn {{ resource.snake }}_read_wrong_scope() {
     let response = app()
         .await
         .oneshot(
@@ -134,7 +249,7 @@ async fn {{ resource.snake }}_read_rejects_missing_scope() {
 }
 
 #[tokio::test]
-async fn {{ resource.snake }}_read_accepts_granted_scope() {
+async fn {{ resource.snake }}_read_correct_scope() {
     let response = app()
         .await
         .oneshot(
@@ -150,11 +265,28 @@ async fn {{ resource.snake }}_read_accepts_granted_scope() {
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
 }
-{%- endif %}
-{%- if resource.write_scope %}
 
 #[tokio::test]
-async fn {{ resource.snake }}_write_rejects_missing_scope() {
+async fn {{ resource.snake }}_read_expired_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/{{ resource.plural }}")
+                .header("Authorization", bearer_exp("{{ resource.read_scope }}", -3600))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+{%- endif %}
+{%- if resource.write_scope and c.auth_scheme == "jwt" %}
+
+#[tokio::test]
+async fn {{ resource.snake }}_write_wrong_scope() {
     // A well-formed body: axum extracts parameters in declaration
     // order, so `Json<..>` extraction (and its own validation) still
     // runs before the handler body's `require_scope` check — an
@@ -177,7 +309,7 @@ async fn {{ resource.snake }}_write_rejects_missing_scope() {
 }
 
 #[tokio::test]
-async fn {{ resource.snake }}_write_accepts_granted_scope() {
+async fn {{ resource.snake }}_write_correct_scope() {
     let response = app()
         .await
         .oneshot(
@@ -193,6 +325,24 @@ async fn {{ resource.snake }}_write_accepts_granted_scope() {
         .unwrap();
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn {{ resource.snake }}_write_expired_token() {
+    let response = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/{{ resource.plural }}")
+                .header("Content-Type", "application/json")
+                .header("Authorization", bearer_exp("{{ resource.write_scope }}", -3600))
+                .body(Body::from(r#"{{ dummy_body(resource) }}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 {%- endif %}
 {%- endfor %}

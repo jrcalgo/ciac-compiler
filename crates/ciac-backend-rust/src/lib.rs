@@ -388,19 +388,28 @@ fn emit_service(
     // broker client lazy (matching the db pools' `connect_lazy`), so
     // the `!has_queue` half of this gate is gone -- a queue-bearing JWT
     // service's `AppState::new` no longer touches the network either.
-    // OAuth2 remains excluded for a different, still-live reason (not
-    // mere constructor eagerness): validating a real signed token needs
-    // real RS256 crypto against the real issuer's JWKS, which this
-    // no-infra suite can't have -- also-lazy JWKS just moves *when* that
-    // network call happens, from construction to first request, it
-    // doesn't remove the need for it. A no-infrastructure scope proof
-    // for OAuth2 needs an actual fake auth adapter (the Rust analog of
-    // Pillar 8's Python `world`-guarded auth bypass), which is real,
-    // disclosed future work this milestone didn't build.
-    if ctx.auth_scheme == "jwt" && !ctx.scopes.is_empty() {
+    // `26UpdatePlan.md` M5: this file's own `no_token`/`malformed_token`
+    // cases are scheme-agnostic (gated inside the template on
+    // `has_auth_step`/`has_auth`, not on scheme), so the file now
+    // renders for both schemes -- an oauth2 project without it silently
+    // lost that coverage, a gap M4 introduced and M5 closed. The
+    // JWT-only bearer-minting helpers and their wrong_scope/
+    // correct_scope/expired_token blocks stay gated on
+    // `c.auth_scheme == "jwt"` inside the template; oauth2 gets the
+    // equivalent via the real-RS256 rig below.
+    if !ctx.scopes.is_empty() {
         project.add_file(
             at("tests/scope_tests.rs"),
             render("scope_tests.rs.j2", empty())?,
+        );
+    }
+    // The no-infra OAuth2 rig (`26UpdatePlan.md` M4): real RS256
+    // signing against an in-process JWKS stub, gated the same way the
+    // JWT scope suite is gated on `c.scopes` above.
+    if ctx.auth_scheme == "oauth2" && !ctx.scopes.is_empty() {
+        project.add_file(
+            at("tests/oauth_rig_tests.rs"),
+            render("oauth_rig_tests.rs.j2", empty())?,
         );
     }
     if !ctx.resources.is_empty() || !ctx.tables.is_empty() {

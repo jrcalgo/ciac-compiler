@@ -1,0 +1,1061 @@
+# CIaC v0.28-file — Multi-Service Simulation: One World, N Services (implementation plan)
+
+> Implementation plan. Document number ≠ release number (standing
+> precedent; expected to ship as **0.26.0**). Assumes 26UpdatePlan.md
+> and 27UpdatePlan.md shipped: five targets at full simulation
+> depth, the corpus-identity harness running everything everywhere,
+> the replay flag decoupled and honest, the ledger's Open table
+> down to the rows this arc and its successors own. This arc
+> removes the last structural refusal in the simulation surface:
+> the per-target drivers' single-service bail. The decision made in
+> the planning discussion was explicit and ambitious: **full
+> N-service coordination**, not a two-service special case — the
+> scenario schema has been service-qualified since v0.17 in
+> anticipation, `SimPlan` has carried an unconsulted
+> `multi_service` flag just as long, and the multi-service examples
+> this arc must satisfy are the project's own deployment flagships.
+>
+> **Parity contract:** every checked-in multi-service example
+> (`multi-service-media.ciac`, `inventory-system.ciac`, plus a new
+> three-service example this arc adds so N>2 is proven, not
+> presumed) simulates on **all five targets** with identical exact
+> outcomes under the 27 corpus discipline; one shared world per
+> simulation — single broker, single virtual clock, per-service
+> database namespaces — so cross-service delivery and time are
+> globally ordered and deterministic; typed cross-service call
+> clients routed in-world (no sockets, no ports, zero
+> infrastructure — the claim boundary `ciac sim` has always drawn,
+> now system-wide); the single-service bail deleted from all five
+> drivers and replaced by real topology handling; scenario service
+> addressing validated with its own diagnostics; and the
+> simulation story's last "except" — "except multi-service
+> systems" — retired from the documentation.
+>
+> **Confidence:** high on the world side — the shared world's
+> system-scoping (namespacing, routing, cross-service delivery
+> order) is a bounded extension of machinery 27 just built and
+> unit-tested, designed once in `ciac-sim` and inherited by Rust
+> through the standing vendoring lever. Deliberately medium on the
+> arc's one genuinely novel engineering problem: **composition** —
+> how N generated services execute inside one deterministic
+> process per target. Python composes trivially (import N apps);
+> the compiled targets need their generated projects consumable as
+> libraries by a generated system runner, which is a
+> project-shape question with real per-target sharp edges (crate
+> lib targets, Go module replaces, N Spring contexts in one JVM).
+> The plan pre-registers the composition design per target, runs
+> Python first as the pathfinder, and gates the compiled targets
+> behind an M5 checkpoint that prices the lib-ification cost
+> against measured reality before committing three more targets to
+> it. The fallback ladder is written down (Pillar 3), ends in an
+> honest partial ship, and — as with every checkpoint arc before
+> it — is priced before the sunk cost exists, not after.
+
+## The gap this version closes
+
+Every real system with more than one service cannot use `ciac sim`
+at all today. The refusal is not a capability gate that better
+worlds could shrink — 27 shrank those to nothing — it is five
+copies of the same hard bail (`ciac sim only supports a
+single-service … project`) in the per-target drivers, checked
+against the count of generated project directories before a
+scenario is ever read. The irony the punch-list review named: the
+language's proudest structural feature is multi-service systems —
+`project` declarations, per-service deployables, cross-service
+streams with consumer-aware evolution, typed call clients,
+generated compose/k8s topology — and the moment a user exercises
+it, the fastest test loop in the toolchain disappears. The
+examples that show CIaC at its best (`multi-service-media`,
+`inventory-system`) are exactly the examples `ciac sim` refuses.
+Single services get deterministic virtual-time testing; systems —
+the things that actually need it, where the bugs live in the
+seams between services — get Docker or nothing.
+
+The user story the punch-list phrased abstractly, concretely: a
+team builds two services with a stream between them. Yesterday
+(one service) their inner loop was `ciac sim` — milliseconds,
+deterministic, failure-injected. Today (two services) it is
+`docker compose up` and a prayer, because the second service's
+existence — not its content — flipped the tool off. The cliff is
+at exactly the wrong place: the two-service moment is when
+cross-service ordering, retry across a boundary, and "what if the
+downstream call fails on the third attempt" become the questions
+that matter, and those are precisely the questions deterministic
+simulation answers better than a live stack ever will.
+
+The machinery has been waiting for this arc for a while. The
+scenario schema speaks service names (`RequestStep.service`,
+`expect.row`'s `service` field) since v0.17; `SimPlan` carries
+`multi_service: bool` (plan.rs:41) that nothing consults; the
+typed call clients built in the parity arcs' M7 milestones are
+precisely the seams cross-service simulation needs to fake; and
+27's shared world, delivery-order specification, and ×5 identity
+harness are the substrate a system-scoped world extends rather
+than invents. What was missing was never the design surface — it
+was the budget for the composition problem, and this arc is that
+budget.
+
+What this arc does not attempt: distributed-systems *failure
+modeling* beyond what the failure engine already does (no network
+partitions, no partial delivery between services, no
+per-service clock skew — the shared-world model deliberately makes
+cross-service communication reliable and time global, because the
+simulation's claim is business-outcome correctness under
+deterministic adversity, not chaos engineering). The Explicit cuts
+section holds that line; the fidelity-boundary docs state it.
+
+## Pillar 1 — The topology contract: what a system means to the simulator
+
+### What exists
+
+A `project` program lowers to N per-service deployables; the
+generated output directory holds N project directories (the
+`find_project_dirs` walk the drivers already use to count — and
+bail). `SimPlan` is derived from the same `NormalizedIr` and
+already sees the whole system; its `multi_service` flag is set and
+ignored. Cross-service edges exist in the IR (streams consumed
+across service boundaries — the evolution machinery's
+consumer-aware diffing depends on them; call edges via the typed
+call clients). The scenario schema addresses services by name in
+requests and row expectations but has never had those names
+validated against a real multi-service plan (deferred "M5"
+name-resolution work from v0.17 that single-service usage never
+forced).
+
+### The contract this arc fixes
+
+M1 turns the implicit topology into specified simulation
+semantics, all recorded in docs/simulation.md's scenario
+reference:
+
+- **Service addressing.** Every `request` step's `service` must
+  name a service in the plan (new diagnostic, reserved SIM0011:
+  unknown service, with the known-service list in the message —
+  the SIM-code discipline of specific, actionable refusals);
+  single-service programs keep the existing behavior where the
+  field is optional and defaulted.
+- **Database namespacing.** Each service's tables live in that
+  service's namespace — two services may each have an `orders`
+  table without collision, matching production reality (each
+  service gets its own database/schema in generated compose).
+  `given.db` and `expect.row` gain/require the `service`
+  qualifier in multi-service scenarios (additive schema change,
+  same discipline as 27's additions; `expect.row` already has the
+  field). A cross-service row assertion is just a row assertion
+  with the right service name — there is no cross-service SQL,
+  because there is none in production either.
+- **Broker scope.** One broker, system-wide — matching production
+  (the generated compose runs one NATS/Kafka for the system).
+  Subjects/streams keep their existing global names; consumer
+  groups are already service-qualified by construction (the
+  generated group names embed the service). Cross-service
+  streams therefore work with zero new mechanism — the log and
+  cursors are 27's, the groups just happen to belong to
+  different services.
+- **Clock scope.** One virtual clock, system-wide. `advance`
+  advances the system; every service's schedules fire in the
+  27-specified (due-time, then declaration order) order, with
+  service declaration order as the outer tiebreak. Deterministic
+  cross-service time is the entire reason the shared-world model
+  was chosen (Pillar 2).
+- **Call edges.** A typed call from service A to service B's API
+  is, under simulation, a routed in-world invocation of B's
+  handler (Pillar 4) — synchronous, deterministic, no transport.
+  The plan records call edges so the router can validate them
+  (a call to a service the plan doesn't know is a plan bug, not
+  a runtime surprise).
+- **Outcome scoping.** The one-line outcome JSON's business
+  counts become service-qualified keys (`"media.ProcessUpload":
+  4` rather than bare handler names) in multi-service runs —
+  additive for single-service (bare names remain), exact-outcome
+  discipline unchanged, canonicalization rules from 27 apply.
+
+### The plan's derived facts, enumerated
+
+What `SimPlan` must carry for the contract above, and where each
+fact comes from in `NormalizedIr` (M1 verifies which already
+exist — the plan was built system-aware in v0.17, so several
+should — and adds the rest additively):
+
+| Fact | Derived from | Consumed by |
+| --- | --- | --- |
+| Service list in declaration order | the project's service nodes | scheduler tiebreak, registration order, outcome qualification |
+| Table → owning service | each service's db/table declarations | world namespacing, `given.db`/`expect.row` validation |
+| Stream → publisher/consumer services + group names | stream nodes + consumer edges (the evolution machinery's own edge set) | cross-service delivery, group registration |
+| Call edges (A → B.api) | typed call-client usage in handler HIR | router validation, acyclicity check (SIM0012) |
+| API → service | api/crud nodes | `request.service` validation (SIM0011), router registry |
+| Schedule entries with owning service | worker/job nodes | the (due-time, declaration, service) firing order |
+
+The acyclicity check runs at plan derivation (a `ciac sim`-time
+refusal with the cycle spelled out), not at scenario runtime —
+topology problems are program problems and get diagnosed before
+any scenario executes.
+
+## Pillar 2 — One world, N services
+
+The architecture decision that everything else hangs from, made
+here rather than discovered mid-arc: the simulation holds **one
+`SimWorld` for the whole system**, not N per-service worlds with
+a coordination layer. The reasons, in order of weight:
+
+1. **Determinism is a global property.** Cross-service delivery
+   order and virtual time cannot be locally owned — N worlds
+   with N clocks and N logs would need a coordinator that
+   re-serializes them into exactly what a single world gives for
+   free, and every coordinator is a place where two targets
+   could serialize differently and break ×5 identity.
+2. **Production topology agrees.** The generated system runs one
+   broker; services share it. Databases are per-service; the
+   world's namespacing mirrors that. The world's shape following
+   production's shape is the fidelity argument, not just the
+   convenience one.
+3. **27 already built it.** The deep world's cursor log is
+   already multi-group; groups already encode services; the
+   clock/scheduler is already system-wide in spirit (nothing in
+   it is service-scoped). System scope is namespacing plus
+   routing, not new machinery.
+
+The concrete `ciac-sim` changes (M2): tables keyed by
+`(service, table)` instead of bare table name (with the
+single-service degenerate case preserved — bare keys when the
+plan has one service, so 27's corpus and goldens are untouched);
+the scheduler's entries carrying their service for the outer
+tiebreak; a call-router registry (`register_api(service, api,
+handler)` / `call(service, api, request) -> response`) that the
+composed runners populate at startup and the call-client guards
+invoke; and `SimPlan` growing the call-edge and
+service-order facts the router and scheduler need. Unit-tested
+in-crate like every 27 fake, inherited by Rust via vendoring as
+always.
+
+### The world's surface additions, as drafted
+
+The method deltas on `SimWorld` (signatures translated per
+restatement as in 27; effect names in parentheses):
+
+```text
+// namespacing: every relational method gains the service key,
+// with the single-service degenerate form preserved:
+db_insert_checked(service, table, row)        (db.commit)
+//  ...same for update/delete/get/count/find_where/seed_db —
+//  27's signatures, one leading parameter wider; bare-key
+//  compatibility path when plan.services.len() == 1
+
+// call routing (new):
+register_api(service, api, handler)              [runner-only]
+call_checked(caller, callee_service, api, req)  (call.request)
+//  inline-synchronous; depth-guarded; returns the callee's
+//  typed response or error envelope verbatim
+
+// registration bookkeeping (new, runner-only):
+register_consumer(service, subject, group, handler)
+register_schedule(service, entry)
+```
+
+`call_checked`'s effect name (`call.request`) enters the failure
+vocabulary's reachable set — occurrence-counted like every other
+effect, so "fail the third cross-service call" is one `failures`
+rule. Broker and peripheral methods are unchanged (subjects are
+global; peripheral instances are service-owned already by their
+names — M1 confirms no peripheral collision case exists across
+the corpus and records the finding).
+
+## Pillar 3 — The composition problem: N services, one process
+
+### The decision space, priced before the arc commits
+
+A deterministic simulation wants a single OS process: one world,
+one memory space, no IPC in the outcome path. The alternative —
+N runner processes with the world behind a socket/pipe protocol —
+was considered and is rejected as the primary design for three
+recorded reasons: the world's every method call becomes a
+serialization boundary (performance is survivable; the
+*determinism bookkeeping* — global delivery order across N
+process-local schedulers — is the coordinator problem from
+Pillar 2 wearing a different hat); failure modes multiply (N
+process lifetimes, partial startup, orphaned children) in exactly
+the tool whose pitch is "no infrastructure, no flakes"; and the
+one-line-stdout child protocol the CLI drivers speak would need a
+multiplexing redesign. It remains the recorded fallback if
+single-process composition hits a structural wall on some target
+(the M5 checkpoint's no-go branch), because it *is* always
+possible — just worse.
+
+So the primary design: **a generated system runner per target** —
+one more generated artifact, emitted at sim time like the
+existing runners, that links/imports all N services' handler and
+wiring code into one process, builds one world, registers every
+service's routes/consumers/jobs with it, and executes scenarios
+under the same child protocol as today. Per target, the known
+sharp edges and the intended shape:
+
+- **Python (M3, the pathfinder):** the pyrunner already
+  constructs a service's app around the world; the system runner
+  constructs N. The sharp edge is import identity — N generated
+  projects with identically named top-level modules cannot be
+  naively imported into one interpreter. Intended shape:
+  pyrunner's system driver loads each service's modules under a
+  package alias (importlib machinery it already half-has for
+  single-service loading), keeping generated code untouched.
+  If aliasing fights something (module-level state, relative
+  imports), the fallback is a sim-only `__init__` shim emitted
+  per service — generated-code-visible but sim-scoped.
+- **Rust (M6):** generated projects are binary crates. The system
+  runner needs them as libraries — the intended shape is the
+  standing lib+bin split (each generated project gains a
+  `lib.rs` re-exporting what `main.rs` and `sim_runner.rs`
+  already share; the sim workspace's system-runner crate depends
+  on the N service crates by path). This is the arc's most
+  golden-visible change on any target: every Rust project's
+  crate shape shifts (uniformly, mechanically, and arguably as a
+  standalone improvement — bins that are thin shells over libs
+  is idiomatic). Priced at M5 against Python's measured
+  experience before it is attempted.
+- **TypeScript (M7):** N package directories in one node
+  process — imports are path-based and collision-free by
+  construction; the system runner is a sim-only entry module
+  importing N `app` factories. Expected to be the cheapest
+  compiled-family port; its sharp edge is dependency-version
+  skew across the N generated `package.json`s (identical by
+  construction today — asserted, and the runner installs once at
+  the system root).
+- **Go (M7):** N modules; the system runner module uses
+  `replace` directives to the N service module paths (the
+  mechanism the repo's own external-backend tooling already
+  exercises). Generated packages are import-path-distinct by
+  service name already. Sharp edge: none expected beyond build
+  wiring — Go's explicitness is for once the easy case.
+- **Java (M8):** one JVM, N services — the intended shape is N
+  isolated `AnnotationConfigApplicationContext`s (the
+  construction 25's SimRunner already uses per service, N-fold),
+  each scanning only its service's packages, sharing the one
+  world bean by explicit registration. Spring context isolation
+  is designed-for; the sharp edge is classpath assembly (N
+  generated Maven projects on one test classpath — the system
+  runner is a sim-only aggregator POM with N module
+  dependencies, or the exec-plugin arrangement generalized;
+  decided at M8 against 25's packaging decisions, recorded).
+
+### The composition matrix, summarized
+
+The per-target analysis above, compressed to the table M5's
+checkpoint re-prices:
+
+| Target | Mechanism | Sharp edge | Fallback |
+| --- | --- | --- | --- |
+| Python | import N apps under package aliases | module identity/import collisions | sim-only per-service shim |
+| Rust | lib+bin split; system-runner crate with N path deps | biggest golden churn in the arc | pre-ship the reshaping as its own reviewed step (M5 decides) |
+| TypeScript | sim entry module importing N app factories | dependency-version skew across N package.jsons (identical by construction — asserted) | none expected |
+| Go | system-runner module with `replace` directives | build wiring only | none expected |
+| Java | N isolated Spring contexts, one JVM, shared world bean | classpath assembly across N Maven projects | aggregator POM vs generalized exec arrangement (M8 decides) |
+
+### The child protocol at system scope
+
+Unchanged, deliberately: one process, scenarios in, **one JSON
+outcome line on stdout** — the contract every driver already
+speaks. What changes is only what the runner does before the
+first scenario: construct the world from the plan, then for each
+service *in declaration order*, register its APIs, consumers
+(with their group names), and schedule entries. Registration
+order is contract (it feeds the delivery spec's tiebreaks), which
+is why it is stated here and asserted by the N=3 scenario's
+frozen outcomes rather than left to whatever iteration order a
+target's map type fancies — the exact class of accident 27's
+canonicalization rules exist to catch.
+
+### The rejected N-process design, sketched for the record
+
+Because M5's fallback branch may need it, the shape it would
+take is written down now rather than designed under pressure: the
+CLI process hosts the world behind a line-oriented local protocol
+(the child-protocol idiom, inverted); each service runner
+registers over it at startup and blocks on a `step` instruction;
+the CLI owns the delivery loop and doles out single-handler
+executions one at a time, preserving 27's ordering by
+construction (determinism lives in the only place that sees
+everything). Every world method becomes a request/response pair;
+scenario wall-time grows by the round-trip count; the process-
+lifecycle handling (startup barriers, teardown, crash surfacing
+through the outcome line) is the bulk of the new code. It works,
+it is uniform across targets, and it is strictly more machinery
+executing strictly slower — which is why it is the fallback. If
+a target ever takes it, the protocol is specified once in
+ciac-sim (a `world-proto` module with fixture tests) rather than
+per target, and the outcome contract is unchanged — ×5 identity
+would not know which composition shape produced a line, which is
+the point of having outcome contracts.
+
+### The uniformity rule
+
+Whatever shape each target's composition takes, the *observable
+contract* is uniform: same scenario files, same child protocol,
+same outcome JSON, same ×5 identity bar. Composition is allowed
+to differ per target (it must — it is made of project-shape
+idiom); outcomes are not. And one process-shape rule is
+non-negotiable across all five: scenario execution remains
+single-threaded through the world (27's delivery loop), no
+matter how many services are loaded — parallelism is a
+performance feature simulations do not want.
+
+## Pillar 4 — Call clients and cross-service seams
+
+The typed call clients (arcs 23–25 M7: service A's generated
+client for service B's API, used by handlers via `call`
+expressions) are the transport of cross-service systems, and
+under simulation they become the world-guard with the highest
+leverage in the arc: guard the client's request method — world
+present: route through the world's call router to service B's
+registered handler, synchronously, returning B's typed response
+(including B's error envelope on failure — the client's
+production error mapping runs unchanged); world absent: the real
+HTTP path, byte-identical to today. `http.request` failure
+injection applies at the seam (`call` effect name reserved in
+M1), so a scenario can fail the third cross-service call — the
+cross-service adversity case single-service sim could never
+express, and the first genuinely *new* testing capability this
+arc hands users (everything else is "what worked for one service
+now works for N").
+
+Two semantic decisions fixed now: routed calls execute
+**inline** on the caller's logical thread (synchronous call
+semantics match production's request/response; the callee's own
+publishes land in the shared log for the delivery loop, exactly
+like any handler's); and a routed call that itself makes calls
+recurses through the router with a depth guard (the plan's call
+edges are checked acyclic for the simulated path at M1 —
+production may tolerate cycles via timeouts; simulation refuses
+them with a specific diagnostic, reserved SIM0012, because a
+cycle under synchronous inline semantics is a hang).
+
+The guard's emitted shape, illustrated on two targets (the other
+three follow their own guard idioms per 27's inventory):
+
+```text
+// Rust — inside the generated call client's request method:
+if let Some(world) = &self.world {
+    return world.call_checked("media", "transcode", "SubmitJob", req);
+} else {
+    // the real reqwest path, byte-identical to today
+}
+
+// TypeScript — same seam:
+if (world) {
+  return world.callChecked("media", "transcode", "SubmitJob", req);
+}
+// real fetch path unchanged below
+```
+
+The client's response typing does the same work it does in
+production (decode-through-schema, 27's rule): the router hands
+back the callee's response value, and the caller's generated
+decoding validates it — a type-level tripwire against router
+bugs on every routed call.
+
+Channels/realtime cross service boundaries the same way they
+work today in-service (the channel machinery is
+broker-backed where it is broker-backed, and the shared log
+covers it); anything channel-specific that proves service-local
+in a target's generated wiring is a finding for the relevant
+milestone, recorded against the uniformity rule.
+
+### Identity propagation through routed calls
+
+One semantic gap the routing surface exposes and this arc must
+answer rather than inherit by accident: when service A handles a
+request from principal P and calls service B, who is B's caller?
+The answer follows production: whatever the generated call
+clients do today with auth context (forwarded bearer context vs
+unauthenticated service-to-service calls — per-target reality
+checked at M1 against the generated client code, since the call
+clients were built before FakeAuth existed), the routed path does
+the same. If production forwards, the router carries P's
+principal into B's enforcement (and a scenario can assert a
+cross-service 403 — a genuinely sharp new test); if production
+does not forward, neither does the router, and the fidelity note
+says so. What the simulator must not do is invent an identity
+model production lacks — M1 records the per-target finding, the
+router implements exactly it, and any *dissatisfaction* with
+production's answer is a language/feature question for a future
+arc, filed in the ledger, not smuggled into a fake.
+
+## Pillar 5 — Scenario semantics and the system corpus
+
+The corpus discipline extends to systems with the same rules
+(exact outcomes, ×5 identity, canonical ordering) and new files:
+
+| Scenario file (sim/) | Program | What it proves | Authored in |
+| --- | --- | --- | --- |
+| media-system.ciac-sim.json | multi-service-media.ciac | request → cross-service publish → worker in another service; per-service row assertions | M4 |
+| inventory-system.ciac-sim.json | inventory-system.ciac | call-client round trip; cross-service failure injection on the call seam; scoped auth across services (27's FakeAuth at system scope) | M4 |
+| three-service.ciac-sim.json | new sim-three-service.ciac | N=3: A calls B, B publishes, C consumes; global delivery order across three services; the N>2 proof | M4 |
+
+The new example's topology, sketched (final program at M4;
+deliberately minimal — topology showcase, not feature showcase):
+
+```text
+project three_service {
+  service intake {          // A: receives requests
+    api SubmitOrder { ... calls billing.Charge ...
+                      publish OrderAccepted }
+  }
+  service billing {         // B: called synchronously by A
+    api Charge { ... db.insert(charges, ...) ... }
+  }
+  service fulfillment {     // C: consumes A's stream
+    worker on OrderAccepted { ... db.insert(shipments, ...) }
+  }
+}
+```
+
+and its scenario asserts, in one file: the routed A→B call's
+effect (a `charges` row in billing's namespace), the
+cross-service stream delivery (a `shipments` row in
+fulfillment's), an injected `call.request` failure on the Nth
+submit (error envelope at A, **no** charge row, **no** shipment —
+the cross-service atomicity-of-refusal story told exactly), and
+quiescence. Global delivery order across three services is what
+freezes the outcome counts.
+
+Like every corpus program, the example verifies ×5 as a normal
+example. Single-service corpus files run unchanged
+throughout the arc — the degenerate-case preservation in
+Pillar 2 is what makes that sentence cheap. The two standing
+canonical anchors remain byte-exact, as always, at every
+milestone.
+
+### A system scenario, illustrated
+
+The media-system scenario's skeleton, showing every
+service-qualified surface at once (counts frozen at M4):
+
+```text
+{
+  "simulation_version": 1,
+  "name": "media system: upload, transcode, notify",
+  "start_at": "2027-01-01T00:00:00Z",
+  "given": {
+    "db": [
+      { "service": "media", "table": "profiles",
+        "rows": [ { "id": "u1", "plan": "pro" } ] }
+    ],
+    "failures": [
+      { "effect": "call.request", "subject": "transcode.SubmitJob",
+        "occurrence": 3, "action": { "kind": "error" } }
+    ]
+  },
+  "steps": [
+    { "request": { "service": "media", "api": "Upload",
+                   "as": { "sub": "u1", "scopes": ["media:write"] },
+                   "json": { ... } } },
+    ... more uploads ...
+    { "drain": {} },
+    { "advance": { "by": "1h" } },
+    { "drain": {} },
+    { "expect": { "row": { "service": "transcode",
+                            "table": "jobs",
+                            "where": { "status": "done" },
+                            "present": true } } },
+    { "expect": { "worker_attempts": { "worker": "transcode.ProcessJob",
+                                        "count": 4 } } },
+    { "expect": { "quiescence": {} } }
+  ]
+}
+```
+
+Note what did *not* change: step kinds, the failure-rule shape,
+the exact-count discipline — a system scenario is a scenario. The
+qualified surfaces (`given.db[].service`, `request.service`,
+worker names in `service.Worker` form, outcome keys likewise) are
+the entire syntactic delta, which is the measure of how much of
+this arc v0.17's schema design pre-paid.
+
+Schema deltas (M1, additive per the 27 discipline):
+`given.db` rows gain the `service` qualifier (required when the
+plan is multi-service, rejected-with-SIM0011 when unknown);
+`publish` steps gain optional `service` disambiguation only if
+M1's plan-resolution work finds stream-name ambiguity is
+representable (streams are globally named today — expected
+answer: not needed, recorded either way); outcome keys
+service-qualify in multi-service runs (Pillar 1). Version
+decision inherits 27's Open-question-1 resolution.
+
+## Pillar 6 — Drivers, protocol, and CI
+
+The five `sim_drive_*` functions in commands.rs lose their
+project-count bail and gain topology handling: enumerate the N
+project directories, map them to plan services (directory-name ↔
+service-name mapping validated with a specific error when a
+directory is missing or extra — generated-output drift is a
+regeneration problem and gets said plainly), emit/build the
+system runner (per-target composition from Pillar 3), and run
+scenarios through the unchanged child protocol (one process, one
+JSON line). Build strategy per target follows the existing
+single-service driver's shape, build once + run per scenario:
+Python needs no build; Rust builds the system-runner crate once
+(cargo builds the N path deps as a graph — incremental across
+scenarios and runs); TS installs once at the system root and
+runs the entry module; Go builds the runner module once
+(`replace`-resolved); Java compiles once (`test-compile` on the
+aggregator or the M8-decided arrangement) and execs per
+scenario, the 25 shape N-fold. The compiled targets' system
+builds are the arc's wall-clock cost center, and each driver
+milestone records cold/warm system build times the way 25's
+Pillar 8 recorded validate latency — data first, CI-scoping
+decisions from data.
+
+`--record`/`--replay`: multi-service record/replay is **out of
+scope** (Explicit cuts) — the flag machinery from 27 already
+distinguishes replay support; multi-service runs on Python
+refuse record/replay with a specific message this arc adds
+(replay's single-service Python support is unchanged). The
+ledger row stays open with its scope widened ("record/replay:
+single-service Python only").
+
+CI: `generated-sim` gains the three system scenarios ×5 —
+budgeted as the job's cost roughly doubling (the three-service
+example is small; the build-once discipline contains it), with
+the same honesty as every CI addition: measured in the
+milestone, recorded, and narrowed deliberately rather than
+quietly if the wall-clock demands it.
+
+## Pillar 7 — Fidelity at system scope
+
+The ratchet question for multi-service sim: does the simulated
+system agree with the real one? The cheap, high-value rows: the
+three system scenarios' *business outcomes* re-asserted against
+the live compose stack via the existing `verify --system`
+machinery (the system tests already probe capability round
+trips; the ratchet rows assert the scenario's specific counts
+through real HTTP against real services with real broker —
+Docker-delegated per the standing honesty, runnable locally
+where compose is available). Divergences land where they always
+land: the fake is corrected, or the boundary is documented as a
+fidelity note. The known-in-advance boundary this arc creates,
+stated in docs from day one: in-world call routing is
+synchronous and reliable; production cross-service HTTP is
+neither under failure — the simulation models call *failure* via
+injection (the seam's `error` action), not call *latency or
+partial connectivity* (no Delay action — 27's cut, inherited).
+That is the same class of disclosure the single-service fakes
+have always carried, now stated at the seam where a distributed
+system's hardest bugs live, so nobody mistakes `ciac sim` for a
+partition-tolerance oracle.
+
+## Pillar 8 — Wall-clock and the sim-latency budget
+
+`ciac sim`'s value is proportional to its speed — a simulation
+that takes as long as compose isn't an inner loop — and system
+composition is the first change since v0.17 that could genuinely
+threaten the latency story on the compiled targets. So the arc
+carries an explicit budget discipline, modeled on 25's
+validate-latency pillar:
+
+- **The measured quantities**, recorded per target at each
+  composition milestone and reconciled at M9: cold system build
+  (first `ciac sim` on a fresh generation), warm system build
+  (repeat run), and per-scenario execution time for the system
+  corpus.
+- **The working budgets** (predictions, not promises — the point
+  is to notice, loudly, if reality disagrees): Python
+  system-scenario execution within 2× its single-service times;
+  compiled-target warm builds within ~1.5× their single-service
+  sim builds (the N services were already built once — path
+  deps/replaces/modules should make warm rebuilds incremental);
+  cold builds are allowed to be honest (N services compile) and
+  are reported, not hidden.
+- **The levers if a budget blows**, in preference order: build-
+  graph hygiene (ensure the system runner reuses the services'
+  existing build artifacts rather than recompiling — the likely
+  first finding on Rust and Java); per-target driver caching
+  keyed on the generation manifest (the machinery `ciac diff`
+  already understands); and only then CI scoping (Open question
+  6) — the user-facing latency is the thing the levers protect,
+  CI cost is the thing they may trade.
+- **The reporting surface**: timings land in each milestone's
+  Shipped note and, at M9, as a small table in
+  docs/simulation.md's system section — users deciding whether
+  to reach for sim-first workflows on a compiled target deserve
+  the numbers, which is the same users-deserve-data reasoning
+  behind 25's image-size disclosures.
+
+## Implementation map
+
+| Area | Changes |
+| --- | --- |
+| `crates/ciac-sim/src/world.rs` | (service, table) namespacing with single-service degenerate case; call-router registry; service-aware scheduler tiebreak |
+| `crates/ciac-sim/src/plan.rs` | `multi_service` finally consulted; call edges + service order carried; acyclicity check for routed calls |
+| `crates/ciac-sim/src/scenario.rs` | `given.db` service qualifier; service-name validation hooks; outcome-key qualification rules |
+| `crates/ciac-sim/src/codes.rs` | SIM0011 (unknown service), SIM0012 (call cycle), the multi-service record/replay refusal message |
+| `sim/pyrunner/` | system driver: N-service loading under package aliases; router population; outcome qualification |
+| `crates/ciac-backend-rust` | lib+bin project shape (the arc's biggest golden churn); system-runner crate emission; call-client guard |
+| `crates/ciac-backend-ts` | system entry module emission; call-client guard |
+| `crates/ciac-backend-go` | system-runner module with replaces; call-client guard |
+| `crates/ciac-backend-java` | N-context system runner (aggregator packaging per M8 decision); call-client guard |
+| `crates/ciac/src/commands.rs` | five drivers: bail removed, topology handling, system-runner build/run, timing capture |
+| `sim/` + `examples/` | three system scenarios + `sim-three-service.ciac` |
+| `tests/` | system-corpus ×5 identity; namespacing/router unit tests ride ciac-sim |
+| CI | `generated-sim` system rows; timings recorded |
+| docs | simulation.md system section + fidelity note; backends.md ledger row closed; scenario reference updates |
+
+## Capability parity checklist
+
+| Surface | All five targets at M9 |
+| --- | --- |
+| Multi-service programs accepted by `ciac sim` | yes — bail deleted, topology handled |
+| Shared world: one broker, one clock, namespaced DBs | yes, via ciac-sim (Rust vendored; three restatements extended) |
+| Cross-service streams | delivered in the specified global order |
+| Typed call clients | world-routed, failure-injectable, production branch byte-identical |
+| Scenario service addressing | validated (SIM0011), documented |
+| System corpus (3 scenarios) | identical outcomes ×5 |
+| Single-service behavior | unchanged — degenerate case preserved, anchors byte-exact |
+| Record/replay | single-service Python only, refusal specific, ledger row scoped |
+| N>2 | proven by the three-service example, not asserted |
+
+## Determinism and supply chain
+
+No new dependencies on any target for any composition shape (the
+system runners are generated code linking generated code; Go's
+`replace` directives and Rust's path deps are toolchain
+features, not packages) — asserted per milestone as in 27. The
+single-threaded execution rule keeps determinism structural.
+The lib+bin Rust reshaping is golden-visible everywhere and
+behavior-neutral by construction (the bin delegates to the lib);
+its review is exactly the 26-style invariant check: production
+binaries byte-identical in behavior, `cargo` outputs identical,
+only the file shape moves. Build wall-clock for composed systems
+is the arc's honest cost; it is measured and recorded per
+target, never hidden.
+
+## Diagnostics, gating, and docs impact
+
+New SIM codes: SIM0011 (scenario names unknown service — with
+the known list), SIM0012 (routed-call cycle refused), plus the
+scoped record/replay refusal message; all registered in
+docs/simulation.md's code table. No CIAC-code changes; no
+`SimSupport` changes (depth is done; this arc is topology). The
+five drivers' refusal-message deletions are themselves
+docs-visible: docs/simulation.md's "single-service only"
+sentences (five of them — one per target's driver paragraph,
+plus the per-target bail messages in commands.rs that quote the
+same limitation with their version stamps, "v0.17"/"v0.23"/
+"v0.24"/"v0.25") retire together, replaced by the system
+section; backends.md's Open-table row "multi-service programs
+refused" closes with proof at M9. The scenario reference gains
+the service-addressing rules, the outcome-key qualification
+convention, and the identity-propagation finding from Pillar 4 —
+whatever production does, stated once, per target if they
+differ.
+
+## Relationship to the forecast documents
+
+The second of the two simulation rows the punch-list forced and
+the discussion resolved ambitiously ("full N-service
+coordination"). Sequenced after depth (27) for the recorded
+reason: composition orchestrates *worlds*, and orchestrating
+full worlds once beats orchestrating narrow ones and re-plumbing
+after. Consumes 27's delivery-order spec, identity harness, and
+corpus discipline wholesale; consumes 26's ledger as the
+scoreboard it closes its row on. Hands 29UpdatePlan.md a
+simulation story with no structural refusals left — the front
+door describes a tool that simulates systems, because it will
+actually do that.
+
+## What this arc is predicted to cost
+
+Predictions, reconciled at M5 (composition) and M9
+(retrospective):
+
+| Workstream | Predicted size |
+| --- | --- |
+| Plan/world system scope (M1–M2) | modest: namespacing is a key-type change with a compatibility path; the router is a registry + dispatch; the validation set is the largest new *code* but smallest risk |
+| Python composition (M3) | the pathfinder's cost is mostly the import-identity fight; the driver rewrite is mechanical |
+| Rust composition (M6) | the arc's peak: lib+bin reshaping touches every Rust golden; the system-runner crate itself is small |
+| TS/Go compositions (M7) | cheap by analysis — the milestone exists to prove it and record the timings |
+| Java composition (M8) | mid-sized; the cost is packaging decisions, not code |
+| Corpus + example (M4) | three scenarios + one deliberately thin example verifying ×5 |
+| Drivers (M3, M6–M8) | five bail deletions + topology handling on a shared shape |
+
+### Predicted golden churn
+
+| Milestone | Expected churn |
+| --- | --- |
+| M1–M2 | none in generated projects (plan/schema/crate) |
+| M3 | Python: driver-side only if aliasing wins; per-service shim files if the fallback is taken (recorded either way) |
+| M4 | the new example's goldens ×5 |
+| M6 | every Rust example (lib+bin reshaping — the arc's review center of gravity) + sim-only system-runner files on multi-service examples |
+| M7 | sim-only system entry/module files on multi-service examples, TS + Go |
+| M8 | sim-only aggregator/runner files, Java |
+| M9 | docs + version churn only |
+
+### The config/env surface
+
+None — same sentence, same enforcement as 27: composition is
+build-shape, the world reads scenario data, and no generated
+system gains an environment variable or config row from this
+arc. Asserted per milestone.
+
+## Milestones
+
+Nine milestones: contract, world, then Python end-to-end as the
+pathfinder (M3–M4), the checkpoint that prices compiled-target
+composition (M5), the three compiled compositions (M6–M8), and
+the ×5 close (M9). Standing per-milestone discipline throughout
+(full verification, golden review, canonical anchors, commit +
+push, in-place Shipped notes).
+
+1. **M1 — The topology contract.** Pillar 1 executed: service
+   addressing validation against the plan (SIM0011), namespacing
+   rules, clock/scheduler tiebreak order, call-edge recording +
+   acyclicity check (SIM0012), outcome-key qualification,
+   `given.db` service qualifier (additive schema), the
+   composition decision matrix recorded per target with the
+   process-shape rule fixed. `SimPlan.multi_service` consulted
+   for the first time — by validation, before any driver
+   accepts. docs/simulation.md's scenario-reference updates
+   drafted alongside (docs move with schema, the standing rule).
+
+2. **M2 — The world at system scope.** ciac-sim: (service,
+   table) namespacing with the single-service degenerate case
+   (27's corpus green untouched — the proof the degeneracy
+   works), call-router registry with inline-synchronous
+   semantics and depth guard, service-aware scheduler tiebreak.
+   Unit tests: two-service namespacing collisions, router
+   round-trip incl. error-envelope pass-through, cross-service
+   delivery order, cycle refusal. Rust inherits by vendoring as
+   always (unexercised until M6 — recorded, familiar from 27's
+   M2/M3 shape).
+
+3. **M3 — Python composition, the pathfinder.** The pyrunner
+   system driver: N services loaded under package aliases, one
+   world, routes/consumers/jobs registered per service in
+   declaration order, call clients guarded to the router, the
+   Python driver's bail replaced with topology handling. The
+   aliasing sharp edge resolved and recorded (or the sim-only
+   shim fallback taken and recorded — either way M5 gets real
+   data, which is this milestone's second deliverable beyond
+   working code).
+
+4. **M4 — The system corpus, proven on Python.** The three
+   scenarios authored (outcomes frozen); `sim-three-service.ciac`
+   added and verifying ×5 as an example; the corpus green on
+   Python end-to-end — request → cross-service publish →
+   foreign-service worker, call round-trip with injected
+   call-seam failure, N=3 global ordering. Single-service corpus
+   + anchors re-proven untouched. The wall-clock data for
+   Python's system runs recorded.
+
+5. **M5 — CHECKPOINT.** The composition go/no-go for compiled
+   targets, priced on M3/M4's measured reality: Python's
+   composition cost, the observed sharp edges, and a concrete
+   re-estimate of the Rust lib+bin reshaping (the single most
+   golden-visible item in the arc) against its M1 estimate.
+   Outcomes: go (M6–M8 proceed); reshape-first (the Rust lib+bin
+   change ships as its own reviewed step before the system
+   runner lands on it — the likely choice if churn review wants
+   isolation); process-fallback for a named target (a target
+   with a structural single-process wall takes the N-process
+   fallback — accepted only with the determinism bookkeeping
+   design written down first); or no-go (halt, findings, re-plan
+   — pre-registered as always, expected never). Checkpoint
+   report lands in this file.
+
+6. **M6 — Rust composition.** The lib+bin project reshaping
+   (uniform, behavior-neutral, golden-reviewed under the 26
+   invariant discipline — likely pre-shipped per M5), the
+   system-runner crate emission (path deps on N service crates,
+   one world, registration in declaration order), call-client
+   guard, driver topology handling. The system corpus green on
+   Rust; outcomes identical to Python's byte-for-byte; build
+   timings recorded.
+
+7. **M7 — TypeScript and Go compositions.** TS: system entry
+   module importing N app factories; the dependency-skew
+   assertion; driver + guard. Go: system-runner module with
+   `replace` directives; driver + guard. Corpus green on both,
+   identity ×4 now running; timings recorded. Two targets in one
+   milestone because both compositions are expected cheap
+   (Pillar 3's per-target analysis) — if either surprises, it
+   splits out with the deviation recorded, the standing rule.
+
+8. **M8 — Java composition.** N isolated
+   `AnnotationConfigApplicationContext`s in one JVM sharing the
+   world bean; the classpath-assembly decision (aggregator POM
+   vs generalized exec arrangement) made against 25's packaging
+   precedents and recorded; driver + guard; corpus green,
+   identity ×5 complete; timings recorded.
+
+9. **M9 — Close-out: ×5 identity, docs, ledger, version,
+   retrospective.** The full system corpus asserted identical
+   ×5 in the harness (now a standing CI surface via the
+   `generated-sim` rows, with the job's measured cost recorded
+   and scoped); the compose-backed fidelity rows for the three
+   scenarios (Docker-delegated) recorded; docs complete
+   (simulation.md system section + fidelity note; five
+   "single-service only" sentences retired; scenario reference);
+   backends.md Open row closed with proof; version **0.25.0 →
+   0.26.0** (workspace + pins, vscode manifest, language.md
+   compiler parenthetical — language still 1.0.0, third
+   consecutive arc proving the two-version discipline);
+   retrospective appended after a rule — composition cost per
+   target vs M1/M5 estimates, the sharp edges that materialized
+   vs the ones that didn't, and the handoff to 29UpdatePlan.md.
+
+### Per-milestone exit checklists
+
+- **M1 exits when:** validation + SIM0011/0012 implemented and
+  fixture-tested; namespacing/ordering/outcome rules recorded in
+  docs draft; composition matrix + process-shape rule committed
+  in this file; schema additions validated; `multi_service`
+  consulted.
+- **M2 exits when:** namespacing (with degenerate case proven by
+  27's corpus running green unchanged), router semantics, and
+  scheduler tiebreak unit-tested in-crate; cycle refusal tested.
+- **M3 exits when:** the Python driver accepts multi-service
+  programs end-to-end; aliasing resolution recorded; call-client
+  guard's production branch byte-identical (golden review).
+- **M4 exits when:** three scenarios frozen and green on Python;
+  the new example verifies ×5; single-service corpus + anchors
+  untouched; timings recorded.
+- **M5 exits when:** the checkpoint report with measured data and
+  one of the four named outcomes is committed in this file.
+- **M6 exits when:** Rust corpus green with Python-identical
+  outcomes; lib+bin reshaping reviewed (or pre-shipped) under
+  the invariant discipline; timings recorded.
+- **M7 exits when:** TS + Go corpus green, identity ×4;
+  dependency-skew assertion in place; timings recorded.
+- **M8 exits when:** Java corpus green, identity ×5; packaging
+  decision recorded; timings recorded.
+- **M9 exits when:** CI rows live with measured cost; fidelity
+  rows recorded; docs complete with the five retirements; ledger
+  row closed; version bumped; retrospective appended.
+
+## Open questions resolved at implementation (pre-registered)
+
+1. **Python module aliasing vs sim-only shim** — resolved in M3
+   on contact with the real import machinery; recorded with the
+   losing approach's failure mode.
+2. **Rust lib+bin: this arc or pre-shipped at M5's direction** —
+   the reshaping is behavior-neutral either way; the question is
+   review isolation, decided on M5's churn data.
+3. **Java classpath assembly** — aggregator POM vs generalized
+   exec-plugin arrangement; decided in M8 against 25's packaging
+   precedents and the one-line-stdout contract.
+4. **`publish` step service disambiguation** — expected
+   unnecessary (streams are globally named); confirmed or added
+   additively in M1, recorded.
+5. **Outcome-key qualification for single-service runs** — bare
+   names preserved (bias: yes, zero churn) vs uniformly
+   qualified; decided in M1 with the harness's canonicalization
+   rules updated to match.
+6. **CI scoping for system rows** — all three scenarios ×5 every
+   push vs a representative subset with the rest scheduled;
+   decided at M9 on measured job cost, recorded — the
+   pre-agreed-narrowing discipline, not silent deletion.
+
+## Verification strategy
+
+The standing discipline plus this arc's spine: the system corpus
+×5 identity harness (extending 27's), the
+single-service-untouched proof at every milestone (27's corpus +
+the two anchors — the degenerate case is a regression surface,
+not a freebie), the byte-identical production branch review on
+every call-client guard and on the Rust reshaping, and measured
+build/run timings per target per milestone (the arc's cost
+honesty).
+
+The proof ledger by layer:
+
+| Claim | Oracle |
+| --- | --- |
+| systems simulate | three system scenarios green per target as its composition lands |
+| outcomes are target-independent | ×5 identity on the system corpus |
+| N>2 works | the three-service scenario, not an assertion |
+| single-service regression-free | 27 corpus + canonical anchors byte-exact every milestone |
+| call seam faithful | router round-trip incl. error envelope; injected call failure scenario; production branch byte-identical goldens |
+| global ordering deterministic | cross-service delivery order unit tests + the N=3 scenario's frozen outcomes |
+| composition adds no deps | per-milestone dependency assertion ×5 |
+| sim vs reality at system scope | compose-backed fidelity rows for the three scenarios (Docker-delegated) |
+| refusals specific | SIM0011/0012 fixture tests; scoped record/replay message |
+| cost visible | recorded build/run timings per target; CI cost measured before scoped |
+
+## Milestone dependencies and parallelism
+
+M1→M2→M3→M4→M5 strictly sequential (the pathfinder spine).
+M6/M7/M8 after M5, independent of each other, listed order
+default (Rust first because its reshaping is the arc's biggest
+review; Java last mirroring every arc's precedent). M9 last.
+The only intra-arc parallelism worth taking: the three-service
+example + scenario authoring (M4 content) can draft during
+M2–M3; docs drafts ride their milestones as always.
+
+## Explicit cuts
+
+No network-failure modeling between services (no partitions, no
+latency injection — the shared world is reliable transport by
+design; the fidelity note says so). No per-service clocks or
+clock skew. No multi-service record/replay (scoped refusal;
+ledger row widened honestly). No parallel scenario execution.
+No N-process composition except as a checkpoint-authorized
+fallback with its determinism design written first. No service
+subsetting (`ciac sim` runs the whole system or nothing — a
+partial-system mode is a plausible future convenience, not this
+arc). No cross-service transaction semantics (the language has
+none; the simulator invents none — a call inside a transaction
+is a call, exactly as in production, where it is also not
+transactional). No new failure actions. No changes to `verify
+--system`/compose beyond the fidelity rows.
+
+## Risks
+
+- **The composition problem is harder than its per-target
+  analysis.** The whole arc structure is the mitigation: Python
+  pathfinds with the least machinery, M5 re-prices everything
+  with real data before three more targets commit, the fallback
+  ladder is pre-registered, and the worst honest outcome — some
+  target ships composition an arc late with the ledger saying
+  so — degrades the schedule, not the truth.
+- **The Rust lib+bin reshaping churns every Rust golden at
+  once.** Behavior-neutral by construction, reviewable
+  mechanically (bin delegates to lib), and M5 can order it
+  pre-shipped as an isolated change precisely so the system
+  runner's review isn't buried in it.
+- **Import/classpath collisions surface late and ugly.** Each
+  target's sharp edge is named in Pillar 3 *before* its
+  milestone, with an intended shape and a fallback — the
+  milestone starts from a design, not a discovery; deviations
+  are findings, recorded.
+- **The degenerate case quietly changes single-service
+  behavior.** The 27 corpus + anchors run at every milestone as
+  a hard gate — the cheapest possible tripwire for the most
+  embarrassing possible regression.
+- **Global-order rules underspecify some interleaving and ×5
+  identity fails on a legitimate ambiguity.** 27's experience
+  says the harness finds these fast and the fix is a one-line
+  rule addition to the delivery spec — the spec is the living
+  document for exactly this; each addition is recorded and both
+  references + three restatements re-checked against it.
+- **CI cost creep.** Timings measured per milestone, the scoping
+  decision pre-agreed as data-driven (Open question 6), and the
+  narrowing — if needed — deliberate and visible, never quiet.
+
+## Confidence and handoff
+
+High on the world and contract (bounded extensions of
+just-built, just-tested machinery, designed once in the shared
+crate). Medium on composition, held with the same honesty 27
+held its restatements: the novel problem is named, its
+per-target sharp edges are pre-analyzed with intended shapes and
+fallbacks, the pathfinder-then-checkpoint structure buys real
+data before the expensive commitments, and the fallback ladder
+terminates in outcomes that are worse in schedule but never in
+truthfulness. When this arc closes, the simulation surface has
+no structural refusals: five targets, full depth, any topology,
+one command, zero infrastructure — the sentence 29UpdatePlan.md
+gets to put on the front door.
+
+Handoff: 29UpdatePlan.md (The Front Door) — the README narrative,
+the guide series, the positioning doc, the editor polish, and
+dogfooding readiness, all describing the system as these three
+arcs leave it: gaps closed or decided, simulation total, releases
+real. The plan after that one is written by whatever the
+dogfooding session teaches.

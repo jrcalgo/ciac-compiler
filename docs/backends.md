@@ -227,7 +227,53 @@ own M3 note named exactly this as the deferred, harder half of seam 2;
 this continuation is where it landed, byte-identical goldens intact
 end to end.
 
+## Divergence ledger
+
+Two tables, drafted and populated once (`26UpdatePlan.md` Pillar 5/M7)
+and kept current since: what differs across targets *by design*, and
+what differs *because the work isn't done yet*. This is the front
+matter for the narrative below (the `## Simulation (v0.17)` section
+and this repo's other per-arc retrospectives carry the full story;
+these tables are the index a reviewer reads first) — replacing no
+prose, just giving "what, exactly, differs across targets, and is each
+difference a decision or a debt?" an answer at a glance instead of a
+paragraph-reconstruction exercise. The structural rule: a permanent row
+needs a *reason*; an open row needs an *address* — a plan file that
+owns closing it, or an explicit "no plan yet" (which a row is always
+allowed to say; what it may not do is hide among the permanent rows).
+`tests/tests/ledger_integrity.rs` enforces both rules mechanically:
+every "Closes in" reference (other than an explicit "no plan yet") must
+name a plan file that exists in the repo root, and no divergence string
+may appear in both tables.
+
+### Permanent by design
+
+| Divergence | Targets | Why this is a decision |
+| --- | --- | --- |
+| Migrations executor | all five | Rust: `sqlx::migrate!` (compile-time). Java: Flyway. Python/TypeScript/Go: a hand-rolled generated runner (its own `_ciac_migrations` ledger table, applying `migrations/*.sql` in filename order) rather than a heavier third-party framework — `db.go.j2`'s own doc comment names this choice explicitly ("the simpler answer", over `golang-migrate`). All five run identical, CIaC-owned SQL, content-equality-tested cross-target; the *executor* is each ecosystem's own idiom (or, for three of five, a deliberately simple in-house runner), and replacing five with one bespoke cross-language runner would trade audited-or-deliberately-simple machinery for NIH risk. |
+| Cron translation library | all five | Python: `croniter`. Rust: the `cron` crate. TypeScript: `croner`. Go: `robfig/cron/v3`. Java: Spring's own built-in `@Scheduled(cron = ...)` (no separate library at all). One shared 5-field cron expression, a different scheduler (or framework feature) per ecosystem; the equivalence suite proves schedule agreement across all five — the library choice is the ecosystem's, forever. |
+| Deploy artifact shape/size | all five | venv + interpreter (Python) / stripped static binary (Rust) / `node_modules` image (TypeScript) / static binary (Go) / JRE base image, ~200MB (Java — `jlink`/GraalVM native-image slimming is real, disclosed future work, not attempted this arc; `25UpdatePlan.md`'s own retrospective recorded the measured number). The artifact shape is the language's. |
+| Go's `time.Time.MarshalJSON` fractional-seconds trimming | Go | RFC 3339-compliant and wire-compatible; confirmed live with a standalone `encoding/json.Marshal` check at v0.24 M9 (not hypothesized from the stdlib docs), asserted-as-documented here since no checked-in example reaches the code path yet. Changing it would mean fighting the stdlib for cosmetics. |
+| Error idiom in generated code (`Result` / exceptions / error returns) | all five | `24UpdatePlan.md` M4's amendment; the wire envelope is identical across every target, the in-language shape belongs to the language. |
+| Executor-seam shape (context hooks + a depth cell, not a uniform-connection rewrite) | Rust | `26UpdatePlan.md` M1's design-A-vs-B decision, closed at M2 with a live rollback proof (Postgres/MariaDB/SQLite); recorded here as the permanent shape so future db verbs adopt it rather than re-litigate it. |
+
+### Open (tracked)
+
+| Gap | Targets | Closes in |
+| --- | --- | --- |
+| Simulation depth: only `db.insert` + publish faked | Rust, TypeScript, Go, Java | `27UpdatePlan.md` |
+| Multi-service programs refused by `ciac sim` | all five | `28UpdatePlan.md` |
+| `transaction {}` non-atomic in production | Rust | `26UpdatePlan.md` M1–M2 — CLOSED, live rollback proof recorded in that milestone's own Shipped note |
+| `logging Structured` refused (`CIAC0011`) | Java | `26UpdatePlan.md` M3 — CLOSED, `LogShapeTest` proof recorded in that milestone's own Shipped note |
+| OAuth2 scope tests excluded from the no-infra suite | all five | `26UpdatePlan.md` M4–M5 — CLOSED, five-target live-proof recorded in those milestones' own Shipped notes |
+| Sim record/replay | Rust, TypeScript, Go, Java | no plan yet — visibly unscheduled, not hidden among the permanent rows |
+| No external human security audit | repo | no plan yet; automated dependency/vulnerability scanning (`26UpdatePlan.md` M6) is the standing floor, not the ceiling |
+
 ## Simulation (v0.17)
+
+See the Divergence ledger above for which of this section's own gaps
+are permanent decisions and which are open, addressed debts — this
+section is the linked detail those tables index, not a restatement.
 
 `ciac sim`/`verify --sim` drive a generated project's real code through
 in-memory fakes instead of real provider containers — see

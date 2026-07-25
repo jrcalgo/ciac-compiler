@@ -26,6 +26,13 @@ inner loop that runs before it, not a replacement for it.
 
 ## Status: Python (full), Rust/TypeScript/Go/Java (narrow) (v0.17 M11, TypeScript v0.23 M9, Go v0.24 M9, Java v0.25 M9)
 
+See [backends.md](backends.md)'s Divergence ledger — Open (tracked)
+table for this gap's classification and address ("Simulation depth:
+only `db.insert` + publish faked", closing in `27UpdatePlan.md`) and
+"Multi-service programs refused by `ciac sim`" (closing in
+`28UpdatePlan.md`). The table below is this page's own per-surface
+detail, not a restatement of the ledger's entry.
+
 | Surface | Python | Rust | TypeScript | Go | Java |
 | --- | --- | --- | --- | --- | --- |
 | `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Rust | same narrow slice as Rust/TypeScript | same narrow slice as Rust/TypeScript/Go |

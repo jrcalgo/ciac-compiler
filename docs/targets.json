@@ -163,7 +163,53 @@
       "sim": {
         "level": "narrow"
       },
-      "capabilities": {}
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
     },
     {
       "id": "go",
@@ -191,7 +237,53 @@
       "sim": {
         "level": "narrow"
       },
-      "capabilities": {}
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
     },
     {
       "id": "java",
@@ -207,7 +299,53 @@
       "sim": {
         "level": "narrow"
       },
-      "capabilities": {}
+      "capabilities": {
+        "auth": [
+          "JWT",
+          "OAuth2"
+        ],
+        "cache": [
+          "Redis"
+        ],
+        "db": [
+          "Postgres",
+          "MySQL",
+          "SQLite"
+        ],
+        "email": [
+          "SES",
+          "SMTP"
+        ],
+        "logging": [
+          "Structured"
+        ],
+        "metrics": [
+          "Prometheus"
+        ],
+        "object_store": [
+          "S3"
+        ],
+        "queue": [
+          "NATS",
+          "Kafka"
+        ],
+        "realtime": [
+          "WebSocket",
+          "SSE"
+        ],
+        "scheduler": [
+          "Cron"
+        ],
+        "search": [
+          "OpenSearch"
+        ],
+        "tracing": [
+          "OpenTelemetry"
+        ],
+        "users": [
+          "Keycloak"
+        ]
+      }
     }
   ]
 }

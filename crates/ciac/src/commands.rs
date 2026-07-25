@@ -2372,14 +2372,17 @@ struct TargetEntry {
     validate: Vec<ValidateStepEntry>,
     sim: SimEntry,
     /// Provider capabilities this target fully implements, keyed by
-    /// capability name (v0.22 M4). Sourced from `vocab::PROVIDERS`
-    /// today, not yet derived from `Backend::supports()` — both
-    /// bundled backends' `supports()` is an unconditional `true` (no
-    /// per-component discrimination exists yet to derive from), the
-    /// same disposition M2 recorded for `vocab::BOTH`. `PROVIDERS` is
-    /// hand-maintained but audited truthful; upgrading this to a real
-    /// `supports()`-derived matrix is the natural continuation once a
-    /// target's `supports()` actually discriminates.
+    /// capability name (v0.22 M4). Sourced from `vocab::PROVIDERS`, not
+    /// derived from `Backend::supports()`: `supports()` gates at
+    /// `Component` (capability-kind) granularity, coarser than this
+    /// field's per-provider one (it can say "this target supports
+    /// `auth`", never "...specifically JWT, not OAuth2"), and every
+    /// internal target's `supports()` is now unconditional `true`
+    /// besides — a derivation would carry zero discriminating
+    /// information regardless of target count. `PROVIDERS` stays
+    /// hand-maintained, audited truthful against the real generated
+    /// templates (`26UpdatePlan.md` M7 widened it from python/rust-only
+    /// to all five internal targets on exactly that audit).
     capabilities: BTreeMap<&'static str, Vec<&'static str>>,
 }
 

@@ -1965,6 +1965,71 @@ per the house convention.
    docs/simulation.md's status table cross-links the Open table
    rather than restating it.
 
+   **Shipped (v0.26 M7):** both tables landed as backends.md front
+   matter (a new `## Divergence ledger` section, ahead of `##
+   Simulation (v0.17)`, which it now indexes rather than duplicates);
+   six Permanent rows and seven Open rows, three of the latter marked
+   CLOSED-with-proof (`transaction {}` non-atomicity → M1–M2's rollback
+   proof, Java `logging` → M3's `LogShapeTest`, OAuth2 scope-testing →
+   M4–M5's five-suite proof) rather than deleted, per the milestone's
+   own "the table records closures, it does not pretend they were
+   never open" rule. **The Permanent table's migrations-executor row
+   corrects the plan's own armchair draft, not just transcribes it:**
+   Pillar 5 assumed alembic/`sqlx migrate`/node-pg-migrate/golang-
+   migrate/Flyway; grepping the real templates found Python/TypeScript/
+   Go all use a hand-rolled generated runner (own `_ciac_migrations`
+   ledger, `db.go.j2`'s own comment naming the choice explicitly —
+   "the simpler answer" over `golang-migrate`) — only Rust
+   (`sqlx::migrate!`) and Java (Flyway) use a named third-party
+   executor. The row ships with the checked answer. `ledger_integrity`
+   (`tests/tests/ledger_integrity.rs`, a hand-rolled markdown-table
+   parser, no new dependency) enforces both structural rules; proven
+   able to fail, not just pass, with a scratch mutation (a "Closes in"
+   cell pointed at a nonexistent `99UpdatePlan.md`) before being
+   reverted. **targets.json's capabilities maps, corrected rather than
+   assumed:** the field's own doc comment claimed derivation from
+   `Backend::supports()` was deferred only because `supports()` was
+   "unconditionally `true`" on the two original targets with "no
+   per-component discrimination to derive from" — reading the actual
+   `supports()` bodies found all *five* internal targets now return
+   unconditional `true` (TypeScript since `23UpdatePlan.md` M8, Go
+   since `24UpdatePlan.md` M7, Java since this arc's own M3 closed its
+   last gate), and every one of the 19 hand-maintained `vocab::
+   PROVIDERS` entries confirmed present by name in TypeScript's/Go's/
+   Java's real templates (MySQL/SQLite/Kafka/Redis/S3/SES/SMTP/
+   OpenSearch/WebSocket/SSE/Prometheus/OpenTelemetry grepped
+   individually; `Keycloak`/`Cron` confirmed target-neutral by their
+   own backends' M7 comments rather than grepped, since neither needs
+   backend-specific code). `vocab::BOTH` renamed `vocab::ALL_TARGETS`
+   and widened from two targets to five; `docs/targets.json`
+   regenerated (`ciac targets --json`), landing all five targets
+   byte-identical on the same 13 capability rows Python/Rust already
+   carried. **Found live, fixed before it could regress silently:** the
+   `target_literal_fence` grep-fence test (v0.22 M1) failed on the
+   widened `vocab.rs` — its justification comment carries a
+   `target-literal-ok:` marker, but the fence only searches 12 lines
+   back from a flagged literal, and the rewritten comment's marker
+   sentence had drifted to line 19 of a 19-line block; fixed by adding
+   a second, shorter `target-literal-ok:` line immediately above the
+   `const` itself, and the fence never got a chance to regrow the
+   scattered-match seam it exists to prevent. **One pre-existing,
+   unrelated failure found and disclosed, not fixed:** `cargo test
+   --workspace` surfaced `backfill_cli::
+   refuses_until_the_expand_migration_lands_then_plans_and_gates_the_contract`
+   failing on `uv run ruff check .` lint errors (import sorting, a
+   `datetime.UTC` alias suggestion, a quoted-forward-reference removal)
+   against generated Python fixtures — confirmed via `git stash` to
+   fail identically on the pre-M7 commit, and traced to `ruff` version
+   drift in this environment (`uv tool run ruff` resolves a cached
+   0.15.8, a fresh `uv run --with ruff` resolves 0.16.0, whose
+   stricter default rule set the fixtures don't yet satisfy) — a
+   template/tooling-pin concern orthogonal to this milestone's own
+   scope, left for whichever milestone next touches Python codegen or
+   `pyproject.toml.j2`'s `ruff` pin. Full workspace `fmt`/`clippy`
+   green; every other test in the full run, including the three named
+   above and the pre-existing golden/conformance/equivalence suites,
+   green.
+
 8. **M8 — Language v1.0.0.** `LANGUAGE_VERSION` file (`1.0.0`);
    `ciac_syntax::LANGUAGE_VERSION` via `include_str!`; surfaced in
    `describe` (beside `describe_version`), `targets --json` header

@@ -2134,6 +2134,174 @@ per the house convention.
    rows became M closed + K permanent + 2 addressed-to-27/28), and
    the handoff to 27UpdatePlan.md.
 
+   **Shipped (v0.26 M9):** version bumped 0.23.0 → 0.24.0 across
+   `Cargo.toml`'s workspace version and all eleven internal path-
+   dependency pins, `editors/vscode/package.json`, and
+   docs/language.md's compiler-parenthetical example (`e.g.
+   0.24.0`); the title's language number stayed `1.0.0`, unmoved —
+   the two-version discipline's first real exercise moving one
+   number and not the other. `docs/targets.json` regenerated (`ciac
+   targets --json`) to carry the new `ciac_version`; live
+   `ciac --version` confirmed printing `ciac 0.24.0 (language
+   1.0.0)`. Full `cargo test --workspace --no-fail-fast` (fmt/clippy
+   clean beforehand) green a second time end-to-end, identical in
+   shape to M8's run: the same one pre-existing, already-disclosed
+   `backfill_cli` ruff-drift failure and nothing else — `fmt`,
+   `clippy`, `conformance.rs`, `determinism.rs`, `golden.rs`,
+   `openapi.rs`, the equivalence suite, and both canonical sim
+   anchors on Rust all green.
+
+   **The release proof did not complete — disclosed, not
+   papered over.** `git push origin v0.24.0` (an annotated tag at
+   this milestone's own commit) was rejected with HTTP 403 from this
+   session's git remote proxy, while ordinary branch pushes to
+   `claude/ciac-codebase-architecture-k5t500` had succeeded all
+   session without incident — the asymmetry (branch refs allowed,
+   a tag ref rejected) points at a deliberate scope restriction on
+   this session's git credentials rather than a network fault, and
+   the proxy's own operating guidance is explicit that a 403 is a
+   policy denial to report, not retry or route around. Checked with
+   the user before attempting the tag at all (per this file's own
+   standing M9 caveat, restated to them directly at the time); after
+   the rejection, checked again on how to proceed rather than
+   hunting for a workaround (force-push, a rewritten remote URL, or
+   a GitHub-API path around the same restriction) — the user chose
+   to cut the real `v0.24.0` tag themselves once ready. The unpushed
+   local tag was deleted rather than left dangling. Consequently:
+   no five-platform `release.yml` matrix ran, no release assets
+   exist, `install.sh` was not proven end-to-end against a real
+   release, and `lang-v1.0.0` did not fire — `language-release.yml`
+   is paths-filtered to pushes on `main`, and this arc's entire
+   history lives on the feature branch (`origin/main` is still the
+   single-commit scaffold this repo started from, 207 commits behind),
+   so it could not have fired from here regardless of the tag-push
+   outcome. Both workflows (`release.yml`, `language-release.yml`)
+   were read line-by-line and validated as parseable YAML in M8/M9,
+   but neither has now been exercised live — the first real release
+   and the first real `lang-v1.0.0` tag remain open, owned by the
+   user, not by a future plan file (this is a one-time credential/
+   scope action, not recurring engineering work, so it does not earn
+   its own row in 27UpdatePlan.md or beyond).
+
+   ---
+
+   ### Arc retrospective
+
+   **Cost accounting.** The two milestones the original plan expected
+   to be heaviest — M1/M2 (Rust atomicity) and M4/M5 (OAuth2 no-infra
+   rig) — were, in the event, the two where reading the real code
+   first cut the estimated scope down rather than up. M1's "30+
+   recursive lowering sites" concern (the reason a `HostSyntax` hook
+   pair was drafted at all) dissolved on inspection: every `db.*` verb
+   lowers directly from one dispatch function's match arms, so a
+   three-parameter thread (`in_tx: bool`) closed the gap that a new
+   trait method and interior mutability were drafted to solve — a
+   smaller change landed than either drafted design. M4/M5 estimated
+   effort per the "needs a live issuer" framing that had gated OAuth2
+   scope tests since `26UpdatePlan.md`'s own ancestor arcs; the
+   no-infra rig (real RS256 keypair, a local JWKS stub, real signature
+   verification) took the same shape across all five backends with no
+   backend-specific surprises once Python's rig proved the pattern —
+   parity, not novelty, dominated M5's actual cost. The milestone that
+   ran *over* the armchair estimate was M7: the plan expected a
+   transcription exercise (move existing prose into two tables) and
+   instead surfaced two factual corrections to the plan's own draft —
+   the migrations-executor assumption (alembic/sqlx-migrate/node-pg-
+   migrate/golang-migrate/Flyway assumed; three of five targets
+   actually use a hand-rolled runner) and the `targets.json`
+   capabilities-population premise (assumed derivable from `supports()`
+   only for two targets; all five already returned unconditional
+   `true`, so all five populate identically). Both corrections were
+   findable only by reading the real templates, not by re-deriving from
+   the plan's own text — the recurring lesson this arc reinforces, as
+   M6/M7/M8 each did in smaller ways (the CIAC0060–0069 reservation
+   collision, the `ciac-codegen`→`ciac-syntax` dependency-shape
+   correction), is that this repo's plans are hypotheses about the
+   codebase, not descriptions of it, and every milestone's own Shipped
+   note is where the gap between the two gets recorded rather than
+   silently reconciled.
+
+   **The A/B decision (M1).** Design A (the `HostSyntax` hook-pair
+   plan) was declared the winner, but not in the shape the plan
+   predicted, and design B (uniform-connection executor) was never
+   attempted — there was nothing left for it to rescue once the real
+   driver's shape made the concern that motivated B (pool-vs-transaction
+   threading through 30+ sites) evaporate. The actual landed shape
+   (`in_tx: bool` threaded through the three functions that already
+   recurse across statement/block boundaries, plus one private
+   `executor(in_tx)` helper on `RustSyntax`) is closer to neither
+   drafted design than to the existing `Statement`-orientation
+   parameter-threading precedent already used elsewhere in the shared
+   driver — the milestone's own conclusion was to match that existing
+   idiom rather than invent a second mechanism. Recorded permanently in
+   docs/backends.md's Permanent-by-design table (`Executor-seam shape`
+   row) so a future db verb adopts the threaded-parameter shape rather
+   than re-litigating hooks-vs-uniform-connection.
+
+   **First-run scanners (M6).** `cargo audit` and `cargo deny check`
+   both ran clean on the first real pass against all 211 workspace
+   crates — zero findings, nothing to triage, an honest empty rather
+   than an assumed one (proven capable of failing via a scratch
+   `time = "=0.1.45"` pin against a real RUSTSEC advisory, then
+   discarded). The one real correction the draft's `deny.toml` needed
+   was two license entries the armchair allowlist missed
+   (`notify`'s `CC0-1.0`, `webpki-roots`' transitive `CDLA-
+   Permissive-2.0`) and one speculative entry (`BSD-2-Clause`) that
+   `cargo deny`'s own `license-not-encountered` warning showed no crate
+   actually carries, dropped rather than kept as padding. The Java
+   scanner choice (grype vs OWASP dependency-check) resolved on
+   observed behavior against the real generated `order-system` pom —
+   grype's cataloger correctly resolved every transitive jar by name
+   and exact version with zero errors — though grype's own vulnerability-
+   database fetch could not be exercised inside this sandbox (its
+   egress policy blocks `grype.anchore.io`, the same category of block
+   that also stopped a real `v0.24.0` release from completing in this
+   same milestone's own M9), disclosed as unverified-here rather than
+   silently assumed working; GitHub Actions runners carry no equivalent
+   block, so the live check is expected to complete on the first real
+   CI run once a release actually triggers one.
+
+   **The ledger's before/after.** Before this arc, there was no ledger
+   at all — divergences lived as unindexed prose scattered across
+   `docs/backends.md`'s `## Simulation (v0.17)` section and a bare
+   status table in `docs/simulation.md`. M7 replaced that with two
+   tables: **6 Permanent-by-design rows** (migrations executor, cron
+   translation library, deploy artifact shape/size, Go's
+   `time.Time.MarshalJSON` trimming, the cross-target error idiom, and
+   M1–M2's own executor-seam shape) and **7 Open-(tracked) rows**, of
+   which **3 landed CLOSED-with-proof by this arc's own milestones**
+   (Rust `transaction {}` non-atomicity → M1–M2's rollback proof, Java
+   `logging Structured` → M3's `LogShapeTest`, the OAuth2 no-infra scope
+   gate → M4–M5's five-target suite), **2 addressed to named successor
+   plans** (simulation depth → `27UpdatePlan.md`, multi-service
+   simulation → `28UpdatePlan.md`), and **2 disclosed with no plan yet**
+   (sim record/replay; the absence of an external human security audit,
+   for which M6's automated scanning is named as the standing floor,
+   not the ceiling). Net: **7 open → 3 closed + 2 handed to 27/28 + 2
+   honestly unscheduled**, with `ledger_integrity.rs` now enforcing
+   mechanically (every "Closes in" cell names a real plan file or an
+   explicit "no plan yet"; no divergence string double-counted across
+   both tables) that this shape cannot silently rot the way the
+   pre-arc prose did.
+
+   **Handoff to `27UpdatePlan.md`.** Two of this arc's own artifacts
+   are load-bearing for the next one: the divergence ledger's
+   `Simulation depth` row now names `27UpdatePlan.md` as the plan
+   that closes it, so 27's own M1 should open by re-reading that row
+   rather than re-deriving the gap from scratch; and M1–M2's executor-
+   seam shape (`in_tx: bool` threaded through `lower_expr_any`/
+   `lower_block_expr`/`lower_stmt_expr`) is the concrete precedent 27's
+   deeper `ciac-sim` world-guards should extend rather than replace —
+   27's own Rust vendoring lever (`include_str!`-based reuse of
+   `ciac-sim`) means whatever shape the world-guards take in
+   `crates/ciac-sim/src/world.rs` inherits into Rust nearly for free,
+   the same leverage this arc's M1 found by reading the real driver
+   before drafting new machinery. The one item this arc could not
+   close itself — the real `v0.24.0` tag, the five-platform release
+   matrix, `install.sh` proven live, and `lang-v1.0.0` — is the user's
+   to finish before or alongside 27's own work; nothing in 27's own
+   plan depends on that release having already happened.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** exactly one of design A/B is landed with the

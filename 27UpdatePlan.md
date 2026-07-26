@@ -2502,6 +2502,239 @@ a commit + push; Shipped notes append in place per convention.
    restatement-drift scorecard — the arc's honesty metric), and
    the handoff to 28UpdatePlan.md.
 
+   **Shipped (v0.27 M9):** unlike M4/M6/M7/M8, this milestone
+   touched no `crates/ciac-backend-*` crate and rendered no
+   template — Python doesn't branch inside generated code the way
+   the four restatements' `lower.rs` world-guard leaves do; it
+   swaps the whole database session object (`AppState.
+   simulation(world)` returns `world.fake_sessionmaker(instance)`
+   in place of a real `async_sessionmaker`), so generated handler
+   code is byte-identical between production and simulation and the
+   entire fix lives in `sim/pyrunner/world.py` (796 → 993 lines).
+   `FakeDatabase` gained `update`/`rows` and a generalized
+   `_check_write` (replacing `_check_insert`, taking a `self_pk`
+   that excludes a row's own prior values from the primary-key and
+   unique-reference conflict checks — the identical exclusion shape
+   Rust's/Java's own `validate_write`/`validateWrite` already use,
+   so this wasn't a new design question, just Python's own turn to
+   answer it the same way). `commit_batch` grew an `updates` list
+   alongside `inserts`/`deletes`, kept backward-compatible with
+   `test_fake_database.py`'s own existing keyword-arg call sites.
+   `_FakeSession.get()` now returns a *tracked* object (paired with
+   a snapshot of the row it was built from) instead of a fresh,
+   forgotten one, so `db_update_tail`'s own `setattr(_row, _k,
+   _v)`-then-`commit()` pattern has something to notice the mutation
+   — `.commit()` diffs each tracked object's current column values
+   against its snapshot and persists only what actually changed, so
+   a plain read-only `.get()` inside a transaction that also writes
+   elsewhere never manufactures a spurious `db.update` effect
+   (caught by a live scenario assertion before it shipped, not just
+   reasoned about — see the first bug below).
+   `_FakeSession.execute()` handles the `select`/`sql_delete`
+   statements `db.query`/`db.count`/`db.delete_where` build, via a
+   new `_compile_predicate` function recursing the *real* SQLAlchemy
+   statement-object shapes `where_chain` (`ciac-backend-python::
+   lower.rs`) produces (`BooleanClauseList`/`Grouping`/`AsBoolean`/
+   `BinaryExpression`) — confirmed against a real generated
+   `query-verbs.ciac` project's own SQLAlchemy 2.0.51 objects via
+   interactive introspection, not assumed from documentation, plus a
+   `_FakeResult` matching the three `query_tail` result shapes
+   (`.scalars().all()`/`.scalar_one()`/`.rowcount`).
+
+   **Two real bugs found live, of two different kinds.** (1) A
+   simulation-fidelity bug in the new `_compile_predicate` code
+   itself, found and fixed within this milestone: `Model.bool_field
+   == some_variable` (reached whenever the compared value is a
+   variable, not a literal — `where_chain`'s bare-truthy-column
+   shortcut only fires for a literal `true`/`false`) coerces its
+   right side to a `True_`/`False_` singleton instead of a
+   `BindParameter`, even though the operator stays plain `eq`/`ne`
+   — found live against `query-verbs.ciac`'s own generated
+   `Notes.active == filter.active`, which crashed with `AttributeError:
+   'True_' object has no attribute 'value'`. Fixed by special-casing
+   both singleton types before falling back to `.value`. (2) A
+   real, pre-existing, out-of-scope production-path bug, found only
+   because wiring `query-verbs.ciac`/`order-system.ciac` into the
+   corpus exercised their generated `app/api/*_api.py` routes for
+   the first time: `api.py.j2`'s response wrapper called
+   `result.model_dump(mode="json")` unconditionally, which crashes
+   for any api pipeline whose final step returns a non-`Record`
+   type — exactly `db.count`/`db.delete_where`'s `Int`, `db.delete`'s
+   `Bool`, and `db.query`'s `[Record]`, meaning `ListActiveApi`/
+   `CountActiveApi`/`DeleteByActiveApi`/`RemoveApi` all crashed on
+   every call, in production as much as under simulation. Confirmed
+   pre-existing via `git stash` against the unmodified pre-M9 `HEAD`
+   (same crash on `sim-vertical-slice.ciac`'s own `tests/
+   test_smoke.py`-adjacent code path too) — this predates the arc
+   entirely and is orthogonal to simulation fidelity, but it was
+   directly blocking M9's own corpus-proof goal, so it was fixed
+   here (a `hasattr(result, "model_dump")` guard, plus a `list`
+   branch) rather than deferred, since no compile-time signal
+   distinguishes a `Record`-returning pipeline from a scalar/list-
+   returning one without a larger IR change out of this milestone's
+   scope.
+
+   **The flagship, executed.** `sim/query-verbs.ciac-sim.json`
+   (predicate-filtered query/count/delete_where, `db.update`, a
+   read-only-query-adds-no-effect regression guard) and `sim/order-
+   system.ciac-sim.json` (auth-scoped routes, `db.count` with a
+   two-term conjunction over an enum and a float, `db.update` paired
+   with `cache.delete` invalidation — the exact program every M4-M8
+   Shipped note named as refused) were authored and wired into
+   `scripts/sim-corpus-x5.sh`'s `PROGRAM_SCENARIOS`, whose default
+   `--targets` widened from `python,rust` to all five. Full corpus
+   run: **11 scenarios × 5 targets = 55 combinations, all green**,
+   including `order-system.ciac-sim.json` with identical outcomes on
+   Python/Rust/TypeScript/Go/Java — the arc's own acceptance sentence
+   ("every corpus scenario runs ×5 and the harness asserts five
+   identical outcome sets... including `order-system.ciac-sim.json`"),
+   executed for real rather than asserted. One cross-target wrinkle
+   found while authoring the flagship scenario, not a bug: `order-
+   system.ciac`'s `MarkShippedApi` route returns a `Customer`-shaped
+   record whose `customer_id` field serializes as `customerId` under
+   Java's own Jackson default (camelCase) versus `customer_id` on
+   the other four targets (snake_case) — a real, undocumented cross-
+   target JSON-casing divergence, first surfaced by this milestone
+   because no prior corpus run had asserted deep response-body
+   equality against Java specifically. Not fixed (opinionated,
+   large-blast-radius, unrelated to simulation depth) and not
+   asserted around in the scenario — the scenario checks `status:
+   200` plus the row-level `db.update` effect instead, which is
+   target-serialization-convention-independent and the more
+   meaningful check anyway. Disclosed here rather than silently
+   routed around; a candidate ledger row for a future arc, not this
+   one.
+
+   **Remaining ratchet rows and CI.** Redis/NATS fidelity stays
+   compose-delegated (no zero-Docker embedded mode exists for
+   either the way `rusqlite` gives SQLite one) — recorded again in
+   `docs/simulation.md`, unchanged, a permanent boundary rather than
+   a gap this milestone was expected to close. CI's `generated-sim`
+   job gained two new scenario rows (`query-verbs.ciac`, `order-
+   system.ciac`) but stayed Python-only, on purpose: `scripts/
+   sim-corpus-x5.sh` (not CI-invoked, run on demand) is the arc's
+   actual cross-target conformance oracle per its own Verification
+   strategy table, and growing this job 5× would multiply CI cost
+   for no coverage the standalone harness doesn't already give —
+   the stale "at which point this job gains a `--target rust` row"
+   comment from M2 (never acted on across M4-M8 either) was
+   corrected to say so explicitly instead.
+
+   **A pre-existing, unrelated `ruff` version-drift issue affecting
+   the whole `generated-sim` CI job, disclosed not fixed:** running
+   `ciac verify --sim` locally against `sim-vertical-slice.ciac` (a
+   scenario this job has run green since v0.17, untouched by this
+   milestone) now fails `uv run ruff check .` with 17 findings
+   (`UP037`/`I001`) in generated files this milestone never touched
+   (`app/state.py`, `tests/test_smoke.py`). Confirmed via `git
+   stash` against the unmodified pre-M9 `HEAD` that this is not a
+   regression from any M9 change — it reproduces identically on
+   completely untouched code. Root cause: no `ruff` version is
+   pinned anywhere a generated project's own `pyproject.toml`
+   controls, so `uv sync`/`uv run ruff` resolves whatever the latest
+   release is at invocation time, and `ruff` 0.16.0 (resolved in
+   this session's sandbox) enables lint rules a prior, unpinned
+   resolution didn't. This is the same class of finding M8's own
+   Shipped note disclosed for `backfill_cli` — environment/dependency
+   drift, not a code defect this arc introduced — but broader here
+   (affects every generated Python project, not one file), so it's
+   surfaced explicitly rather than folded into a footnote: whether
+   CI's own `uv sync` resolution currently exhibits the same drift
+   is unknown from this sandbox and worth a maintainer check: pinning
+   `ruff` in the generated `pyproject.toml.j2` template (or in this
+   repo's own dev dependencies) is real, disclosed future work, out
+   of this milestone's own scope.
+
+   ---
+
+   ### Arc retrospective
+
+   **Cost accounting: the three restatements against M5's own
+   calibration.** M5 reconciled M4's actual cost against the
+   original armchair estimate (~10 guard edits) and found **18
+   guards, ~1.8× the estimate**, plus six real bugs found only by
+   live proof — recording explicitly for M6-M8: "budget live-proof
+   debugging time as a first-class line item, not an assumed-free
+   byproduct." Measured against that calibration, the three
+   restatements' own line-count growth (each Shipped note's own
+   figure): TypeScript's `world.ts.j2` ~158 → ~700 lines (**4.4×**);
+   Go's `world.go.j2` ~220 → ~900 lines (**4.1×**); Java's
+   `World.java.j2` ~200 → ~1030 lines (**5.2×**) — all larger
+   multiples than Rust's own 1.8× guard-count overrun, though the
+   two aren't a like-for-like unit (line count vs. guard count); the
+   honest reading is that a from-scratch hand-restatement (TS/Go/
+   Java) costs meaningfully more per target than extending an
+   existing vendored world (Rust), which is exactly the asymmetry
+   the plan's own "Key lever" section predicted going in, not a
+   surprise found here.
+
+   **The bug-count trend did not go down as the pattern repeated —
+   named honestly, not smoothed over.** TS (M6): 2 real bugs. Go
+   (M7): 4 real bugs. Java (M8): 4 real bugs, plus a fifth found
+   pre-existing (not introduced by M8, exposed for the first time).
+   If "the same architecture, three times" meant later restatements
+   would get cheaper as the pattern became familiar, the bug count
+   should have trended down; instead it trended up. The likely
+   reason, visible in each milestone's own disclosed bugs: the find-
+   space per target is dominated by that ecosystem's own quirks
+   (TypeScript's block-scoping trap, Go's `switch`-arm uniqueness
+   rule forcing an if-chain, Java's Spring bean-registration/
+   `SecurityConfig` interactions, an `Integer`-vs-`Long` JSON
+   round-trip) — genuinely orthogonal discoveries each restatement's
+   own toolchain forces, not shared learning that transfers from the
+   previous target. The corpus-identity harness (the arc's spine)
+   caught every one of them before it shipped regardless of which
+   target found it, which is the risk section's own bet paying off
+   as designed, not merely as hoped.
+
+   **Python's own M9 closure, by contrast, was the cheapest closure
+   of the five by a wide margin** — `sim/pyrunner/world.py` grew
+   796 → 993 lines (**1.25×**), an order of magnitude smaller than
+   any of the three restatements, because it was never a
+   restatement: Python's `AppState.simulation(world)` swaps the
+   whole session object rather than branching inside generated code,
+   so M9 closed the last two verb families (`db.update`, predicate-
+   filtered read verbs) inside one already-complete implementation
+   instead of building a fourth world from scratch. Exactly what the
+   Risks section predicted going in ("Python's verb closure
+   destabilizes the one Full target. Smallest change in the arc"),
+   confirmed rather than merely hoped for.
+
+   **The corpus-found-bugs-by-target scorecard (the arc's own
+   honesty metric).** Rust (M4): **6**. TypeScript (M6): **2**. Go
+   (M7): **4**. Java (M8): **4**, +1 pre-existing (disclosed,
+   inherited, not introduced that milestone). Python (M9): **1**
+   simulation-fidelity bug (the `True_`/`False_` predicate-compiler
+   gap), +1 unrelated pre-existing production-path bug (`api.py.j2`'s
+   response wrapper, found only because M9's own corpus wiring
+   exercised those routes for the first time, disclosed separately
+   since it isn't a simulation-fidelity finding at all). Total: **17
+   real defects found across the arc, zero of them catchable by a
+   type checker or a narrower unit test** — every one required
+   actually running generated code against a real scenario. The
+   corpus grew from 1 scenario at M2 to **11 scenarios** by M9, and
+   the harness that runs them grew from `python,rust` (2 targets) to
+   all five — the growing surface is exactly why the bug count didn't
+   shrink: each milestone widened what the harness could catch, not
+   just what it had already proven.
+
+   **Handoff to `28UpdatePlan.md`.** The "Confidence and handoff"
+   section below (written before this arc's own execution) predicted
+   the expected case — "the word ['narrow'] disappears" — and that is
+   what happened: all five targets report full-fidelity simulation
+   outcomes (three still carry `SimSupport::Narrow` as a type, by the
+   same structural necessity M4 first disclosed and every restatement
+   confirmed — `commands.rs`'s `sim_inner` dispatch hardcodes
+   `SimSupport::Full => sim_drive_python`, so a real behavioral fact
+   and a type-level label diverge on purpose, not by oversight). 28's
+   own multi-service work inherits five worlds that already agree with
+   each other on every scenario in the corpus, a replay flag that
+   accurately says Python-only rather than pretending otherwise, and
+   per-target drivers whose one remaining refusal (more than one
+   project descriptor under `--out`) is precisely the single-service
+   bail 28 exists to remove — nothing else needs to change underneath
+   it first.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** contract table finalized in this file; new

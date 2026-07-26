@@ -24,6 +24,10 @@ import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 {%- endif %}
+{%- if c.has_object_store or c.has_email or c.has_search or c.has_external_http %}
+import com.ciac.{{ java_package }}.sim.World;
+import org.springframework.beans.factory.ObjectProvider;
+{%- endif %}
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 {%- if c.has_db %}
@@ -113,8 +117,9 @@ public class AppState {
             @Value("${{ '{' }}{{ inst.cfg[1].env }}:{{ inst.cfg[1].rust_default }}{{ '}' }}") String accessKey,
             @Value("${{ '{' }}{{ inst.cfg[2].env }}:{{ inst.cfg[2].rust_default }}{{ '}' }}") String secretKey,
             @Value("${{ '{' }}{{ inst.cfg[3].env }}:{{ inst.cfg[3].rust_default }}{{ '}' }}") String bucket,
-            @Value("${{ '{' }}{{ inst.cfg[4].env }}:{{ inst.cfg[4].rust_default }}{{ '}' }}") String region) {
-        return new ObjectStore(endpoint, accessKey, secretKey, bucket, region);
+            @Value("${{ '{' }}{{ inst.cfg[4].env }}:{{ inst.cfg[4].rust_default }}{{ '}' }}") String region,
+            ObjectProvider<World> worldProvider) {
+        return new ObjectStore("{{ inst.name }}", endpoint, accessKey, secretKey, bucket, region, worldProvider);
     }
 {%- endfor %}
 {%- for inst in c.email_instances %}
@@ -127,8 +132,9 @@ public class AppState {
             @Value("${{ '{' }}{{ inst.cfg[2].env }}:{{ inst.cfg[2].rust_default }}{{ '}' }}") String username,
             @Value("${{ '{' }}{{ inst.cfg[3].env }}:{{ inst.cfg[3].rust_default }}{{ '}' }}") String password,
             @Value("${{ '{' }}{{ inst.cfg[4].env }}:{{ inst.cfg[4].rust_default }}{{ '}' }}") String from,
-            @Value("${{ '{' }}{{ inst.cfg[5].env }}:{{ inst.cfg[5].rust_default }}{{ '}' }}") boolean useTls) {
-        return new Email(host, port, username, password, from, useTls);
+            @Value("${{ '{' }}{{ inst.cfg[5].env }}:{{ inst.cfg[5].rust_default }}{{ '}' }}") boolean useTls,
+            ObjectProvider<World> worldProvider) {
+        return new Email("{{ inst.name }}", host, port, username, password, from, useTls, worldProvider);
     }
 {%- endfor %}
 {%- for inst in c.search_instances %}
@@ -136,8 +142,9 @@ public class AppState {
     @Lazy
     @Bean("{{ inst.state_field | java_camel }}")
     public Search {{ inst.state_field | java_camel }}(
-            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String url) {
-        return new Search(url);
+            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String url,
+            ObjectProvider<World> worldProvider) {
+        return new Search("{{ inst.name }}", url, worldProvider);
     }
 {%- endfor %}
 {%- for inst in c.external_http_instances %}
@@ -145,8 +152,9 @@ public class AppState {
     @Lazy
     @Bean("{{ inst.state_field | java_camel }}")
     public ExternalHttp {{ inst.state_field | java_camel }}(
-            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String baseUrl) {
-        return new ExternalHttp(baseUrl);
+            @Value("${{ '{' }}{{ inst.cfg[0].env }}:{{ inst.cfg[0].rust_default }}{{ '}' }}") String baseUrl,
+            ObjectProvider<World> worldProvider) {
+        return new ExternalHttp("{{ inst.name }}", baseUrl, worldProvider);
     }
 {%- endfor %}
 {%- if c.has_db %}

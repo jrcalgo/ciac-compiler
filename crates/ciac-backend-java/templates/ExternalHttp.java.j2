@@ -5,21 +5,40 @@
 // base URL. Holds configuration only -- `RestClient.create` opens no
 // connection, so an `ExternalHttp` bean never blocks `AppState`
 // construction.
+//
+// World-guarded (27UpdatePlan.md M8): `object_store`/`email`/`search`/
+// `external_http` each hold their own `ObjectProvider<World>`
+// (mirroring `Queue.java`'s own pre-existing `publishJson` pattern,
+// v0.25 M9) rather than getting a `lower.rs` world-guard leaf of their
+// own -- a Java-specific structural choice (Pillar 4: "structure may
+// diverge; answers may not"), not a narrower fake. `instanceName` is
+// this bean's own declared instance name (`AppState`'s own `inst.name`,
+// e.g. `default`/`payments`), matching the key `World.httpPost`/
+// `httpRequestCount` key their own per-instance fixture queues by.
 package com.ciac.{{ java_package }}.state;
 
+import com.ciac.{{ java_package }}.sim.World;
 import com.fasterxml.jackson.databind.JsonNode;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.client.RestClient;
 
 public final class ExternalHttp {
+    private final String instanceName;
     private final RestClient client;
+    private final World world;
 
-    public ExternalHttp(String baseUrl) {
+    public ExternalHttp(String instanceName, String baseUrl, ObjectProvider<World> worldProvider) {
+        this.instanceName = instanceName;
         this.client = RestClient.create(baseUrl);
+        this.world = worldProvider.getIfAvailable();
     }
 
     /** Posts jsonBody (already-serialized JSON text) to path and returns
      * the decoded JSON response. */
     public JsonNode post(String path, String jsonBody) {
+        if (world != null) {
+            return world.httpPost(instanceName, path);
+        }
         return client
                 .post()
                 .uri(path)

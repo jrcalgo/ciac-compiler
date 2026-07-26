@@ -51,7 +51,7 @@
 pub(crate) use ciac_codegen::lower::scan;
 use ciac_codegen::lower::{
     self, apply_dest, fidelity_checked_float, strip_outer_parens, Dest, HostSyntax, IndexKey,
-    LoweredPredicate, Orientation, PredValue,
+    LoweredPredTerm, LoweredPredicate, Orientation, PredValue,
 };
 use ciac_codegen::model::{self as context, FieldCtx, RecordCtx};
 use ciac_ir::{
@@ -224,6 +224,12 @@ struct JavaSyntax<'a> {
     ir: &'a NormalizedIr,
     tx_field: Option<String>,
     cache_field: Option<String>,
+    /// The declared `cache` instance name (e.g. `default`, `media`) --
+    /// distinct from `cache_field` (the bean/parameter name, e.g.
+    /// `cache`/`cacheMedia`): `World.cacheGet`/`cacheSet`/`cacheDelete`
+    /// (27UpdatePlan.md M8) key their own per-instance maps by this
+    /// name, mirroring Go's own `cache_instance` accessor.
+    cache_instance: Option<String>,
     object_store_field: Option<String>,
     email_field: Option<String>,
     search_field: Option<String>,
@@ -571,6 +577,15 @@ impl HostSyntax for JavaSyntax<'_> {
     /// [`collect_branching_lets`] already solves, not this verb's own
     /// internal found/not-found branch, which never spans more than one
     /// statement).
+    ///
+    /// World-guarded (27UpdatePlan.md M8): the world branch converts
+    /// `{row}` to a raw `Map<String, Object>` (`World.dbUpdateChecked`'s
+    /// own signature, matching the row shape `dbInsertChecked`/
+    /// `dbGet`/`dbQuery` already share) and converts the returned
+    /// `Map` (or `null`, on a no-such-id miss) back to a typed record
+    /// -- both directions go through `Schemas.MAPPER.convertValue`,
+    /// which is null-safe (`_convert`'s own `null`-passthrough check),
+    /// so the ternary shape below needs no separate null branch.
     fn db_update_tail(
         &self,
         table: TableId,
@@ -581,9 +596,9 @@ impl HostSyntax for JavaSyntax<'_> {
         _in_tx: bool,
     ) -> Vec<String> {
         let row = self.fresh("__row");
-        let n = self.fresh("__n");
         let table_sql = table_sql_name(self.ir, table);
         let record = context::build_record(self.ir, self.ir.table(table).record);
+        let record_name = self.ir.record(self.ir.table(table).record).name.clone();
         let engine = table_db_engine(self.ir, table);
         let non_id: Vec<&FieldCtx> = record.fields.iter().filter(|f| f.name != "id").collect();
         let assignments: Vec<String> = non_id
@@ -596,19 +611,36 @@ impl HostSyntax for JavaSyntax<'_> {
             "UPDATE {table_sql} SET {} WHERE id = ?",
             assignments.join(", ")
         );
-        let mut out = vec![format!("{indent}var {row} = {value};")];
+        let result = self.fresh("__result");
+        let mut out = vec![
+            format!("{indent}var {row} = {value};"),
+            format!("{indent}{record_name} {result};"),
+            format!("{indent}if (world != null) {{"),
+        ];
+        let updated = self.fresh("__updated");
         out.push(format!(
-            "{indent}int {n} = {}.sql({sql:?}){}.update();",
+            "{indent}    var {updated} = world.dbUpdateChecked({table_sql:?}, {key}, Schemas.MAPPER.convertValue({row}, java.util.Map.class));"
+        ));
+        out.push(format!(
+            "{indent}    {result} = Schemas.MAPPER.convertValue({updated}, {record_name}.class);"
+        ));
+        out.push(format!("{indent}}} else {{"));
+        let n = self.fresh("__n");
+        out.push(format!(
+            "{indent}    int {n} = {}.sql({sql:?}){}.update();",
             self.jdbc(),
             Self::params_chain(&binds)
         ));
-        let result = self.fresh("__result");
-        out.push(format!("{indent}var {result} = ({n} == 0) ? null : {row};"));
+        out.push(format!("{indent}    {result} = ({n} == 0) ? null : {row};"));
+        out.push(format!("{indent}}}"));
         if !matches!(dest, Dest::Discard) {
             apply_dest(self, dest, &result, indent, &mut out);
         }
         out
     }
+    /// World-guarded (27UpdatePlan.md M8): `World.dbDeleteChecked`
+    /// resolves cascade/restrict references itself, matching
+    /// production's own real `ON DELETE` behavior.
     fn db_delete_tail(
         &self,
         table: TableId,
@@ -617,18 +649,38 @@ impl HostSyntax for JavaSyntax<'_> {
         indent: &str,
         _in_tx: bool,
     ) -> Vec<String> {
-        let n = self.fresh("__n");
         let table_sql = table_sql_name(self.ir, table);
         let sql = jdbcph(&format!("DELETE FROM {table_sql} WHERE id = ?"));
-        let mut out = vec![format!(
-            "{indent}int {n} = {}.sql({sql:?}).param({key}).update();",
+        let result = self.fresh("__deleted");
+        let mut out = vec![
+            format!("{indent}boolean {result};"),
+            format!("{indent}if (world != null) {{"),
+            format!("{indent}    {result} = world.dbDeleteChecked({table_sql:?}, {key});"),
+            format!("{indent}}} else {{"),
+        ];
+        let n = self.fresh("__n");
+        out.push(format!(
+            "{indent}    int {n} = {}.sql({sql:?}).param({key}).update();",
             self.jdbc()
-        )];
+        ));
+        out.push(format!("{indent}    {result} = ({n} > 0);"));
+        out.push(format!("{indent}}}"));
         if !matches!(dest, Dest::Discard) {
-            apply_dest(self, dest, &format!("({n} > 0)"), indent, &mut out);
+            apply_dest(self, dest, &result, indent, &mut out);
         }
         out
     }
+    /// World-guarded (27UpdatePlan.md M8): `DbQuery`/`DbCount` convert
+    /// `World.dbQuery`/`dbCount`'s own `Map`-shaped rows back to typed
+    /// records the same way `db_get_tail`/`db_update_tail` do.
+    /// `DbDeleteWhere` has no bulk delete-by-predicate method on
+    /// `World` (`commitBatchChecked` takes explicit `(table, pk)`
+    /// pairs, not a filter), so its world branch resolves matching ids
+    /// first via `dbMatchingIds`, then deletes each individually
+    /// through `dbDeleteChecked` (real cascade/restrict handling, real
+    /// failure-injection) — a disclosed divergence from production's
+    /// single bulk `DELETE`, mirroring Rust's/TypeScript's/Go's own
+    /// `query_tail` world branch exactly.
     fn query_tail(
         &self,
         verb: Verb,
@@ -647,13 +699,30 @@ impl HostSyntax for JavaSyntax<'_> {
                     "SELECT {} FROM {table_sql}{where_sql}",
                     record.select_cols
                 ));
+                let world_pred = world_predicate_expr(predicate);
                 let out_var = self.fresh("__rows");
-                let mut out = vec![format!(
-                    "{indent}java.util.List<{record_name}> {out_var} = {}.sql({sql:?}){}.query(RowMappers.{}).list();",
+                let mut out = vec![
+                    format!(
+                        "{indent}java.util.List<{record_name}> {out_var} = new java.util.ArrayList<>();"
+                    ),
+                    format!("{indent}if (world != null) {{"),
+                ];
+                let rows = self.fresh("__rawRows");
+                out.push(format!(
+                    "{indent}    for (java.util.Map<String, Object> {rows} : world.dbQuery({table_sql:?}, row -> {world_pred})) {{"
+                ));
+                out.push(format!(
+                    "{indent}        {out_var}.add(Schemas.MAPPER.convertValue({rows}, {record_name}.class));"
+                ));
+                out.push(format!("{indent}    }}"));
+                out.push(format!("{indent}}} else {{"));
+                out.push(format!(
+                    "{indent}    {out_var}.addAll({}.sql({sql:?}){}.query(RowMappers.{}).list());",
                     self.jdbc(),
                     Self::params_chain(&binds),
                     record_name.to_shouty_snake_case_ish()
-                )];
+                ));
+                out.push(format!("{indent}}}"));
                 if !matches!(dest, Dest::Discard) {
                     apply_dest(self, dest, &out_var, indent, &mut out);
                 }
@@ -663,12 +732,22 @@ impl HostSyntax for JavaSyntax<'_> {
                 let table_sql = table_sql_name(self.ir, table);
                 let (where_sql, binds) = self.where_clause(predicate);
                 let sql = jdbcph(&format!("SELECT COUNT(*) FROM {table_sql}{where_sql}"));
+                let world_pred = world_predicate_expr(predicate);
                 let count = self.fresh("__count");
-                let mut out = vec![format!(
-                    "{indent}long {count} = {}.sql({sql:?}){}.query((__rs, __rowNum) -> __rs.getLong(1)).single();",
+                let mut out = vec![
+                    format!("{indent}long {count};"),
+                    format!("{indent}if (world != null) {{"),
+                    format!(
+                        "{indent}    {count} = world.dbCount({table_sql:?}, row -> {world_pred});"
+                    ),
+                    format!("{indent}}} else {{"),
+                ];
+                out.push(format!(
+                    "{indent}    {count} = {}.sql({sql:?}){}.query((__rs, __rowNum) -> __rs.getLong(1)).single();",
                     self.jdbc(),
                     Self::params_chain(&binds)
-                )];
+                ));
+                out.push(format!("{indent}}}"));
                 if !matches!(dest, Dest::Discard) {
                     apply_dest(self, dest, &count, indent, &mut out);
                 }
@@ -678,12 +757,27 @@ impl HostSyntax for JavaSyntax<'_> {
                 let table_sql = table_sql_name(self.ir, table);
                 let (where_sql, binds) = self.where_clause(predicate);
                 let sql = jdbcph(&format!("DELETE FROM {table_sql}{where_sql}"));
+                let world_pred = world_predicate_expr(predicate);
                 let n = self.fresh("__n");
-                let mut out = vec![format!(
-                    "{indent}int {n} = {}.sql({sql:?}){}.update();",
+                let mut out = vec![
+                    format!("{indent}int {n};"),
+                    format!("{indent}if (world != null) {{"),
+                ];
+                let ids = self.fresh("__ids");
+                out.push(format!(
+                    "{indent}    var {ids} = world.dbMatchingIds({table_sql:?}, row -> {world_pred});"
+                ));
+                out.push(format!(
+                    "{indent}    for (String __id : {ids}) {{ world.dbDeleteChecked({table_sql:?}, __id); }}"
+                ));
+                out.push(format!("{indent}    {n} = {ids}.size();"));
+                out.push(format!("{indent}}} else {{"));
+                out.push(format!(
+                    "{indent}    {n} = {}.sql({sql:?}){}.update();",
                     self.jdbc(),
                     Self::params_chain(&binds)
-                )];
+                ));
+                out.push(format!("{indent}}}"));
                 if !matches!(dest, Dest::Discard) {
                     apply_dest(self, dest, &n, indent, &mut out);
                 }
@@ -724,15 +818,35 @@ impl HostSyntax for JavaSyntax<'_> {
     /// leaf's own `Runnable` re-wrap (below) relies on too, since
     /// `Runnable.run()` declares no `throws` clause either.
     ///
-    /// World-guarded (v0.25 M9): production `transaction {}` is
-    /// already genuinely atomic (unlike Go's/TS's own manual `BeginTx`/
-    /// `Commit` dance, this leaf never had one to skip) — the only
-    /// thing simulation needs to skip is the `TransactionTemplate`
-    /// call itself, since touching it would force the real, `@Lazy`
+    /// World-guarded (v0.25 M9, ambient-batch-mode extended
+    /// 27UpdatePlan.md M8): production `transaction {}` is already
+    /// genuinely atomic (unlike Go's/TS's own manual `BeginTx`/`Commit`
+    /// dance, this leaf never had one to skip) — the only thing
+    /// simulation needs to skip is the `TransactionTemplate` call
+    /// itself, since touching it would force the real, `@Lazy`
     /// `DataSource` proxy to actually dial an unreachable database.
-    /// Each `db.insert` inside `inner_lines` already re-checks `world`
-    /// on its own (`db_insert_tail`), so simply running the body
-    /// directly under simulation is correct, not merely expedient.
+    ///
+    /// **M8 extends this leaf's own world branch**, wrapping
+    /// `__txBody.run()` in `World.beginWorldBatch()`/
+    /// `commitWorldBatch()`/`rollbackWorldBatch()` (the same ambient-
+    /// batch-mode design TypeScript's/Go's own M6/M7 restatements
+    /// introduced): before this milestone, `db_update_tail`/
+    /// `db_delete_tail` had no world branch at all, so a `transaction
+    /// {}` block combining `db.insert` with `db.update`/`db.delete`
+    /// only had `db_insert_tail`'s own per-statement validation to
+    /// rely on, with no atomicity guarantee spanning the whole block
+    /// under simulation — every db verb inside `inner_lines` now
+    /// re-checks `world` and, while a batch is open, queues instead of
+    /// applying immediately (`dbInsertChecked`/`dbUpdateChecked`/
+    /// `dbDeleteChecked`'s own `pendingBatch` check), so wrapping the
+    /// whole `Runnable` in begin/commit/rollback is what actually
+    /// closes the gap, not merely a symmetry exercise. A `RuntimeException`
+    /// thrown from `__txBody.run()` (a `fail`'s own `throw`, or a
+    /// `dbInsertChecked`/`dbUpdateChecked`/`dbDeleteChecked` validation
+    /// failure) propagates out of the `try` before `commitWorldBatch()`
+    /// runs, so `finally`'s own `rollbackWorldBatch()` -- a safe no-op
+    /// once the batch has already committed -- is what actually
+    /// discards the queue on that path, mirroring a real `ROLLBACK`.
     /// `inner_lines` arrives pre-indented by the shared lowering
     /// framework for exactly *one* enclosing lambda body -- reusing it
     /// unchanged inside a second, brand-new `Runnable` (rather than
@@ -748,7 +862,13 @@ impl HostSyntax for JavaSyntax<'_> {
         out.extend(inner_lines);
         out.push(format!("{indent}}};"));
         out.push(format!("{indent}if (world != null) {{"));
-        out.push(format!("{indent}    __txBody.run();"));
+        out.push(format!("{indent}    world.beginWorldBatch();"));
+        out.push(format!("{indent}    try {{"));
+        out.push(format!("{indent}        __txBody.run();"));
+        out.push(format!("{indent}        world.commitWorldBatch();"));
+        out.push(format!("{indent}    }} finally {{"));
+        out.push(format!("{indent}        world.rollbackWorldBatch();"));
+        out.push(format!("{indent}    }}"));
         out.push(format!("{indent}}} else {{"));
         out.push(format!(
             "{indent}    {tx_field}.executeWithoutResult(__status -> __txBody.run());"
@@ -785,6 +905,33 @@ impl HostSyntax for JavaSyntax<'_> {
             record_name.to_shouty_snake_case_ish()
         )
     }
+    /// World-guarded (27UpdatePlan.md M8): `db.get` is `Statement`-
+    /// oriented's own `db_get_tail` default (host_syntax.rs's own
+    /// "error-idiom amendment" comment) would just apply `Dest` to
+    /// this leaf's plain expression once -- overridden here instead so
+    /// the world/production split can happen *before* `Dest` is
+    /// applied, converting `World.dbGet`'s own `Map<String, Object>`
+    /// (or `null`, on a miss) back to a typed record via
+    /// `Schemas.MAPPER.convertValue`, which is null-safe.
+    fn db_get_tail(&self, table: TableId, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let table_sql = table_sql_name(self.ir, table);
+        let record_name = self.ir.record(self.ir.table(table).record).name.clone();
+        let result = self.fresh("__result");
+        let mut out = vec![
+            format!("{indent}{record_name} {result};"),
+            format!("{indent}if (world != null) {{"),
+            format!(
+                "{indent}    {result} = Schemas.MAPPER.convertValue(world.dbGet({table_sql:?}, {key}), {record_name}.class);"
+            ),
+            format!("{indent}}} else {{"),
+            format!("{indent}    {result} = {};", self.db_get(table, key)),
+            format!("{indent}}}"),
+        ];
+        if !matches!(dest, Dest::Discard) {
+            apply_dest(self, dest, &result, indent, &mut out);
+        }
+        out
+    }
     fn cache_get(&self, key: &str) -> String {
         let field = java_camel(
             self.cache_field
@@ -792,6 +939,36 @@ impl HostSyntax for JavaSyntax<'_> {
                 .expect("cache.get requires a bound cache instance"),
         );
         format!("Schemas.fromJsonOrNull({field}.opsForValue().get({key}))")
+    }
+    /// World-guarded (27UpdatePlan.md M8): overridden (rather than
+    /// left to `db_get_tail`'s own default-`_tail` pattern) for the
+    /// identical reason -- the split must happen before `Dest` is
+    /// applied, and `World.cacheGet`'s own raw `String` still needs
+    /// the same `Schemas.fromJsonOrNull` wrap `cache_get`'s own
+    /// production expression already applies, so both branches
+    /// produce the same `JsonNode` type.
+    fn cache_get_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
+        let instance = self
+            .cache_instance
+            .as_deref()
+            .expect("cache.get requires a bound cache instance");
+        let result = self.fresh("__result");
+        let mut out = vec![
+            format!(
+                "{indent}com.fasterxml.jackson.databind.JsonNode {result};"
+            ),
+            format!("{indent}if (world != null) {{"),
+            format!(
+                "{indent}    {result} = Schemas.fromJsonOrNull(world.cacheGet({instance:?}, {key}));"
+            ),
+            format!("{indent}}} else {{"),
+            format!("{indent}    {result} = {};", self.cache_get(key)),
+            format!("{indent}}}"),
+        ];
+        if !matches!(dest, Dest::Discard) {
+            apply_dest(self, dest, &result, indent, &mut out);
+        }
+        out
     }
     fn cache_set(&self, key: &str, value: &str, value_ty: &HirType) -> String {
         let field = java_camel(
@@ -802,6 +979,39 @@ impl HostSyntax for JavaSyntax<'_> {
         let payload = json_body(value, value_ty);
         format!("{field}.opsForValue().set({key}, {payload})")
     }
+    /// World-guarded (27UpdatePlan.md M8). `cache.set` is `Unit`-typed
+    /// (a Redis `set`/`World.cacheSet` call, never a value a `let`
+    /// binds), so, like `db_insert_tail`'s own `Dest::Discard` case,
+    /// there is nothing meaningful to `apply_dest` -- both branches'
+    /// own statement is already the entire effect.
+    fn cache_set_tail(
+        &self,
+        key: &str,
+        value: &str,
+        value_ty: &HirType,
+        _dest: &Dest,
+        indent: &str,
+    ) -> Vec<String> {
+        let instance = self
+            .cache_instance
+            .as_deref()
+            .expect("cache.set requires a bound cache instance");
+        let field = java_camel(
+            self.cache_field
+                .as_deref()
+                .expect("cache.set requires a bound cache instance"),
+        );
+        let payload = json_body(value, value_ty);
+        let payload_var = self.fresh("__cachePayload");
+        vec![
+            format!("{indent}String {payload_var} = {payload};"),
+            format!("{indent}if (world != null) {{"),
+            format!("{indent}    world.cacheSet({instance:?}, {key}, {payload_var}, null);"),
+            format!("{indent}}} else {{"),
+            format!("{indent}    {field}.opsForValue().set({key}, {payload_var});"),
+            format!("{indent}}}"),
+        ]
+    }
     fn cache_delete(&self, key: &str) -> String {
         let field = java_camel(
             self.cache_field
@@ -809,6 +1019,21 @@ impl HostSyntax for JavaSyntax<'_> {
                 .expect("cache.delete requires a bound cache instance"),
         );
         format!("{field}.delete({key})")
+    }
+    /// World-guarded (27UpdatePlan.md M8) -- same `Dest::Discard`-only
+    /// reasoning as `cache_set_tail`.
+    fn cache_delete_tail(&self, key: &str, _dest: &Dest, indent: &str) -> Vec<String> {
+        let instance = self
+            .cache_instance
+            .as_deref()
+            .expect("cache.delete requires a bound cache instance");
+        vec![
+            format!("{indent}if (world != null) {{"),
+            format!("{indent}    world.cacheDelete({instance:?}, {key});"),
+            format!("{indent}}} else {{"),
+            format!("{indent}    {};", self.cache_delete(key)),
+            format!("{indent}}}"),
+        ]
     }
     fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
         let field = java_camel(
@@ -892,6 +1117,53 @@ fn json_body(value: &str, _value_ty: &HirType) -> String {
     format!("Schemas.toJson({value})")
 }
 
+/// `db.query`/`db.count`/`db.delete_where`'s own world-branch
+/// predicate, compiled into a `Predicate<Map<String, Object>>` lambda
+/// body (`row -> <this expression>`) rather than the SQL `WHERE`
+/// clause `where_clause` builds -- the Java counterpart to Go's own
+/// `world_predicate_expr`/`world_predicate_term_expr`, using
+/// `World.jsonEq`/`contains`/`lt`/`ltEq`/`gt`/`gtEq` (this milestone's
+/// own new static helpers) instead of Go's free `JSONEq`/`Contains`/
+/// `Lt`/... functions.
+fn world_pred_value_expr(term: &LoweredPredTerm) -> String {
+    match &term.value {
+        PredValue::EnumVariant(v) => format!("{v:?}"),
+        PredValue::BoolLit(b) => b.to_string(),
+        PredValue::Rendered(s) => s.clone(),
+    }
+}
+
+fn world_predicate_term_expr(term: &LoweredPredTerm) -> String {
+    let field = &term.field;
+    let value = world_pred_value_expr(term);
+    match term.op {
+        PredOp::Eq => format!("World.jsonEq(row.get({field:?}), {value})"),
+        PredOp::NotEq => format!("!World.jsonEq(row.get({field:?}), {value})"),
+        PredOp::Contains => format!("World.contains(row.get({field:?}), {value})"),
+        PredOp::Lt => format!("World.lt(row.get({field:?}), {value})"),
+        PredOp::LtEq => format!("World.ltEq(row.get({field:?}), {value})"),
+        PredOp::Gt => format!("World.gt(row.get({field:?}), {value})"),
+        PredOp::GtEq => format!("World.gtEq(row.get({field:?}), {value})"),
+    }
+}
+
+/// `"true"` (matches every row) for no predicate at all -- mirrors
+/// Go's own `world_predicate_expr`.
+fn world_predicate_expr(predicate: Option<&LoweredPredicate>) -> String {
+    let Some(predicate) = predicate else {
+        return "true".to_owned();
+    };
+    if predicate.terms.is_empty() {
+        return "true".to_owned();
+    }
+    predicate
+        .terms
+        .iter()
+        .map(world_predicate_term_expr)
+        .collect::<Vec<_>>()
+        .join(" && ")
+}
+
 /// A minimal `SHOUTY_SNAKE_CASE`-ish transform for a `RowMappers`
 /// constant name — `heck`'s own `ToShoutySnakeCase` is already
 /// registered as the `shouty_snake_case` minijinja filter
@@ -971,6 +1243,10 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
     let email_field = extra_field("email");
     let search_field = extra_field("search");
     let http_field = extra_field("external_http");
+    let cache_instance = bindings
+        .iter()
+        .find(|b| b.kind == "cache")
+        .map(|b| b.name.clone());
 
     let params: Vec<ParamCtx> = hir
         .params
@@ -996,6 +1272,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
                 ir,
                 tx_field: java_tx_field.clone(),
                 cache_field: access.rust_cache_field.clone(),
+                cache_instance,
                 object_store_field,
                 email_field,
                 search_field,

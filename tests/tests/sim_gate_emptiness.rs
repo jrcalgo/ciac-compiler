@@ -1,14 +1,14 @@
-//! 27UpdatePlan.md M4/M6/M7 exit checklist: "gate-emptiness test green
-//! across the corpus" -- asserts `ciac_backend_rust::
+//! 27UpdatePlan.md M4/M6/M7/M8 exit checklist: "gate-emptiness test
+//! green across the corpus" -- asserts `ciac_backend_rust::
 //! unsupported_sim_capabilities` (M4), `ciac_backend_ts::
-//! unsupported_sim_capabilities` (M6), and `ciac_backend_go::
-//! unsupported_sim_capabilities` (M7) return empty for every checked-in
+//! unsupported_sim_capabilities` (M6), `ciac_backend_go::
+//! unsupported_sim_capabilities` (M7), and `ciac_backend_java::
+//! unsupported_sim_capabilities` (M8) return empty for every checked-in
 //! example each backend can generate at all (mirroring `golden.rs`'s
 //! own `check_support`-gated skip for provider combinations a backend
 //! doesn't support outright, an orthogonal question from simulation
 //! coverage). A regression here means some future verb/capability
-//! addition to the language outran its own world-guard. Java (M8)
-//! joins this test in its own milestone.
+//! addition to the language outran its own world-guard.
 
 use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir};
 
@@ -65,6 +65,26 @@ fn go_gate_is_empty_for_the_whole_corpus() {
             continue;
         }
         let reasons = ciac_backend_go::unsupported_sim_capabilities(&ir);
+        assert!(
+            reasons.is_empty(),
+            "{name}: expected an empty simulation-gate, found {reasons:?}"
+        );
+    }
+}
+
+#[test]
+fn java_gate_is_empty_for_the_whole_corpus() {
+    let java = backends()
+        .into_iter()
+        .find(|b| b.id() == "java")
+        .expect("java backend registered");
+    for path in ciac_files(&examples_dir()) {
+        let name = path.file_stem().expect("file name").to_string_lossy();
+        let ir = compile_file(&path);
+        if ciac_codegen::check_support(java.as_ref(), &ir).is_err() {
+            continue;
+        }
+        let reasons = ciac_backend_java::unsupported_sim_capabilities(&ir);
         assert!(
             reasons.is_empty(),
             "{name}: expected an empty simulation-gate, found {reasons:?}"

@@ -24,7 +24,7 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python + Rust + TypeScript + Go (full), Java (narrow) (v0.17 M11, TypeScript v0.27 M6, Go v0.27 M7, Java v0.25 M9, Rust v0.27 M4)
+## Status: Python + Rust + TypeScript + Go + Java (all full) (v0.17 M11, TypeScript v0.27 M6, Go v0.27 M7, Java v0.27 M8, Rust v0.27 M4)
 
 See [backends.md](backends.md)'s Divergence ledger — Open (tracked)
 table for this gap's classification and address ("Simulation depth:
@@ -35,13 +35,13 @@ detail, not a restatement of the ledger's entry.
 
 | Surface | Python | Rust | TypeScript | Go | Java |
 | --- | --- | --- | --- | --- | --- |
-| `ciac sim` | done, every capability faked | done as of `27UpdatePlan.md` M4 — every verb `SimWorld` fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M6 — every verb `world.ts`'s `SimWorld` class fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M7 — every verb `internal/world`'s `World` struct fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | narrow: only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else |
+| `ciac sim` | done, every capability faked | done as of `27UpdatePlan.md` M4 — every verb `SimWorld` fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M6 — every verb `world.ts`'s `SimWorld` class fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M7 — every verb `internal/world`'s `World` struct fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M8 — every verb `sim.World` fakes (db/cache directly, object store/email/search/external_http via their own wrapper classes' own `ObjectProvider<World>`, auth), gate-emptiness proven across the whole example corpus |
 | `verify --sim` | done | same | same | same | same |
 | MCP `verify_sim` | done | same | same | same | same |
 
 Rust's ports/adapters seam and generated per-program simulation runner
-(v0.17 M11) started at the same narrow slice TypeScript/Go/Java still
-occupy; `27UpdatePlan.md` M4 grew `crates/ciac-sim/src/world.rs`'s
+(v0.17 M11) started at the same narrow slice TypeScript/Go/Java once
+occupied; `27UpdatePlan.md` M4 grew `crates/ciac-sim/src/world.rs`'s
 `SimWorld` (already deepened by that arc's M2-M3) into every remaining
 verb's own world-guard leaf in Rust's `lower.rs` — `db.get`/`update`/
 `delete`/`query`/`count`/`delete_where`, cache/object store/email/
@@ -198,53 +198,96 @@ already-drained-above semantics, expressed the one way Go's own
 `switch` uniqueness rule allows; found live via `go build` against
 `sim-broker-slice.ciac`'s own fanout scenario, not anticipated.
 
-Java's own restatement (v0.25 M9) still occupies the same narrow
-slice Go's own did before `27UpdatePlan.md` M7 closed it (M8's own
-work), via the same hand-written-restatement shape TypeScript's own
-original pass established (Java cannot vendor `ciac-sim`'s Rust
-source either): `sim/World.java`'s `World` class (a nested
-`FailureEngine`/table map/queue list, occupying the same position
-Python's/TypeScript's/Go's own restatements do) fakes the identical
-`db.insert` + broker publish/consume pair, gated on the identical
-`db`/`queue` declaration check, refused with the identical
-per-verb/per-capability reasons `unsupported_sim_capabilities`
-computes over the same shared HIR scanner Rust's/TypeScript's/Go's own
-gates use. Java's own
-production code gives `transaction {}` **real**, unconditional
-atomicity too (`TransactionTemplate`, matching Go's/TypeScript's/
-Rust's own Postgres branches) and degrades to a guarded no-op
-only under simulation, for the identical reason every other narrow
-target does: every db verb this checkpoint's own gate allows inside a
-transaction is `db.insert`, already world-guarded per statement — the
-`transaction {}` wrapper itself is what simulation skips, not anything
-inside it. One design choice specific to Java's own architecture: every
-class holding a `JdbcClient`/`Queue` field also holds a
-constructor-injected, nullable `World` (via Spring's own
-`ObjectProvider<World>` — `null` in production, since `World` is never
-a `@Component` no production context ever registers one), rather than
-threading one shared state object through every call site the way
-Go's `*state.AppState`/Rust's `&AppState` do — `Queue.publishJson`
-becomes the single choke point every `publish` call site (pipeline
-steps and the `publish <Stream>(..)` HIR leaf alike) shares, needing
-no world-awareness of its own at either call site. `SimRunner.java`
+Java's own restatement started at the same narrow slice Go's own did
+before `27UpdatePlan.md` M7 closed it; `27UpdatePlan.md` M8 closes
+Java's own gate the identical way, via the same hand-written-
+restatement shape TypeScript's/Go's own passes established (Java
+cannot vendor `ciac-sim`'s Rust source either): `sim/World.java`'s
+`World` class (occupying the same position Python's/Rust's/
+TypeScript's/Go's own restatements do) now fakes every remaining
+verb a typed handler can call — `db.get`/`update`/`delete`/`query`/
+`count`/`delete_where` (in addition to the narrow `db.insert`/publish),
+schema-aware reference/unique/cascade checking (`WorldTable`/
+`WorldReference`, computed once at codegen time from the same source
+the migration DDL is built from, mirroring Rust's/TypeScript's/Go's
+own `sim_world_tables`), a group-aware broker log (`BrokerLog`, true
+fan-out — two workers sharing one subject each see every message,
+matching Rust's/TypeScript's/Go's own M4/M6/M7 fix), a virtual clock,
+`cache`, `object_store`, `email`, `search`, `external_http`, and
+`auth` (claims-lookup, not real JWT/JWKS crypto, matching Python's own
+`FakeAuth`) — so `unsupported_sim_capabilities` always returns empty,
+proven by the same gate-emptiness test the other three restatements
+carry.
+
+One structural choice specific to Java's own architecture (Pillar 4:
+"structure may diverge; answers may not"): `db`/`cache` verbs get a
+`lower.rs` world-guard leaf directly (both bind to raw Spring types --
+`JdbcClient`/`StringRedisTemplate` -- that can't embed world-awareness
+of their own), while `object_store`/`email`/`search`/`external_http`
+instead push their world-awareness into their own wrapper classes
+(`ObjectStore`/`Email`/`Search`/`ExternalHttp`, each holding its own
+constructor-injected, nullable `World` via Spring's own
+`ObjectProvider<World>` -- `null` in production, since `World` is
+never a `@Component` no production context ever registers one) --
+mirroring the *existing* precedent `Queue.java` already established
+for `publish` before this milestone (`Queue.publishJson` was already
+the one choke point every `publish` call site shares, needing no
+world-awareness of its own at the call site). `lower.rs`'s own
+`object_store_put`/`get`/`delete`/`list`, `email_send`,
+`search_index`/`query`, `http_call` leaves therefore needed *zero*
+changes for this milestone -- only the four wrapper classes and
+`AppState`'s own `@Bean` factory methods (threading each instance's own
+declared name into the new `instanceName` constructor parameter) did.
+
+Java's own production code already gave `transaction {}` **real**,
+unconditional atomicity (`TransactionTemplate`, matching Go's/
+TypeScript's/Rust's own Postgres branches) before this milestone; M8's
+own job was closing the *simulation*-side gap the narrow scope left
+open -- only `db.insert` was world-guarded pre-M8, so a `transaction
+{}` block mixing `db.insert` with `db.update`/`db.delete` had no
+atomicity guarantee spanning the whole block under simulation once
+those verbs gained their own per-statement world-guard. `World`'s own
+ambient-batch-mode mechanism (`beginWorldBatch`/`commitWorldBatch`/
+`rollbackWorldBatch`, mirroring TypeScript's/Go's own M6/M7 design)
+closes it: `transaction_stmt`'s world branch now wraps the lambda body
+in `beginWorldBatch()` / a `try { ...; commitWorldBatch(); } finally {
+rollbackWorldBatch(); }`, so a validation failure partway through
+leaves the store exactly as it was before the call, the same guarantee
+production's own `TransactionTemplate` already gave. `SimRunner.java`
 (`src/test/java/.../sim/SimRunner.java`, test-scoped since `MockMvc`/
 `spring-test` never sit on the packaged application's own classpath)
-resolves the milestone's own pre-registered "SimRunner packaging" open
-question: not `@SpringBootTest`, not a `sim` Spring profile on the main
-jar, but a plain `AnnotationConfigApplicationContext` scanning every
-package below the service root *except* `Application` itself (whose
-conditional `@EnableScheduling`/`@EnableWebSocket` would otherwise
-activate Spring's own background timer/WebSocket machinery — exactly
-the real side effects a scenario's own explicit `advance`/`drain`
-steps exist to replace) plus one manually-registered `World` bean,
-driving requests through Spring's own standalone `MockMvc` (`@RestController`
-beans and `@RestControllerAdvice` gathered by annotation, no embedded
-servlet container, no bound port) and worker/job beans directly via
-their own `handleMessageOnce`/`handleTickOnce` entry points — the same
-"real routes, real handlers, no live listener" contract every other
-target's own runner already holds, reached without needing Spring
-Boot's own `SpringApplication` bootstrap (and its banner/startup
-logging) at all.
+resolves the same "SimRunner packaging" question the narrow slice
+already had answered: not `@SpringBootTest`, not a `sim` Spring
+profile on the main jar, but a plain
+`AnnotationConfigApplicationContext` scanning every package below the
+service root *except* `Application` itself (whose conditional
+`@EnableScheduling`/`@EnableWebSocket` would otherwise activate
+Spring's own background timer/WebSocket machinery) plus one manually-
+registered `World` bean, driving requests through Spring's own
+standalone `MockMvc` and worker/job beans directly via their own
+`handleMessageOnce`/`handleTickOnce` entry points. M8 found one
+further wrinkle live: `SecurityConfig`'s own `securityFilterChain`
+`@Bean` needs a real `HttpSecurity` bean that only exists under a real
+`SpringApplication`, never true here — `SecurityConfig`'s own bean
+definition is now removed by name right after the scan and before
+`ctx.refresh()` (a no-op on a program with no `auth` at all), and
+every `JwtDecoder` constructor dependency across `ApiController`/
+`ResourceController` became an `ObjectProvider<JwtDecoder>` for the
+identical reason (`Auth.verifyToken`'s own `world != null` branch
+never reaches it anyway, but the real bean must still be optional for
+the controller to construct at all under simulation) — both found only
+once an auth-declaring program first became sim-reachable this
+milestone, not anticipated. A second live-found bug, disclosed since
+it predates this milestone but was only exercised for the first time
+by `sim-broker-slice.ciac`'s own fanout scenario: `World.findWhere`'s
+row/filter comparison used `Objects.equals` directly, which silently
+fails whenever a stored integer field's `Long`-typed round-trip (via
+`Schemas.MAPPER.convertValue`'s own `TokenBuffer`-preserved
+`NumberType`) is compared against a scenario JSON's own `Integer`-typed
+filter value — fixed by routing through the same `jsonEq` helper
+`db.query`'s own world-guard predicate already needed for the
+identical `Integer`-vs-`Long` reason, JSON-serializing both sides
+before comparing instead of comparing boxed types directly.
 
 Single-service projects only, every target: `ciac sim` refuses cleanly
 (not a crash, not a silent partial run) when it finds more than one

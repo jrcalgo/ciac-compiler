@@ -9,26 +9,50 @@
 // `AppState` construction. Defaults target the Mailpit container from
 // the generated docker-compose, so sent mail is inspectable at
 // http://localhost:8025.
+//
+// World-guarded (27UpdatePlan.md M8): `object_store`/`email`/`search`/
+// `external_http` each hold their own `ObjectProvider<World>`
+// (mirroring `Queue.java`'s own pre-existing `publishJson` pattern,
+// v0.25 M9) rather than getting a `lower.rs` world-guard leaf of their
+// own -- a Java-specific structural choice (Pillar 4: "structure may
+// diverge; answers may not"), not a narrower fake. `instanceName` is
+// this bean's own declared instance name (`AppState`'s own `inst.name`,
+// e.g. `default`/`notifications`), matching the key `World.emailSend`
+// keys its own per-instance send log by.
 package com.ciac.{{ java_package }}.state;
 
+import com.ciac.{{ java_package }}.sim.World;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 
 public final class Email {
+    private final String instanceName;
     private final String host;
     private final int port;
     private final String username;
     private final String password;
     private final String from;
     private final boolean useTls;
+    private final World world;
 
-    public Email(String host, int port, String username, String password, String from, boolean useTls) {
+    public Email(
+            String instanceName,
+            String host,
+            int port,
+            String username,
+            String password,
+            String from,
+            boolean useTls,
+            ObjectProvider<World> worldProvider) {
+        this.instanceName = instanceName;
         this.host = host;
         this.port = port;
         this.username = username;
         this.password = password;
         this.from = from;
         this.useTls = useTls;
+        this.world = worldProvider.getIfAvailable();
     }
 
     private JavaMailSenderImpl sender() {
@@ -46,6 +70,10 @@ public final class Email {
     }
 
     public void send(String to, String subject, String body) {
+        if (world != null) {
+            world.emailSend(instanceName, to, subject, body);
+            return;
+        }
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(from);
         message.setTo(to);

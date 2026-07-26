@@ -40,7 +40,7 @@ use ciac_codegen::{
     Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
     TargetInfo, ValidateStep,
 };
-use ciac_ir::{Component, NodeKind, NormalizedIr};
+use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 use serde::Serialize;
@@ -113,47 +113,85 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     sim_replay: false,
 };
 
-/// Human-readable, closed list of reasons `ciac sim --target java`
-/// (v0.25 M9) cannot yet simulate `ir`, empty when it can — the same
-/// gate Rust's own `unsupported_sim_capabilities` (v0.17 M11),
-/// TypeScript's (v0.23 M9), and Go's (v0.24 M9) compute, over the same
-/// shared `lower::scan` this backend already reuses elsewhere:
-/// `World.java` only fakes `db.insert` and broker publish/consume;
-/// every other verb a typed handler calls falls straight through the
-/// world-guard to real infrastructure (`db_update_tail` and friends
-/// never check `world`).
-pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
-    let mut reasons = Vec::new();
-    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
-        reasons.push(
-            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
-             cryptography against a real issuer, which this milestone's simulation world does \
-             not fake"
-                .to_owned(),
-        );
-    }
-    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
-    for node in ir.nodes() {
-        if let Component::Service {
-            signature: Some(hir),
-            ..
-        } = &node.component
-        {
-            for verb in lower::scan(ir, hir).unguarded_verbs {
-                if !unguarded_verbs.contains(&verb) {
-                    unguarded_verbs.push(verb);
-                }
-            }
-        }
-    }
-    if !unguarded_verbs.is_empty() {
-        unguarded_verbs.sort_unstable();
-        reasons.push(format!(
-            "calls verb(s) the simulation world does not fake: {}",
-            unguarded_verbs.join(", ")
-        ));
-    }
-    reasons
+/// Human-readable, closed list of reasons `ciac sim --target java` cannot
+/// yet simulate `ir`, empty when it can — the same gate Rust's own
+/// `unsupported_sim_capabilities` (v0.17 M11, full parity 27UpdatePlan.md
+/// M4), TypeScript's (v0.23 M9, full parity M6), and Go's (v0.24 M9, full
+/// parity M7) compute. 27UpdatePlan.md M8 closes Java's own gate the
+/// identical way: `World.java` (`World.java.j2`) now fakes every capability
+/// a typed handler can call — `db.get`/`update`/`delete`/`query`/`count`/
+/// `delete_where` (in addition to the v0.25 M9 narrow `db.insert`/publish),
+/// `cache` (both via a `lower.rs` world-guard leaf), and `object_store`/
+/// `email`/`search`/`external_http`/`auth` (each via its own wrapper
+/// class's own `ObjectProvider<World>`, mirroring `Queue.java`'s own
+/// pre-existing `publishChecked` pattern) — so `lower::scan`'s own
+/// `unguarded_verbs` list is always empty and `auth` no longer needs a
+/// standalone refusal either. Kept as a function (not a bare `Vec::new()`
+/// constant) for the identical reason Rust's/TypeScript's/Go's own M4/M6/M7
+/// kept theirs: `TargetInfo::sim` needs a `fn(&NormalizedIr) -> Vec<String>`
+/// value, and a real function documents the empty list's own reasoning
+/// inline rather than leaving a bare literal to look unintentional.
+///
+/// **A structural note, identical to Rust's/TypeScript's/Go's own M4/M6/M7
+/// finding:** this does *not* flip `TargetInfo::sim` from `SimSupport::
+/// Narrow` to `SimSupport::Full` — `commands.rs`'s `sim_inner` dispatch
+/// hardcodes `SimSupport::Full => sim_drive_python(..)`, so doing that would
+/// silently misroute Java-generated projects through Python's driver.
+/// Java's `TargetInfo` stays `SimSupport::Narrow` with this function now
+/// always returning empty — "full" in observed behavior, not in enum shape.
+pub fn unsupported_sim_capabilities(_ir: &NormalizedIr) -> Vec<String> {
+    Vec::new()
+}
+
+/// Template-facing counterpart of `World.java`'s own `WorldReference`.
+#[derive(serde::Serialize)]
+struct SimWorldReferenceCtx {
+    field_name: String,
+    target_table: Option<String>,
+    on_delete: &'static str,
+    unique: bool,
+}
+
+/// Template-facing counterpart of `World.java`'s own `WorldTable`.
+#[derive(serde::Serialize)]
+struct SimWorldTableCtx {
+    name: String,
+    references: Vec<SimWorldReferenceCtx>,
+}
+
+/// Builds the schema `SimRunner.java.j2` passes to `new World(.., tables)`
+/// (27UpdatePlan.md M8) -- without it, `World` falls back to an empty
+/// schema and every reference/unique/cascade check silently becomes a
+/// no-op, the same gap Rust's/TypeScript's/Go's own M4/M6/M7 caught live
+/// against `domain-orders.ciac`. Reuses `ciac_codegen::migrations::
+/// snapshot_schema` -- the same reference/unique-column facts the
+/// migration DDL itself is built from, so this can never drift from what
+/// the real schema actually enforces. Mirrors `ciac-backend-go`'s own
+/// `sim_world_tables` exactly, except `on_delete`'s own uppercase spelling
+/// here (`World.java.j2`'s `RefAction.valueOf` reads this string
+/// directly, unlike TS's/Go's own lowercase-string `on_delete` field).
+fn sim_world_tables(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(fk.target_table),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "CASCADE"
+                    } else {
+                        "RESTRICT"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx { name, references }
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -612,20 +650,34 @@ fn emit_service(
     // M9 simulation slice: `World.java` (main, gated the same as
     // Rust's/TS's/Go's own restatement) plus `SimRunner.java` (test-
     // scoped, `MockMvc`/`spring-test` only ever sit on the `test`
-    // classpath) -- generated unconditionally for any has_db/has_queue
-    // program, whether or not that specific program is ever actually
-    // eligible for `ciac sim` (an auth-declaring or unguarded-verb-
-    // calling program still gets a compiling SimRunner; `ciac sim`
+    // classpath) -- generated unconditionally for any program with
+    // something this world can fake, whether or not that specific
+    // program is ever actually eligible for `ciac sim` (an unguarded-
+    // verb-calling program still gets a compiling SimRunner; `ciac sim`
     // itself is what refuses to run it, via `unsupported_sim_
-    // capabilities` above), mirroring Go's own M9 emission gate.
-    if ctx.has_db || ctx.has_queue {
+    // capabilities` above). 27UpdatePlan.md M8 broadens this from
+    // `has_db or has_queue` to the full 8-condition check, matching
+    // TypeScript's/Go's own M6/M7 fix, now that `World.java` fakes
+    // every capability, not just db.insert/publish.
+    if ctx.has_db
+        || ctx.has_queue
+        || ctx.has_cache
+        || ctx.has_object_store
+        || ctx.has_email
+        || ctx.has_search
+        || ctx.has_external_http
+        || ctx.has_auth
+    {
         project.add_file(
             at(&format!("{java_root}/sim/World.java")),
             render_java("World.java.j2", empty())?,
         );
         project.add_file(
             at(&format!("{test_root}/sim/SimRunner.java")),
-            render_java("SimRunner.java.j2", empty())?,
+            render_java(
+                "SimRunner.java.j2",
+                context! { sim_world_tables => sim_world_tables(ir) },
+            )?,
         );
     }
 

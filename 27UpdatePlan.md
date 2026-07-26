@@ -2180,11 +2180,28 @@ a commit + push; Shipped notes append in place per convention.
    clippy --workspace --all-targets -- -D warnings` zero warnings;
    `cargo test -p ciac-integration-tests --test sim_gate_emptiness`
    green standalone (Rust, TypeScript, and the new Go case, three
-   for three); generated-project `go build ./...`/`go vet ./...`/
-   `gofmt -l .` clean across every corpus program reached by `ciac
-   sim --target go`. Live `ciac sim --target go` proof for all nine
-   corpus scenarios as above, independently re-run and re-captured
-   for this note rather than quoted from memory.
+   for three); `cargo test -p ciac-integration-tests --test
+   typed_handler_equivalence` green (four for four, including the
+   pre-existing `go_db_query_result_initializes_as_a_non_nil_
+   empty_slice` regression test the nil-slice bug above briefly
+   broke and this milestone's own fix restored); generated-project
+   `go build ./...`/`go vet ./...`/`gofmt -l .` clean across every
+   corpus program reached by `ciac sim --target go`. `cargo test
+   --workspace --no-fail-fast` run to completion: one failure,
+   `backfill_cli::refuses_until_the_expand_migration_lands_then_
+   plans_and_gates_the_contract` — `uv run ruff check .` rejecting
+   generated Python import ordering/`datetime.UTC`/quoted-annotation
+   style, the identical pre-existing ruff-version-drift finding M5's
+   own Shipped note already disclosed (`crates/ciac-backend-python/
+   templates/pyproject.toml.j2`'s unpinned `ruff>=0.6` floor against
+   this sandbox's newer installed ruff) — confirmed unrelated to any
+   file this milestone touched (every flagged line is Python-
+   template output; this milestone changed only Go templates/`lower.
+   rs`/docs/tests) and left unfixed for the identical out-of-scope
+   reason M5 recorded. No other failure anywhere in the workspace.
+   Live `ciac sim --target go` proof for all nine corpus scenarios
+   as above, independently re-run and re-captured for this note
+   rather than quoted from memory.
 
    **M7 exit checklist — met:** `world.go.j2` self-contained per
    Pillar 4's rules, mutex-guarded rather than lock-free (✓, the

@@ -33,7 +33,7 @@ export const {{ resource.snake }}Route: FastifyPluginAsync<{ state: AppState }> 
 
   app.post("/{{ resource.plural }}", async (request, reply) => {
 {%- if resource.has_auth %}
-    const claims = await verifyToken(request, state.config);
+    const claims = await verifyToken(request, state);
 {%- if resource.write_scope %}
     requireScope(claims, "{{ resource.write_scope }}");
 {%- else %}
@@ -48,7 +48,7 @@ export const {{ resource.snake }}Route: FastifyPluginAsync<{ state: AppState }> 
 
   app.get("/{{ resource.plural }}", async (request) => {
 {%- if resource.has_auth %}
-    const claims = await verifyToken(request, state.config);
+    const claims = await verifyToken(request, state);
 {%- if resource.read_scope %}
     requireScope(claims, "{{ resource.read_scope }}");
 {%- else %}
@@ -63,7 +63,7 @@ export const {{ resource.snake }}Route: FastifyPluginAsync<{ state: AppState }> 
 
   app.get("/{{ resource.plural }}/:id", async (request, reply) => {
 {%- if resource.has_auth %}
-    const claims = await verifyToken(request, state.config);
+    const claims = await verifyToken(request, state);
 {%- if resource.read_scope %}
     requireScope(claims, "{{ resource.read_scope }}");
 {%- else %}
@@ -81,7 +81,7 @@ export const {{ resource.snake }}Route: FastifyPluginAsync<{ state: AppState }> 
 
   app.put("/{{ resource.plural }}/:id", async (request, reply) => {
 {%- if resource.has_auth %}
-    const claims = await verifyToken(request, state.config);
+    const claims = await verifyToken(request, state);
 {%- if resource.write_scope %}
     requireScope(claims, "{{ resource.write_scope }}");
 {%- else %}
@@ -100,7 +100,7 @@ export const {{ resource.snake }}Route: FastifyPluginAsync<{ state: AppState }> 
 
   app.delete("/{{ resource.plural }}/:id", async (request, reply) => {
 {%- if resource.has_auth %}
-    const claims = await verifyToken(request, state.config);
+    const claims = await verifyToken(request, state);
 {%- if resource.write_scope %}
     requireScope(claims, "{{ resource.write_scope }}");
 {%- else %}

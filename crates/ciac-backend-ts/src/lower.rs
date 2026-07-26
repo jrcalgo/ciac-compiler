@@ -27,10 +27,9 @@
 //!   site (mirroring Python's own keyword-free `assign()` spelling)
 //!   sidesteps that regardless of nesting depth.
 
-pub(crate) use ciac_codegen::lower::scan;
 use ciac_codegen::lower::{
-    self, fidelity_checked_float, strip_outer_parens, Dest, HostSyntax, IndexKey, LoweredPredicate,
-    Orientation, PredValue,
+    self, fidelity_checked_float, strip_outer_parens, Dest, HostSyntax, IndexKey, LoweredPredTerm,
+    LoweredPredicate, Orientation, PredValue,
 };
 use ciac_codegen::model::{self as context, FieldCtx, FieldTypeKind, RecordCtx};
 use ciac_codegen::template::sqlph;
@@ -155,6 +154,17 @@ struct TsSyntax<'a> {
     email_field: Option<String>,
     search_field: Option<String>,
     http_field: Option<String>,
+    /// 27UpdatePlan.md M6: the capability instance's own *declared*
+    /// name (e.g. `"Sessions"` from `cache Sessions`), not the
+    /// `AppState` field it resolves to -- `SimWorld`'s cache/object
+    /// store/email/search/http maps are keyed by this name, matching
+    /// `given.cache`/`given.store`/etc.'s own `instance` field and
+    /// Rust's own `cache_instance`/`object_store_instance`/etc.
+    cache_instance: Option<String>,
+    object_store_instance: Option<String>,
+    email_instance: Option<String>,
+    search_instance: Option<String>,
+    http_instance: Option<String>,
     /// A handler body can call more than one statement-shaped db verb
     /// within the same block scope (e.g. two `db.insert`s inside one
     /// `transaction {}` — live-caught: two `const __row = ..;`
@@ -217,6 +227,75 @@ impl TsSyntax<'_> {
         self.object_store_field
             .as_deref()
             .expect("an object_store verb requires a bound object_store instance")
+    }
+
+    fn cache_instance(&self) -> &str {
+        self.cache_instance
+            .as_deref()
+            .expect("a handler calling a cache verb has a bound cache instance, per sema")
+    }
+    fn object_store_instance(&self) -> &str {
+        self.object_store_instance
+            .as_deref()
+            .expect("a handler calling an object_store verb has a bound instance, per sema")
+    }
+    fn email_instance(&self) -> &str {
+        self.email_instance
+            .as_deref()
+            .expect("a handler calling an email verb has a bound instance, per sema")
+    }
+    fn search_instance(&self) -> &str {
+        self.search_instance
+            .as_deref()
+            .expect("a handler calling a search verb has a bound instance, per sema")
+    }
+    fn http_instance(&self) -> &str {
+        self.http_instance
+            .as_deref()
+            .expect("a handler calling an external_http verb has a bound instance, per sema")
+    }
+
+    /// 27UpdatePlan.md M6: compiles a `LoweredPredicate` into a JS
+    /// boolean expression over an in-memory `world.ts` row (a plain
+    /// object, not a SQL row) -- `SimWorld.db.findWhere`'s own filter
+    /// only ever supports equality, so `db.query`/`db.count`/
+    /// `db.delete_where`'s world branches filter the *unconstrained*
+    /// row set themselves, mirroring Rust's own `world_predicate_expr`.
+    fn world_predicate_expr(&self, predicate: Option<&LoweredPredicate>, row_var: &str) -> String {
+        let Some(predicate) = predicate else {
+            return "true".to_owned();
+        };
+        predicate
+            .terms
+            .iter()
+            .map(|term| self.world_predicate_term_expr(term, row_var))
+            .collect::<Vec<_>>()
+            .join(" && ")
+    }
+    fn world_predicate_term_expr(&self, term: &LoweredPredTerm, row_var: &str) -> String {
+        let field = &term.field;
+        let value_expr = match &term.value {
+            PredValue::EnumVariant(v) => format!("{v:?}"),
+            PredValue::BoolLit(b) => b.to_string(),
+            PredValue::Rendered(s) => s.clone(),
+        };
+        match term.op {
+            PredOp::Eq => format!("{row_var}[{field:?}] === ({value_expr})"),
+            PredOp::NotEq => format!("{row_var}[{field:?}] !== ({value_expr})"),
+            PredOp::Contains => {
+                format!("String({row_var}[{field:?}] ?? \"\").includes(String({value_expr}))")
+            }
+            PredOp::Lt | PredOp::LtEq | PredOp::Gt | PredOp::GtEq => {
+                let op_str = match term.op {
+                    PredOp::Lt => "<",
+                    PredOp::LtEq => "<=",
+                    PredOp::Gt => ">",
+                    PredOp::GtEq => ">=",
+                    _ => unreachable!(),
+                };
+                format!("Number({row_var}[{field:?}]) {op_str} Number({value_expr})")
+            }
+        }
     }
 
     /// A field's write-side bind expression: SQLite's driver rejects a
@@ -589,8 +668,10 @@ impl HostSyntax for TsSyntax<'_> {
     ) -> Vec<String> {
         let row = self.fresh("__row");
         let result = self.fresh("__result");
+        let out_var = self.fresh("__out");
         let table_snake = self.ir.table(table).name.to_snake_case();
         let record = context::build_record(self.ir, self.ir.table(table).record);
+        let record_name = record_class_name(self.ir, self.ir.table(table).record);
         let handle = self.handle(in_tx);
         let mut binds: Vec<String> = record
             .fields
@@ -606,45 +687,57 @@ impl HostSyntax for TsSyntax<'_> {
             ),
             self.db_engine,
         );
-        let mut out = vec![format!("{indent}const {row} = {value};")];
-        let inner = format!("{indent}    ");
+        // 27UpdatePlan.md M6: `{out_var}` is declared once, above the
+        // world/production split, and only ever *assigned* (never
+        // `const`-declared again) inside each branch -- TS's `if {}
+        // else {}` introduces a real block scope (unlike Rust's/
+        // Python's own branch-sharing orientations), so a `const`
+        // declared inside one arm and read after the block closes is a
+        // real `ReferenceError`/compile error, not a style nit; found
+        // live via `tsc` against `domain-orders.ciac`.
+        let mut out = vec![
+            format!("{indent}const {row} = {value};"),
+            format!("{indent}let {out_var}: {record_name} | null;"),
+        ];
+        // World guard -- `dbUpdateChecked` does the same full-record
+        // replace `SET` production SQL performs, `null` for a missing
+        // row exactly like `rowCount === 0`.
+        out.push(format!("{indent}if (this.state.world) {{"));
+        out.push(format!(
+            "{indent}  {out_var} = this.state.world.dbUpdateChecked({table_snake:?}, {key}, {row}) as unknown as {record_name} | null;"
+        ));
+        out.push(format!("{indent}}} else {{"));
         match self.db_engine {
             "sqlite" => {
                 out.push(format!(
-                    "{indent}const {result} = {handle}.prepare({sql:?}).run({});",
+                    "{indent}  const {result} = {handle}.prepare({sql:?}).run({});",
                     binds.join(", ")
                 ));
-                out.push(format!("{indent}if ({result}.changes === 0) {{"));
-                lower::apply_dest(self, dest, "null", &inner, &mut out);
-                out.push(format!("{indent}}} else {{"));
-                lower::apply_dest(self, dest, &row, &inner, &mut out);
-                out.push(format!("{indent}}}"));
+                out.push(format!(
+                    "{indent}  {out_var} = {result}.changes === 0 ? null : {row};"
+                ));
             }
             "mysql" => {
                 out.push(format!(
-                    "{indent}const [{result}] = await {handle}.query({sql:?}, [{}]);",
+                    "{indent}  const [{result}] = await {handle}.query({sql:?}, [{}]);",
                     binds.join(", ")
                 ));
                 out.push(format!(
-                    "{indent}if (({result} as {{ affectedRows: number }}).affectedRows === 0) {{"
+                    "{indent}  {out_var} = ({result} as {{ affectedRows: number }}).affectedRows === 0 ? null : {row};"
                 ));
-                lower::apply_dest(self, dest, "null", &inner, &mut out);
-                out.push(format!("{indent}}} else {{"));
-                lower::apply_dest(self, dest, &row, &inner, &mut out);
-                out.push(format!("{indent}}}"));
             }
             _ => {
                 out.push(format!(
-                    "{indent}const {result} = await {handle}.query({sql:?}, [{}]);",
+                    "{indent}  const {result} = await {handle}.query({sql:?}, [{}]);",
                     binds.join(", ")
                 ));
-                out.push(format!("{indent}if ({result}.rowCount === 0) {{"));
-                lower::apply_dest(self, dest, "null", &inner, &mut out);
-                out.push(format!("{indent}}} else {{"));
-                lower::apply_dest(self, dest, &row, &inner, &mut out);
-                out.push(format!("{indent}}}"));
+                out.push(format!(
+                    "{indent}  {out_var} = {result}.rowCount === 0 ? null : {row};"
+                ));
             }
         }
+        out.push(format!("{indent}}}"));
+        lower::apply_dest(self, dest, &out_var, indent, &mut out);
         out
     }
     fn db_delete_tail(
@@ -656,51 +749,52 @@ impl HostSyntax for TsSyntax<'_> {
         in_tx: bool,
     ) -> Vec<String> {
         let result = self.fresh("__result");
+        let out_var = self.fresh("__out");
         let table_snake = self.ir.table(table).name.to_snake_case();
         let handle = self.handle(in_tx);
         let sql = sqlph(
             &format!("DELETE FROM {table_snake} WHERE id = $1"),
             self.db_engine,
         );
-        let mut out = Vec::new();
+        // 27UpdatePlan.md M6: `{out_var}` is declared once, above the
+        // world/production split, and only ever *assigned* inside each
+        // branch -- see `db_update_tail`'s own doc for why (TS's `if {}
+        // else {}` block scope; found live via `tsc`).
+        let mut out = vec![format!("{indent}let {out_var}: boolean;")];
+        // World guard -- `dbDeleteChecked` resolves cascade/restrict
+        // references the same way production's `ON DELETE` behavior
+        // would (enforced at the schema level, not per-statement).
+        out.push(format!("{indent}if (this.state.world) {{"));
+        out.push(format!(
+            "{indent}  {out_var} = this.state.world.dbDeleteChecked({table_snake:?}, {key});"
+        ));
+        out.push(format!("{indent}}} else {{"));
         match self.db_engine {
             "sqlite" => {
                 out.push(format!(
-                    "{indent}const {result} = {handle}.prepare({sql:?}).run({key});"
+                    "{indent}  const {result} = {handle}.prepare({sql:?}).run({key});"
                 ));
-                lower::apply_dest(
-                    self,
-                    dest,
-                    &format!("{result}.changes > 0"),
-                    indent,
-                    &mut out,
-                );
+                out.push(format!("{indent}  {out_var} = {result}.changes > 0;"));
             }
             "mysql" => {
                 out.push(format!(
-                    "{indent}const [{result}] = await {handle}.query({sql:?}, [{key}]);"
+                    "{indent}  const [{result}] = await {handle}.query({sql:?}, [{key}]);"
                 ));
-                lower::apply_dest(
-                    self,
-                    dest,
-                    &format!("({result} as {{ affectedRows: number }}).affectedRows > 0"),
-                    indent,
-                    &mut out,
-                );
+                out.push(format!(
+                    "{indent}  {out_var} = ({result} as {{ affectedRows: number }}).affectedRows > 0;"
+                ));
             }
             _ => {
                 out.push(format!(
-                    "{indent}const {result} = await {handle}.query({sql:?}, [{key}]);"
+                    "{indent}  const {result} = await {handle}.query({sql:?}, [{key}]);"
                 ));
-                lower::apply_dest(
-                    self,
-                    dest,
-                    &format!("({result}.rowCount ?? 0) > 0"),
-                    indent,
-                    &mut out,
-                );
+                out.push(format!(
+                    "{indent}  {out_var} = ({result}.rowCount ?? 0) > 0;"
+                ));
             }
         }
+        out.push(format!("{indent}}}"));
+        lower::apply_dest(self, dest, &out_var, indent, &mut out);
         out
     }
     fn query_tail(
@@ -714,6 +808,7 @@ impl HostSyntax for TsSyntax<'_> {
         match verb {
             Verb::DbQuery(table) => {
                 let rows = self.fresh("__rows");
+                let out_var = self.fresh("__out");
                 let table_snake = self.ir.table(table).name.to_snake_case();
                 let record = context::build_record(self.ir, self.ir.table(table).record);
                 let handle = self.handle(in_tx);
@@ -725,30 +820,56 @@ impl HostSyntax for TsSyntax<'_> {
                     ),
                     self.db_engine,
                 );
-                let mut out = Vec::new();
+                let world_pred = self.world_predicate_expr(predicate, "__r");
+                let cast_ty = self.row_cast_type(&record);
+                let record_name = record_class_name(self.ir, self.ir.table(table).record);
+                // 27UpdatePlan.md M6: `{out_var}` is declared once,
+                // above the world/production split, and only ever
+                // *assigned* inside each branch -- see
+                // `db_update_tail`'s own doc for why (TS's `if {} else
+                // {}` block scope; found live via `tsc`).
+                let mut out = vec![format!("{indent}let {out_var}: {record_name}[];")];
+                out.push(format!("{indent}if (this.state.world) {{"));
+                out.push(format!(
+                    "{indent}  const {rows} = this.state.world.db.findWhere({table_snake:?}, {{}}).filter((__r) => {world_pred});"
+                ));
+                // World rows are already in the record's own in-memory
+                // shape (the same object `dbInsertChecked`'s own `row`
+                // param received, never through `bindExpr`'s SQLite
+                // storage-shape coercion) -- `mapRowExpr`'s SQLite/MySQL/
+                // Postgres storage-decoding only applies to a *real* SQL
+                // row, so the world branch casts through `unknown`
+                // rather than remapping.
+                out.push(format!(
+                    "{indent}  {out_var} = {rows} as unknown as {record_name}[];"
+                ));
+                out.push(format!("{indent}}} else {{"));
                 match self.db_engine {
                     "sqlite" => {
-                        let cast_ty = self.row_cast_type(&record);
                         out.push(format!(
-                            "{indent}const {rows} = {handle}.prepare({sql:?}).all({}) as {cast_ty}[];",
+                            "{indent}  const {rows} = {handle}.prepare({sql:?}).all({}) as {cast_ty}[];",
                             binds.join(", ")
                         ));
                     }
                     "mysql" => out.push(format!(
-                        "{indent}const [{rows}] = await {handle}.query({sql:?}, [{}]);",
+                        "{indent}  const [{rows}] = await {handle}.query({sql:?}, [{}]);",
                         binds.join(", ")
                     )),
                     _ => out.push(format!(
-                        "{indent}const {rows} = (await {handle}.query({sql:?}, [{}])).rows;",
+                        "{indent}  const {rows} = (await {handle}.query({sql:?}, [{}])).rows;",
                         binds.join(", ")
                     )),
                 }
                 let map_expr = self.map_row_expr(&record, "__r");
-                let mapped = format!("{rows}.map((__r) => ({map_expr}))");
-                lower::apply_dest(self, dest, &mapped, indent, &mut out);
+                out.push(format!(
+                    "{indent}  {out_var} = {rows}.map((__r) => ({map_expr}));"
+                ));
+                out.push(format!("{indent}}}"));
+                lower::apply_dest(self, dest, &out_var, indent, &mut out);
                 out
             }
             Verb::DbCount(table) => {
+                let out_var = self.fresh("__out");
                 let table_snake = self.ir.table(table).name.to_snake_case();
                 let handle = self.handle(in_tx);
                 let (where_sql, binds) = self.where_clause(predicate);
@@ -756,34 +877,36 @@ impl HostSyntax for TsSyntax<'_> {
                     &format!("SELECT COUNT(*) as count FROM {table_snake}{where_sql}"),
                     self.db_engine,
                 );
-                let mut out = Vec::new();
+                let world_pred = self.world_predicate_expr(predicate, "__r");
+                let mut out = vec![format!("{indent}let {out_var}: number;")];
+                out.push(format!("{indent}if (this.state.world) {{"));
+                out.push(format!(
+                    "{indent}  {out_var} = this.state.world.db.findWhere({table_snake:?}, {{}}).filter((__r) => {world_pred}).length;"
+                ));
+                out.push(format!("{indent}}} else {{"));
                 match self.db_engine {
                     "sqlite" => {
                         let row = self.fresh("__row");
                         out.push(format!(
-                            "{indent}const {row} = {handle}.prepare({sql:?}).get({}) as {{ count: number }};",
+                            "{indent}  const {row} = {handle}.prepare({sql:?}).get({}) as {{ count: number }};",
                             binds.join(", ")
                         ));
-                        lower::apply_dest(self, dest, &format!("{row}.count"), indent, &mut out);
+                        out.push(format!("{indent}  {out_var} = {row}.count;"));
                     }
                     "mysql" => {
                         let rows = self.fresh("__rows");
                         out.push(format!(
-                            "{indent}const [{rows}] = await {handle}.query({sql:?}, [{}]);",
+                            "{indent}  const [{rows}] = await {handle}.query({sql:?}, [{}]);",
                             binds.join(", ")
                         ));
-                        lower::apply_dest(
-                            self,
-                            dest,
-                            &format!("Number(({rows} as {{ count: number }}[])[0].count)"),
-                            indent,
-                            &mut out,
-                        );
+                        out.push(format!(
+                            "{indent}  {out_var} = Number(({rows} as {{ count: number }}[])[0].count);"
+                        ));
                     }
                     _ => {
                         let result = self.fresh("__result");
                         out.push(format!(
-                            "{indent}const {result} = await {handle}.query({sql:?}, [{}]);",
+                            "{indent}  const {result} = await {handle}.query({sql:?}, [{}]);",
                             binds.join(", ")
                         ));
                         // Postgres returns COUNT(*) as a bigint, decoded
@@ -791,19 +914,18 @@ impl HostSyntax for TsSyntax<'_> {
                         // `Number(..)` matches this backend's `Int`
                         // decision (Pillar 2: `number`, 2^53 boundary
                         // disclosed) rather than adding a bigint mode.
-                        lower::apply_dest(
-                            self,
-                            dest,
-                            &format!("Number({result}.rows[0].count)"),
-                            indent,
-                            &mut out,
-                        );
+                        out.push(format!(
+                            "{indent}  {out_var} = Number({result}.rows[0].count);"
+                        ));
                     }
                 }
+                out.push(format!("{indent}}}"));
+                lower::apply_dest(self, dest, &out_var, indent, &mut out);
                 out
             }
             Verb::DbDeleteWhere(table) => {
                 let result = self.fresh("__result");
+                let out_var = self.fresh("__out");
                 let table_snake = self.ir.table(table).name.to_snake_case();
                 let handle = self.handle(in_tx);
                 let (where_sql, binds) = self.where_clause(predicate);
@@ -811,48 +933,67 @@ impl HostSyntax for TsSyntax<'_> {
                     &format!("DELETE FROM {table_snake}{where_sql}"),
                     self.db_engine,
                 );
-                let mut out = Vec::new();
+                let world_pred = self.world_predicate_expr(predicate, "__r");
+                let matching = self.fresh("__matching");
+                let pk = self.fresh("__pk");
+                // 27UpdatePlan.md M6: `SimWorld` has no bulk
+                // delete-by-predicate method (`commitBatchChecked`
+                // takes explicit `(table, pk)` pairs, not a filter), so
+                // the world branch resolves matching ids first, then
+                // deletes each through `dbDeleteChecked` (real cascade/
+                // restrict handling, real failure-injection) -- a
+                // disclosed divergence from production's single bulk
+                // `DELETE`, mirroring Rust's own `query_expr` world
+                // branch exactly.
+                let world = self.fresh("__world");
+                let mut out = vec![format!("{indent}let {out_var}: number;")];
+                out.push(format!("{indent}if (this.state.world) {{"));
+                // Captured into a local (rather than repeated
+                // `this.state.world.*` accesses) so TypeScript's
+                // control-flow narrowing of the guard above survives
+                // across the loop below -- narrowing a dotted member
+                // expression like `this.state.world` is not guaranteed
+                // to persist across an intervening method call.
+                out.push(format!("{indent}  const {world} = this.state.world;"));
+                out.push(format!(
+                    "{indent}  const {matching} = {world}.db.findWhere({table_snake:?}, {{}}).filter((__r) => {world_pred}).map((__r) => __r.id as string);"
+                ));
+                out.push(format!("{indent}  {out_var} = 0;"));
+                out.push(format!("{indent}  for (const {pk} of {matching}) {{"));
+                out.push(format!(
+                    "{indent}    if ({world}.dbDeleteChecked({table_snake:?}, {pk})) {{"
+                ));
+                out.push(format!("{indent}      {out_var} += 1;"));
+                out.push(format!("{indent}    }}"));
+                out.push(format!("{indent}  }}"));
+                out.push(format!("{indent}}} else {{"));
                 match self.db_engine {
                     "sqlite" => {
                         out.push(format!(
-                            "{indent}const {result} = {handle}.prepare({sql:?}).run({});",
+                            "{indent}  const {result} = {handle}.prepare({sql:?}).run({});",
                             binds.join(", ")
                         ));
-                        lower::apply_dest(
-                            self,
-                            dest,
-                            &format!("{result}.changes"),
-                            indent,
-                            &mut out,
-                        );
+                        out.push(format!("{indent}  {out_var} = {result}.changes;"));
                     }
                     "mysql" => {
                         out.push(format!(
-                            "{indent}const [{result}] = await {handle}.query({sql:?}, [{}]);",
+                            "{indent}  const [{result}] = await {handle}.query({sql:?}, [{}]);",
                             binds.join(", ")
                         ));
-                        lower::apply_dest(
-                            self,
-                            dest,
-                            &format!("({result} as {{ affectedRows: number }}).affectedRows"),
-                            indent,
-                            &mut out,
-                        );
+                        out.push(format!(
+                            "{indent}  {out_var} = ({result} as {{ affectedRows: number }}).affectedRows;"
+                        ));
                     }
                     _ => {
                         out.push(format!(
-                            "{indent}const {result} = await {handle}.query({sql:?}, [{}]);",
+                            "{indent}  const {result} = await {handle}.query({sql:?}, [{}]);",
                             binds.join(", ")
                         ));
-                        lower::apply_dest(
-                            self,
-                            dest,
-                            &format!("{result}.rowCount ?? 0"),
-                            indent,
-                            &mut out,
-                        );
+                        out.push(format!("{indent}  {out_var} = {result}.rowCount ?? 0;"));
                     }
                 }
+                out.push(format!("{indent}}}"));
+                lower::apply_dest(self, dest, &out_var, indent, &mut out);
                 out
             }
             _ => unreachable!("HirExpr::Query only ever carries a db query verb, found {verb:?}"),
@@ -893,23 +1034,20 @@ impl HostSyntax for TsSyntax<'_> {
     /// connection, so no separate handle is needed there — see
     /// `handle`'s own doc.
     ///
-    /// Under simulation (v0.23 M9, `this.state.world` set), the real
-    /// checkout/`BEGIN`/`COMMIT`/`ROLLBACK`/release calls are skipped
-    /// entirely — there is no live database to open a connection
-    /// against, and every db verb this checkpoint's sim gate allows
-    /// inside a transaction (`db.insert` only; any other db verb is
-    /// on `unsupportedSimCapabilities`'s unguarded list and already
-    /// refuses `ciac sim` before this code path is reached) already
-    /// redirects to `SimWorld` itself in `inner_lines`. This is a
-    /// narrower, disclosed simplification *only* under simulation —
-    /// production TypeScript keeps its real atomicity unchanged, the
-    /// same "transaction atomicity does not apply the same way inside
-    /// `ciac sim`" gap Rust's own production backend has generally.
-    /// SQLite's wrapper needs no such guard: its `.transaction()` call
-    /// only ever touches a local file already opened by `createState`
-    /// (never the network), so running it under simulation is a real
-    /// but harmless no-op once `inner_lines`' own world guard skips
-    /// every actual `.prepare(..).run(..)` inside it.
+    /// 27UpdatePlan.md M6: under simulation (`this.state.world` set),
+    /// the real checkout/`BEGIN`/`COMMIT`/`ROLLBACK`/release calls are
+    /// skipped, and `this.state.world`'s ambient batch mode
+    /// (`beginWorldBatch`/`commitWorldBatch`/`rollbackWorldBatch` --
+    /// see `world.ts`'s own doc) wraps `inner_lines` instead: every
+    /// `db.insert`/`update`/`delete` inside `inner_lines` already
+    /// calls `dbXChecked` (unchanged from outside a transaction), and
+    /// while a batch is open those calls queue instead of applying, so
+    /// the whole block commits atomically at `commitWorldBatch()`,
+    /// retiring the "degraded per-verb shape" a prior milestone's own
+    /// disclosure named -- matching Rust's own M4 atomicity fix.
+    /// Production TypeScript's real atomicity (SQLite's `.transaction()`
+    /// wrapper; Postgres/MySQL's dedicated-connection `BEGIN`/`COMMIT`/
+    /// `ROLLBACK`) is unchanged.
     fn transaction_stmt(&self, inner_lines: Vec<String>, indent: &str) -> Vec<String> {
         let field = self
             .db_field
@@ -917,11 +1055,18 @@ impl HostSyntax for TsSyntax<'_> {
             .expect("a transaction block requires a bound database instance");
         match self.db_engine {
             "sqlite" => {
-                let mut out = vec![format!(
-                    "{indent}this.state.{field}.$client.transaction(() => {{"
-                )];
+                let mut out = vec![
+                    format!("{indent}this.state.world?.beginWorldBatch();"),
+                    format!("{indent}try {{"),
+                    format!("{indent}  this.state.{field}.$client.transaction(() => {{"),
+                ];
                 out.extend(inner_lines);
-                out.push(format!("{indent}}})();"));
+                out.push(format!("{indent}  }})();"));
+                out.push(format!("{indent}  this.state.world?.commitWorldBatch();"));
+                out.push(format!("{indent}}} catch (__e) {{"));
+                out.push(format!("{indent}  this.state.world?.rollbackWorldBatch();"));
+                out.push(format!("{indent}  throw __e;"));
+                out.push(format!("{indent}}}"));
                 out
             }
             _ => {
@@ -945,16 +1090,19 @@ impl HostSyntax for TsSyntax<'_> {
                     format!("{indent}    __tx = await __connect();"),
                     format!("{indent}    await __tx.query(\"BEGIN\");"),
                     format!("{indent}}}"),
+                    format!("{indent}this.state.world?.beginWorldBatch();"),
                     format!("{indent}try {{"),
                 ];
                 out.extend(inner_lines);
                 out.push(format!("{indent}    if (!this.state.world) {{"));
                 out.push(format!("{indent}        await __tx!.query(\"COMMIT\");"));
                 out.push(format!("{indent}    }}"));
+                out.push(format!("{indent}    this.state.world?.commitWorldBatch();"));
                 out.push(format!("{indent}}} catch (__e) {{"));
                 out.push(format!("{indent}    if (!this.state.world) {{"));
                 out.push(format!("{indent}        await __tx!.query(\"ROLLBACK\");"));
                 out.push(format!("{indent}    }}"));
+                out.push(format!("{indent}    this.state.world?.rollbackWorldBatch();"));
                 out.push(format!("{indent}    throw __e;"));
                 out.push(format!("{indent}}} finally {{"));
                 out.push(format!("{indent}    if (!this.state.world) {{"));
@@ -992,6 +1140,7 @@ impl HostSyntax for TsSyntax<'_> {
     fn db_get(&self, table: TableId, key: &str) -> String {
         let table_snake = self.ir.table(table).name.to_snake_case();
         let record = context::build_record(self.ir, self.ir.table(table).record);
+        let record_name = record_class_name(self.ir, self.ir.table(table).record);
         let handle = format!(
             "this.state.{}.$client",
             self.db_field
@@ -1006,82 +1155,116 @@ impl HostSyntax for TsSyntax<'_> {
             self.db_engine,
         );
         let map_expr = self.map_row_expr(&record, "__row");
+        // 27UpdatePlan.md M6: the world guard is prepended as an early
+        // return inside the same IIFE -- the original per-engine body
+        // below is otherwise untouched.
+        let world_guard = format!(
+            "if (this.state.world) {{ return this.state.world.db.get({table_snake:?}, {key}) as unknown as {record_name} | null; }}"
+        );
         match self.db_engine {
             "sqlite" => {
                 let cast_ty = self.row_cast_type(&record);
                 format!(
-                    "(() => {{ const __row = {handle}.prepare({sql:?}).get({key}) as {cast_ty} | undefined; return __row === undefined ? null : {map_expr}; }})()"
+                    "(() => {{ {world_guard} const __row = {handle}.prepare({sql:?}).get({key}) as {cast_ty} | undefined; return __row === undefined ? null : {map_expr}; }})()"
                 )
             }
             "mysql" => format!(
-                "await (async () => {{ const [__rows] = await {handle}.query({sql:?}, [{key}]); const __row = __rows[0]; return __row === undefined ? null : {map_expr}; }})()"
+                "await (async () => {{ {world_guard} const [__rows] = await {handle}.query({sql:?}, [{key}]); const __row = __rows[0]; return __row === undefined ? null : {map_expr}; }})()"
             ),
             _ => format!(
-                "await (async () => {{ const __row = (await {handle}.query({sql:?}, [{key}])).rows[0]; return __row === undefined ? null : {map_expr}; }})()"
+                "await (async () => {{ {world_guard} const __row = (await {handle}.query({sql:?}, [{key}])).rows[0]; return __row === undefined ? null : {map_expr}; }})()"
             ),
         }
     }
     fn cache_get(&self, key: &str) -> String {
         let cache = self.cache_handle();
+        let instance = self.cache_instance();
         format!(
-            "await (async () => {{ const __cv = await {cache}.get({key}); return __cv === null ? null : JSON.parse(__cv); }})()"
+            "await (async () => {{ if (this.state.world) {{ const __cv = this.state.world.cacheGet({instance:?}, {key}); return __cv === null ? null : JSON.parse(__cv); }} const __cv = await {cache}.get({key}); return __cv === null ? null : JSON.parse(__cv); }})()"
         )
     }
     fn cache_set(&self, key: &str, value: &str, _value_ty: &HirType) -> String {
         let cache = self.cache_handle();
-        format!("(await {cache}.set({key}, JSON.stringify({value})))")
+        let instance = self.cache_instance();
+        format!(
+            "(await (this.state.world ? this.state.world.cacheSet({instance:?}, {key}, JSON.stringify({value}), null) : {cache}.set({key}, JSON.stringify({value}))))"
+        )
     }
     fn cache_delete(&self, key: &str) -> String {
         let cache = self.cache_handle();
-        format!("(await {cache}.del({key}))")
+        let instance = self.cache_instance();
+        format!(
+            "(await (this.state.world ? this.state.world.cacheDelete({instance:?}, {key}) : {cache}.del({key})))"
+        )
     }
-    // --- object store / email / search / http (v0.23 M7): each leaf
-    // reaches the handler's bound instance through `this.state.
-    // <state_field>`, resolved once in `render()` exactly like
+    // --- object store / email / search / http (v0.23 M7, world-guarded
+    // 27UpdatePlan.md M6): each leaf reaches the handler's bound
+    // instance through `this.state.<state_field>` in production and
+    // `this.state.world.<method>({instance_name}, ..)` under
+    // simulation, resolved once in `render()` exactly like
     // `db_field`/`cache_field` — see `object_store_field`'s own doc.
     fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
         let field = self.object_store_state_field();
+        let instance = self.object_store_instance();
         let payload = if matches!(value_ty, HirType::Record(_)) {
             format!("JSON.stringify({value})")
         } else {
             format!("String({value})")
         };
-        format!("(await this.state.{field}.put({key}, {payload}))")
+        format!(
+            "(await (this.state.world ? this.state.world.objectPut({instance:?}, {key}, Buffer.from({payload})) : this.state.{field}.put({key}, {payload})))"
+        )
     }
     fn object_store_get(&self, key: &str) -> String {
         let field = self.object_store_state_field();
-        format!("JSON.parse(await this.state.{field}.get({key}))")
+        let instance = self.object_store_instance();
+        format!(
+            "JSON.parse(await (this.state.world ? Promise.resolve(this.state.world.objectGet({instance:?}, {key}).toString(\"utf8\")) : this.state.{field}.get({key})))"
+        )
     }
     fn object_store_delete(&self, key: &str) -> String {
         let field = self.object_store_state_field();
-        format!("(await this.state.{field}.delete({key}))")
+        let instance = self.object_store_instance();
+        format!(
+            "(await (this.state.world ? this.state.world.objectDelete({instance:?}, {key}) : this.state.{field}.delete({key})))"
+        )
     }
     fn object_store_list(&self, prefix: &str) -> String {
         let field = self.object_store_state_field();
-        format!("(await this.state.{field}.list({prefix}))")
+        let instance = self.object_store_instance();
+        format!(
+            "(await (this.state.world ? Promise.resolve(this.state.world.objectList({instance:?}, {prefix})) : this.state.{field}.list({prefix})))"
+        )
     }
     fn email_send(&self, to: &str, subject: &str, body: &str) -> String {
         let field = self
             .email_field
             .as_deref()
             .expect("an email verb requires a bound email instance");
-        format!("(await this.state.{field}.send({to}, {subject}, {body}))")
+        let instance = self.email_instance();
+        format!(
+            "(await (this.state.world ? this.state.world.emailSend({instance:?}, {to}, {subject}, {body}) : this.state.{field}.send({to}, {subject}, {body})))"
+        )
     }
     fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String {
         let field = self
             .search_field
             .as_deref()
             .expect("a search verb requires a bound search instance");
+        let instance = self.search_instance();
         let document = self.json_body(document, document_ty);
-        format!("(await this.state.{field}.index({SEARCH_INDEX_NAME:?}, {doc_id}, {document}))")
+        format!(
+            "(await (this.state.world ? this.state.world.searchIndex({instance:?}, {doc_id}, {document}) : this.state.{field}.index({SEARCH_INDEX_NAME:?}, {doc_id}, {document})))"
+        )
     }
     fn search_query(&self, query: &str) -> String {
         let field = self
             .search_field
             .as_deref()
             .expect("a search verb requires a bound search instance");
+        let instance = self.search_instance();
         format!(
-            "(await this.state.{field}.search({SEARCH_INDEX_NAME:?}, {{ query: {{ query_string: {{ query: {query} }} }} }}))"
+            "(await (this.state.world ? Promise.resolve(this.state.world.searchQuery({instance:?}, {query})) : this.state.{field}.search({SEARCH_INDEX_NAME:?}, {{ query: {{ query_string: {{ query: {query} }} }} }})))"
         )
     }
     fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String {
@@ -1089,8 +1272,11 @@ impl HostSyntax for TsSyntax<'_> {
             .http_field
             .as_deref()
             .expect("an external_http verb requires a bound external_http instance");
+        let instance = self.http_instance();
         let json_arg = self.json_body(json_body, body_ty);
-        format!("(await this.state.{field}.post({url}, {json_arg}))")
+        format!(
+            "(await (this.state.world ? Promise.resolve(this.state.world.httpPost({instance:?}, {url}, {json_arg})) : this.state.{field}.post({url}, {json_arg})))"
+        )
     }
 }
 
@@ -1152,6 +1338,17 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
     let email_field = extra_field("email");
     let search_field = extra_field("search");
     let http_field = extra_field("external_http");
+    let instance_of = |kind: &str| {
+        bindings
+            .iter()
+            .find(|b| b.kind == kind)
+            .map(|b| b.name.clone())
+    };
+    let cache_instance = instance_of("cache");
+    let object_store_instance = instance_of("object_store");
+    let email_instance = instance_of("email");
+    let search_instance = instance_of("search");
+    let http_instance = instance_of("external_http");
 
     let mut schema_imports: Vec<SchemaImportCtx> = needs
         .records
@@ -1186,6 +1383,11 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
                 email_field: email_field.clone(),
                 search_field: search_field.clone(),
                 http_field: http_field.clone(),
+                cache_instance: cache_instance.clone(),
+                object_store_instance: object_store_instance.clone(),
+                email_instance: email_instance.clone(),
+                search_instance: search_instance.clone(),
+                http_instance: http_instance.clone(),
                 tmp: std::cell::Cell::new(0),
                 branching_locals: locals.iter().cloned().collect(),
             };

@@ -22,7 +22,7 @@ use ciac_codegen::{
     Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
     TargetInfo, ValidateStep,
 };
-use ciac_ir::{Component, NodeKind, NormalizedIr};
+use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 
@@ -108,46 +108,88 @@ static TARGET_INFO: TargetInfo = TargetInfo {
 };
 
 /// Human-readable, closed list of reasons `ciac sim --target typescript`
-/// (v0.23 M9) cannot yet simulate `ir`, empty when it can — the same
-/// gate Rust's own `unsupported_sim_capabilities` (v0.17 M11) computes,
-/// over the same shared `lower::scan` this backend already reuses
-/// elsewhere: `world.ts` only fakes `db.insert` and broker publish/
-/// consume; every other verb a typed handler calls falls straight
-/// through the world-guard to real infrastructure (`db_update_tail`
-/// and friends never check `this.state.world`, matching `handle`'s own
-/// doc comment).
-pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
-    let mut reasons = Vec::new();
-    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
-        reasons.push(
-            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
-             cryptography against a real issuer, which this milestone's simulation world does \
-             not fake"
-                .to_owned(),
-        );
-    }
-    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
-    for node in ir.nodes() {
-        if let Component::Service {
-            signature: Some(hir),
-            ..
-        } = &node.component
-        {
-            for verb in lower::scan(ir, hir).unguarded_verbs {
-                if !unguarded_verbs.contains(&verb) {
-                    unguarded_verbs.push(verb);
-                }
-            }
-        }
-    }
-    if !unguarded_verbs.is_empty() {
-        unguarded_verbs.sort_unstable();
-        reasons.push(format!(
-            "calls verb(s) the simulation world does not fake: {}",
-            unguarded_verbs.join(", ")
-        ));
-    }
-    reasons
+/// cannot yet simulate `ir`, empty when it can. Always empty as of
+/// 27UpdatePlan.md M6 -- every verb `lower::scan`'s `unguarded_verbs`
+/// tracks now has a `world.ts` guard leaf (`db.get`/`update`/`delete`/
+/// `query`/`count`/`delete_where`, `cache.*`, `object_store.*`,
+/// `email.send`, `search.*`, `http.call`) and `auth` is guarded via
+/// `state.world.authVerify` in `auth.ts.j2` (claims-lookup, matching
+/// Python's `FakeAuth`), retiring the blanket auth refusal this
+/// function used to carry.
+///
+/// This backend stays `SimSupport::Narrow` (never flips to `Full`) --
+/// `crates/ciac/src/commands.rs`'s `sim_inner` dispatch hardcodes
+/// `SimSupport::Full => sim_drive_python(..)`, so flipping the enum
+/// variant would silently misroute TypeScript-generated projects
+/// through Python's driver (the same structural finding Rust's own M4
+/// made and corrected; docs/targets.json record the behavioral
+/// "full" state precisely rather than flip a JSON field that would
+/// then contradict the code).
+///
+/// One real, disclosed (not modeled here) gap: `crud <Name>: <Record>`
+/// resources (`resource_store.ts.j2`) never read `this.state.world` at
+/// all -- but confirmed unreachable through `ciac sim`, the same
+/// finding Rust's M4 made: a scenario's `request` step can only
+/// address `c.apis`, built from nodes with an attached `Pipeline`,
+/// which a crud resource's synthesized api node never has (this
+/// backend and Rust's share the same `ciac-codegen` `c.apis` builder,
+/// so the finding transfers without needing to be re-proven per
+/// target). See `docs/simulation.md`.
+pub fn unsupported_sim_capabilities(_ir: &NormalizedIr) -> Vec<String> {
+    Vec::new()
+}
+
+/// Template-facing counterpart of `ciac-sim`'s `WorldReference` --
+/// `sim_runner.ts.j2` renders each of these as a `WorldReference`
+/// object literal (27UpdatePlan.md M6). `on_delete` is spelled
+/// `"cascade"`/`"restrict"`, matching `world.ts`'s own
+/// `WorldRefAction` string-union type exactly.
+#[derive(serde::Serialize)]
+struct SimWorldReferenceCtx {
+    field_name: String,
+    target_table: Option<String>,
+    on_delete: &'static str,
+    unique: bool,
+}
+
+/// Template-facing counterpart of `ciac-sim`'s `WorldTable`.
+#[derive(serde::Serialize)]
+struct SimWorldTableCtx {
+    name: String,
+    references: Vec<SimWorldReferenceCtx>,
+}
+
+/// Builds the schema `sim_runner.ts.j2` passes to `new SimWorld(..)`
+/// (27UpdatePlan.md M6) -- without it, `SimWorld` falls back to an
+/// empty schema and every reference/unique/cascade check silently
+/// becomes a no-op, the same gap Rust's own M4 caught live against
+/// `domain-orders.ciac`. Reuses `ciac_codegen::migrations::snapshot_schema`
+/// -- the same reference/unique-column facts the migration DDL itself
+/// is built from, so this can never drift from what the real schema
+/// actually enforces. Mirrors `ciac-backend-rust::sim_world_tables`
+/// exactly, modulo the lowercase `on_delete` spelling.
+fn sim_world_tables(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(fk.target_table),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "cascade"
+                    } else {
+                        "restrict"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx { name, references }
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -304,20 +346,29 @@ fn emit_service(
     if ctx.queue_engine.is_some() {
         project.add_file(at("src/queue.ts"), render("queue.ts.j2", empty())?);
     }
-    // v0.23 M9: the simulation world -- only for programs with
-    // something it can actually fake (`db.insert`, broker `publish`),
-    // the same gate Rust's own `world.rs`/`sim_runner.rs` emission
-    // (v0.17 M11) uses. `has_drain_workers` tells the template whether
-    // any worker match arm exists at all, so it can name the drained
-    // payload binding `_raw` instead of `raw` when none do (an empty
-    // chain has nothing to deserialize `raw` into) -- mirroring the
-    // Rust backend's own template context exactly.
-    if ctx.has_db || ctx.queue_engine.is_some() {
+    // 27UpdatePlan.md M6: the simulation world -- for any program with
+    // something it can fake (db, queue, cache, object_store, email,
+    // search, external_http, or auth), the same broadened gate Rust's
+    // own `world.rs`/`sim_runner.rs` emission (27UpdatePlan.md M4)
+    // uses -- a program with only a peripheral capability and no
+    // db/queue (e.g. a cache-only or auth-only program) still needs
+    // `src/world.ts` to exist.
+    if ctx.has_db
+        || ctx.queue_engine.is_some()
+        || ctx.has_cache
+        || ctx.has_object_store
+        || ctx.has_email
+        || ctx.has_search
+        || ctx.has_external_http
+        || ctx.has_auth
+    {
         project.add_file(at("src/world.ts"), render("world.ts.j2", empty())?);
-        let has_drain_workers = ctx.workers.iter().any(|w| !w.steps.is_empty());
         project.add_file(
             at("src/sim_runner.ts"),
-            render("sim_runner.ts.j2", context! { has_drain_workers })?,
+            render(
+                "sim_runner.ts.j2",
+                context! { sim_world_tables => sim_world_tables(ir) },
+            )?,
         );
     }
     if ctx.has_auth {

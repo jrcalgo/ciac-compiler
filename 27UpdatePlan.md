@@ -2231,6 +2231,259 @@ a commit + push; Shipped notes append in place per convention.
    "narrow" column is gone from docs at this milestone, not M9 —
    truth lands when it becomes true.
 
+   **Shipped (v0.27 M8):** `World.java.j2` rewritten from the v0.25
+   M9 narrow ~200-line file (`db.insert` + broker publish only) to a
+   ~1030-line self-contained port of `ciac-sim`'s full world. Every
+   public method stays `synchronized` (the v0.25 M9 narrow version's
+   own choice, kept rather than introduced this milestone: a
+   generated Java service's handlers can run on concurrent Servlet
+   container threads, unlike Node's/Python's single-threaded
+   restatements). New: a `RelationalSchema`-aware store (get/update/
+   delete/count/query/matchingIds with the full `LoweredPredicate`
+   operator set via new `World.jsonEq`/`contains`/`lt`/`ltEq`/`gt`/
+   `gtEq` static helpers evaluated against `Map<String, Object>` rows
+   — mirroring Go's own `JSONEq`/`Contains`/`Lt`/... free functions
+   exactly, adapted to Java's own type system), a group-aware
+   `BrokerLog` fan-out cursor log, a virtual clock, and the cache/
+   object-store/email/search/http/auth peripheral fakes Rust/TS/Go
+   closed at M4/M6/M7. Unlike those three restatements, Java splits
+   the guard economy in two: `db`/`cache` verbs gained a `lower.rs`
+   world-guard leaf directly (both bind to raw Spring types --
+   `JdbcClient`/`StringRedisTemplate` -- that can't embed world-
+   awareness of their own: `db_get_tail`/`db_update_tail`/
+   `db_delete_tail`/`query_tail`'s three arms, `cache_get_tail`/
+   `cache_set_tail`/`cache_delete_tail`, all new or extended); `object_
+   store`/`email`/`search`/`external_http` instead got their world-
+   awareness pushed into their own wrapper classes (`ObjectStore`/
+   `Email`/`Search`/`ExternalHttp`, each now holding a constructor-
+   injected `ObjectProvider<World>`), mirroring `Queue.java`'s own
+   *pre-existing* `publishJson` pattern (v0.25 M9) rather than adding
+   a `lower.rs` leaf -- so `object_store_put`/`get`/`delete`/`list`,
+   `email_send`, `search_index`/`query`, `http_call` needed *zero*
+   `lower.rs` changes this milestone. `unsupported_sim_capabilities`
+   now always returns an empty `Vec`; the new `java_gate_is_empty_
+   for_the_whole_corpus` test in `sim_gate_emptiness.rs` proves it
+   across the whole example corpus.
+
+   **Atomicity: Java already had real production atomicity from
+   before this arc (`TransactionTemplate`, Pillar 4 -- no manual
+   `BeginTx`/`Commit` dance to skip, since `JdbcClient` transparently
+   participates in the ambient transaction via Spring's own
+   `DataSourceUtils` binding); this milestone's own job was closing
+   the *simulation* side of that same `transaction {}` leaf, since
+   only `db.insert` was world-guarded before M8 -- a block mixing
+   `db.insert` with `db.update`/`db.delete` had no atomicity
+   guarantee spanning the whole block under simulation until this
+   milestone's own per-statement guards landed on the other two
+   verbs too.** Mirroring TypeScript's/Go's own M6/M7 ambient-batch-
+   mode design for the identical structural reason (Java, like TS/
+   Go, renders a handler body's statements once --
+   `Orientation::Statement` -- so there is no second, world-only
+   render pass the way Rust's `Orientation::Expression` gives
+   `transaction {}` to switch codegen-time between "call world
+   directly" and "push onto a `BatchOp` accumulator"): `World` gained
+   `beginWorldBatch`/`commitWorldBatch`/`rollbackWorldBatch`, and
+   `transaction_stmt`'s world branch wraps `__txBody.run()` in
+   `beginWorldBatch()` then `try { ...; commitWorldBatch(); } finally
+   { rollbackWorldBatch(); }` -- `rollbackWorldBatch()` after a
+   successful `commitWorldBatch()` is a safe no-op (`pendingBatch` is
+   already `null`), the same "unconditional rollback, commit clears
+   it" idiom Go's own `defer` found and TypeScript's own `try`/
+   `finally` already uses. Live-verified identical to Rust's/
+   TypeScript's/Go's own atomicity guarantee via `sim/atomic-batch.
+   ciac-sim.json` against `domain-orders.ciac`.
+
+   **Four real bugs found and fixed via live proof against real
+   generated code, none caught by `javac` (Java's own type system is
+   permissive enough that all four compiled cleanly on the first
+   pass) -- every one found only by actually running `ciac sim
+   --target java` against the corpus, the same "live proof is not
+   optional" lesson every prior restatement's own Shipped note
+   recorded, just paid a different way this time (runtime failures,
+   not compile errors):** (1) three emission gates -- `lib.rs`'s own
+   `World.java`/`SimRunner.java` gate, and `pom.xml.j2`'s
+   `exec-maven-plugin` `<version>` property *and* its `<plugin>`
+   block -- were still `{%- if c.has_db or c.has_queue %}`, so
+   `sim-peripherals.ciac` (cache/object_store/email/search/http/auth
+   only, no `db`/`queue`) either never got a `World.java`/
+   `SimRunner.java` at all, or got a `SimRunner.java` whose own
+   `exec-maven-plugin` had no `<version>`/`mainClass` (a genuine
+   Maven `PluginParameterException`, not a Java compile error) --
+   broadened all three to the full 8-condition check, the identical
+   fix Rust's/TypeScript's/Go's own M4/M6/M7 already made to their
+   own equivalent gates. (2) `SimRunner`'s own
+   `AnnotationConfigApplicationContext.scan(..)` swept in
+   `SecurityConfig`'s own `securityFilterChain` `@Bean` (it lives in
+   the same `state` package `SimRunner` already needs scanned for
+   `AppState`/`Queue`/the ontology wrapper classes), which needs a
+   real `HttpSecurity` bean only Spring Boot's own security auto-
+   configuration provides under a real `SpringApplication` -- never
+   true here (`SimRunner` deliberately never scans `Application`
+   itself for the identical reason). Found live the moment an auth-
+   declaring program (`sim-peripherals.ciac`'s own `auth-scopes`
+   scenario) first became sim-reachable this milestone (`unsupported_
+   sim_capabilities`'s own standalone `Auth` refusal is gone): a
+   `UnsatisfiedDependencyException` at context refresh, not a
+   `javac` error. Fixed by removing `SecurityConfig`'s own bean
+   definition by name (`ctx.removeBeanDefinition("securityConfig")`,
+   Spring's own default bean-name convention) right after the scan
+   and before `ctx.refresh()` -- a no-op on a program with no `auth`
+   at all. (3) Once `SecurityConfig`'s bean was gone, every
+   `ApiController`/`ResourceController` with `has_auth_step`/
+   `has_auth` still constructor-injected a raw `JwtDecoder` (a hard
+   dependency), which no longer resolved -- a second
+   `UnsatisfiedDependencyException`, found in the same live pass;
+   fixed by widening every such constructor parameter to
+   `ObjectProvider<JwtDecoder>` (`Auth.verifyToken`'s own `world !=
+   null` branch never reaches the decoder anyway, but the real bean
+   must still be optional for the controller to *construct* at all
+   under simulation). (4) The four ontology wrapper classes
+   (`ObjectStore`/`Email`/`Search`/`ExternalHttp`) had no world-
+   awareness at all despite this milestone's own architecture
+   decision calling for it -- a real gap in the initial pass, not a
+   deliberate deferral: `http-fixtures.ciac-sim.json`'s own scenario
+   against `sim-peripherals.ciac` threw a real
+   `ResourceAccessException` ("Tunnel failed, got: 403") reaching out
+   to `https://example.internal`, the unmistakable signature of a
+   wrapper class that never checked `world` at all. Fixed by adding
+   an `instanceName` + `ObjectProvider<World> worldProvider`
+   constructor parameter to all four, threading `inst.name` (`ciac-
+   codegen`'s own `OntologyInstanceCtx.name`) through `AppState.
+   java.j2`'s own `@Bean` factory methods, and adding an `if (world
+   != null) { ...; return; }`/`if (world != null) { return world.
+   ...; }` branch to each public method (`search.delete` stays real-
+   only, since it is not part of the shared `HostSyntax` leaf set any
+   backend's `lower.rs` lowers a verb through -- confirmed via `grep`
+   against `ciac-codegen::lower::host_syntax`, so it is unreachable
+   from any generated handler body; adding a symmetric `World.
+   searchDelete` for parity is disclosed, deliberate future scope).
+   (5, disclosed as pre-existing rather than introduced this
+   milestone, but only ever exercised for the first time by this
+   milestone's own live-proof pass): `World.findWhere`'s row/filter
+   comparison used `Objects.equals` directly, which silently fails
+   whenever a stored integer field's `Long`-typed round-trip (via
+   `Schemas.MAPPER.convertValue`'s own `TokenBuffer`-preserved
+   `NumberType` -- a Java field statically typed `long` round-trips
+   as `Long`, not `Integer`, even for small values) is compared
+   against a scenario JSON's own `Integer`-typed filter value (plain
+   JSON-text parsing has no static field type to preserve, so
+   `UntypedObjectDeserializer` defaults small integers to `Integer`)
+   -- `Long.equals(Integer)` is `false` even for equal values,
+   exactly the `Integer`-vs-`Long`/Go's own `int64`-vs-`float64` gap
+   `World.jsonEq` (built for `db.query`'s own world-guard predicate,
+   item (0) above) already exists to sidestep. Found live via
+   `sim-broker-slice.ciac`'s own `fanout` scenario (`expect.row.
+   where` filtering on `ProcessedByA.seq`, an `Int` field) --
+   isolated to the exact root cause via a hand-crafted debug scenario
+   before reaching for the fix, not guessed. Fixed by routing
+   `findWhere`'s own comparison through the same `jsonEq` helper.
+
+   **Live: full corpus green on Java, all nine scenarios, both
+   canonical anchors byte-exact -- identical to Rust's/TypeScript's/
+   Go's own M4/M6/M7 results.** `sim-peripherals.ciac` ×
+   `cache-ttl`/`auth-scopes`/`http-fixtures`/`peripherals` (all four
+   failed at first for the reasons above, all four green after the
+   fixes); `sim-vertical-slice.ciac` × `vertical-slice`/
+   `virtual-week` (`{"ProcessOrder":3}`/`{"Reconcile":1}` and
+   `{"ProcessOrder":100}`/`{"Reconcile":7}`, both raw `SimRunner`
+   outcome lines re-captured directly for this note via `mvn -q
+   exec:java`: `{"scenario":"v0.17-m5-vertical-slice","passed":true,
+   "error":null,"worker_attempts":{"ProcessOrder":3},"job_runs":
+   {"Reconcile":1}}` and `{"scenario":"v0.17-m5-virtual-week",
+   "passed":true,"error":null,"worker_attempts":
+   {"ProcessOrder":100},"job_runs":{"Reconcile":7}}`); `sim-broker-
+   slice.ciac` × `fanout` (Java's own `findWhere` fix's own proof,
+   group-aware `World.drainBroker` fan-out confirmed via
+   `worker_attempts: {"ConsumerA":1,"ConsumerB":1}`); `domain-
+   orders.ciac` × `relational-depth`/`atomic-batch` (schema-aware
+   cascade delete and the ambient-batch-mode rollback guarantee,
+   respectively). All nine `[PASS]` via `scripts/sim-corpus-x5.sh
+   --targets java`.
+
+   **Golden churn:** 25 Java golden snapshots regenerated (`cargo
+   insta test --accept`, 41204 insertions / 7064 deletions across the
+   diff -- `multi-service-media.snap` alone accounts for over 12,000
+   of those lines, since it carries a full `World.java`/
+   `SimRunner.java` pair per service in a multi-service system, not a
+   sign of anything wrong), reviewed as additive-only: new world-
+   guard branches, new `World.java` inner types/helpers, new
+   `ObjectProvider`/`World` dependency imports (rippling into every
+   example declaring `cache`/`object_store`/`email`/`search`/
+   `external_http`/`auth`, not only the four "sim" example programs,
+   since `logic.java.j2`'s `needs_cache` gate and the `ApiController`/
+   `ResourceController` `JwtDecoder` widening are unconditional
+   template changes), and `SimRunner.java`'s grown given/expect
+   vocabulary. Pre-existing production (`else`-branch) SQL text and
+   behavior confirmed byte-identical by direct diff inspection --
+   `domain-orders.snap`'s `"SELECT COUNT(*) FROM orders WHERE total
+   >= ?"`, `"DELETE FROM orders WHERE id = ?"`, and `"UPDATE orders
+   SET customer_id = ?, total = ? WHERE id = ?"` all appear verbatim
+   in both the pre- and post-M8 snapshot text, now simply reached
+   through the new `if (world != null) {...} else {...}` branch
+   rather than unconditionally.
+
+   **Full verification:** `cargo fmt --all --check` clean; `cargo
+   clippy --workspace --all-targets -- -D warnings` zero warnings;
+   `cargo test -p ciac-integration-tests --test sim_gate_emptiness`
+   green standalone (all four cases: Rust, TypeScript, Go, and the
+   new Java case); `cargo test -p ciac-integration-tests --test
+   typed_handler_equivalence` green (including the pre-existing
+   `java_db_insert_and_publish_are_world_guarded` case, confirming
+   the narrow-scope db.insert/publish world-guard shape stayed
+   intact through the wider rewrite); `mvn -q -B test-compile`/
+   `exec:java` clean across every corpus program reached by `ciac sim
+   --target java` (`domain-orders`/`query-verbs`/`order-system`/
+   `sim-peripherals`/`sim-vertical-slice`/`sim-broker-slice`/
+   `extras-verbs`, live-compiled and run, not merely generated).
+   `cargo test --workspace --no-fail-fast` run to completion: one
+   failure, `backfill_cli::refuses_until_the_expand_migration_lands_
+   then_plans_and_gates_the_contract` -- `uv run ruff check .`
+   rejecting generated Python import ordering/`datetime.UTC`/quoted-
+   annotation style, the identical pre-existing ruff-version-drift
+   finding M5's/M6's/M7's own Shipped notes already disclosed
+   (`crates/ciac-backend-python/templates/pyproject.toml.j2`'s
+   unpinned `ruff>=0.6` floor against this sandbox's newer installed
+   ruff) -- confirmed unrelated to any file this milestone touched
+   (every flagged line is Python-template output; this milestone
+   changed only Java templates/`lower.rs`/docs/tests) and left
+   unfixed for the identical out-of-scope reason M5 recorded. No
+   other failure anywhere in the workspace. Live `ciac sim --target
+   java` proof for all nine corpus scenarios as above, independently
+   re-run and re-captured for this note rather than quoted from
+   memory.
+
+   **M8 exit checklist — met:** `World.java.j2` self-contained per
+   Pillar 4's rules (✓, `synchronized`-guarded per method, the Java-
+   idiom adaptation the milestone bullet itself named); guard leaves
+   across Java `lower.rs` for `db`/`cache` (✓) plus wrapper-class-
+   embedded world-awareness for `object_store`/`email`/`search`/
+   `external_http` (✓, the disclosed structural split from Rust's/
+   TS's/Go's own uniform `lower.rs`-leaf shape, justified by mirroring
+   `Queue.java`'s own pre-existing pattern rather than inventing a
+   new one); runner growth (✓, cache/store/search/http seeding, five
+   new `expect` branches, principal-to-token synthesis via `World.
+   authIssue`, group-aware `drainBroker`); auth seam (✓, `Auth.
+   verifyToken(request, jwtDecoder, world)` checks `world.authVerify`
+   first, building a real `Jwt` via its own builder from the returned
+   claims); gate-emptiness test (✓, new `java_gate_is_empty_for_the_
+   whole_corpus`); corpus × Java identical to Rust's/TypeScript's/
+   Go's own outcomes (✓, all nine `[PASS]`, both canonical anchors
+   byte-exact); "all four gates provably empty, all five targets
+   report `Full`" (✓ in observed behavior -- `unsupported_sim_
+   capabilities` always returns empty on all four restated targets
+   now; ✗ in literal `TargetInfo::sim` enum shape, for the identical
+   structural reason M4's/M6's/M7's own Shipped notes already
+   recorded: `commands.rs`'s `sim_inner` dispatch still hardcodes
+   `SimSupport::Full => sim_drive_python(..)`, so flipping any
+   restated target's own enum variant would silently misroute it
+   through Python's driver; `docs/targets.json`'s `sim.level` stays
+   `"narrow"` for Rust/TypeScript/Go/Java, correspondingly); status
+   table's "narrow" column gone from `docs/simulation.md` at this
+   milestone (✓, the table now reads "Python + Rust + TypeScript +
+   Go + Java (all full)"); `docs/backends.md`'s ledger row closed for
+   all five targets (✓, the "Simulation depth" row's own `Targets`
+   cell now reads "none (all five closed)").
+
 9. **M9 — Python's closure, the flagship ×5, version, and the
    retrospective.** Python's residual verbs (`db.update`, the read
    subset) land in pyrunner's world/session, closing the

@@ -261,7 +261,7 @@ may appear in both tables.
 
 | Gap | Targets | Closes in |
 | --- | --- | --- |
-| Simulation depth: only `db.insert` + publish faked | Rust, TypeScript, Go, Java | `27UpdatePlan.md` |
+| Simulation depth: only `db.insert` + publish faked | TypeScript, Go, Java | `27UpdatePlan.md` M6–M8 — Rust CLOSED at M4 (gate-emptiness proven across the whole example corpus, live-verified against nine corpus scenarios; proof recorded in that milestone's own Shipped note) |
 | Multi-service programs refused by `ciac sim` | all five | `28UpdatePlan.md` |
 | `transaction {}` non-atomic in production | Rust | `26UpdatePlan.md` M1–M2 — CLOSED, live rollback proof recorded in that milestone's own Shipped note |
 | `logging Structured` refused (`CIAC0011`) | Java | `26UpdatePlan.md` M3 — CLOSED, `LogShapeTest` proof recorded in that milestone's own Shipped note |

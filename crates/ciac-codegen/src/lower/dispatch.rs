@@ -619,7 +619,9 @@ fn lower_stmt_expr<H: HostSyntax>(
             // always `false`, and this is the only place that ever
             // passes `true`). See `HostSyntax::transaction_expr`'s doc
             // for why both renders are needed.
+            host.begin_world_batch();
             let world_s = lower_block_expr(host, ir, body, inner, Wrap::None, false);
+            let world_s = host.end_world_batch(&world_s);
             let real_s = lower_block_expr(host, ir, body, inner, Wrap::None, true);
             host.transaction_expr(&world_s, &real_s)
         }

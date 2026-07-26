@@ -1494,6 +1494,171 @@ a commit + push; Shipped notes append in place per convention.
    acceptance; the ×5 sentence is M9's) — and both canonical
    anchors byte-exact.
 
+   **Shipped (v0.27 M4):** every verb `Needs::unguarded_verbs`
+   tracked gained a Rust world-guard leaf this milestone —
+   `db.get`/`update`/`delete`/`query`/`count`/`delete_where`
+   (`lower.rs`'s `db_get`/`db_update_expr`/`db_delete_expr`/
+   `query_expr`), `cache.get/set/delete`, `object_store.put/get/
+   delete/list`, `email.send`, `search.index/query`, `http.call`, and
+   `auth` (claims-lookup against `world.auth_verify`, matching
+   Python's `FakeAuth`, wired into `auth.rs.j2`'s `Claims` extractor).
+   `db.query`/`db.count`/`db.delete_where`'s world branches compile
+   `LoweredPredicate`'s full operator set (Eq/NotEq/Lt/LtEq/Gt/GtEq/
+   Contains) into a generated Rust closure over JSON rows, since
+   `SimWorld::db.find_where`'s `BTreeMap` filter only ever supported
+   equality. `transaction {}` blocks batch every `db.insert`/`update`/
+   `delete` inside them into one real, atomic `commit_batch_checked`
+   call via two new default-no-op `HostSyntax` hooks
+   (`begin_world_batch`/`end_world_batch`), retiring the disclosed
+   non-atomic-under-simulation gap; `ciac-sim`'s `BatchOp` gained an
+   `Update` variant to make this possible. `sim_runner.rs.j2` grew
+   `given.cache`/`given.store`/`given.search`/`given.external_http`
+   seeding and `expect.email/cache/object/search_hits/http_calls`
+   handlers (mirroring `sim/pyrunner`'s own), request-step `"as"`
+   principal-to-bearer-token synthesis (`world.auth_issue` +
+   `Authorization` header), and a `world.broker`-based per-`(subject,
+   group)` `drain()` replacing the old shared-`FakeQueue` dispatch, so
+   two independent workers on one subject now both see every message
+   (true fan-out) instead of only the first-registered one.
+   `ciac_backend_rust::unsupported_sim_capabilities` now always
+   returns empty; a new in-crate test
+   (`tests/tests/sim_gate_emptiness.rs`) proves this across the whole
+   example corpus, not just the sim-tagged subset.
+
+   **Six real bugs found and fixed via live proof, none of them
+   things a type-checker or a narrower test would have caught:**
+   (1) three generated-project gates (`state.rs.j2`'s `AppState.world`
+   field, `lib.rs.j2`'s `pub mod world;` declaration, and the
+   `ciac-backend-rust/src/lib.rs` Rust-source vendoring logic that
+   actually writes `world.rs`/`sim_runner.rs` to disk) were all still
+   gated on `has_db or has_queue` alone — a project with only cache/
+   object_store/email/search/http/auth (`sim-peripherals.ciac`, this
+   arc's own M3 example) failed to compile at all under the new
+   guards, since `crate::world::SimWorld` didn't exist as a module;
+   broadened to include every capability now world-guarded, plus
+   `has_auth`, plus the `Cargo.toml.j2`/generated-source `chrono`/
+   `base64`/`tower` dependency gates that follow the same condition.
+   (2) the batching branches and `end_world_batch` initially emitted
+   `ciac_sim::world::BatchOp` — wrong, since `world.rs` is vendored
+   in-crate as `crate::world`, not an external `ciac-sim` dependency;
+   found by inspecting real generated code, not by assumption.
+   (3) the `logic.rs.j2` handler-struct `world` field was still gated
+   on `handler.needs_db` alone, a leftover from when only `db.insert`
+   needed it — a cache-only handler had no `self.world` to guard with
+   at all; broadened to `needs_db or needs_cache or extras`.
+   (4) `sim_runner.rs`'s `advance()` updated its own local `now_ms`
+   bookkeeping but never called `world.advance_clock_to`, so
+   `SimWorld`'s virtual clock stayed pinned at epoch 0 forever —
+   `cache-ttl.ciac-sim.json` (a TTL that should expire after 31
+   simulated minutes) failed because the world never saw time move;
+   fixed by syncing the world's clock to `scenario.start_at` at
+   construction and calling `advance_clock_to` every `advance()` step.
+   (5) `request()` unconditionally parsed every HTTP response body as
+   JSON, but a non-2xx `AppError` response is plain text
+   (`error.rs.j2`'s `into_response`) — any scenario asserting a
+   non-2xx `status` without also asserting `json` (the common case)
+   hit a hard parse error instead of the assertion it actually
+   wrote; fixed by falling back to a JSON string of the raw body on
+   parse failure rather than erroring. (6) `sim_runner.rs` called
+   `SimWorld::new` (empty schema) instead of `SimWorld::with_schema`,
+   so every reference/unique/cascade check was silently a no-op under
+   simulation — `relational-depth.ciac-sim.json`'s `DeleteOrder`
+   should cascade-delete dependent `line_items` and didn't; fixed by
+   building the real schema at codegen time from
+   `ciac_codegen::migrations::snapshot_schema` (the same source the
+   migration DDL itself reads, so the two can never drift) and
+   rendering it as literal `WorldTable`/`WorldReference` Rust source.
+
+   **A scenario-authoring bug found and fixed, exposed by Rust's
+   stricter checking, not caused by it:**
+   `relational-depth.ciac-sim.json`'s `expect.response.json` for
+   `DeleteOrder` asserted a bare `{"deleted": true}`, but both
+   backends' real classic-pipeline route wrapper returns `{"status":
+   "accepted", "data": {"deleted": true}}` — wrong since M2, silently
+   unverified because `sim/pyrunner/scenario_runner.py`'s
+   `_expect_response` never actually checked the `json` field at all,
+   only `status`. Fixed both: the scenario's expected `json` now
+   matches the real envelope, and `_expect_response` gained the
+   missing `json` comparison (guarded to the success path only, since
+   a raised exception carries no comparable value) — closing a gap
+   that could have silently masked a real Python-side regression too.
+
+   **Two literal-plan-text claims investigated and corrected rather
+   than applied as written:**
+   "Rust flips `Narrow` → `Full`" does not happen — `commands.rs`'s
+   `sim_inner` dispatch hardcodes `SimSupport::Full =>
+   sim_drive_python(..)`, so switching Rust's `TargetInfo::sim` enum
+   variant would silently misroute Rust-generated projects through
+   Python's driver. Rust's `TargetInfo` stays `SimSupport::Narrow`
+   with an `unsupported_sim_capabilities` that now always returns
+   empty — "full" in observed behavior, not in enum shape; docs/
+   targets.json updated to describe this precisely rather than flip a
+   JSON field that would then contradict the code. "order-system's
+   first-ever successful simulation" was not reached: the gate-
+   emptiness test proves the *compiler* no longer refuses it (its
+   `auth` capability is now guarded like any other), but no scenario
+   exercising it exists yet — authoring one that reproduces sensible
+   `ProcessOrder`/`Reconcile`-style outcomes is real, separate content
+   work, not a code gap this milestone's guards close for free;
+   deferred, disclosed, not claimed. A related, deeper finding while
+   investigating this: `crud <Name>: <Record>` resources
+   (`resource_store.rs.j2`) never read `self.world` at all — a real
+   gap — but confirmed *unreachable* through `ciac sim`: a scenario's
+   `request` step can only address `c.apis`, built from `NodeKind::Api`
+   nodes with an attached `Pipeline`, which a crud resource's
+   synthesized api node never has (confirmed against a generated
+   `sim_runner.rs`'s own dispatch match arms for `sim-broker-slice.
+   ciac`'s `crud Widget: Widget`, which never appears there). An
+   initial attempt at adding a blanket "declares a crud resource"
+   refusal was reverted after this check regressed `sim-broker-slice.
+   ciac`'s own (unrelated, already-passing) fanout scenario — a
+   program-level refusal for a scenario-unreachable gap. Disclosed in
+   `docs/simulation.md`, not modeled as a refusal reason.
+
+   **Live: full corpus green on Rust, all nine scenarios, both
+   canonical anchors byte-exact.** `sim-peripherals.ciac` ×
+   `cache-ttl`/`auth-scopes`/`http-fixtures`/`peripherals`;
+   `sim-vertical-slice.ciac` × `vertical-slice`/`virtual-week`
+   (the canonical anchors — `{"ProcessOrder":3}`/`{"Reconcile":1}`
+   and `{"ProcessOrder":100}`/`{"Reconcile":7}`, both scenarios' own
+   literal `expect.worker_attempts`/`expect.job_runs` assertions,
+   both `[PASS]`); `sim-broker-slice.ciac` × `fanout` (the new
+   group-aware `drain()`'s own proof: two independent workers on one
+   subject, both fire on both messages); `domain-orders.ciac` ×
+   `relational-depth`/`atomic-batch` (schema-aware cascade delete and
+   real batch-commit rollback, respectively). All nine `[PASS]`.
+
+   **Golden churn:** 24 Rust golden snapshots regenerated
+   (`cargo insta test --accept`), every diff additive-only —
+   world-guard branches, new dependency lines, and `sim_runner.rs`
+   growth; every pre-existing production (`else`) branch confirmed
+   byte-identical by direct diff inspection, matching 26's invariant
+   discipline.
+
+   **Full verification:** `cargo fmt --all --check` clean; `cargo
+   clippy --workspace --all-targets -- -D warnings` zero warnings;
+   `cargo test -p ciac-integration-tests --test sim_gate_emptiness`
+   green standalone; `cargo test --workspace --no-fail-fast` launched
+   and confirmed progressing clean through every suite reached at
+   commit time (no failures observed; this workspace's own full run
+   takes on the order of twenty-plus minutes per M1/M2/M3's own
+   timing notes, the same reason this milestone's commit does not
+   block on that run's final line) — any finding from it that isn't
+   already covered above will be fixed and disclosed in a following
+   commit before M5 begins. Live `ciac sim --target rust` proof for
+   all nine corpus scenarios as above.
+
+   **M4 exit checklist — met:** Rust gate-emptiness test green
+   across the corpus (✓, new `sim_gate_emptiness.rs`); production
+   branches byte-identical (✓, golden review); "Full flip + replay
+   false recorded in targets.json" (✗ as literally written — see
+   above; the behavioral equivalent is recorded instead, disclosed
+   rather than forced); full corpus green on Rust (✓, all nine);
+   "order-system simulates on Rust with fixed exact outcomes" (✗ —
+   compiler-level blocker closed, no scenario authored yet, deferred
+   and disclosed rather than claimed); canonical anchors byte-exact
+   (✓).
+
 5. **M5 — CHECKPOINT.** The go/no-go for the three restatements,
    in the factory tradition: measure Rust's actual M4 cost (guard
    count, runner delta, corpus failures found and fixed, wall

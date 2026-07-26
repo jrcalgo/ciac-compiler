@@ -185,7 +185,7 @@ class ScenarioRunner:
         of = spec.get("of")
         if of not in self._saved:
             raise ScenarioAssertionError(f"expect.response.of references unknown save_as {of!r}")
-        ok, _value = self._saved[of]
+        ok, value = self._saved[of]
         want_status = spec.get("status")
         if want_status is not None:
             # See module docstring: no real HTTP transport, so "2xx"
@@ -195,6 +195,19 @@ class ScenarioRunner:
                 raise ScenarioAssertionError(
                     f"expect.response.of={of!r}: expected "
                     f"{'success' if is_2xx else 'failure'}, call {'raised' if not ok else 'succeeded'}"
+                )
+        # 27UpdatePlan.md M4: this was silently never checked -- found
+        # via Rust's own stricter `expect.response.json` implementation
+        # catching a genuine wrong expectation in
+        # `sim/relational-depth.ciac-sim.json` that this gap had let
+        # through since M2. Only meaningful on the success path (`ok`);
+        # `value` is the raised exception itself otherwise, not a value
+        # comparable to a JSON body.
+        want_json = spec.get("json")
+        if want_json is not None and ok:
+            if value != want_json:
+                raise ScenarioAssertionError(
+                    f"expect.response.of={of!r}: expected json {want_json!r}, got {value!r}"
                 )
 
     def _expect_row(self, spec: dict[str, Any]) -> None:

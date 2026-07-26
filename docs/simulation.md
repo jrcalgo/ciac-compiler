@@ -24,7 +24,7 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python (full), Rust/TypeScript/Go/Java (narrow) (v0.17 M11, TypeScript v0.23 M9, Go v0.24 M9, Java v0.25 M9)
+## Status: Python + Rust (full), TypeScript/Go/Java (narrow) (v0.17 M11, TypeScript v0.23 M9, Go v0.24 M9, Java v0.25 M9, Rust v0.25 M4)
 
 See [backends.md](backends.md)'s Divergence ledger — Open (tracked)
 table for this gap's classification and address ("Simulation depth:
@@ -35,26 +35,48 @@ detail, not a restatement of the ledger's entry.
 
 | Surface | Python | Rust | TypeScript | Go | Java |
 | --- | --- | --- | --- | --- | --- |
-| `ciac sim` | done, every capability faked | done, only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Rust | same narrow slice as Rust/TypeScript | same narrow slice as Rust/TypeScript/Go |
+| `ciac sim` | done, every capability faked | done as of `27UpdatePlan.md` M4 — every verb `SimWorld` fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | narrow: only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as TypeScript | same narrow slice as TypeScript/Go |
 | `verify --sim` | done | same | same | same | same |
 | MCP `verify_sim` | done | same | same | same | same |
 
-Rust's ports/adapters seam, fake adapters, and a generated per-program
-simulation runner (v0.17 M11) exist now, but they cover a deliberately
-narrow slice: `crates/ciac-sim/src/world.rs`'s `SimWorld`
-(`FakeDatabase`/`FakeQueue`, wired to `ciac-sim`'s own real
-`FailureEngine`) fakes exactly what `sim-vertical-slice.ciac` needs —
-`db.insert` and broker publish/consume, `error` failure actions only,
-no independent per-`(subject, group)` broker cursors. `ciac sim
---target rust` runs a scenario against `src/bin/sim_runner.rs` (present
-in the generated project whenever `db`/`queue` is declared) and refuses
-cleanly — naming the specific unsupported verb(s) or capability, not a
-generic "unsupported" — for any program using `db.get`/`update`/
-`delete`/`query`/`count`/`delete_where`, cache, object store, email,
-search, external HTTP, or `auth`. See [backends.md](backends.md) for
-the lazy-init work (broker client, OAuth2 JWKS) that made constructing
-`AppState` infrastructure-free in the first place, a precondition for
-`AppState::simulation` existing at all.
+Rust's ports/adapters seam and generated per-program simulation runner
+(v0.17 M11) started at the same narrow slice TypeScript/Go/Java still
+occupy; `27UpdatePlan.md` M4 grew `crates/ciac-sim/src/world.rs`'s
+`SimWorld` (already deepened by that arc's M2-M3) into every remaining
+verb's own world-guard leaf in Rust's `lower.rs` — `db.get`/`update`/
+`delete`/`query`/`count`/`delete_where`, cache/object store/email/
+search/external HTTP, and `auth` (claims-lookup against the world,
+matching Python's own `FakeAuth`, not real JWT/JWKS crypto) — plus a
+schema-aware `SimWorld::with_schema` call built from the same
+`ciac_codegen::migrations::snapshot_schema` the migration DDL itself
+reads (so cascade/restrict/unique checks under simulation can never
+drift from what production actually enforces), a real atomic
+`commit_batch_checked` for `transaction {}` blocks (retiring the
+disclosed non-atomic-under-simulation gap below), and a `world.broker`-
+based `(subject, group)`-cursor `drain()` replacing the old shared-
+queue dispatch, so two independent workers on one subject now both see
+every message (true fan-out) instead of only the first-registered one.
+`ciac_backend_rust::unsupported_sim_capabilities` reflects this: it
+always returns empty now, proven by an in-crate test iterating the
+whole example corpus. One structural note the `Full`/`Narrow` column
+above doesn't capture: `ciac`'s own `SimSupport::Full` variant is
+hardcoded to Python's dynamic-import driver
+(`crates/ciac/src/commands.rs`), so Rust's `TargetInfo` stays
+`SimSupport::Narrow` with an always-empty refusal list rather than
+switching enum variants — a real behavioral difference from Python
+("full" in outcome, still "Narrow" in the type) rather than a loose
+end. `crud <Name>: <Record>` resources remain outside this milestone's
+scope for a structural reason, not an oversight: their generated store
+(`resource_store.rs.j2`) still never reads `self.world`, but a
+scenario's `request` step can only address `c.apis` (typed/classic-
+pipeline routes with an attached `Pipeline`), which a `crud` resource's
+synthesized api node never has — confirmed by inspecting a generated
+`sim_runner.rs`'s own route-dispatch match arms — so the missing guard
+is real but not reachable through anything `ciac sim` exposes today.
+See [backends.md](backends.md) for the lazy-init work (broker client,
+OAuth2 JWKS) that made constructing `AppState` infrastructure-free in
+the first place, a precondition for `AppState::simulation` existing at
+all.
 
 TypeScript's own gated bet (v0.23 M9) reaches the exact same scope,
 via a hand-written restatement instead of vendored Rust source: `src/
@@ -69,11 +91,13 @@ Rust's own `unsupported_sim_capabilities` uses. One real, disclosed
 target-specific wrinkle: TypeScript's `transaction {}` blocks are
 *really* atomic in production (matching Rust's own production code
 since `26UpdatePlan.md` M1), but degrade to non-atomic,
-unwrapped-statement behavior *only* under simulation — the same
-degradation Rust's own simulation path still has too — since there is
-no live database for a real `BEGIN`/`COMMIT` to run against a
-`SimWorld`, and every db-verb inside a transaction this checkpoint's
-own gate allows is `db.insert`, already world-guarded per statement.
+unwrapped-statement behavior *only* under simulation — a degradation
+Rust's own simulation path no longer has as of `27UpdatePlan.md` M4
+(its `transaction {}` world branch batches every db-verb inside it
+into one real `commit_batch_checked` call) — since there is no live
+database for a real `BEGIN`/`COMMIT` to run against a `SimWorld`, and
+every db-verb inside a transaction this checkpoint's own gate allows is
+`db.insert`, already world-guarded per statement.
 
 Go's own gated bet (v0.24 M9) reaches the same scope again, via the
 same hand-written-restatement shape TypeScript's own pass established

@@ -107,7 +107,10 @@
           "of": "delete_order",
           "status": 200,
           "json": {
-            "deleted": true
+            "status": "accepted",
+            "data": {
+              "deleted": true
+            }
           }
         }
       }

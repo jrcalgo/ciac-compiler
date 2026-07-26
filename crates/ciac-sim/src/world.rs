@@ -172,8 +172,27 @@ impl std::error::Error for RelationalError {}
 /// includes the cascaded deletes explicitly.
 #[derive(Debug, Clone)]
 pub enum BatchOp {
-    Insert { table: String, row: Value },
-    Delete { table: String, pk: String },
+    Insert {
+        table: String,
+        row: Value,
+    },
+    Delete {
+        table: String,
+        pk: String,
+    },
+    /// 27UpdatePlan.md M4: full-record replace by `id`, the batch
+    /// counterpart to `db_update_checked` -- added when Rust's
+    /// transaction leaf needed to batch a `db.update` alongside
+    /// `db.insert`/`db.delete` inside a `transaction {}` block, even
+    /// though no checked-in example exercises this combination yet.
+    /// A no-op (not an error) if `pk` names no existing row in the
+    /// overlay at apply time, matching `db_update_checked`'s own
+    /// "absent vs. present" contract.
+    Update {
+        table: String,
+        pk: String,
+        row: Value,
+    },
 }
 
 /// An in-memory table store keyed by table name, rows as plain JSON
@@ -796,7 +815,9 @@ impl SimWorld {
     /// item's table" convention), not one check per op.
     pub fn commit_batch_checked(&self, ops: Vec<BatchOp>) -> anyhow::Result<Vec<(String, String)>> {
         let subject = ops.first().map(|op| match op {
-            BatchOp::Insert { table, .. } | BatchOp::Delete { table, .. } => table.clone(),
+            BatchOp::Insert { table, .. }
+            | BatchOp::Delete { table, .. }
+            | BatchOp::Update { table, .. } => table.clone(),
         });
         if let Some(subject) = &subject {
             if self.should_fail("db.commit", Some(subject))? {
@@ -812,6 +833,17 @@ impl SimWorld {
                 BatchOp::Insert { table, row } => {
                     self.validate_write(&overlay, table, row, None)?;
                     overlay.entry(table.clone()).or_default().push(row.clone());
+                }
+                BatchOp::Update { table, pk, row } => {
+                    self.validate_write(&overlay, table, row, Some(pk))?;
+                    if let Some(rows) = overlay.get_mut(table) {
+                        if let Some(existing) = rows
+                            .iter_mut()
+                            .find(|r| r.get("id").and_then(Value::as_str) == Some(pk))
+                        {
+                            *existing = row.clone();
+                        }
+                    }
                 }
                 BatchOp::Delete { table, pk } => {
                     let cascaded = self.plan_delete(&overlay, table, pk)?;
@@ -834,8 +866,12 @@ impl SimWorld {
         // touching the real store -- reaching here means the whole
         // batch is safe to apply for real, all at once.
         for op in &ops {
-            if let BatchOp::Insert { table, row } = op {
-                self.db.insert(table, row.clone());
+            match op {
+                BatchOp::Insert { table, row } => self.db.insert(table, row.clone()),
+                BatchOp::Update { table, pk, row } => {
+                    self.db.replace(table, pk, row.clone());
+                }
+                BatchOp::Delete { .. } => {}
             }
         }
         for (table, pk) in &all_deletes {
@@ -1103,9 +1139,9 @@ impl SimWorld {
             .send(to, subject, body);
     }
 
-    /// `expect.email`'s own count query: every sent message on
-    /// `instance` matching `to` (if given) and containing
-    /// `subject_contains` (if given).
+    /// Per-instance count query: every sent message on `instance`
+    /// matching `to` (if given) and containing `subject_contains` (if
+    /// given).
     pub fn email_sent_count(
         &self,
         instance: &str,
@@ -1117,6 +1153,22 @@ impl SimWorld {
             .expect("email mutex poisoned")
             .get(instance)
             .into_iter()
+            .flat_map(|email| email.sent.iter())
+            .filter(|m| to.is_none_or(|t| m.to == t))
+            .filter(|m| subject_contains.is_none_or(|s| m.subject.contains(s)))
+            .count()
+    }
+
+    /// `expect.email`'s own count query -- deliberately not scoped to
+    /// one instance: `ciac_sim::scenario::ExpectStep::Email` carries no
+    /// `instance` field, matching Python's own `_expect_email`
+    /// (`sim/pyrunner/scenario_runner.py`), which counts sends across
+    /// every `email` instance the world has seen.
+    pub fn email_sent_count_all(&self, to: Option<&str>, subject_contains: Option<&str>) -> usize {
+        self.emails
+            .lock()
+            .expect("email mutex poisoned")
+            .values()
             .flat_map(|email| email.sent.iter())
             .filter(|m| to.is_none_or(|t| m.to == t))
             .filter(|m| subject_contains.is_none_or(|s| m.subject.contains(s)))
@@ -1588,6 +1640,55 @@ mod tests {
         assert_eq!(deleted.len(), 2, "the cascade into orders is reported too");
         assert_eq!(world.db.count("customers"), 0);
         assert_eq!(world.db.count("orders"), 0);
+    }
+
+    #[test]
+    fn commit_batch_checked_applies_an_update_op_and_rolls_it_back_with_the_rest_on_violation() {
+        let world = SimWorld::with_schema(
+            Vec::new(),
+            customers_and_orders_schema(WorldRefAction::Cascade, false),
+        );
+        world
+            .db_insert_checked("customers", serde_json::json!({"id": "c1"}))
+            .unwrap();
+        world
+            .db_insert_checked(
+                "orders",
+                serde_json::json!({"id": "o1", "customer_id": "c1"}),
+            )
+            .unwrap();
+
+        // A batch replacing the order alongside an insert that violates
+        // a dangling reference must roll the update back too, not just
+        // the insert.
+        let ops = vec![
+            BatchOp::Update {
+                table: "orders".into(),
+                pk: "o1".into(),
+                row: serde_json::json!({"id": "o1", "customer_id": "c1", "note": "updated"}),
+            },
+            BatchOp::Insert {
+                table: "orders".into(),
+                row: serde_json::json!({"id": "o2", "customer_id": "does-not-exist"}),
+            },
+        ];
+        assert!(world.commit_batch_checked(ops).is_err());
+        assert_eq!(
+            world.db.get("orders", "o1").unwrap().get("note"),
+            None,
+            "the update did not land either"
+        );
+
+        let ops = vec![BatchOp::Update {
+            table: "orders".into(),
+            pk: "o1".into(),
+            row: serde_json::json!({"id": "o1", "customer_id": "c1", "note": "updated"}),
+        }];
+        world.commit_batch_checked(ops).unwrap();
+        assert_eq!(
+            world.db.get("orders", "o1").unwrap().get("note"),
+            Some(&serde_json::json!("updated"))
+        );
     }
 
     #[test]

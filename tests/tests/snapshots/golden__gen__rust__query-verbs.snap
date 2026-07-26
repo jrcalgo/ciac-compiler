@@ -28,6 +28,11 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
+# 27UpdatePlan.md M4: `src/bin/sim_runner.rs` decodes `given.store`'s
+# `value_base64` (the scenario schema's own binary-payload encoding)
+# regardless of which capabilities this particular service declares --
+# the runner is generic over the whole scenario schema.
+base64 = "0.22"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "json"] }
 # v0.17 M11: `src/bin/sim_runner.rs` drives `routes::router()` through
 # `tower::ServiceExt::oneshot` (no live listener), so this needs to be a
@@ -493,7 +498,30 @@ struct Runner {
 
 impl Runner {
     async fn new(scenario: &Scenario) -> anyhow::Result<Self> {
-        let world = Arc::new(SimWorld::new(scenario.given.failures.clone()));
+        // 27UpdatePlan.md M4: schema facts computed once at codegen time
+        // from the same source `snapshot_schema` builds the migration
+        // DDL from, so `db_delete_checked`'s cascade/restrict and
+        // `db_insert_checked`/`db_update_checked`'s reference/unique
+        // checks can never drift from what the real schema enforces.
+        let world = Arc::new(SimWorld::with_schema(
+            scenario.given.failures.clone(),
+            vec![
+                query_verbs::world::WorldTable {
+                    name: "notes".to_owned(),
+                    references: vec![
+                    ],
+                },
+            ],
+        ));
+        let now_ms = chrono::DateTime::parse_from_rfc3339(&scenario.start_at)
+            .map_err(|e| anyhow::anyhow!("scenario start_at {:?}: {e}", scenario.start_at))?
+            .timestamp_millis();
+        // `SimWorld::new` always starts its own virtual clock at epoch 0
+        // (disclosed in `world.rs`'s own doc comment -- not yet
+        // scenario-customizable); synced to `start_at` here, before any
+        // TTL-bearing seed below reads `world.now_ms()`, and kept in
+        // lockstep by every `advance()` step thereafter.
+        world.advance_clock_to(now_ms);
         for seed in &scenario.given.db {
             if seed.service != "QueryVerbs" {
                 anyhow::bail!(
@@ -507,9 +535,32 @@ impl Runner {
                 world.db.insert(&seed.table, row.clone());
             }
         }
-        let now_ms = chrono::DateTime::parse_from_rfc3339(&scenario.start_at)
-            .map_err(|e| anyhow::anyhow!("scenario start_at {:?}: {e}", scenario.start_at))?
-            .timestamp_millis();
+        // 27UpdatePlan.md M4: `given.cache`/`given.store`/`given.search`/
+        // `given.external_http` -- mirrors `sim/pyrunner/auto_driver.py`'s
+        // `apply_given` (the same four lists that driver discloses were
+        // silently dropped before that fix).
+        for entry in &scenario.given.cache {
+            let ttl_ms = entry.ttl.as_deref().map(parse_duration_ms).transpose()?;
+            world.cache_set(
+                &entry.instance,
+                &entry.key,
+                serde_json::to_string(&entry.value)?,
+                ttl_ms,
+            );
+        }
+        for obj in &scenario.given.store {
+            use base64::Engine;
+            let body = base64::engine::general_purpose::STANDARD
+                .decode(&obj.value_base64)
+                .map_err(|e| anyhow::anyhow!("given.store {:?}: {e}", obj.key))?;
+            world.object_put(&obj.instance, &obj.key, body);
+        }
+        for doc in &scenario.given.search {
+            world.search_index(&doc.instance, &doc.id, doc.doc.clone());
+        }
+        for fixture in &scenario.given.external_http {
+            world.seed_http_fixtures(&fixture.instance, fixture.responses.clone());
+        }
         let config = Config::from_env();
         let state = AppState::simulation(config, world.clone()).await?;
         Ok(Self {
@@ -562,21 +613,45 @@ impl Runner {
             "RemoveApi" => (axum::http::Method::POST, "/remove-api"),
             other => anyhow::bail!("sim_runner: no api registered named {other:?}"),
         };
-        let request = Request::builder()
+        let mut request_builder = Request::builder()
             .method(method)
             .uri(path)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(serde_json::to_vec(&spec.json)?))?;
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        // 27UpdatePlan.md M4: synthesizes a bearer token from the step's
+        // own `as` principal exactly like `sim/pyrunner/auto_driver.py`'s
+        // `_request` (`f"sim:{sub}:{','.join(scopes)}"`, claims
+        // `{"sub": sub, "scope": " ".join(scopes)}`) -- Rust's own
+        // `Claims::require_scope` reads either a space-joined `scope`
+        // string or a `scp` array (`auth.rs.j2`), so the space-joined
+        // form is what this world-issued token must carry.
+        if let Some(principal) = &spec.principal {
+            let token = format!("sim:{}:{}", principal.sub, principal.scopes.join(","));
+            self.world.auth_issue(
+                &token,
+                serde_json::json!({"sub": principal.sub, "scope": principal.scopes.join(" ")}),
+                None,
+            );
+            request_builder = request_builder
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let request = request_builder.body(Body::from(serde_json::to_vec(&spec.json)?))?;
         let response = app
             .oneshot(request)
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))?;
         let status = response.status().as_u16();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        // A non-2xx response's body is plain text, not JSON (see
+        // `error.rs.j2`'s `AppError::into_response`) -- parsed as a
+        // JSON string rather than treated as a hard parse error, so
+        // `expect.response`'s `status`-only checks (the common case for
+        // an error path) never fail on the body shape they never asked
+        // about.
         let json = if body.is_empty() {
             serde_json::Value::Null
         } else {
-            serde_json::from_slice(&body)?
+            serde_json::from_slice(&body)
+                .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&body).into_owned()))
         };
         if let Some(save_as) = &spec.save_as {
             self.saved.insert(save_as.clone(), (status, json));
@@ -589,25 +664,29 @@ impl Runner {
         let from_ms = self.now_ms;
         let to_ms = from_ms + delta_ms;
         self.now_ms = to_ms;
+        self.world.advance_clock_to(to_ms);
         Ok(())
     }
 
-    /// One pass: every message currently undelivered is handed to its
-    /// worker's `handle_message_once` exactly once (with that worker's
-    /// own retry budget) -- messages a handler publishes as a side
-    /// effect of processing are left for the *next* `drain` step, same
-    /// as `sim/pyrunner/scenario_runner.py`'s own `_drain` (one pass per
-    /// worker per step, not a fixed-point loop).
-    ///
-    /// Dispatches by `if`/`else if` on the subject string, not `match`
-    /// (a real `match` on each worker's `SUBJECT` constant is a
-    /// compile-time "unreachable pattern" error whenever two workers
-    /// share a subject, e.g. two independent consumer groups on one
-    /// stream) -- but that also means this runner has no independent
-    /// per-`(subject, group)` cursors (documented in `src/world.rs`):
-    /// the *first* worker registered for a subject receives every
-    /// drained message, any others sharing that subject receive none.
+    /// One pass: every worker drains its *own* `(subject, group)` cursor
+    /// on `world.broker` (27UpdatePlan.md M4 -- see `src/world.rs`'s
+    /// `BrokerLog` doc comment for why this replaces the old shared-
+    /// queue dispatch) into its `handle_message_once` (with that
+    /// worker's own retry budget) -- messages a handler publishes as a
+    /// side effect of processing are left for the *next* `drain` step,
+    /// same as `sim/pyrunner/scenario_runner.py`'s own
+    /// `deliver_counting_attempts` (one pass per worker per step, not a
+    /// fixed-point loop). Two independent workers on the same subject
+    /// now each see every message (true fan-out), where the old shared-
+    /// queue dispatch delivered only to whichever worker's `if`/`else
+    /// if` branch matched first.
     async fn drain(&mut self) -> anyhow::Result<()> {
+        // `world.queue` is dual-written alongside `world.broker`
+        // (`publish_checked`'s own doc comment) for exactly this sweep:
+        // a message published to a subject no registered worker drains
+        // above is refused here, not left to sit undelivered forever --
+        // the same "refused, not guessed" contract this runner has
+        // always held for capabilities it doesn't cover.
         for (subject, _raw) in self.world.queue.take_all() {
             anyhow::bail!(
                 "sim_runner: no worker registered to consume subject {subject:?} \
@@ -688,28 +767,90 @@ impl Runner {
                 }
                 Ok(())
             }
-            // 27UpdatePlan.md M1 added these `ExpectStep` kinds to the
-            // shared scenario schema for the peripheral fakes (cache,
-            // object store, email, search, external HTTP) M3 builds
-            // into this world -- refused with the specific reason here
-            // rather than silently no-op'd, matching this runner's own
-            // "refused, not guessed" contract for anything it does not
-            // yet fake (v0.17 M11).
-            ExpectStep::Email { .. } => anyhow::bail!(
-                "sim_runner: expect.email is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::Cache { .. } => anyhow::bail!(
-                "sim_runner: expect.cache is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::Object { .. } => anyhow::bail!(
-                "sim_runner: expect.object is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::SearchHits { .. } => anyhow::bail!(
-                "sim_runner: expect.search_hits is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::HttpCalls { .. } => anyhow::bail!(
-                "sim_runner: expect.http_calls is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
+            // 27UpdatePlan.md M4: mirrors
+            // `sim/pyrunner/scenario_runner.py`'s `_expect_email`/
+            // `_expect_cache`/`_expect_object`/`_expect_search_hits`/
+            // `_expect_http_calls` exactly, now that M3 built the
+            // matching fakes into `SimWorld`.
+            ExpectStep::Email {
+                to,
+                subject_contains,
+                count,
+            } => {
+                let actual = self
+                    .world
+                    .email_sent_count_all(to.as_deref(), subject_contains.as_deref());
+                if actual != *count as usize {
+                    anyhow::bail!(
+                        "expect.email: to={to:?} subject_contains={subject_contains:?} \
+                         expected {count}, got {actual}"
+                    );
+                }
+                Ok(())
+            }
+            ExpectStep::Cache {
+                instance,
+                key,
+                present,
+                value,
+            } => {
+                let cached = self.world.cache_get(instance, key);
+                let found = cached.is_some();
+                if found != *present {
+                    anyhow::bail!(
+                        "expect.cache: instance={instance:?} key={key:?} expected \
+                         present={present}, found present={found}"
+                    );
+                }
+                if let Some(want) = value {
+                    let actual: Option<serde_json::Value> =
+                        cached.map(|s| serde_json::from_str(&s)).transpose()?;
+                    if actual.as_ref() != Some(want) {
+                        anyhow::bail!(
+                            "expect.cache: instance={instance:?} key={key:?} expected \
+                             value={want:?}, got {actual:?}"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            ExpectStep::Object {
+                store,
+                key,
+                present,
+            } => {
+                let found = self.world.object_exists(store, key);
+                if found != *present {
+                    anyhow::bail!(
+                        "expect.object: store={store:?} key={key:?} expected \
+                         present={present}, found present={found}"
+                    );
+                }
+                Ok(())
+            }
+            ExpectStep::SearchHits {
+                instance,
+                query,
+                count,
+            } => {
+                let actual = self.world.search_query(instance, query).len();
+                if actual != *count as usize {
+                    anyhow::bail!(
+                        "expect.search_hits: instance={instance:?} query={query:?} \
+                         expected {count}, got {actual}"
+                    );
+                }
+                Ok(())
+            }
+            ExpectStep::HttpCalls { instance, count } => {
+                let actual = self.world.http_request_count(instance);
+                if actual != *count as usize {
+                    anyhow::bail!(
+                        "expect.http_calls: instance={instance:?} expected {count}, got {actual}"
+                    );
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -1283,9 +1424,11 @@ use crate::schemas::{ ActiveFilter };
 #[derive(Debug)]
 pub struct CountActive<'a> {
     pub db: &'a sqlx::SqlitePool,
-    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- `db.insert`
-    /// call sites in `handle`'s generated body check this first, writing to
-    /// the in-memory `SimWorld` instead of `db` above.
+    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- every
+    /// world-guarded verb's call site in `handle`'s generated body
+    /// checks this first, writing to the in-memory `SimWorld` instead
+    /// of the real capability field(s) above/below (27UpdatePlan.md
+    /// M4 grew this from `db.insert`-only to every faked verb).
     pub world: Option<&'a std::sync::Arc<crate::world::SimWorld>>,
 }
 
@@ -1303,7 +1446,12 @@ impl<'a> CountActive<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, filter: ActiveFilter) -> anyhow::Result<i64> {
-return Ok({
+return Ok(if let Some(world) = self.world {
+    world.db.find_where("notes", &Default::default())
+        .into_iter()
+        .filter(|__row| __row.get("active") == Some(&serde_json::json!(filter.active)))
+        .count() as i64
+} else {
     let __count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes WHERE active = ?")
         .bind(filter.active)
         .fetch_one(self.db)
@@ -1324,9 +1472,11 @@ use crate::schemas::{ ActiveFilter };
 #[derive(Debug)]
 pub struct DeleteByActive<'a> {
     pub db: &'a sqlx::SqlitePool,
-    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- `db.insert`
-    /// call sites in `handle`'s generated body check this first, writing to
-    /// the in-memory `SimWorld` instead of `db` above.
+    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- every
+    /// world-guarded verb's call site in `handle`'s generated body
+    /// checks this first, writing to the in-memory `SimWorld` instead
+    /// of the real capability field(s) above/below (27UpdatePlan.md
+    /// M4 grew this from `db.insert`-only to every faked verb).
     pub world: Option<&'a std::sync::Arc<crate::world::SimWorld>>,
 }
 
@@ -1344,7 +1494,20 @@ impl<'a> DeleteByActive<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, filter: ActiveFilter) -> anyhow::Result<i64> {
-return Ok({
+return Ok(if let Some(world) = self.world {
+    let __matching: Vec<String> = world.db.find_where("notes", &Default::default())
+        .into_iter()
+        .filter(|__row| __row.get("active") == Some(&serde_json::json!(filter.active)))
+        .filter_map(|__row| __row.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+        .collect();
+    let mut __n = 0i64;
+    for __pk in &__matching {
+        if world.db_delete_checked("notes", __pk)? {
+            __n += 1;
+        }
+    }
+    __n
+} else {
     let __deleted = sqlx::query("DELETE FROM notes WHERE active = ?")
         .bind(filter.active)
         .execute(self.db)
@@ -1366,9 +1529,11 @@ use crate::models::{ Notes };
 #[derive(Debug)]
 pub struct ListActive<'a> {
     pub db: &'a sqlx::SqlitePool,
-    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- `db.insert`
-    /// call sites in `handle`'s generated body check this first, writing to
-    /// the in-memory `SimWorld` instead of `db` above.
+    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- every
+    /// world-guarded verb's call site in `handle`'s generated body
+    /// checks this first, writing to the in-memory `SimWorld` instead
+    /// of the real capability field(s) above/below (27UpdatePlan.md
+    /// M4 grew this from `db.insert`-only to every faked verb).
     pub world: Option<&'a std::sync::Arc<crate::world::SimWorld>>,
 }
 
@@ -1386,7 +1551,13 @@ impl<'a> ListActive<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, filter: ActiveFilter) -> anyhow::Result<Vec<Note>> {
-return Ok({
+return Ok(if let Some(world) = self.world {
+    world.db.find_where("notes", &Default::default())
+        .into_iter()
+        .filter(|__row| __row.get("active") == Some(&serde_json::json!(filter.active)))
+        .map(serde_json::from_value::<Note>)
+        .collect::<Result<Vec<_>, _>>()?
+} else {
     let __rows: Vec<Notes> = sqlx::query_as("SELECT id, title, active FROM notes WHERE active = ?")
         .bind(filter.active)
         .fetch_all(self.db)
@@ -1419,9 +1590,11 @@ use crate::schemas::{ IdOnly };
 #[derive(Debug)]
 pub struct Remove<'a> {
     pub db: &'a sqlx::SqlitePool,
-    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- `db.insert`
-    /// call sites in `handle`'s generated body check this first, writing to
-    /// the in-memory `SimWorld` instead of `db` above.
+    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- every
+    /// world-guarded verb's call site in `handle`'s generated body
+    /// checks this first, writing to the in-memory `SimWorld` instead
+    /// of the real capability field(s) above/below (27UpdatePlan.md
+    /// M4 grew this from `db.insert`-only to every faked verb).
     pub world: Option<&'a std::sync::Arc<crate::world::SimWorld>>,
 }
 
@@ -1439,7 +1612,9 @@ impl<'a> Remove<'a> {
     // allowed here rather than promoted to a hard failure by `-D warnings`.
     #[allow(unused_variables)]
     pub async fn handle(&self, payload: IdOnly) -> anyhow::Result<bool> {
-return Ok({
+return Ok(if let Some(world) = self.world {
+    world.db_delete_checked("notes", &payload.id.to_string())?
+} else {
     let __deleted = sqlx::query("DELETE FROM notes WHERE id = ?")
         .bind(payload.id.to_string())
         .execute(self.db)
@@ -1460,9 +1635,11 @@ use crate::schemas::{ Note, NoteUpdate };
 #[derive(Debug)]
 pub struct Replace<'a> {
     pub db: &'a sqlx::SqlitePool,
-    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- `db.insert`
-    /// call sites in `handle`'s generated body check this first, writing to
-    /// the in-memory `SimWorld` instead of `db` above.
+    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- every
+    /// world-guarded verb's call site in `handle`'s generated body
+    /// checks this first, writing to the in-memory `SimWorld` instead
+    /// of the real capability field(s) above/below (27UpdatePlan.md
+    /// M4 grew this from `db.insert`-only to every faked verb).
     pub world: Option<&'a std::sync::Arc<crate::world::SimWorld>>,
 }
 
@@ -1483,13 +1660,20 @@ impl<'a> Replace<'a> {
 let v1 = Note { id: payload.id.clone(), title: payload.title.clone(), active: payload.active.clone() };
 {
     let __row = v1.clone();
-    let __updated = sqlx::query("UPDATE notes SET title = ?, active = ? WHERE id = ?")
+    if let Some(world) = self.world {
+        match world.db_update_checked("notes", &v1.id.to_string(), serde_json::to_value(&__row)?)? {
+            Some(_) => Some(__row),
+            None => None,
+        }
+    } else {
+        let __updated = sqlx::query("UPDATE notes SET title = ?, active = ? WHERE id = ?")
         .bind(&__row.title)
         .bind(&__row.active)
-        .bind(v1.id.to_string())
-        .execute(self.db)
-        .await?;
-    if __updated.rows_affected() == 0 { None } else { Some(__row) }
+            .bind(v1.id.to_string())
+            .execute(self.db)
+            .await?;
+        if __updated.rows_affected() == 0 { None } else { Some(__row) }
+    }
 };
 return Ok(v1);
     }
@@ -2374,11 +2558,12 @@ pub struct AppState {
     pub db: sqlx::SqlitePool,
     /// `None` in production; `Some` only when constructed via
     /// [`AppState::simulation`] (v0.17 M11) -- every world-guarded
-    /// call site (`db.insert`, broker `publish`) checks this first,
+    /// call site (`db.insert`, broker `publish`, and every peripheral
+    /// verb faked as of 27UpdatePlan.md M4) checks this first,
     /// reading/writing the in-memory `SimWorld` instead of the real
-    /// pool/broker client fields above, which still exist (so this
-    /// struct's shape doesn't fork between production and simulation
-    /// builds) but are never touched while `world` is `Some`.
+    /// pool/broker/peripheral client fields above, which still exist
+    /// (so this struct's shape doesn't fork between production and
+    /// simulation builds) but are never touched while `world` is `Some`.
     pub world: Option<std::sync::Arc<crate::world::SimWorld>>,
 }
 
@@ -2595,8 +2780,27 @@ impl std::error::Error for RelationalError {}
 /// includes the cascaded deletes explicitly.
 #[derive(Debug, Clone)]
 pub enum BatchOp {
-    Insert { table: String, row: Value },
-    Delete { table: String, pk: String },
+    Insert {
+        table: String,
+        row: Value,
+    },
+    Delete {
+        table: String,
+        pk: String,
+    },
+    /// 27UpdatePlan.md M4: full-record replace by `id`, the batch
+    /// counterpart to `db_update_checked` -- added when Rust's
+    /// transaction leaf needed to batch a `db.update` alongside
+    /// `db.insert`/`db.delete` inside a `transaction {}` block, even
+    /// though no checked-in example exercises this combination yet.
+    /// A no-op (not an error) if `pk` names no existing row in the
+    /// overlay at apply time, matching `db_update_checked`'s own
+    /// "absent vs. present" contract.
+    Update {
+        table: String,
+        pk: String,
+        row: Value,
+    },
 }
 
 /// An in-memory table store keyed by table name, rows as plain JSON
@@ -3219,7 +3423,9 @@ impl SimWorld {
     /// item's table" convention), not one check per op.
     pub fn commit_batch_checked(&self, ops: Vec<BatchOp>) -> anyhow::Result<Vec<(String, String)>> {
         let subject = ops.first().map(|op| match op {
-            BatchOp::Insert { table, .. } | BatchOp::Delete { table, .. } => table.clone(),
+            BatchOp::Insert { table, .. }
+            | BatchOp::Delete { table, .. }
+            | BatchOp::Update { table, .. } => table.clone(),
         });
         if let Some(subject) = &subject {
             if self.should_fail("db.commit", Some(subject))? {
@@ -3235,6 +3441,17 @@ impl SimWorld {
                 BatchOp::Insert { table, row } => {
                     self.validate_write(&overlay, table, row, None)?;
                     overlay.entry(table.clone()).or_default().push(row.clone());
+                }
+                BatchOp::Update { table, pk, row } => {
+                    self.validate_write(&overlay, table, row, Some(pk))?;
+                    if let Some(rows) = overlay.get_mut(table) {
+                        if let Some(existing) = rows
+                            .iter_mut()
+                            .find(|r| r.get("id").and_then(Value::as_str) == Some(pk))
+                        {
+                            *existing = row.clone();
+                        }
+                    }
                 }
                 BatchOp::Delete { table, pk } => {
                     let cascaded = self.plan_delete(&overlay, table, pk)?;
@@ -3257,8 +3474,12 @@ impl SimWorld {
         // touching the real store -- reaching here means the whole
         // batch is safe to apply for real, all at once.
         for op in &ops {
-            if let BatchOp::Insert { table, row } = op {
-                self.db.insert(table, row.clone());
+            match op {
+                BatchOp::Insert { table, row } => self.db.insert(table, row.clone()),
+                BatchOp::Update { table, pk, row } => {
+                    self.db.replace(table, pk, row.clone());
+                }
+                BatchOp::Delete { .. } => {}
             }
         }
         for (table, pk) in &all_deletes {
@@ -3526,9 +3747,9 @@ impl SimWorld {
             .send(to, subject, body);
     }
 
-    /// `expect.email`'s own count query: every sent message on
-    /// `instance` matching `to` (if given) and containing
-    /// `subject_contains` (if given).
+    /// Per-instance count query: every sent message on `instance`
+    /// matching `to` (if given) and containing `subject_contains` (if
+    /// given).
     pub fn email_sent_count(
         &self,
         instance: &str,
@@ -3540,6 +3761,22 @@ impl SimWorld {
             .expect("email mutex poisoned")
             .get(instance)
             .into_iter()
+            .flat_map(|email| email.sent.iter())
+            .filter(|m| to.is_none_or(|t| m.to == t))
+            .filter(|m| subject_contains.is_none_or(|s| m.subject.contains(s)))
+            .count()
+    }
+
+    /// `expect.email`'s own count query -- deliberately not scoped to
+    /// one instance: `ciac_sim::scenario::ExpectStep::Email` carries no
+    /// `instance` field, matching Python's own `_expect_email`
+    /// (`sim/pyrunner/scenario_runner.py`), which counts sends across
+    /// every `email` instance the world has seen.
+    pub fn email_sent_count_all(&self, to: Option<&str>, subject_contains: Option<&str>) -> usize {
+        self.emails
+            .lock()
+            .expect("email mutex poisoned")
+            .values()
             .flat_map(|email| email.sent.iter())
             .filter(|m| to.is_none_or(|t| m.to == t))
             .filter(|m| subject_contains.is_none_or(|s| m.subject.contains(s)))
@@ -4011,6 +4248,55 @@ mod tests {
         assert_eq!(deleted.len(), 2, "the cascade into orders is reported too");
         assert_eq!(world.db.count("customers"), 0);
         assert_eq!(world.db.count("orders"), 0);
+    }
+
+    #[test]
+    fn commit_batch_checked_applies_an_update_op_and_rolls_it_back_with_the_rest_on_violation() {
+        let world = SimWorld::with_schema(
+            Vec::new(),
+            customers_and_orders_schema(WorldRefAction::Cascade, false),
+        );
+        world
+            .db_insert_checked("customers", serde_json::json!({"id": "c1"}))
+            .unwrap();
+        world
+            .db_insert_checked(
+                "orders",
+                serde_json::json!({"id": "o1", "customer_id": "c1"}),
+            )
+            .unwrap();
+
+        // A batch replacing the order alongside an insert that violates
+        // a dangling reference must roll the update back too, not just
+        // the insert.
+        let ops = vec![
+            BatchOp::Update {
+                table: "orders".into(),
+                pk: "o1".into(),
+                row: serde_json::json!({"id": "o1", "customer_id": "c1", "note": "updated"}),
+            },
+            BatchOp::Insert {
+                table: "orders".into(),
+                row: serde_json::json!({"id": "o2", "customer_id": "does-not-exist"}),
+            },
+        ];
+        assert!(world.commit_batch_checked(ops).is_err());
+        assert_eq!(
+            world.db.get("orders", "o1").unwrap().get("note"),
+            None,
+            "the update did not land either"
+        );
+
+        let ops = vec![BatchOp::Update {
+            table: "orders".into(),
+            pk: "o1".into(),
+            row: serde_json::json!({"id": "o1", "customer_id": "c1", "note": "updated"}),
+        }];
+        world.commit_batch_checked(ops).unwrap();
+        assert_eq!(
+            world.db.get("orders", "o1").unwrap().get("note"),
+            Some(&serde_json::json!("updated"))
+        );
     }
 
     #[test]

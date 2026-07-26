@@ -20,8 +20,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 {%- else %}
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 {%- endif %}
-{%- if c.records_use_datetime or c.jobs or needs_chrono_crate or c.has_db or c.has_queue %}
+{%- if c.records_use_datetime or c.jobs or needs_chrono_crate or c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
 chrono = { version = "0.4", features = ["serde"] }
+{%- endif %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
+# 27UpdatePlan.md M4: `src/bin/sim_runner.rs` decodes `given.store`'s
+# `value_base64` (the scenario schema's own binary-payload encoding)
+# regardless of which capabilities this particular service declares --
+# the runner is generic over the whole scenario schema.
+base64 = "0.22"
 {%- endif %}
 {%- if c.jobs %}
 cron = "0.12"
@@ -81,14 +88,14 @@ tower-http = { version = "0.6", features = ["trace"] }
 {%- if needs_thiserror %}
 thiserror = "2"
 {%- endif %}
-{%- if c.has_db or c.has_queue %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
 # v0.17 M11: `src/bin/sim_runner.rs` drives `routes::router()` through
 # `tower::ServiceExt::oneshot` (no live listener), so this needs to be a
 # real dependency, not the dev-only one below (which folds into this
 # condition rather than duplicating the crate when both apply).
 tower = { version = "0.5", features = ["util"] }
 {%- endif %}
-{%- if (c.auth_scheme == "jwt" or c.auth_scheme == "oauth2") and c.scopes and not (c.has_db or c.has_queue) %}
+{%- if (c.auth_scheme == "jwt" or c.auth_scheme == "oauth2") and c.scopes and not (c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth) %}
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

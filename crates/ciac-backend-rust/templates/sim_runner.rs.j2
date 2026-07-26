@@ -100,7 +100,40 @@ struct Runner {
 
 impl Runner {
     async fn new(scenario: &Scenario) -> anyhow::Result<Self> {
-        let world = Arc::new(SimWorld::new(scenario.given.failures.clone()));
+        // 27UpdatePlan.md M4: schema facts computed once at codegen time
+        // from the same source `snapshot_schema` builds the migration
+        // DDL from, so `db_delete_checked`'s cascade/restrict and
+        // `db_insert_checked`/`db_update_checked`'s reference/unique
+        // checks can never drift from what the real schema enforces.
+        let world = Arc::new(SimWorld::with_schema(
+            scenario.given.failures.clone(),
+            vec![
+{%- for table in sim_world_tables %}
+                {{ c.module }}::world::WorldTable {
+                    name: "{{ table.name }}".to_owned(),
+                    references: vec![
+{%- for reference in table.references %}
+                        {{ c.module }}::world::WorldReference {
+                            field_name: "{{ reference.field_name }}".to_owned(),
+                            target_table: {% if reference.target_table %}Some("{{ reference.target_table }}".to_owned()){% else %}None{% endif %},
+                            on_delete: {{ c.module }}::world::WorldRefAction::{{ reference.on_delete }},
+                            unique: {{ reference.unique }},
+                        },
+{%- endfor %}
+                    ],
+                },
+{%- endfor %}
+            ],
+        ));
+        let now_ms = chrono::DateTime::parse_from_rfc3339(&scenario.start_at)
+            .map_err(|e| anyhow::anyhow!("scenario start_at {:?}: {e}", scenario.start_at))?
+            .timestamp_millis();
+        // `SimWorld::new` always starts its own virtual clock at epoch 0
+        // (disclosed in `world.rs`'s own doc comment -- not yet
+        // scenario-customizable); synced to `start_at` here, before any
+        // TTL-bearing seed below reads `world.now_ms()`, and kept in
+        // lockstep by every `advance()` step thereafter.
+        world.advance_clock_to(now_ms);
         for seed in &scenario.given.db {
             if seed.service != "{{ c.service_name }}" {
                 anyhow::bail!(
@@ -114,9 +147,32 @@ impl Runner {
                 world.db.insert(&seed.table, row.clone());
             }
         }
-        let now_ms = chrono::DateTime::parse_from_rfc3339(&scenario.start_at)
-            .map_err(|e| anyhow::anyhow!("scenario start_at {:?}: {e}", scenario.start_at))?
-            .timestamp_millis();
+        // 27UpdatePlan.md M4: `given.cache`/`given.store`/`given.search`/
+        // `given.external_http` -- mirrors `sim/pyrunner/auto_driver.py`'s
+        // `apply_given` (the same four lists that driver discloses were
+        // silently dropped before that fix).
+        for entry in &scenario.given.cache {
+            let ttl_ms = entry.ttl.as_deref().map(parse_duration_ms).transpose()?;
+            world.cache_set(
+                &entry.instance,
+                &entry.key,
+                serde_json::to_string(&entry.value)?,
+                ttl_ms,
+            );
+        }
+        for obj in &scenario.given.store {
+            use base64::Engine;
+            let body = base64::engine::general_purpose::STANDARD
+                .decode(&obj.value_base64)
+                .map_err(|e| anyhow::anyhow!("given.store {:?}: {e}", obj.key))?;
+            world.object_put(&obj.instance, &obj.key, body);
+        }
+        for doc in &scenario.given.search {
+            world.search_index(&doc.instance, &doc.id, doc.doc.clone());
+        }
+        for fixture in &scenario.given.external_http {
+            world.seed_http_fixtures(&fixture.instance, fixture.responses.clone());
+        }
         let config = Config::from_env();
         let state = AppState::simulation(config, world.clone()).await?;
         Ok(Self {
@@ -176,21 +232,45 @@ impl Runner {
 {%- endfor %}
             other => anyhow::bail!("sim_runner: no api registered named {other:?}"),
         };
-        let request = Request::builder()
+        let mut request_builder = Request::builder()
             .method(method)
             .uri(path)
-            .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(serde_json::to_vec(&spec.json)?))?;
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        // 27UpdatePlan.md M4: synthesizes a bearer token from the step's
+        // own `as` principal exactly like `sim/pyrunner/auto_driver.py`'s
+        // `_request` (`f"sim:{sub}:{','.join(scopes)}"`, claims
+        // `{"sub": sub, "scope": " ".join(scopes)}`) -- Rust's own
+        // `Claims::require_scope` reads either a space-joined `scope`
+        // string or a `scp` array (`auth.rs.j2`), so the space-joined
+        // form is what this world-issued token must carry.
+        if let Some(principal) = &spec.principal {
+            let token = format!("sim:{}:{}", principal.sub, principal.scopes.join(","));
+            self.world.auth_issue(
+                &token,
+                serde_json::json!({"sub": principal.sub, "scope": principal.scopes.join(" ")}),
+                None,
+            );
+            request_builder = request_builder
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let request = request_builder.body(Body::from(serde_json::to_vec(&spec.json)?))?;
         let response = app
             .oneshot(request)
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))?;
         let status = response.status().as_u16();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        // A non-2xx response's body is plain text, not JSON (see
+        // `error.rs.j2`'s `AppError::into_response`) -- parsed as a
+        // JSON string rather than treated as a hard parse error, so
+        // `expect.response`'s `status`-only checks (the common case for
+        // an error path) never fail on the body shape they never asked
+        // about.
         let json = if body.is_empty() {
             serde_json::Value::Null
         } else {
-            serde_json::from_slice(&body)?
+            serde_json::from_slice(&body)
+                .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&body).into_owned()))
         };
         if let Some(save_as) = &spec.save_as {
             self.saved.insert(save_as.clone(), (status, json));
@@ -214,26 +294,59 @@ impl Runner {
         }
 {%- endfor %}
         self.now_ms = to_ms;
+        self.world.advance_clock_to(to_ms);
         Ok(())
     }
 
-    /// One pass: every message currently undelivered is handed to its
-    /// worker's `handle_message_once` exactly once (with that worker's
-    /// own retry budget) -- messages a handler publishes as a side
-    /// effect of processing are left for the *next* `drain` step, same
-    /// as `sim/pyrunner/scenario_runner.py`'s own `_drain` (one pass per
-    /// worker per step, not a fixed-point loop).
-    ///
-    /// Dispatches by `if`/`else if` on the subject string, not `match`
-    /// (a real `match` on each worker's `SUBJECT` constant is a
-    /// compile-time "unreachable pattern" error whenever two workers
-    /// share a subject, e.g. two independent consumer groups on one
-    /// stream) -- but that also means this runner has no independent
-    /// per-`(subject, group)` cursors (documented in `src/world.rs`):
-    /// the *first* worker registered for a subject receives every
-    /// drained message, any others sharing that subject receive none.
+    /// One pass: every worker drains its *own* `(subject, group)` cursor
+    /// on `world.broker` (27UpdatePlan.md M4 -- see `src/world.rs`'s
+    /// `BrokerLog` doc comment for why this replaces the old shared-
+    /// queue dispatch) into its `handle_message_once` (with that
+    /// worker's own retry budget) -- messages a handler publishes as a
+    /// side effect of processing are left for the *next* `drain` step,
+    /// same as `sim/pyrunner/scenario_runner.py`'s own
+    /// `deliver_counting_attempts` (one pass per worker per step, not a
+    /// fixed-point loop). Two independent workers on the same subject
+    /// now each see every message (true fan-out), where the old shared-
+    /// queue dispatch delivered only to whichever worker's `if`/`else
+    /// if` branch matched first.
     async fn drain(&mut self) -> anyhow::Result<()> {
-        for (subject, {% if has_drain_workers %}raw{% else %}_raw{% endif %}) in self.world.queue.take_all() {
+{%- for worker in c.workers %}
+{%- if worker.steps %}
+        for raw in self
+            .world
+            .broker
+            .drain(workers::{{ worker.snake }}::SUBJECT, workers::{{ worker.snake }}::QUEUE_GROUP)
+        {
+            let payload: {% if worker.payload %}{{ c.module }}::schemas::{{ worker.payload.class_name }}{% else %}serde_json::Value{% endif %} =
+                serde_json::from_slice(&raw)?;
+            let mut attempts = 0u32;
+            for attempt in 0..=workers::{{ worker.snake }}::MAX_RETRIES {
+                attempts += 1;
+                match workers::{{ worker.snake }}::handle_message_once(&self.state, payload.clone()).await {
+                    Ok(()) => break,
+                    Err(err) if attempt < workers::{{ worker.snake }}::MAX_RETRIES => {
+                        tracing::warn!(?err, attempt, "sim_runner: retrying {{ worker.name }}");
+                    }
+                    Err(err) => {
+                        tracing::error!(?err, "sim_runner: {{ worker.name }} exhausted retries");
+                    }
+                }
+            }
+            *self
+                .worker_attempts
+                .entry("{{ worker.name }}".to_owned())
+                .or_insert(0) += attempts;
+        }
+{%- endif %}
+{%- endfor %}
+        // `world.queue` is dual-written alongside `world.broker`
+        // (`publish_checked`'s own doc comment) for exactly this sweep:
+        // a message published to a subject no registered worker drains
+        // above is refused here, not left to sit undelivered forever --
+        // the same "refused, not guessed" contract this runner has
+        // always held for capabilities it doesn't cover.
+        for (subject, _raw) in self.world.queue.take_all() {
 {%- if not has_drain_workers %}
             anyhow::bail!(
                 "sim_runner: no worker registered to consume subject {subject:?} \
@@ -243,25 +356,7 @@ impl Runner {
 {%- for worker in c.workers %}
 {%- if worker.steps %}
             {% if not loop.first %}else {% endif %}if subject == workers::{{ worker.snake }}::SUBJECT {
-                let payload: {% if worker.payload %}{{ c.module }}::schemas::{{ worker.payload.class_name }}{% else %}serde_json::Value{% endif %} =
-                    serde_json::from_slice(&raw)?;
-                let mut attempts = 0u32;
-                for attempt in 0..=workers::{{ worker.snake }}::MAX_RETRIES {
-                    attempts += 1;
-                    match workers::{{ worker.snake }}::handle_message_once(&self.state, payload.clone()).await {
-                        Ok(()) => break,
-                        Err(err) if attempt < workers::{{ worker.snake }}::MAX_RETRIES => {
-                            tracing::warn!(?err, attempt, "sim_runner: retrying {{ worker.name }}");
-                        }
-                        Err(err) => {
-                            tracing::error!(?err, "sim_runner: {{ worker.name }} exhausted retries");
-                        }
-                    }
-                }
-                *self
-                    .worker_attempts
-                    .entry("{{ worker.name }}".to_owned())
-                    .or_insert(0) += attempts;
+                // Already drained via `world.broker` above.
             }
 {%- endif %}
 {%- endfor %}
@@ -347,28 +442,90 @@ impl Runner {
                 }
                 Ok(())
             }
-            // 27UpdatePlan.md M1 added these `ExpectStep` kinds to the
-            // shared scenario schema for the peripheral fakes (cache,
-            // object store, email, search, external HTTP) M3 builds
-            // into this world -- refused with the specific reason here
-            // rather than silently no-op'd, matching this runner's own
-            // "refused, not guessed" contract for anything it does not
-            // yet fake (v0.17 M11).
-            ExpectStep::Email { .. } => anyhow::bail!(
-                "sim_runner: expect.email is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::Cache { .. } => anyhow::bail!(
-                "sim_runner: expect.cache is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::Object { .. } => anyhow::bail!(
-                "sim_runner: expect.object is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::SearchHits { .. } => anyhow::bail!(
-                "sim_runner: expect.search_hits is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
-            ExpectStep::HttpCalls { .. } => anyhow::bail!(
-                "sim_runner: expect.http_calls is not yet faked on this target (27UpdatePlan.md M3)"
-            ),
+            // 27UpdatePlan.md M4: mirrors
+            // `sim/pyrunner/scenario_runner.py`'s `_expect_email`/
+            // `_expect_cache`/`_expect_object`/`_expect_search_hits`/
+            // `_expect_http_calls` exactly, now that M3 built the
+            // matching fakes into `SimWorld`.
+            ExpectStep::Email {
+                to,
+                subject_contains,
+                count,
+            } => {
+                let actual = self
+                    .world
+                    .email_sent_count_all(to.as_deref(), subject_contains.as_deref());
+                if actual != *count as usize {
+                    anyhow::bail!(
+                        "expect.email: to={to:?} subject_contains={subject_contains:?} \
+                         expected {count}, got {actual}"
+                    );
+                }
+                Ok(())
+            }
+            ExpectStep::Cache {
+                instance,
+                key,
+                present,
+                value,
+            } => {
+                let cached = self.world.cache_get(instance, key);
+                let found = cached.is_some();
+                if found != *present {
+                    anyhow::bail!(
+                        "expect.cache: instance={instance:?} key={key:?} expected \
+                         present={present}, found present={found}"
+                    );
+                }
+                if let Some(want) = value {
+                    let actual: Option<serde_json::Value> =
+                        cached.map(|s| serde_json::from_str(&s)).transpose()?;
+                    if actual.as_ref() != Some(want) {
+                        anyhow::bail!(
+                            "expect.cache: instance={instance:?} key={key:?} expected \
+                             value={want:?}, got {actual:?}"
+                        );
+                    }
+                }
+                Ok(())
+            }
+            ExpectStep::Object {
+                store,
+                key,
+                present,
+            } => {
+                let found = self.world.object_exists(store, key);
+                if found != *present {
+                    anyhow::bail!(
+                        "expect.object: store={store:?} key={key:?} expected \
+                         present={present}, found present={found}"
+                    );
+                }
+                Ok(())
+            }
+            ExpectStep::SearchHits {
+                instance,
+                query,
+                count,
+            } => {
+                let actual = self.world.search_query(instance, query).len();
+                if actual != *count as usize {
+                    anyhow::bail!(
+                        "expect.search_hits: instance={instance:?} query={query:?} \
+                         expected {count}, got {actual}"
+                    );
+                }
+                Ok(())
+            }
+            ExpectStep::HttpCalls { instance, count } => {
+                let actual = self.world.http_request_count(instance);
+                if actual != *count as usize {
+                    anyhow::bail!(
+                        "expect.http_calls: instance={instance:?} expected {count}, got {actual}"
+                    );
+                }
+                Ok(())
+            }
         }
     }
 }

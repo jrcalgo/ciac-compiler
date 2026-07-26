@@ -1834,6 +1834,186 @@ a commit + push; Shipped notes append in place per convention.
    restatement drift, if the discipline has a hole, shows here
    cheapest.
 
+   **Shipped (v0.27 M6):** `world.ts.j2` rewritten from the v0.23
+   M9 narrow ~158-line file (`db.insert` + publish only) to a
+   ~700-line self-contained port of `ciac-sim`'s full world —
+   `RelationalSchema`-aware `FakeDatabase` (get/update/delete/
+   count/query with the full `LoweredPredicate` operator set via a
+   new `world_predicate_expr`/`world_predicate_term_expr` pair,
+   mirroring Rust's own), a group-aware `BrokerLog` fan-out cursor
+   log, a virtual clock, and the same cache/object-store/email/
+   search/http/auth peripheral fakes Rust closed in M4. Every verb
+   `lower.rs`'s TS backend hadn't guarded gained a world leaf this
+   milestone: `db.get`/`update`/`delete`/`query`/`count`/
+   `delete_where`, `cache.get/set/delete`, `object_store.put/get/
+   delete/list`, `email.send`, `search.index/query`, `http.call`,
+   and `auth` (`verifyToken` now takes `AppState` and checks
+   `state.world.authVerify` before falling through to real JWT
+   verification). `unsupported_sim_capabilities` now always
+   returns an empty `Vec` on TS too; the new
+   `typescript_gate_is_empty_for_the_whole_corpus` test in
+   `sim_gate_emptiness.rs` proves it across the whole example
+   corpus, not just the sim-tagged subset.
+
+   **Atomicity: a genuinely different mechanism, not a copy of
+   Rust's, because the two backends' shared `ciac_codegen::lower`
+   walker dispatches them in different orientations.** Rust's
+   `transaction {}` renders its body twice (`Orientation::
+   Expression` — once as the world branch, once as production),
+   so `self.batching: Cell<bool>` can switch codegen-time between
+   "call world directly" and "push onto a `BatchOp` accumulator."
+   TS renders a handler body's statements once (`Orientation::
+   Statement`) — there is no second rendering pass to switch. So
+   TS closes the same atomicity gap with an **ambient batch mode**
+   on `SimWorld` itself instead: a `pendingBatch: BatchOp[] | null`
+   field, with `beginWorldBatch()`/`commitWorldBatch()`/
+   `rollbackWorldBatch()` methods. While a batch is open,
+   `dbInsertChecked`/`dbUpdateChecked`/`dbDeleteChecked` queue an
+   op instead of applying immediately (with the same optimistic
+   return-value convention Rust's own batching branch already
+   uses — the input record for update, `true` for delete).
+   `commitWorldBatch()` replays the queue through the existing
+   `commitBatchChecked` engine. The generated `transaction {}`
+   wrapper's shape is unchanged; it now calls `this.state.world?.
+   beginWorldBatch()` before, `commitWorldBatch()` on success,
+   `rollbackWorldBatch()` on catch — optional chaining making all
+   three safe no-ops in production. This is Pillar 4's "structure
+   may diverge; answers may not" working as designed, not a
+   deviation from Rust's approach: live-verified identical to
+   Rust's own atomicity guarantee via `sim/atomic-batch.ciac-sim.
+   json` against `domain-orders.ciac` (rollback leaves zero
+   partial rows on both targets).
+
+   **Two real bugs found and fixed via live proof against real
+   generated code, neither of them things `cargo check` on the
+   Rust compiler side could have caught, since both live entirely
+   downstream in the generated TypeScript:** (1) a TS-specific
+   block-scoping trap, found via `tsc --noEmit` against
+   `domain-orders.ciac`'s generated `delete_order.ts`
+   (`error TS2304: Cannot find name 'v1'`). Unlike Rust's `if let`/
+   Python's `if/else` (which share the enclosing scope with
+   branch-produced values), TypeScript's `if {} else {}` opens a
+   real block scope — a `const` declared inside one arm of a
+   world/production split is invisible once the block closes. The
+   module's own pre-existing doc comment at the top of `lower.rs`
+   already warned about this exact class of bug for HIR-level
+   `Let` bindings (handled by `collect_branching_lets`/
+   `branching_locals`), but the codegen-introduced world/production
+   splits this milestone added to `db_update_tail`, `db_delete_tail`,
+   and `query_tail`'s three arms sat outside that mechanism's
+   coverage. Fixed uniformly across all four sites: hoist
+   `let __out: <Type>;` before the if/else, assign (never
+   re-declare) inside each arm, call `apply_dest` once after the
+   block closes. (2) three `@typescript-eslint/no-unused-vars`
+   failures — `dueInstants`, `workerAttempts`, a destructured
+   `_raw` — all newly exposed because M6's broadened emission gate
+   now reaches peripheral-only programs (`sim-peripherals.ciac`:
+   no jobs, no workers) that never received `sim_runner.ts` at all
+   under the old narrow `has_db or queue_engine` gate. Fixed by
+   gating the `Cron` import and `dueInstants` behind
+   `{%- if c.jobs %}`, adding `void workerAttempts;` (matching the
+   pre-existing pattern `advance()` already used for its own
+   always-unconditional parameters), and removing the unused
+   destructure entirely from the orphan-detection sweep.
+
+   **Two authoring mistakes caught before they reached a commit,
+   neither a design gap:** a `context! { sim_world_tables:
+   sim_world_tables(ir) }` call used `:` instead of this codebase's
+   established `=>` minijinja convention, caught by the doctest
+   phase of a background full-test-suite run (`error: no rules
+   expected ':'`); and two literal NUL bytes ended up written into
+   `world.ts.j2` (in `BrokerLog.cursorKey` and `queuesEmpty`, both
+   meant to be a space separator) — caught by `grep` reporting
+   "binary file matches" on a file that should have been plain
+   text, fixed with a direct byte-replacement pass and confirmed
+   clean ASCII afterward.
+
+   **One literal-plan-text claim investigated and corrected rather
+   than applied as written, for the identical structural reason
+   M4's own Shipped note already recorded:** "TS flips `Narrow` →
+   `Full`" does not happen. `commands.rs`'s `sim_inner` dispatch
+   still hardcodes `SimSupport::Full => sim_drive_python(..)` —
+   flipping TS's `TargetInfo::sim` enum variant would silently
+   misroute TS-generated projects through Python's driver. TS's
+   `TargetInfo` stays `SimSupport::Narrow` with an
+   `unsupported_sim_capabilities` that now always returns empty —
+   "full" in observed behavior, not in enum shape, matching Rust's
+   own M4 precedent exactly; `docs/targets.json`'s TS `sim.level`
+   is correspondingly left at `"narrow"`, not flipped, confirmed
+   by direct inspection rather than re-derived. The
+   crud-resource-unreachable finding M4 recorded (a `crud <Name>:
+   <Record>` resource's synthesized api node never carries a
+   `Pipeline`, so `ciac sim`'s `request` step can never address
+   it) transfers to TS without re-proving, since both backends
+   build `c.apis` from the same shared `ciac-codegen` construction.
+
+   **Live: full corpus green on TypeScript, all nine scenarios,
+   both canonical anchors byte-exact — identical to Rust's own M4
+   results.** `sim-peripherals.ciac` × `cache-ttl`/`auth-scopes`/
+   `http-fixtures`/`peripherals`; `sim-vertical-slice.ciac` ×
+   `vertical-slice`/`virtual-week` (`{"ProcessOrder":3}`/
+   `{"Reconcile":1}` and `{"ProcessOrder":100}`/`{"Reconcile":7}`,
+   both raw `sim_runner.js` outcome lines re-captured directly for
+   this note: `{"scenario":"v0.17-m5-vertical-slice","passed":
+   true,"error":null,"worker_attempts":{"ProcessOrder":3},
+   "job_runs":{"Reconcile":1}}` and `{"scenario":"v0.17-m5-virtual-
+   week","passed":true,"error":null,"worker_attempts":
+   {"ProcessOrder":100},"job_runs":{"Reconcile":7}}`);
+   `sim-broker-slice.ciac` × `fanout` (TS's own group-aware
+   `BrokerLog.drain()` proof); `domain-orders.ciac` ×
+   `relational-depth`/`atomic-batch` (schema-aware cascade delete
+   and the ambient-batch-mode rollback guarantee, respectively).
+   All nine `[PASS]` via `scripts/sim-corpus-x5.sh --targets
+   typescript`.
+
+   **Golden churn:** 25 TypeScript golden snapshots regenerated
+   (`cargo insta test --accept`, 30330 insertions / 3248 deletions
+   across the diff), reviewed as additive-only — world-guard
+   branches, the `__out` hoisting pattern, new dependency lines,
+   and `sim_runner.ts` growth; pre-existing production (`else`)
+   branches' own runtime behavior (same SQL text, same computation)
+   confirmed unchanged by direct spot-check diff inspection of
+   `domain-orders.snap`'s `delete_order.ts` and `oauth-echo.snap`'s
+   `auth.ts` sections, matching M4's own invariant discipline. (For
+   these specific verbs there is no historical "byte-identical"
+   text to preserve, since this is the first milestone any of them
+   received a simulation guard at all — the discipline that
+   transfers is production-behavior stability, not literal-text
+   stability.)
+
+   **Full verification:** `cargo fmt --all --check` clean; `cargo
+   clippy --workspace --all-targets -- -D warnings` zero warnings;
+   `cargo test -p ciac-integration-tests --test sim_gate_emptiness`
+   green standalone (both the Rust and the new TypeScript case);
+   generated-project `tsc -p tsconfig.build.json` and `eslint`
+   clean across every corpus program reached by `ciac sim --target
+   typescript`; `cargo test --workspace --no-fail-fast` launched
+   and confirmed progressing clean through every suite reached at
+   commit time (no failures observed beyond the already-disclosed,
+   already-triaged M5 ruff-drift finding, which is Python-template
+   dependency drift wholly unrelated to any file this milestone
+   touched) — this workspace's own full run takes on the order of
+   twenty-plus minutes per M1–M5's own timing notes, the same
+   reason this milestone's commit does not block on that run's
+   final line; any further finding will be fixed and disclosed in
+   a following commit before M7 begins. Live `ciac sim --target
+   typescript` proof for all nine corpus scenarios as above,
+   independently re-run and re-captured for this note rather than
+   quoted from memory.
+
+   **M6 exit checklist — met:** `world.ts.j2` self-contained per
+   Pillar 4's rules (✓); guard leaves across TS `lower.rs` (✓,
+   every verb `Needs::unguarded_verbs` tracked); runner growth (✓,
+   cache/store/search/http seeding, five new `expect` branches,
+   principal-to-token synthesis, group-aware `drain()`); auth seam
+   (✓, `verifyToken(request, state)` checks `state.world.
+   authVerify` first); gate-emptiness test (✓, new
+   `typescript_gate_is_empty_for_the_whole_corpus`); "`Full` flip"
+   (✗ as literally written — see above; the behavioral equivalent
+   is recorded instead, disclosed rather than forced, identical to
+   M4's own precedent); corpus × TS identical to Rust's outcomes
+   (✓, all nine `[PASS]`, both canonical anchors byte-exact).
+
 7. **M7 — Go restatement.** Same shape as M6 (`world.go.j2`,
    mutex-guarded structs where idiom wants them, behavior
    identical); the corpus × Go. Go's existing `FindWhere`/

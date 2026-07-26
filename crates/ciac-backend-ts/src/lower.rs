@@ -1102,7 +1102,9 @@ impl HostSyntax for TsSyntax<'_> {
                 out.push(format!("{indent}    if (!this.state.world) {{"));
                 out.push(format!("{indent}        await __tx!.query(\"ROLLBACK\");"));
                 out.push(format!("{indent}    }}"));
-                out.push(format!("{indent}    this.state.world?.rollbackWorldBatch();"));
+                out.push(format!(
+                    "{indent}    this.state.world?.rollbackWorldBatch();"
+                ));
                 out.push(format!("{indent}    throw __e;"));
                 out.push(format!("{indent}}} finally {{"));
                 out.push(format!("{indent}    if (!this.state.world) {{"));

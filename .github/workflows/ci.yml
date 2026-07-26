@@ -384,9 +384,13 @@ jobs:
             --scenario sim/vertical-slice.ciac-sim.json \
             --scenario sim/virtual-week.ciac-sim.json
           # 27UpdatePlan.md M2: the relational-depth/atomic-batch/fanout
-          # corpus, Python-only for now -- Rust's own world-guard leaves
-          # for these verbs/fan-out land in M4, at which point this job
-          # gains a `--target rust` row alongside these.
+          # corpus. M4-M8 grew Rust/TypeScript/Go/Java to the identical
+          # full-parity worlds these scenarios exercise on Python, but
+          # this job stayed Python-only rather than growing 5x here too
+          # -- `scripts/sim-corpus-x5.sh` (not CI-invoked, run on demand)
+          # is the arc's actual cross-target conformance oracle per its
+          # own Verification strategy table; this job's job is a fast
+          # per-PR smoke check, not a second copy of that harness.
           cargo run -q -p ciac -- verify examples/domain-orders.ciac \
             --target python --out /tmp/gen-sim-domain-orders --sim \
             --scenario sim/relational-depth.ciac-sim.json \
@@ -405,6 +409,17 @@ jobs:
             --scenario sim/peripherals.ciac-sim.json \
             --scenario sim/http-fixtures.ciac-sim.json \
             --scenario sim/auth-scopes.ciac-sim.json
+          # 27UpdatePlan.md M9: query-verbs.ciac (the db.update/query/
+          # count/delete_where predicate closure) and order-system.ciac
+          # (the flagship every M4-M8 Shipped note named as refused,
+          # now green) -- the two examples this milestone's own
+          # FakeDatabase/_FakeSession closure made sim-reachable.
+          cargo run -q -p ciac -- verify examples/query-verbs.ciac \
+            --target python --out /tmp/gen-sim-query-verbs --sim \
+            --scenario sim/query-verbs.ciac-sim.json
+          cargo run -q -p ciac -- verify examples/order-system.ciac \
+            --target python --out /tmp/gen-sim-order-system --sim \
+            --scenario sim/order-system.ciac-sim.json
       - name: assert no Docker container was started
         run: |
           set -euo pipefail

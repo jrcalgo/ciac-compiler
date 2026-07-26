@@ -24,18 +24,30 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python + Rust + TypeScript + Go + Java (all full) (v0.17 M11, TypeScript v0.27 M6, Go v0.27 M7, Java v0.27 M8, Rust v0.27 M4)
+## Status: full (all five targets)
+
+`ciac sim` reaches full-fidelity coverage — every capability a
+generated project can declare, faked identically in outcome across
+Python, Rust, TypeScript, Go, and Java — as of `27UpdatePlan.md`'s own
+arc: Python was always the reference (v0.17 M11), Rust closed at M4,
+TypeScript at M6, Go at M7, Java at M8, and Python's own residual gap
+(`db.update`, predicate-filtered `db.query`/`db.count`/
+`db.delete_where`) closed at M9 — the milestone that also proved the
+arc's own acceptance sentence: `order-system.ciac`, the flagship every
+M4-M8 Shipped note named as refused, now simulates green on all five
+targets with identical outcomes (`sim/order-system.ciac-sim.json`, run
+via `scripts/sim-corpus-x5.sh`).
 
 See [backends.md](backends.md)'s Divergence ledger — Open (tracked)
 table for this gap's classification and address ("Simulation depth:
-only `db.insert` + publish faked", closing in `27UpdatePlan.md`) and
+only `db.insert` + publish faked", closed in `27UpdatePlan.md`) and
 "Multi-service programs refused by `ciac sim`" (closing in
 `28UpdatePlan.md`). The table below is this page's own per-surface
 detail, not a restatement of the ledger's entry.
 
 | Surface | Python | Rust | TypeScript | Go | Java |
 | --- | --- | --- | --- | --- | --- |
-| `ciac sim` | done, every capability faked | done as of `27UpdatePlan.md` M4 — every verb `SimWorld` fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M6 — every verb `world.ts`'s `SimWorld` class fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M7 — every verb `internal/world`'s `World` struct fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M8 — every verb `sim.World` fakes (db/cache directly, object store/email/search/external_http via their own wrapper classes' own `ObjectProvider<World>`, auth), gate-emptiness proven across the whole example corpus |
+| `ciac sim` | done as of `27UpdatePlan.md` M9 — every verb `sim.World`/`_FakeSession` fakes, including `db.update` (mutation-tracked via `.get()`'s own returned-object snapshot, diffed at `.commit()`) and predicate-filtered `db.query`/`db.count`/`db.delete_where` (via `_compile_predicate`, interpreting the real SQLAlchemy `select`/`sql_delete` statement objects `where_chain` builds rather than re-implementing SQL) | done as of `27UpdatePlan.md` M4 — every verb `SimWorld` fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M6 — every verb `world.ts`'s `SimWorld` class fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M7 — every verb `internal/world`'s `World` struct fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M8 — every verb `sim.World` fakes (db/cache directly, object store/email/search/external_http via their own wrapper classes' own `ObjectProvider<World>`, auth), gate-emptiness proven across the whole example corpus |
 | `verify --sim` | done | same | same | same | same |
 | MCP `verify_sim` | done | same | same | same | same |
 
@@ -289,6 +301,66 @@ filter value — fixed by routing through the same `jsonEq` helper
 identical `Integer`-vs-`Long` reason, JSON-serializing both sides
 before comparing instead of comparing boxed types directly.
 
+Python's own closure (`27UpdatePlan.md` M9) is architecturally
+different from the four restatements above: Python doesn't branch
+inside generated code the way Rust's/TypeScript's/Go's/Java's own
+`lower.rs` world-guard leaves do (`if world != null { .. } else { .. }`
+at every db call site). Instead, `AppState.simulation(world)` swaps the
+*entire* database session object — `sessionmaker()` returns
+`world.fake_sessionmaker(instance)` instead of a real
+`async_sessionmaker`-backed one — so generated handler code is
+byte-identical between production and simulation; it always calls
+`self.session.get/add/delete/execute(..)`, oblivious to which session
+is behind it. This means M9's whole fix lives in `sim/pyrunner/
+world.py`'s `FakeDatabase`/`_FakeSession` classes, with zero `lower.rs`
+changes — the only one of the five closures this arc's own restatement
+work didn't touch a single `crates/ciac-backend-*` crate for.
+`FakeDatabase` gained `update`/`rows` and a generalized `_check_write`
+(replacing `_check_insert`, taking a `self_pk` that excludes a row's
+own prior values from the primary-key-conflict and unique-reference
+checks — the identical `self_pk`-exclusion shape Rust's/Java's own
+`validate_write`/`validateWrite` already used, so an update naturally
+colliding with itself was never a design question needing to be
+re-litigated per target). `_FakeSession.get()` now returns a *tracked*
+object (paired with a snapshot of the row it was built from) instead of
+a fresh, forgotten one, so `db_update_tail`'s own `setattr(_row, _k,
+_v)`-then-`commit()` pattern — there is no separate `.add()` call after
+a `.get()`-then-mutate; real `AsyncSession` relies on its own identity
+map to notice the change — has something to be noticed by:
+`.commit()` diffs each tracked object's current column values against
+its snapshot and persists only what actually changed, so a plain
+read-only `.get()` inside a transaction that also writes elsewhere
+never manufactures a spurious `db.update` effect (confirmed by a live
+scenario assertion, not just reasoned about). `_FakeSession.execute()`
+handles the `select`/`sql_delete` statements `db.query`/`db.count`/
+`db.delete_where` build, via a new `_compile_predicate` function that
+recurses the *real* SQLAlchemy statement-object shapes `where_chain`
+(`ciac-backend-python::lower.rs`) actually produces — `BooleanClauseList`
+(chained `.where()` calls, ANDed), `Grouping` (the `.contains(..)`
+wrapper), `AsBoolean` (a bare/`~`-negated truthy column, `where_chain`'s
+own ruff-E712 dodge for a literal `true`/`false` comparison), and
+`BinaryExpression` (every other operator) — confirmed against a real
+generated `query-verbs.ciac` project's own SQLAlchemy 2.0 objects
+rather than assumed. One live-found bug during that confirmation: `Model.
+bool_field == some_variable` (reached whenever the compared value is a
+variable, not a literal — `where_chain`'s bare-truthy shortcut only
+fires for `BoolLit`) coerces its right side to a `True_`/`False_`
+singleton instead of a `BindParameter`, even though the operator is
+still plain `eq`/`ne` — found live against `query-verbs.ciac`'s own
+generated `Notes.active == filter.active`, fixed by special-casing
+those two singleton types before falling back to `.value`. A second,
+unrelated bug found live while wiring `query-verbs.ciac`/`order-
+system.ciac` into the corpus: `api.py.j2`'s response wrapper called
+`result.model_dump(mode="json")` unconditionally, which crashes for
+any api pipeline whose final step returns a non-`Record` type (`Int`,
+`Bool`, `[Record]` — exactly `db.count`/`db.delete`/`db.query`'s own
+return shapes) — a real, pre-existing production-path defect (confirmed
+via `git stash` against unmodified `HEAD`, predating this arc entirely,
+not a simulation-only issue), fixed with a `hasattr(result,
+"model_dump")` guard since no compile-time signal distinguishes a
+`Record`-returning pipeline from a scalar/list-returning one without a
+larger IR change out of this milestone's own scope.
+
 Single-service projects only, every target: `ciac sim` refuses cleanly
 (not a crash, not a silent partial run) when it finds more than one
 project descriptor (`pyproject.toml`/`Cargo.toml`/`package.json`/
@@ -471,10 +543,17 @@ and one outcome per scenario).
 real counterpart is cheap to stand up — relational semantics against
 an embedded SQLite database (`crates/ciac-sim/tests/sqlite_ratchet.rs`,
 zero Docker), and cache TTL / broker fan-out remain delegated to the
-existing Docker-backed rows under `verify --system`. Three families
-have no such cheap real counterpart, and get the opposite treatment: an
-explicit statement of what the fake deliberately is not, rather than a
-parity claim it can't back up.
+existing Docker-backed rows under `verify --system`. Recorded again at
+M9, unchanged: Redis and NATS have no equivalent zero-Docker embedded
+mode the way SQLite does (unlike `rusqlite`, there is no in-process
+Redis/NATS library this repo could vendor without pulling in a
+container), so those two families' fake-vs-real drift stays caught only
+by `verify --system`'s existing compose-backed rows, not a second
+in-crate ratchet — a permanent-by-design boundary, not a gap M9 closed
+or was expected to. Three families have no such cheap real counterpart
+at all, and get the opposite treatment: an explicit statement of what
+the fake deliberately is not, rather than a parity claim it can't back
+up.
 
 - **Email.** `FakeEmail` records sent messages (`to`/`subject`/`body`)
   instead of talking SMTP. It never establishes a connection, never
@@ -513,6 +592,26 @@ rules up front (the same `{"at": {...}, "action": {...}}` shape
 Pillar 7's failure engine uses) so a checked-in scenario is fully
 self-describing — a runner reads what it needs from the document
 itself, never from out-of-band per-fixture Python glue.
+
+### Checked-in scenario reference
+
+Every `sim/*.ciac-sim.json` file, the example program it drives, and
+what it exercises — `scripts/sim-corpus-x5.sh` runs each of these
+against all five targets and asserts identical outcomes:
+
+| Scenario | Program | Exercises |
+| --- | --- | --- |
+| `vertical-slice.ciac-sim.json` | `sim-vertical-slice.ciac` | insert-only db effects inside `transaction {}`, a single broker publish, worker-retry failure injection at `db.commit` |
+| `virtual-week.ciac-sim.json` | `sim-vertical-slice.ciac` | the virtual clock advancing across a scheduler/cron boundary |
+| `relational-depth.ciac-sim.json` | `domain-orders.ciac` | reference existence, `Reference<T> { unique: true }`, cascade delete |
+| `atomic-batch.ciac-sim.json` | `domain-orders.ciac` | a mid-transaction `db.commit` failure rolling back the whole `transaction {}` block, then a clean retry |
+| `fanout.ciac-sim.json` | `sim-broker-slice.ciac` | true fan-out — two independent workers on one subject each seeing every message — and lost-ack redelivery |
+| `cache-ttl.ciac-sim.json` | `sim-peripherals.ciac` | `cache.set`/`get`/`delete` against the virtual clock, TTL expiry |
+| `auth-scopes.ciac-sim.json` | `sim-peripherals.ciac` | scope-gated routes: granted, denied, and no-scopes-at-all requests |
+| `http-fixtures.ciac-sim.json` | `sim-peripherals.ciac` | fixture-driven `http.call` responses, no real network |
+| `peripherals.ciac-sim.json` | `sim-peripherals.ciac` | object store put/get/delete/list, email send, search index/query |
+| `query-verbs.ciac-sim.json` | `query-verbs.ciac` | predicate-filtered `db.query`/`db.count`/`db.delete_where`, `db.update`, plain `db.delete` — closed at `27UpdatePlan.md` M9 |
+| `order-system.ciac-sim.json` | `order-system.ciac` | the arc's flagship: auth-scoped routes, `db.count` with a two-term conjunction (enum + float comparison), `db.update` paired with `cache.delete` invalidation — refused by every target through M8, green on all five as of M9 |
 
 ## MCP `verify_sim`
 

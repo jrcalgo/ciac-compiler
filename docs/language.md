@@ -26,7 +26,7 @@ live, machine-derived source of truth for current per-target support
 Two version numbers appear everywhere `ciac` reports itself
 (`ciac --version`, `ciac describe`, `ciac targets --json`, the
 generated manifest stamp): the **compiler** version
-(`CARGO_PKG_VERSION`, e.g. `0.24.0`) and the **language** version
+(`CARGO_PKG_VERSION`, e.g. `0.25.0`) and the **language** version
 (this document's own title, e.g. `1.0.0`). They move independently
 and on purpose — a compiler release can ship faster codegen, a new
 backend, or a bug fix without the language surface changing at all,

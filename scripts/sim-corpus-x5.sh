@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
-# 27UpdatePlan.md M5: the corpus-runs-×N-identical harness (the "×5
-# harness", executing ×2 today — Python and Rust, the only targets at
-# SimSupport::Full/gate-empty as of M4; TS/Go/Java join as M6-M8 land
-# their own restatements, Python's remaining verb-family closure is
-# M9's). Not a `cargo test` because it compiles a generated Rust
-# project per (program, target) pair (the same cargo-build cost every
-# manual M2-M4 live-verification pass already paid) — too slow for the
-# default workspace test suite, so it stays a standalone script,
-# matching this repo's existing pattern (`check-deny-ignores.sh`).
+# 27UpdatePlan.md M5-M9: the corpus-runs-×N-identical harness (the "×5
+# harness" -- ×2 at M4 (Python/Rust, the only targets at SimSupport::
+# Full/gate-empty then), growing to all five targets as TS/Go/Java
+# restated to full parity (M6-M8) and Python's own residual verb-family
+# gap (db.update/query/count/delete_where predicates) closed at M9.
+# "×5" names the target count, not repeated runs of one target --
+# every scenario below is asserted to produce the *same* outcome on
+# all five, per Pillar 4 ("structure may diverge; answers may not").
+# Not a `cargo test` because it compiles a generated Rust project per
+# (program, target) pair (the same cargo-build cost every manual M2-M9
+# live-verification pass already paid) -- too slow for the default
+# workspace test suite, so it stays a standalone script, matching this
+# repo's existing pattern (`check-deny-ignores.sh`).
 #
-# Usage: scripts/sim-corpus-x5.sh [--targets python,rust]
+# Usage: scripts/sim-corpus-x5.sh [--targets python,rust,typescript,go,java]
 #
 # Exits non-zero if any (program, scenario, target) combination fails.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TARGETS="${SIM_CORPUS_TARGETS:-python,rust}"
+TARGETS="${SIM_CORPUS_TARGETS:-python,rust,typescript,go,java}"
 if [[ "${1:-}" == "--targets" ]]; then
     TARGETS="$2"
 fi
@@ -30,11 +34,18 @@ CIAC="./target/debug/ciac"
 # (program, scenario...) pairs -- every corpus scenario paired with
 # the single example program it drives, per the scenario files' own
 # "service" fields (confirmed by direct inspection, not guessed).
+# `query-verbs.ciac`/`order-system.ciac` (the flagship refusal case
+# every M4-M8 Shipped note named, now closed at M9) joined the corpus
+# at M9 alongside Python's own `db.update`/predicate-query closure --
+# neither example was reachable by any target's simulator before this
+# milestone.
 declare -A PROGRAM_SCENARIOS=(
     [examples/sim-peripherals.ciac]="sim/cache-ttl.ciac-sim.json sim/auth-scopes.ciac-sim.json sim/http-fixtures.ciac-sim.json sim/peripherals.ciac-sim.json"
     [examples/sim-vertical-slice.ciac]="sim/vertical-slice.ciac-sim.json sim/virtual-week.ciac-sim.json"
     [examples/sim-broker-slice.ciac]="sim/fanout.ciac-sim.json"
     [examples/domain-orders.ciac]="sim/relational-depth.ciac-sim.json sim/atomic-batch.ciac-sim.json"
+    [examples/query-verbs.ciac]="sim/query-verbs.ciac-sim.json"
+    [examples/order-system.ciac]="sim/order-system.ciac-sim.json"
 )
 
 FAILED=0

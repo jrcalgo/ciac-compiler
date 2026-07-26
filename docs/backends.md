@@ -261,7 +261,7 @@ may appear in both tables.
 
 | Gap | Targets | Closes in |
 | --- | --- | --- |
-| Simulation depth: only `db.insert` + publish faked | none (all five closed) | `27UpdatePlan.md` — Rust CLOSED at M4, TypeScript CLOSED at M6, Go CLOSED at M7, Java CLOSED at M8 (gate-emptiness proven across the whole example corpus, live-verified against nine corpus scenarios each; proof recorded in each milestone's own Shipped note) |
+| Simulation depth: only `db.insert` + publish faked | none (all five closed) | `27UpdatePlan.md` — Rust CLOSED at M4, TypeScript CLOSED at M6, Go CLOSED at M7, Java CLOSED at M8, Python CLOSED at M9 (`db.update` + predicate-filtered `db.query`/`db.count`/`db.delete_where`, `_FakeSession`'s own last disclosed gap; gate-emptiness proven across the whole example corpus, live-verified against eleven corpus scenarios each including the flagship `order-system.ciac` — refused by every target through M8, green on all five with identical outcomes as of M9; proof recorded in each milestone's own Shipped note) |
 | Multi-service programs refused by `ciac sim` | all five | `28UpdatePlan.md` |
 | `transaction {}` non-atomic in production | Rust | `26UpdatePlan.md` M1–M2 — CLOSED, live rollback proof recorded in that milestone's own Shipped note |
 | `logging Structured` refused (`CIAC0011`) | Java | `26UpdatePlan.md` M3 — CLOSED, `LogShapeTest` proof recorded in that milestone's own Shipped note |
@@ -274,6 +274,15 @@ may appear in both tables.
 See the Divergence ledger above for which of this section's own gaps
 are permanent decisions and which are open, addressed debts — this
 section is the linked detail those tables index, not a restatement.
+**This section narrates the v0.17/23-25-era narrow-slice architecture
+as originally shipped and is not current-state documentation** — by
+the end of `27UpdatePlan.md` (M9), every target fakes every capability
+identically, closing the "Rust/TypeScript/Go/Java refuse a wider
+program" behavior described below. [simulation.md](simulation.md)'s
+own Status section is the current-truth surface; this narrative is
+kept for its historical account of how each target's simulation
+support was actually built; it is not rewritten every time the ledger
+row above closes further.
 
 `ciac sim`/`verify --sim` drive a generated project's real code through
 in-memory fakes instead of real provider containers — see

@@ -135,6 +135,16 @@ sim_codes! {
          runner has no plan/source-hash arguments and no transcript \
          format to replay against."
     ),
+    UnknownService = (
+        "SIM0011",
+        "scenario references an unknown service",
+        "28UpdatePlan.md M1: a scenario's own `request.service`, \
+         `given.db[].service`, or `expect.row.service` named a service \
+         the program's plan has no record of -- the message names the \
+         unknown value and lists every service the plan actually knows, \
+         checked once at `ciac sim` invocation, before any scenario \
+         step runs."
+    ),
 }
 
 impl std::fmt::Display for SimCode {

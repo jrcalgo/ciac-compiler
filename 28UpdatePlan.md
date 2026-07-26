@@ -814,6 +814,63 @@ push, in-place Shipped notes).
    accepts. docs/simulation.md's scenario-reference updates
    drafted alongside (docs move with schema, the standing rule).
 
+   **Shipped (v0.28 M1) — a course correction, not a straight
+   execution.** `SimPlan` (`crates/ciac-sim/src/plan.rs`) grew
+   `apis: Vec<SimApi>` and `call_edges: Vec<SimCallEdge>`, derived
+   from `ir.nodes_of_kind(NodeKind::Api)` and
+   `ir.edges().filter(|e| e.kind == EdgeKind::ServiceCall)` — both
+   already existed in the IR (`ciac-sema::build::wire_steps` wires
+   a `ServiceCall` edge for every `Call` step; no new IR modeling
+   was needed, only consuming what was already there), sorted by
+   stable key like every other `Sim*` collection so `plan_hash`
+   stays architecture-order-independent. **SIM0012 (routed-call
+   cycle) was reserved, implemented, then removed before
+   shipping.** Investigation before wiring it in found
+   `ciac-sema`'s existing `CycleDetection` pass
+   (`crates/ciac-sema/src/passes/cycles.rs`) already treats
+   `EdgeKind::ServiceCall` as a flow edge in its combined request-
+   flow/message/call/dependency cycle check, run on every `ciac
+   check`/`build`/`sim` invocation via `front_end` ->
+   `ciac_sema::analyze` — so a program with a call cycle already
+   fails compilation with `CyclicDependency` (`CIAC*`, not `SIM*`)
+   before a `SimPlan` can exist at all. A sim-layer
+   `check_acyclic()` (built, unit-tested, then deleted along with
+   the `CallCycle` type and the `SIM0012` registry entry) would
+   have been permanently unreachable dead code duplicating a check
+   that already runs earlier and is already mandatory — see
+   `docs/simulation.md`'s "Multi-service topology" section for the
+   disclosed reasoning. **SIM0011 shipped as designed.**
+   `Scenario::validate_against_plan` (`crates/ciac-sim/src/scenario.rs`)
+   checks every `request.service`, `given.db[].service`, and
+   `expect.row.service` against `SimPlan.services`; wired into
+   `sim_inner` (`crates/ciac/src/commands.rs`) as a preflight over
+   every `--scenario` file — parse, structural `validate()`, then
+   `validate_against_plan(&plan)` — right after `SimPlan::from_ir`,
+   before any target's driver runs. Live-verified against the real
+   CLI: the unmodified flagship (`order-system.ciac` + its own
+   scenario) still passes with the new preflight in place, and a
+   scenario with a deliberately wrong `request.service` fails with
+   `unknown service "NoSuchService" (known services: OrderSystem)
+   (SIM0011)` — before any project is built or driven, not after.
+   **A second finding, carried over from this same investigation:**
+   the scenario schema's `service` fields (`RequestStep.service`,
+   `GivenTableRows.service`, `ExpectStep::Row.service`) were
+   already required, non-optional fields with no
+   `#[serde(default)]` — not "optional and defaulted" as some
+   earlier prose described them — so this milestone's addition is
+   the *validation* against a real plan, not a schema change.
+   Namespacing/ordering/clock-tiebreak rules and the `given.db`
+   service qualifier are unchanged from Pillar 1/2's own design (no
+   correction needed there); the composition decision matrix and
+   process-shape rule (Pillar 3) are affirmed here as M1's
+   committed record, unchanged from their pre-registered form — M2
+   onward builds on them as drafted. 6 new unit tests added
+   (`ciac-sim`'s suite: 81 -> 87, all passing); full `cargo test
+   --workspace --no-fail-fast` clean except the same disclosed
+   pre-existing `ruff`-version-drift failure in `backfill_cli` (27
+   M9's own finding, reconfirmed unrelated to this milestone's
+   changes).
+
 2. **M2 — The world at system scope.** ciac-sim: (service,
    table) namespacing with the single-service degenerate case
    (27's corpus green untouched — the proof the degeneracy

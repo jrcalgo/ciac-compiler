@@ -613,6 +613,54 @@ against all five targets and asserts identical outcomes:
 | `query-verbs.ciac-sim.json` | `query-verbs.ciac` | predicate-filtered `db.query`/`db.count`/`db.delete_where`, `db.update`, plain `db.delete` — closed at `27UpdatePlan.md` M9 |
 | `order-system.ciac-sim.json` | `order-system.ciac` | the arc's flagship: auth-scoped routes, `db.count` with a two-term conjunction (enum + float comparison), `db.update` paired with `cache.delete` invalidation — refused by every target through M8, green on all five as of M9 |
 
+### Multi-service topology (28UpdatePlan.md M1)
+
+`SimPlan` (`ciac_sim::plan`) now derives two more facts from a
+program's IR alongside its tables/streams/jobs/workers: `apis` (every
+`api` node, keyed `api/<Name>`) and `call_edges` (every `call
+<Service>.<Api>` pipeline step, resolved to its caller's and callee's
+stable keys). These exist for M2's in-simulation call router, not for
+this milestone's own runners — M1 ships the *contract* two multi-
+service arcs 26–28 have carried since v0.17: service addressing.
+
+**Service addressing preflight.** Before dispatching to any target's
+driver, `ciac sim` now reads and structurally validates every
+`--scenario` file, then checks each `request.service`,
+`given.db[].service`, and `expect.row.service` value against the
+program's own `SimPlan.services`. An unresolvable name fails once, up
+front, with every known service name listed — **SIM0011** — instead of
+surfacing later as whatever error each target's own generated runner
+happens to raise for a lookup miss. This closes a gap open since v0.17:
+the scenario schema's `service` fields were always required (not
+optional/defaulted, despite some earlier prose describing them that
+way), but nothing checked them against a real plan before this
+milestone.
+
+**Call-cycle detection is not this crate's job.** The original design
+for this milestone reserved SIM0012 for a routed-call cycle refused at
+plan-derivation time. Investigation found `ciac-sema`'s own
+`CycleDetection` pass (`crates/ciac-sema/src/passes/cycles.rs`) already
+includes `EdgeKind::ServiceCall` in its combined request-flow/message/
+call/dependency cycle check, run on every `ciac check`/`build`/`sim`
+invocation — so a program with a call cycle already fails compilation
+with `CyclicDependency` (a `CIAC*` code) before a `SimPlan` can ever be
+built. A second, sim-layer cycle check over the same edges would be
+dead code duplicating a check that already runs earlier and is already
+mandatory. SIM0012 was dropped rather than shipped unreachable; if a
+future change ever lets an unvalidated `NormalizedIr` reach
+`SimPlan::from_ir` without going through `ciac-sema` first, that would
+be the moment to reconsider, not before.
+
+**Composition (M2+, not this milestone).** M1 only derives topology
+facts and validates addressing; it does not yet run more than one
+service in one simulation. Every `sim_drive_*` driver in
+`crates/ciac/src/commands.rs` still refuses a multi-service generated
+output (`find_project_dirs` returning more than one project directory)
+with the same plain refusal it always has — that refusal is M3
+(Python)/M6 (Rust)/M7 (TS, Go)/M8 (Java)'s job to lift, one target at a
+time, once the shared-world call router (M2) exists to route across
+the services a lifted refusal would actually let through.
+
 ## MCP `verify_sim`
 
 `verify_sim` calls the same internal function `verify --sim` does —

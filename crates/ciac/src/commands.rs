@@ -1247,6 +1247,31 @@ fn sim_inner(
     let plan = ciac_sim::SimPlan::from_ir(&ir, source_hash.clone());
     let plan_hash = plan.plan_hash();
 
+    // 28UpdatePlan.md M1: each target's own generated runner still
+    // parses and drives a `--scenario` file itself (Python/Rust/TS/Go/
+    // Java each read the JSON independently below) -- this is a single
+    // shared preflight *before* any of them run, so an unknown-service
+    // reference (SIM0011) fails the same way regardless of `--target`,
+    // rather than surfacing as whatever each runner's own lookup error
+    // happens to say.
+    for scenario_path in scenarios {
+        let text = std::fs::read_to_string(scenario_path)
+            .with_context(|| format!("cannot read scenario file {}", scenario_path.display()))?;
+        let scenario = ciac_sim::Scenario::parse(&text)
+            .with_context(|| format!("cannot parse scenario file {}", scenario_path.display()))?;
+        scenario
+            .validate()
+            .with_context(|| format!("scenario file {} is invalid", scenario_path.display()))?;
+        if let Err(err) = scenario.validate_against_plan(&plan) {
+            bail!(
+                "`ciac sim`: scenario {} {} ({})",
+                scenario_path.display(),
+                err,
+                ciac_sim::SimCode::UnknownService
+            );
+        }
+    }
+
     // v0.22 M1: `Narrow` runs a generated-runner drive (Rust's own,
     // v0.17 M11; TypeScript's, v0.23 M9); `Full` keeps the
     // bounded-child-protocol drive (today: Python's). Two `Narrow`

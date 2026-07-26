@@ -31,13 +31,14 @@ pub use codes::SimCode;
 pub use cron::{CronError, CronSchedule};
 pub use failure::{FailureAction, FailureEngine, FailurePhase, FailureRule, FailureSelector};
 pub use plan::{
-    SimCardinality, SimColumn, SimFieldType, SimJob, SimPlan, SimRefAction, SimService, SimStream,
-    SimTable, SimWorker, PLAN_VERSION,
+    SimApi, SimCallEdge, SimCardinality, SimColumn, SimFieldType, SimJob, SimPlan, SimRefAction,
+    SimService, SimStream, SimTable, SimWorker, PLAN_VERSION,
 };
 pub use replay::{Replay, ReplayError, REPLAY_VERSION};
 pub use scenario::{
     AdvanceStep, DrainStep, ExpectStep, Given, GivenHttpFixture, GivenHttpResponse, GivenTableRows,
-    Principal, PublishStep, RequestStep, Scenario, ScenarioError, ScenarioStep, SCENARIO_VERSION,
+    Principal, PublishStep, RequestStep, Scenario, ScenarioError, ScenarioPlanError, ScenarioStep,
+    SCENARIO_VERSION,
 };
 pub use schedule::{retry_eligible, Phase, ScheduleRequest, Scheduler, SchedulingKey};
 pub use world::{FakeDatabase, FakeQueue, SimWorld};

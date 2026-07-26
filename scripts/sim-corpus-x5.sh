@@ -68,6 +68,13 @@ for program in "${!PROGRAM_SCENARIOS[@]}"; do
         if [[ "$status" == "ERROR" ]]; then
             printf '%-32s %-12s %-40s %s\n' "$(basename "$program")" "$target" "(build/refusal)" "ERROR: $(echo "$result" | tail -1)"
         fi
+        # A generated Rust project's own `target/` dir (a full
+        # dependency tree per program×target combination) is multiple
+        # GB; deleting it immediately once this combination's result
+        # is captured is what keeps a full corpus run from exhausting
+        # disk mid-run (found live: an early run of this script hit
+        # exactly that on its last combination).
+        rm -rf "$out"
     done
 done
 

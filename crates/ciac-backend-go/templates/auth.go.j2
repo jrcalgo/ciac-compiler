@@ -24,8 +24,11 @@ import (
 {%- endif %}
 	"github.com/golang-jwt/jwt/v5"
 
+{%- if c.auth_scheme == "oauth2" %}
 	"{{ c.package }}/internal/config"
+{%- endif %}
 	"{{ c.package }}/internal/httpx"
+	"{{ c.package }}/internal/state"
 )
 
 // Claims is the verified token's own claim set -- an open bag of
@@ -57,12 +60,26 @@ func getJWKS(cfg config.Config) (keyfunc.Keyfunc, error) {
 
 // VerifyToken checks the request's `Authorization: Bearer <token>`
 // header and returns its verified claims.
-func VerifyToken(r *http.Request, cfg config.Config) (Claims, error) {
+//
+// 27UpdatePlan.md M7: under simulation (`st.World` set), verification
+// is a claims-lookup against `World.AuthVerify` -- not real JWT/JWKS
+// crypto, matching Python's own `FakeAuth` -- checked first, falling
+// through to the real JWT verification below when unset. Mirrors
+// Rust's/TypeScript's own auth seam exactly.
+func VerifyToken(r *http.Request, st *state.AppState) (Claims, error) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
 		return nil, httpx.Unauthorized()
 	}
 	tokenStr := strings.TrimPrefix(header, "Bearer ")
+	if st.World != nil {
+		var claims Claims
+		if err := st.World.AuthVerify(tokenStr, &claims); err != nil {
+			return nil, httpx.Unauthorized()
+		}
+		return claims, nil
+	}
+	cfg := st.Config
 	var claims Claims
 {%- if c.auth_scheme == "oauth2" %}
 	kf, err := getJWKS(cfg)

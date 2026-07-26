@@ -24,7 +24,7 @@ network/TLS behavior. `verify --system` against real provider
 containers remains the outer truth for those — simulation is the fast
 inner loop that runs before it, not a replacement for it.
 
-## Status: Python + Rust + TypeScript (full), Go/Java (narrow) (v0.17 M11, TypeScript v0.27 M6, Go v0.24 M9, Java v0.25 M9, Rust v0.27 M4)
+## Status: Python + Rust + TypeScript + Go (full), Java (narrow) (v0.17 M11, TypeScript v0.27 M6, Go v0.27 M7, Java v0.25 M9, Rust v0.27 M4)
 
 See [backends.md](backends.md)'s Divergence ledger — Open (tracked)
 table for this gap's classification and address ("Simulation depth:
@@ -35,7 +35,7 @@ detail, not a restatement of the ledger's entry.
 
 | Surface | Python | Rust | TypeScript | Go | Java |
 | --- | --- | --- | --- | --- | --- |
-| `ciac sim` | done, every capability faked | done as of `27UpdatePlan.md` M4 — every verb `SimWorld` fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M6 — every verb `world.ts`'s `SimWorld` class fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | narrow: only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else | same narrow slice as Go |
+| `ciac sim` | done, every capability faked | done as of `27UpdatePlan.md` M4 — every verb `SimWorld` fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M6 — every verb `world.ts`'s `SimWorld` class fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | done as of `27UpdatePlan.md` M7 — every verb `internal/world`'s `World` struct fakes (db/cache/object store/email/search/http/auth), gate-emptiness proven across the whole example corpus | narrow: only `db.insert` + broker publish/consume + cron jobs faked — refused with the specific reason for anything else |
 | `verify --sim` | done | same | same | same | same |
 | MCP `verify_sim` | done | same | same | same | same |
 
@@ -128,46 +128,88 @@ Rust's own M4 found and disclosed: `resource_store.ts.j2` never reads
 the same shared `ciac-codegen` `c.apis` builder both backends read
 from, so the finding transfers without needing to be re-proven.
 
-Go's own restatement (v0.24 M9) still occupies the same narrow slice
-TypeScript did before `27UpdatePlan.md` M6 closed it (Java's own is
-identical, M8's own work), via the same hand-written-restatement shape
-TypeScript's own original pass established (Go cannot `include_str!`
-Rust source either): `internal/world/world.go`'s `World` type (an
-in-package `failureEngine`/table map/queue slice, occupying the same
-position Python's/TypeScript's/Rust's own restatements do) fakes the
-identical `db.insert` + broker publish/consume pair, gated on the
-identical `db`/`queue` declaration check, refused with the identical
-per-verb/per-capability reasons `unsupported_sim_capabilities`
-computes over the same shared HIR scanner Rust's/TypeScript's own
-gates use. Go's own production code gives `transaction {}` **real**,
-unconditional atomicity (`database/sql`'s `*sql.Tx`, the same bar
-TypeScript's and Rust's own Postgres branches hold) and degrades to a
-guarded no-op only under simulation (unlike TypeScript's own M6
-closure, which replaced this exact degradation with an ambient batch
-mode — see that paragraph above), for the identical reason: every db
-verb this checkpoint's own gate allows inside a transaction is
-`db.insert`, already world-guarded per statement — `27UpdatePlan.md`
-M7 is Go's own turn to close this. One Go-specific wrinkle the other
-narrow target (Java) doesn't have: `cmd/sim_runner/main.go`'s worker-dispatch
-table cannot be a Go `switch` on the subject string (two workers
+Go's own restatement started at the same narrow slice TypeScript did
+before `27UpdatePlan.md` M6 closed it; `27UpdatePlan.md` M7 grew
+`internal/world/world.go`'s `World` struct — a from-scratch,
+self-contained port (Go cannot `include_str!` Rust source either, so
+this occupies the same position `sim/pyrunner/world.py`'s/`world.ts`'s
+own restatements do), single-mutex-guarded rather than lock-free the
+way Node's/Python's single-threaded runtime lets those restatements
+be, since a generated Go service's handlers can genuinely run on
+concurrent goroutines — into every remaining verb's own world-guard
+leaf in Go's `lower.rs`: `db.get`/`update`/`delete`/`query`/`count`/
+`delete_where` (a `LoweredPredicate`-to-Go-closure compiler,
+`world_predicate_expr`, evaluated against `world.Row` —
+`map[string]any` decoded from JSON — via `world.JSONEq`/`Contains`/
+`Lt`/`LtEq`/`Gt`/`GtEq` helpers rather than Rust's/TypeScript's own
+inline boolean expressions, since Go has no expression-position
+boolean-operator overloading to lean on), `cache.*`/`object_store.*`/
+`email.send`/`search.*`/`http.call` (each keyed by the capability
+instance's own declared name, matching `given.cache`/`given.store`/
+etc.'s own `instance` field — resolved via a `bindings`-lookup closure
+mirroring TypeScript's own `instance_of`), and `auth` (claims-lookup
+against `World.AuthVerify` in `auth.go.j2`'s `VerifyToken`, matching
+Python's/Rust's/TypeScript's own `FakeAuth`, not real JWT/JWKS
+crypto) — plus a schema-aware `relationalSchema` built from the same
+`ciac_codegen::migrations::snapshot_schema` the migration DDL itself
+reads (so cascade/restrict/unique checks under simulation can never
+drift from what production actually enforces). Go's own production
+code already gave `transaction {}` **real**, unconditional atomicity
+before this milestone (`database/sql`'s `*sql.Tx`, the same bar
+TypeScript's/Rust's own Postgres branches hold — `26UpdatePlan.md` M1's
+atomicity work reached Go for free, since `database/sql` gives every
+engine including SQLite the same `*sql.Tx` shape); under simulation,
+`World`'s own ambient batch mode (`BeginWorldBatch`/`CommitWorldBatch`/
+`RollbackWorldBatch`) now stands in for it, the identical design
+TypeScript's own M6 introduced for the identical structural reason
+(Go, like TypeScript, renders a handler body's statements once —
+`Orientation::Statement` — so there is no second, world-only render
+pass the way Rust's `Orientation::Expression` gives `transaction {}`
+to switch codegen-time between "call `World` directly" and "push onto
+an explicit `BatchOp` accumulator"): `defer st.World.
+RollbackWorldBatch()` immediately after `BeginWorldBatch` is a safe
+no-op once `CommitWorldBatch` has already run, the exact same
+"defer rollback, commit clears it" idiom the real-`*sql.Tx` branch
+already used (`sql.ErrTxDone`), not a hand-rolled scheme.
+`ciac_backend_go::unsupported_sim_capabilities` reflects all of this:
+it always returns empty now, proven by an in-crate test
+(`go_gate_is_empty_for_the_whole_corpus`) iterating the whole example
+corpus. The same structural note Rust's/TypeScript's own M4/M6
+disclosed applies here too: `ciac`'s own `SimSupport::Full` variant is
+hardcoded to Python's dynamic-import driver
+(`crates/ciac/src/commands.rs`), so Go's `TargetInfo` stays
+`SimSupport::Narrow` with an always-empty refusal list rather than
+switching enum variants. `crud <Name>: <Record>` resources remain
+outside this milestone's scope for the identical structural reason
+Rust's/TypeScript's own M4/M6 found and disclosed: `resource_store.
+go.j2` never reads `st.World`, but a scenario's `request` step can
+only address `c.apis`, which a `crud` resource's synthesized api node
+never has — the same shared `ciac-codegen` `c.apis` builder every
+backend reads from, so the finding transfers without needing to be
+re-proven. One Go-specific wrinkle worth naming: `cmd/sim_runner/
+main.go`'s worker-dispatch table for the orphan-subject detection
+sweep cannot be a Go `switch` on the subject string (two workers
 sharing one subject — `examples/sim-broker-slice.ciac`'s own shape —
 would be two `case` arms with the same constant value, a compile
 error, not merely dead code the way it would be in Rust's `match`
 guards or TypeScript's `if`/`else` chain), so it lowers to an
-`if`/`else`-chain with a `delivered` flag instead — the same
-first-worker-registered-wins semantics, expressed the one way Go's own
-`switch` uniqueness rule allows.
+`if`-chain with a `delivered` flag instead — the same
+already-drained-above semantics, expressed the one way Go's own
+`switch` uniqueness rule allows; found live via `go build` against
+`sim-broker-slice.ciac`'s own fanout scenario, not anticipated.
 
 Java's own restatement (v0.25 M9) still occupies the same narrow
-slice Go's own does, via the same hand-written-restatement shape
-TypeScript's own original pass established (Java cannot vendor
-`ciac-sim`'s Rust source either): `sim/World.java`'s `World` class (a nested `FailureEngine`/
-table map/queue list, occupying the same position Python's/
-TypeScript's/Go's own restatements do) fakes the identical `db.insert`
-+ broker publish/consume pair, gated on the identical `db`/`queue`
-declaration check, refused with the identical per-verb/per-capability
-reasons `unsupported_sim_capabilities` computes over the same shared
-HIR scanner Rust's/TypeScript's/Go's own gates use. Java's own
+slice Go's own did before `27UpdatePlan.md` M7 closed it (M8's own
+work), via the same hand-written-restatement shape TypeScript's own
+original pass established (Java cannot vendor `ciac-sim`'s Rust
+source either): `sim/World.java`'s `World` class (a nested
+`FailureEngine`/table map/queue list, occupying the same position
+Python's/TypeScript's/Go's own restatements do) fakes the identical
+`db.insert` + broker publish/consume pair, gated on the identical
+`db`/`queue` declaration check, refused with the identical
+per-verb/per-capability reasons `unsupported_sim_capabilities`
+computes over the same shared HIR scanner Rust's/TypeScript's/Go's own
+gates use. Java's own
 production code gives `transaction {}` **real**, unconditional
 atomicity too (`TransactionTemplate`, matching Go's/TypeScript's/
 Rust's own Postgres branches) and degrades to a guarded no-op

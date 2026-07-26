@@ -43,6 +43,9 @@ import (
 	"{{ c.package }}/internal/schemas"
 {%- endif %}
 	"{{ c.package }}/internal/state"
+{%- if handler.needs_world %}
+	"{{ c.package }}/internal/world"
+{%- endif %}
 )
 
 // {{ handler.class_name }} implements the `{{ handler.class_name }}` typed handler.

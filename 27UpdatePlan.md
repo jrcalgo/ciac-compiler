@@ -2022,6 +2022,170 @@ a commit + push; Shipped notes append in place per convention.
    compatibility shim (nothing external depends on a generated
    world's internals; the runner and guards regenerate with it).
 
+   **Shipped (v0.27 M7):** `world.go.j2` rewritten from the v0.24
+   M9 narrow ~220-line file (`db.insert` + publish only) to a
+   ~900-line self-contained port of `ciac-sim`'s full world —
+   one package-level `sync.Mutex` guards every mutable field (Go's
+   own idiom over Node's/Python's lock-free single-threaded
+   restatements, since a generated Go service's handlers can
+   genuinely run on concurrent goroutines), a `relationalSchema`-
+   aware `fakeDatabase` (get/update/delete/count/query with the
+   full `LoweredPredicate` operator set via new `world.JSONEq`/
+   `Contains`/`Lt`/`LtEq`/`Gt`/`GtEq` helpers, evaluated against
+   `world.Row` — `map[string]any` JSON-decoded documents, mirroring
+   TS's own `Row`), a `brokerLog` fan-out cursor log, a virtual
+   clock, and the same cache/object-store/email/search/http/auth
+   peripheral fakes Rust/TS closed at M4/M6. Every verb `lower.rs`'s
+   Go backend hadn't guarded gained a world leaf this milestone:
+   `db.get`/`update`/`delete`/`query`/`count`/`delete_where`,
+   `cache.get/set/delete`, `object_store.put/get/delete/list`,
+   `email.send`, `search.index/query`, `http.call`, and `auth`
+   (`VerifyToken` now takes `*state.AppState` and checks
+   `st.World.AuthVerify` before falling through to real JWT
+   verification). `unsupported_sim_capabilities` now always returns
+   an empty `Vec` on Go too; the new
+   `go_gate_is_empty_for_the_whole_corpus` test in
+   `sim_gate_emptiness.rs` proves it across the whole example
+   corpus.
+
+   **Atomicity: Go already had real production atomicity from
+   26UpdatePlan.md M1 (`database/sql`'s `*sql.Tx` gives every
+   engine, SQLite included, the same shape — a real simplification
+   over TS's three-way per-engine split); this milestone's own job
+   was closing the *simulation* side of that same `transaction {}`
+   leaf, since every db verb now routes through `World` when
+   `st.World != nil`.** Mirroring TS's own M6 ambient-batch-mode
+   design for the identical structural reason (Go, like TS, renders
+   a handler body's statements once — `Orientation::Statement` — so
+   there is no second, world-only render pass the way Rust's
+   `Orientation::Expression` gives `transaction {}` to switch
+   codegen-time between "call world directly" and "push onto a
+   `BatchOp` accumulator"): `World` gained `BeginWorldBatch`/
+   `CommitWorldBatch`/`RollbackWorldBatch`, and `transaction_stmt`'s
+   world branch calls `st.World.BeginWorldBatch()` then `defer
+   func() { st.World.RollbackWorldBatch() }()` — unconditionally,
+   with no `__committed` flag needed, because `RollbackWorldBatch`
+   after a successful `CommitWorldBatch` is a safe no-op (the
+   pending batch is already `nil`), the *exact* `defer rollback,
+   commit clears it` idiom the real-`*sql.Tx` branch already uses
+   (`sql.ErrTxDone`) — found by recognizing the parallel, not by
+   trial and error. Live-verified identical to Rust's/TS's own
+   atomicity guarantee via `sim/atomic-batch.ciac-sim.json` against
+   `domain-orders.ciac`.
+
+   **Three real bugs found and fixed via live proof against real
+   generated code, all caught by `go build`/`go vet` on generated
+   projects rather than by a runtime scenario failure — Go's own
+   compile-time strictness paying for itself the same way TS's
+   `tsc` did at M6:** (1) the three generated-project gates
+   (`state.go.j2`'s `AppState.World` field/import/`NewSimulation`)
+   were still `{%- if c.has_db or c.has_queue %}` — a program with
+   only cache/object_store/email/search/http/auth
+   (`sim-peripherals.ciac`, this arc's own M3 example) failed to
+   compile at all (`st.World undefined`), since `World` never
+   existed as a field; broadened to the full 8-condition check,
+   the identical fix Rust's/TS's own M4/M6 already made to their
+   own equivalent gates. (2) `auth.go.j2`'s `internal/config`
+   import, previously unconditional (the old `VerifyToken(r, cfg
+   config.Config)` signature spelled `config.Config` directly),
+   became genuinely unused on a non-OAuth2 (HS256/JWT) program once
+   `VerifyToken` took `*state.AppState` instead — `config.Config`
+   is now spelled only inside `getJWKS`, itself OAuth2-gated; fixed
+   by gating the import the same way. (3) `sim-broker-slice.ciac`'s
+   own fanout scenario (two independent workers on one subject)
+   failed to *compile*, not just to fail at runtime: the orphan-
+   subject detection sweep's original `switch msg.Subject { case
+   workers.XSubject: ... }` produced two `case` arms with the same
+   string constant when two workers share a subject — a genuine Go
+   compile error ("duplicate case"), not merely dead code the way
+   the identical shape would be in Rust's `match` guards or TS's
+   `if`/`else if` chain; fixed by lowering to a `delivered`-flag
+   `if`-chain instead (every worker's own `if` runs independently,
+   so a duplicate subject just sets `delivered = true` twice,
+   harmlessly) — a real, disclosed Go-specific divergence from
+   Rust's/TS's own dispatch shape, not a functional gap (the
+   worker-registration semantics — "already drained above, and
+   don't error" — stay identical).
+
+   **One literal-plan-text claim investigated and corrected rather
+   than applied as written, for the identical structural reason
+   M4's/M6's own Shipped notes already recorded:** "Go flips
+   `Narrow` → `Full`" does not happen. `commands.rs`'s `sim_inner`
+   dispatch still hardcodes `SimSupport::Full => sim_drive_python(..)`
+   — flipping Go's `TargetInfo::sim` enum variant would silently
+   misroute Go-generated projects through Python's driver. Go's
+   `TargetInfo` stays `SimSupport::Narrow` with an
+   `unsupported_sim_capabilities` that now always returns empty —
+   "full" in observed behavior, not in enum shape, matching Rust's/
+   TS's own M4/M6 precedent exactly; `docs/targets.json`'s Go
+   `sim.level` is correspondingly left at `"narrow"`, not flipped.
+   The crud-resource-unreachable finding M4/M6 recorded (a `crud
+   <Name>: <Record>` resource's synthesized api node never carries
+   a `Pipeline`, so `ciac sim`'s `request` step can never address
+   it) transfers to Go without re-proving, since every backend
+   builds `c.apis` from the same shared `ciac-codegen` construction.
+
+   **Live: full corpus green on Go, all nine scenarios, both
+   canonical anchors byte-exact — identical to Rust's/TypeScript's
+   own M4/M6 results.** `sim-peripherals.ciac` × `cache-ttl`/
+   `auth-scopes`/`http-fixtures`/`peripherals`; `sim-vertical-
+   slice.ciac` × `vertical-slice`/`virtual-week` (`{"ProcessOrder":
+   3}`/`{"Reconcile":1}` and `{"ProcessOrder":100}`/
+   `{"Reconcile":7}`, both raw `sim_runner` outcome lines re-
+   captured directly for this note via `go run ./cmd/sim_runner`:
+   `{"scenario":"v0.17-m5-vertical-slice","passed":true,"error":
+   null,"worker_attempts":{"ProcessOrder":3},"job_runs":
+   {"Reconcile":1}}` and `{"scenario":"v0.17-m5-virtual-week",
+   "passed":true,"error":null,"worker_attempts":
+   {"ProcessOrder":100},"job_runs":{"Reconcile":7}}`); `sim-broker-
+   slice.ciac` × `fanout` (Go's own `if`-chain-dispatch fix's own
+   proof, after the compile error above was fixed); `domain-
+   orders.ciac` × `relational-depth`/`atomic-batch` (schema-aware
+   cascade delete and the ambient-batch-mode rollback guarantee,
+   respectively). All nine `[PASS]` via `scripts/sim-corpus-x5.sh
+   --targets go`.
+
+   **Golden churn:** Go golden snapshots regenerated (`cargo insta
+   test --accept`), reviewed as additive-only — world-guard
+   branches, new dependency lines, and `sim_runner.go` growth;
+   pre-existing production (non-world) branches' own runtime
+   behavior (same SQL text, same computation) confirmed unchanged,
+   matching M4's/M6's own invariant discipline. (For these specific
+   verbs there is no historical "byte-identical" text to preserve,
+   since this is the first milestone any of them received a
+   simulation guard at all — the discipline that transfers is
+   production-behavior stability, not literal-text stability.)
+
+   **Full verification:** `cargo fmt --all --check` clean; `cargo
+   clippy --workspace --all-targets -- -D warnings` zero warnings;
+   `cargo test -p ciac-integration-tests --test sim_gate_emptiness`
+   green standalone (Rust, TypeScript, and the new Go case, three
+   for three); generated-project `go build ./...`/`go vet ./...`/
+   `gofmt -l .` clean across every corpus program reached by `ciac
+   sim --target go`. Live `ciac sim --target go` proof for all nine
+   corpus scenarios as above, independently re-run and re-captured
+   for this note rather than quoted from memory.
+
+   **M7 exit checklist — met:** `world.go.j2` self-contained per
+   Pillar 4's rules, mutex-guarded rather than lock-free (✓, the
+   Go-idiom adaptation the milestone bullet itself named); guard
+   leaves across Go `lower.rs` (✓, every verb `Needs::
+   unguarded_verbs` tracked); the corpus × Go (✓, all nine
+   `[PASS]`, both canonical anchors byte-exact); `FindWhere`/
+   `SeedDB`/`DrainQueue` generalized rather than duplicated (✓, all
+   three kept their v0.24 M9 names and signatures, extended with
+   `DrainBroker`/`DBGet`/`DBQuery`/`DBCount`/`DBUpdateChecked`/
+   `DBDeleteChecked`/`DBMatchingIDs`/the peripheral-fake methods
+   alongside them); no compatibility shim needed (✓, the restatement
+   replaced the narrow world outright — nothing external depended
+   on `world.go`'s own internals, confirmed by the fact only
+   `lower.rs`, `sim_runner.go.j2`, and `auth.go.j2`'s own call sites
+   needed updating); gate-emptiness test (✓, new
+   `go_gate_is_empty_for_the_whole_corpus`); "`Full` flip" (✗ as
+   literally written — see above; the behavioral equivalent is
+   recorded instead, disclosed rather than forced, identical to
+   M4's/M6's own precedent).
+
 8. **M8 — Java restatement.** Same shape (`World.java.j2` +
    `SimRunner.java.j2` growth, self-containment rule already
    proven there by the v0.25 mapper lesson); the corpus × Java.

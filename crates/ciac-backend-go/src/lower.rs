@@ -876,11 +876,19 @@ impl HostSyntax for GoSyntax<'_> {
                 let world_pred = self.world_predicate_expr(predicate);
                 // 27UpdatePlan.md M7: `{out_var}` hoisted above the
                 // world/production split (see `db_delete_tail`'s own
-                // doc on why) — assigned once via `World.DBQuery`'s
-                // own JSON round-trip in the world branch, via the
-                // existing `Scan` loop in the production branch.
+                // doc on why), but via `:=` with a literal empty-slice
+                // initializer, never a bare `var` -- a bare `var
+                // {out_var} []T` defaults to `nil`, which
+                // `typed_handler_equivalence.rs`'s own pre-existing
+                // `go_db_query_result_initializes_as_a_non_nil_empty_
+                // slice` test exists specifically to forbid (a nil
+                // slice marshals to JSON `null` instead of `[]`).
+                // `World.DBQuery`'s own `json.Unmarshal` into
+                // `&{out_var}` overwrites this initial value
+                // unconditionally, so pre-seeding it here is free, not
+                // wasted work.
                 let out_var = self.fresh("__out");
-                let mut out = vec![format!("{indent}var {out_var} []{record_name}")];
+                let mut out = vec![format!("{indent}{out_var} := []{record_name}{{}}")];
                 out.push(format!("{indent}if st.World != nil {{"));
                 let pred_var = self.fresh("__pred");
                 out.push(format!(
@@ -903,7 +911,6 @@ impl HostSyntax for GoSyntax<'_> {
                 out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
                 out.push(format!("{indent}\t}}"));
                 out.push(format!("{indent}\tdefer {rows}.Close()"));
-                out.push(format!("{indent}\t{out_var} = []{record_name}{{}}"));
                 out.push(format!("{indent}\tfor {rows}.Next() {{"));
                 let elem = self.fresh("__elem");
                 out.push(format!("{indent}\t\tvar {elem} {record_name}"));

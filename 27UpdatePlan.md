@@ -2073,11 +2073,31 @@ a commit + push; Shipped notes append in place per convention.
    atomicity guarantee via `sim/atomic-batch.ciac-sim.json` against
    `domain-orders.ciac`.
 
-   **Three real bugs found and fixed via live proof against real
-   generated code, all caught by `go build`/`go vet` on generated
-   projects rather than by a runtime scenario failure — Go's own
-   compile-time strictness paying for itself the same way TS's
-   `tsc` did at M6:** (1) the three generated-project gates
+   **Four real bugs found and fixed via live proof against real
+   generated code, all caught by `go build`/`go vet`/the existing
+   test suite on generated projects rather than by a runtime
+   scenario failure — Go's own compile-time strictness (and one
+   pre-existing regression test) paying for itself the same way
+   TS's `tsc` did at M6:** (0) the `DbQuery` world/production hoist
+   initially declared its shared result variable via a bare `var
+   __out0 []schemas.Note` (mirroring `db_delete_tail`'s own `var
+   __out bool` pattern) — caught not by a new test but by an
+   *existing* one, `typed_handler_equivalence.rs`'s pre-existing
+   `go_db_query_result_initializes_as_a_non_nil_empty_slice`
+   (written well before this milestone specifically to forbid this
+   exact pattern: a bare `var` slice defaults to `nil`, and a `nil`
+   slice marshals to JSON `null` instead of `[]`, a real production
+   bug class for any list-returning API). Fixed by initializing via
+   `:=` with a literal `[]schemas.Note{}` instead of a bare `var` —
+   harmless even though `World.DBQuery`'s own `json.Unmarshal`
+   overwrites it unconditionally in the world branch, and correct
+   already in the production branch, which no longer needs its own
+   separate re-initialization line. `DbCount`/`DbDeleteWhere`/
+   `db_delete_tail`'s own `var` hoists needed no equivalent fix:
+   `int64`'s and `bool`'s zero values (`0`/`false`) are legitimate,
+   correctly-marshaled JSON values, not a nil-vs-null ambiguity —
+   only slices (and, not yet exercised, pointers/maps) carry this
+   risk. (1) the three generated-project gates
    (`state.go.j2`'s `AppState.World` field/import/`NewSimulation`)
    were still `{%- if c.has_db or c.has_queue %}` — a program with
    only cache/object_store/email/search/http/auth

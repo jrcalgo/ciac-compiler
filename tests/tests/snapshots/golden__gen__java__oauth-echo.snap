@@ -1,6 +1,5 @@
 ---
 source: tests/tests/golden.rs
-assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -702,6 +701,11 @@ pom.xml
     <java.version>21</java.version>
     <maven.compiler.release>21</maven.compiler.release>
     <spotless.version>2.43.0</spotless.version>
+    <!-- Not managed by spring-boot-dependencies' own BOM, so pinned
+         explicitly here (SimRunner's own `test-compile exec:java`
+         driver, 25UpdatePlan.md M9, gate broadened to the full
+         8-condition check at 27UpdatePlan.md M8). -->
+    <exec-maven-plugin.version>3.4.1</exec-maven-plugin.version>
   </properties>
 
   <dependencies>
@@ -753,6 +757,28 @@ pom.xml
             </goals>
           </execution>
         </executions>
+      </plugin>
+      <!-- Drives `SimRunner` (25UpdatePlan.md M9, broadened to the
+           full 8-condition check at 27UpdatePlan.md M8, matching
+           `World.java`'s/`SimRunner.java`'s own emission gate in
+           `lib.rs`): a test-scoped
+           `main`, not the packaged application, since `MockMvc`/
+           `spring-test` only ever sit on the `test` classpath.
+           Running it via `test-compile exec:java` (build once, then
+           one `exec:java` invocation per scenario) mirrors every
+           other target's own "compile once, run the driver once per
+           scenario" shape (Go's `go build` then `go run`; Rust's
+           `cargo build` then a scoped `cargo run`; TypeScript's
+           `npm run build` then `node dist/sim_runner.js`) without
+           packaging a second artifact of its own. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>${exec-maven-plugin.version}</version>
+        <configuration>
+          <mainClass>com.ciac.oauthecho.sim.SimRunner</mainClass>
+          <classpathScope>test</classpathScope>
+        </configuration>
       </plugin>
     </plugins>
   </build>
@@ -824,10 +850,22 @@ src/main/java/com/ciac/oauthecho/routes/Auth.java
 // (Spring's own resource-server starter) does the actual signature/
 // issuer/audience verification; this class only extracts the bearer
 // token and checks the verified claims' scope.
+//
+// World-guarded (27UpdatePlan.md M8): under simulation, the real
+// `JwtDecoder` is never called at all -- its own `@Lazy` construction
+// never dials the issuer/JWKS endpoint, but `decode(token)` itself
+// would, and a `SimRunner`-synthesized token (`World.authIssue`) is
+// never really signed anyway. `World.authVerify`'s claims-lookup
+// (Python's own FakeAuth: claims-lookup, not real JWT/JWKS crypto)
+// feeds a real Spring Security `Jwt` instance built directly via its
+// own builder, so `requireScope`'s own `getClaimAsString`/
+// `getClaimAsStringList` calls work identically regardless of path.
 package com.ciac.oauthecho.routes;
 
+import com.ciac.oauthecho.sim.World;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
+import java.util.Map;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
@@ -835,12 +873,23 @@ import org.springframework.security.oauth2.jwt.JwtException;
 public final class Auth {
   private Auth() {}
 
-  public static Jwt verifyToken(HttpServletRequest request, JwtDecoder decoder) {
+  public static Jwt verifyToken(HttpServletRequest request, JwtDecoder decoder, World world) {
     String header = request.getHeader("Authorization");
     if (header == null || !header.startsWith("Bearer ")) {
       throw new UnauthorizedException("missing bearer token");
     }
     String token = header.substring("Bearer ".length());
+    if (world != null) {
+      try {
+        Map<String, Object> claims = world.authVerify(token);
+        return Jwt.withTokenValue(token)
+            .header("alg", "none")
+            .claims(c -> c.putAll(claims))
+            .build();
+      } catch (RuntimeException e) {
+        throw new UnauthorizedException("invalid or expired token");
+      }
+    }
     try {
       return decoder.decode(token);
     } catch (JwtException e) {
@@ -890,9 +939,11 @@ src/main/java/com/ciac/oauthecho/routes/EchoController.java
 package com.ciac.oauthecho.routes;
 
 import com.ciac.oauthecho.schemas.Message;
+import com.ciac.oauthecho.sim.World;
 import com.ciac.oauthecho.state.AppState;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -903,16 +954,30 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class EchoController {
   private final AppState state;
+  // Real in production; `null` under simulation (SimRunner never
+  // registers `SecurityConfig`'s own `JwtDecoder` bean at all --
+  // `Auth.verifyToken`'s own `world != null` branch never reaches
+  // it, so an `ObjectProvider` here, not a hard constructor
+  // dependency, is what keeps this controller constructible at all
+  // (27UpdatePlan.md M8).
   private final JwtDecoder jwtDecoder;
+  // `null` in production; a simulation-run `World` when SimRunner
+  // manually registers one -- see `Auth.verifyToken`'s own
+  // `if (world != null)` branch (27UpdatePlan.md M8).
+  private final World world;
 
-  public EchoController(AppState state, JwtDecoder jwtDecoder) {
+  public EchoController(
+      AppState state,
+      ObjectProvider<JwtDecoder> jwtDecoderProvider,
+      ObjectProvider<World> worldProvider) {
     this.state = state;
-    this.jwtDecoder = jwtDecoder;
+    this.jwtDecoder = jwtDecoderProvider.getIfAvailable();
+    this.world = worldProvider.getIfAvailable();
   }
 
   @RequestMapping(method = RequestMethod.POST, path = "/echo")
   public Envelope echo(HttpServletRequest request, @RequestBody JsonNode body) throws Exception {
-    Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+    Jwt jwt = Auth.verifyToken(request, jwtDecoder, world);
     Auth.requireScope(jwt, "echo:write");
     Object result = Message.decode(body);
 
@@ -1144,6 +1209,1074 @@ public final class Schemas {
       return MAPPER.readTree(s);
     } catch (Exception e) {
       throw new RuntimeException("parsing JSON", e);
+    }
+  }
+}
+============================================================
+src/main/java/com/ciac/oauthecho/sim/World.java
+============================================================
+// World.java -- Generated by CIaC (sim builds only).
+//
+// 27UpdatePlan.md M8: a full Java restatement of ciac-sim's simulation
+// world (crates/ciac-sim/src/world.rs) -- Java cannot vendor the Rust
+// crate's source the way the Rust backend does via include_str!, so
+// this is a from-scratch, self-contained port (Pillar 4's rule: a
+// world template may depend on its language's standard library and
+// the target's already-present runtime deps, and nothing else),
+// following the same closure TypeScript's own M6 and Go's own M7
+// restatements reached. Every public method is `synchronized` (the
+// same choice the v0.25 M9 narrow version already made): a generated
+// Java service's handlers can run on concurrent Servlet container
+// threads, unlike Node's/Python's single-threaded runtimes.
+//
+// v0.25 M9's narrow scope (only db.insert and broker publish) is
+// retired here: schema-aware relational writes (reference/unique/
+// cascade checking), a group-aware broker log, a virtual clock, and
+// the db/auth peripheral fakes are ported, matching Python's/Rust's/
+// TypeScript's/Go's own coverage. cache/object_store/email/search/
+// external_http instead embed their own world-awareness directly in
+// their own wrapper classes (StringRedisTemplate.java.j2's own
+// `cache.*` leaves being the one exception -- see lower.rs's own
+// doc) -- a Java-specific structural choice (Pillar 4: "structure may
+// diverge; answers may not"), not a narrower fake: `ObjectStore`/
+// `Email`/`Search`/`ExternalHttp` each hold their own
+// `ObjectProvider<World>` (mirroring `Queue.java`'s own pre-existing
+// `publishChecked` pattern, v0.25 M9) and delegate to this same
+// `World` instance's own object/email/search/http methods when set,
+// so `SimRunner`'s own `expect.*` checks still have exactly one
+// source of truth to query. Generated by CIaC for any program with
+// something this world can fake (`db`, `queue`, `cache`,
+// `object_store`, `email`, `search`, `external_http`, or `auth`),
+// mirroring the Rust/TypeScript/Go backends' own `world` emission
+// gate.
+package com.ciac.oauthecho.sim;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Predicate;
+
+public final class World {
+  // Own mapper, not `Schemas.MAPPER` -- `World.java` is emitted
+  // whenever any capability this world can fake is declared, but
+  // `Schemas.java` only when the program declares at least one
+  // record/resource; a program with only classic (untyped) handlers
+  // and no `table`/`crud`/`record` declaration at all (e.g.
+  // `event-pipeline.ciac`) has no `Schemas` class to import, found
+  // live the moment this backend's own full-example sweep reached
+  // it. Configured identically to `Schemas.MAPPER` regardless
+  // (`SNAKE_CASE`, so a stored row's map keys agree with a
+  // scenario's own `expect.row.where` filter keys, both parsed
+  // through a `SNAKE_CASE` mapper) -- two independently-declared
+  // mappers are fine as long as neither drifts from the other.
+  private static final ObjectMapper MAPPER =
+      new ObjectMapper()
+          .registerModule(new JavaTimeModule())
+          .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+
+  /**
+   * The `error`-action-only, occurrence-counted subset of ciac_sim::failure's full vocabulary this
+   * restatement implements -- the same disclosed scope Rust's/TS's/Go's own restatements hold to
+   * (this checkpoint's scenarios need nothing more).
+   */
+  public record FailureRule(String effect, String subject, int occurrence) {}
+
+  /** One publish, in arrival order. */
+  public record QueuedMessage(String subject, byte[] payload) {}
+
+  /** `on_delete`'s two shapes -- the Java counterpart to `ciac_sim::world::WorldRefAction`. */
+  public enum RefAction {
+    RESTRICT,
+    CASCADE
+  }
+
+  /**
+   * One outgoing reference field, as a schema-aware store needs it -- the Java counterpart to
+   * `ciac_sim::world::WorldReference`.
+   */
+  public record WorldReference(
+      String fieldName, String targetTable, RefAction onDelete, boolean unique) {}
+
+  /**
+   * One table's worth of schema facts a schema-aware store needs -- just its own outgoing
+   * references.
+   */
+  public record WorldTable(String name, List<WorldReference> references) {}
+
+  /**
+   * One configured fixture response -- either an injected failure (`error` set) or a real
+   * status/json response, matching the scenario JSON's own `{"error": ..}` vs. `{"status": ..,
+   * "json": ..}` shape (the Java counterpart to TypeScript's/Go's own `GivenHttpResponse`).
+   */
+  public record GivenHttpResponse(String error, Integer status, JsonNode json) {}
+
+  private final Map<String, List<Map<String, Object>>> tables = new HashMap<>();
+  private final RelationalSchema schema;
+  private final List<QueuedMessage> queue = new ArrayList<>();
+  private final BrokerLog broker = new BrokerLog();
+  private final FailureEngine failures;
+  private long nowMsValue = 0;
+
+  private final Map<String, FakeCache> caches = new HashMap<>();
+  private final Map<String, List<byte[]>> objectStoreOrder = new HashMap<>();
+  private final Map<String, Map<String, byte[]>> objectStores = new HashMap<>();
+  private final Map<String, List<SentEmail>> emails = new HashMap<>();
+  private final Map<String, FakeSearch> searches = new HashMap<>();
+  private final Map<String, FakeHttpClient> httpClients = new HashMap<>();
+  private final FakeAuth auth = new FakeAuth();
+
+  /**
+   * 27UpdatePlan.md M8: the `transaction {}` leaf's own atomicity seam, the same ambient-batch-mode
+   * design TypeScript's/Go's own M6/M7 restatements introduced for the identical structural reason:
+   * this world's own db verbs are checked one statement at a time (mirroring Rust's/TS's/Go's own
+   * db_insert_checked/ dbInsertChecked/DBInsertChecked), and production's own `TransactionTemplate`
+   * (real, unconditional atomicity already -- see `lower.rs`'s `transaction_stmt` doc) has no
+   * equivalent concept to switch into under simulation. While `pendingBatch` is non-null,
+   * `dbInsertChecked`/`dbUpdateChecked`/ `dbDeleteChecked` queue an op instead of validating and
+   * applying immediately; `commitWorldBatch` validates and applies the whole queue atomically via
+   * `commitBatchChecked`.
+   */
+  private List<BatchOp> pendingBatch;
+
+  public World(List<FailureRule> failureRules) {
+    this(failureRules, List.of());
+  }
+
+  public World(List<FailureRule> failureRules, List<WorldTable> tables) {
+    this.failures = new FailureEngine(failureRules);
+    this.schema = new RelationalSchema(tables);
+  }
+
+  // -- Predicate-comparison helpers for `db.query`/`db.count`/
+  // `db.delete_where`'s own world-guard leaf
+  // (`lower.rs`'s `world_predicate_term_expr`) -- the Java
+  // counterpart to Go's own `JSONEq`/`Contains`/`Lt`/`LtEq`/`Gt`/
+  // `GtEq` free functions. A raw stored row's value and a typed
+  // production value can carry different boxed numeric types for
+  // what is semantically the same value (Jackson's own untyped
+  // `Map<String, Object>` deserialization prefers `Integer` where a
+  // production `long` field autoboxes to `Long`), so `Eq`/`NotEq`
+  // compare through each side's own JSON text rather than
+  // `Objects.equals` directly, exactly like Go's own `JSONEq`
+  // sidesteps `int64` vs `float64`. `Lt`/`LtEq`/`Gt`/`GtEq` compare
+  // numerically via `Number.doubleValue()` when both sides are
+  // numbers, else lexically via `String.valueOf(..).compareTo(..)` --
+  // this checkpoint's own corpus only ever orders a numeric field
+  // (`domain-orders.ciac`'s own `total >= filter.min_total`), so a
+  // `Timestamp` field's own epoch-vs-ISO-text representation gap
+  // (disclosed, not fixed: `db.insert`'s stored row holds a JSON-
+  // numeric epoch value via Jackson's default `Instant`
+  // serialization, while a rendered comparison value is a real
+  // `java.time.Instant` object) is a known, narrow corner this
+  // milestone's scope does not reach. --
+
+  /**
+   * `Eq`/`NotEq`: JSON-text equality, not `Objects.equals` -- see this section's own doc for why.
+   */
+  public static boolean jsonEq(Object a, Object b) {
+    try {
+      return Objects.equals(MAPPER.writeValueAsString(a), MAPPER.writeValueAsString(b));
+    } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+      throw new RuntimeException("comparing predicate values", e);
+    }
+  }
+
+  /**
+   * `Contains` (the `PredOp::Contains` -> SQL `LIKE` counterpart): a plain case-sensitive substring
+   * check over both sides' `String.valueOf`.
+   */
+  public static boolean contains(Object haystack, Object needle) {
+    return String.valueOf(haystack).contains(String.valueOf(needle));
+  }
+
+  private static int compare(Object a, Object b) {
+    if (a instanceof Number na && b instanceof Number nb) {
+      return Double.compare(na.doubleValue(), nb.doubleValue());
+    }
+    return String.valueOf(a).compareTo(String.valueOf(b));
+  }
+
+  public static boolean lt(Object a, Object b) {
+    return compare(a, b) < 0;
+  }
+
+  public static boolean ltEq(Object a, Object b) {
+    return compare(a, b) <= 0;
+  }
+
+  public static boolean gt(Object a, Object b) {
+    return compare(a, b) > 0;
+  }
+
+  public static boolean gtEq(Object a, Object b) {
+    return compare(a, b) >= 0;
+  }
+
+  private static String rowId(Map<String, Object> row) {
+    Object id = row.get("id");
+    return id instanceof String s ? s : null;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> toRow(Object value) {
+    return MAPPER.convertValue(value, Map.class);
+  }
+
+  // -- Relational schema: schema-aware reference/uniqueness/cascade
+  // checking, the Java counterpart to ciac_sim::world::
+  // RelationalSchema. --
+
+  private record IncomingRef(String table, WorldReference reference) {}
+
+  private static final class RelationalSchema {
+    private final Map<String, List<WorldReference>> outgoing = new HashMap<>();
+
+    RelationalSchema(List<WorldTable> tables) {
+      for (WorldTable t : tables) {
+        outgoing.put(t.name(), t.references());
+      }
+    }
+
+    List<WorldReference> outgoingOf(String table) {
+      return outgoing.getOrDefault(table, List.of());
+    }
+
+    /** Every `[referencingTable, reference]` whose reference targets `targetTable`. */
+    List<IncomingRef> incomingOf(String targetTable) {
+      List<IncomingRef> out = new ArrayList<>();
+      for (Map.Entry<String, List<WorldReference>> e : outgoing.entrySet()) {
+        for (WorldReference ref : e.getValue()) {
+          if (Objects.equals(ref.targetTable(), targetTable)) {
+            out.add(new IncomingRef(e.getKey(), ref));
+          }
+        }
+      }
+      return out;
+    }
+  }
+
+  /**
+   * A prospective write's reference/uniqueness check against `overlay` (the live store, or a
+   * batch's in-progress scratch copy) rather than the real store directly, so a multi-op batch sees
+   * its own earlier ops' effects. `selfPk` is the row's own `id` for an update (excluded from both
+   * the primary-key collision check and the unique-reference check), `null` for an insert. Throws
+   * on the first violation found -- the Java counterpart to `SimWorld::validate_write`.
+   */
+  private void validateWrite(
+      Map<String, List<Map<String, Object>>> overlay,
+      String table,
+      Map<String, Object> row,
+      String selfPk) {
+    if (selfPk == null) {
+      Object pk = row.get("id");
+      if (pk != null) {
+        boolean collides =
+            overlay.getOrDefault(table, List.of()).stream()
+                .anyMatch(r -> Objects.equals(rowId(r), pk));
+        if (collides) {
+          throw new RuntimeException(table + ".id = \"" + pk + "\" is not unique");
+        }
+      }
+    }
+    for (WorldReference field : schema.outgoingOf(table)) {
+      Object targetIdObj = row.get(field.fieldName());
+      if (!(targetIdObj instanceof String targetId) || field.targetTable() == null) {
+        continue;
+      }
+      String targetTable = field.targetTable();
+      boolean targetExists =
+          overlay.getOrDefault(targetTable, List.of()).stream()
+              .anyMatch(r -> Objects.equals(rowId(r), targetId));
+      if (!targetExists) {
+        throw new RuntimeException(
+            table
+                + "."
+                + field.fieldName()
+                + " references "
+                + targetTable
+                + "/"
+                + targetId
+                + ", which does not exist");
+      }
+      if (field.unique()) {
+        boolean conflict =
+            overlay.getOrDefault(table, List.of()).stream()
+                .anyMatch(
+                    r ->
+                        Objects.equals(r.get(field.fieldName()), targetId)
+                            && !Objects.equals(rowId(r), selfPk));
+        if (conflict) {
+          throw new RuntimeException(
+              table + "." + field.fieldName() + " = \"" + targetId + "\" is not unique");
+        }
+      }
+    }
+  }
+
+  private record DeletePlanStep(String table, String pk) {}
+
+  /**
+   * Every `[referencingTable, pk]` a delete of `table`/`pk` would cascade into, recursively --
+   * throws if a `restrict` reference blocks it. Read-only against `overlay`; the caller applies the
+   * result. The Java counterpart to `SimWorld::plan_delete`.
+   */
+  private List<DeletePlanStep> planDelete(
+      Map<String, List<Map<String, Object>>> overlay, String table, String pk) {
+    List<DeletePlanStep> planned = new ArrayList<>();
+    for (IncomingRef in : schema.incomingOf(table)) {
+      List<String> dependents = new ArrayList<>();
+      for (Map<String, Object> row : overlay.getOrDefault(in.table(), List.of())) {
+        if (Objects.equals(row.get(in.reference().fieldName()), pk)) {
+          String id = rowId(row);
+          if (id != null) {
+            dependents.add(id);
+          }
+        }
+      }
+      if (dependents.isEmpty()) {
+        continue;
+      }
+      if (in.reference().onDelete() == RefAction.RESTRICT) {
+        throw new RuntimeException(
+            "cannot delete "
+                + table
+                + "/"
+                + pk
+                + ": restricted by "
+                + in.table()
+                + "."
+                + in.reference().fieldName());
+      }
+      for (String depPk : dependents) {
+        planned.add(new DeletePlanStep(in.table(), depPk));
+        planned.addAll(planDelete(overlay, in.table(), depPk));
+      }
+    }
+    return planned;
+  }
+
+  private static Map<String, List<Map<String, Object>>> snapshot(
+      Map<String, List<Map<String, Object>>> tables) {
+    Map<String, List<Map<String, Object>>> out = new HashMap<>();
+    for (Map.Entry<String, List<Map<String, Object>>> e : tables.entrySet()) {
+      out.put(e.getKey(), new ArrayList<>(e.getValue()));
+    }
+    return out;
+  }
+
+  /**
+   * One operation in an atomic `commitBatchChecked` call -- the transaction leaf's own accumulation
+   * shape. Deliberately does not auto-expand cascades on delete -- that is `dbDeleteChecked`'s own
+   * job as a single, immediate, plan-then-apply call.
+   */
+  private record BatchOp(String kind, String table, String pk, Map<String, Object> row) {}
+
+  /**
+   * db.commit's failure check, schema-aware reference/uniqueness validation, then the actual (fake)
+   * write -- mirroring Python's `_FakeSession.commit()`. row is converted internally (Jackson's
+   * `convertValue`) rather than requiring every call site to build its own map.
+   */
+  public synchronized void dbInsertChecked(String table, Object row) {
+    Map<String, Object> r = toRow(row);
+    if (pendingBatch != null) {
+      pendingBatch.add(new BatchOp("insert", table, null, r));
+      return;
+    }
+    if (failures.shouldFail("db.commit", table)) {
+      throw new RuntimeException("simulated db.commit failure (injected by FailureEngine)");
+    }
+    var overlay = snapshot(tables);
+    validateWrite(overlay, table, r, null);
+    tables.computeIfAbsent(table, k -> new ArrayList<>()).add(r);
+  }
+
+  /**
+   * Inserts row into table with no failure check -- a scenario's `given.db` seeding, not a
+   * simulated db.insert call.
+   */
+  public synchronized void seedDb(String table, Map<String, Object> row) {
+    tables.computeIfAbsent(table, k -> new ArrayList<>()).add(row);
+  }
+
+  /**
+   * Returns table's rows matching every key/value pair in filter (an empty filter matches every
+   * row) -- SimRunner's own expect.row check, not something generated handler code calls.
+   */
+  public synchronized List<Map<String, Object>> findWhere(
+      String table, Map<String, Object> filter) {
+    List<Map<String, Object>> out = new ArrayList<>();
+    for (Map<String, Object> row : tables.getOrDefault(table, List.of())) {
+      boolean matches = true;
+      for (Map.Entry<String, Object> e : filter.entrySet()) {
+        // `jsonEq`, not `Objects.equals` -- found live
+        // (27UpdatePlan.md M8's own fanout scenario):
+        // `Schemas.MAPPER.convertValue`'s row storage
+        // preserves a numeric field's original writer-side
+        // `NumberType` through `TokenBuffer` (a stored `long`
+        // field round-trips as `Long`), while a scenario
+        // JSON's own `where` filter -- parsed straight off the
+        // wire with no static field type to preserve -- always
+        // decodes a small integer literal as `Integer`
+        // (Jackson's own `UntypedObjectDeserializer` default).
+        // `Long.equals(Integer)` is `false` even for equal
+        // values, so a raw `Objects.equals` here silently
+        // failed every `expect.row.where` filter on an integer
+        // field -- the same `Integer`-vs-`Long`/`int64`-vs-
+        // `float64` gap Go's own `JSONEq` (`World.jsonEq`
+        // mirrors it exactly, added for `db.query`'s own
+        // world-guard predicate) already exists to sidestep.
+        if (!jsonEq(row.get(e.getKey()), e.getValue())) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) {
+        out.add(row);
+      }
+    }
+    return out;
+  }
+
+  /** By-`id` lookup -- `null` if no row has that key, matching production `db.get`'s own shape. */
+  public synchronized Map<String, Object> dbGet(String table, String pk) {
+    for (Map<String, Object> row : tables.getOrDefault(table, List.of())) {
+      if (Objects.equals(rowId(row), pk)) {
+        return row;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Every row in table for which pred returns true (a `null` pred matches every row) -- the
+   * world-guarded counterpart to a real `SELECT ... WHERE ...`.
+   */
+  public synchronized List<Map<String, Object>> dbQuery(
+      String table, Predicate<Map<String, Object>> pred) {
+    List<Map<String, Object>> out = new ArrayList<>();
+    for (Map<String, Object> row : tables.getOrDefault(table, List.of())) {
+      if (pred == null || pred.test(row)) {
+        out.add(row);
+      }
+    }
+    return out;
+  }
+
+  /** `dbQuery`'s own row count, without building the intermediate list. */
+  public synchronized long dbCount(String table, Predicate<Map<String, Object>> pred) {
+    return dbQuery(table, pred).size();
+  }
+
+  /**
+   * The `id` field of every row in `table` for which `pred` returns `true` -- `db.delete_where`'s
+   * own world branch resolves matching rows this way before deleting each individually through
+   * `dbDeleteChecked` (real cascade/restrict handling, real failure-injection), a disclosed
+   * divergence from production's single bulk `DELETE`, mirroring Rust's/TypeScript's/Go's own
+   * `query_tail` world branch exactly.
+   */
+  public synchronized List<String> dbMatchingIds(
+      String table, Predicate<Map<String, Object>> pred) {
+    List<String> out = new ArrayList<>();
+    for (Map<String, Object> row : dbQuery(table, pred)) {
+      String id = rowId(row);
+      if (id != null) {
+        out.add(id);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Full-record replace by `id`, matching production `db.update`'s own shape -- `null` if no row
+   * with that `id` exists, exactly like production's "0 rows affected" case, not an error.
+   */
+  public synchronized Map<String, Object> dbUpdateChecked(
+      String table, String pk, Map<String, Object> record) {
+    if (pendingBatch != null) {
+      pendingBatch.add(new BatchOp("update", table, pk, record));
+      // Optimistic, matching Rust's/TypeScript's/Go's own
+      // batching branch: the actual "did a row with this id
+      // exist" outcome isn't known until the batch commits.
+      return record;
+    }
+    if (failures.shouldFail("db.commit", table)) {
+      throw new RuntimeException("simulated db.commit failure (injected by FailureEngine)");
+    }
+    if (dbGet(table, pk) == null) {
+      return null;
+    }
+    var overlay = snapshot(tables);
+    validateWrite(overlay, table, record, pk);
+    List<Map<String, Object>> rows = tables.get(table);
+    for (int i = 0; i < rows.size(); i++) {
+      if (Objects.equals(rowId(rows.get(i)), pk)) {
+        rows.set(i, record);
+        break;
+      }
+    }
+    return record;
+  }
+
+  /**
+   * Delete by `id`, resolving cascade/restrict references first via a plan-then-apply pass --
+   * `false` if no row with that `id` exists; a restricted delete throws, since a real database
+   * would refuse the same delete with a foreign-key violation.
+   */
+  public synchronized boolean dbDeleteChecked(String table, String pk) {
+    if (pendingBatch != null) {
+      pendingBatch.add(new BatchOp("delete", table, pk, null));
+      // Optimistic, matching Rust's/TypeScript's/Go's own
+      // batching branch.
+      return true;
+    }
+    if (failures.shouldFail("db.commit", table)) {
+      throw new RuntimeException("simulated db.commit failure (injected by FailureEngine)");
+    }
+    if (dbGet(table, pk) == null) {
+      return false;
+    }
+    var overlay = snapshot(tables);
+    List<DeletePlanStep> cascaded = planDelete(overlay, table, pk);
+    tables.get(table).removeIf(r -> Objects.equals(rowId(r), pk));
+    for (DeletePlanStep step : cascaded) {
+      tables.get(step.table()).removeIf(r -> Objects.equals(rowId(r), step.pk()));
+    }
+    return true;
+  }
+
+  /**
+   * Starts ambient batch mode -- every `dbInsertChecked`/ `dbUpdateChecked`/`dbDeleteChecked` call
+   * until the matching `commitWorldBatch`/`rollbackWorldBatch` queues instead of applying. Called
+   * by a generated `transaction {}` block's world branch.
+   */
+  public synchronized void beginWorldBatch() {
+    pendingBatch = new ArrayList<>();
+  }
+
+  /**
+   * Validates and applies every op queued since `beginWorldBatch` atomically -- same
+   * overlay-then-apply discipline, just gathered ambiently instead of passed as an explicit list.
+   * Throws (leaving the real store untouched) on the first violation found.
+   */
+  public synchronized void commitWorldBatch() {
+    List<BatchOp> ops = pendingBatch != null ? pendingBatch : List.of();
+    pendingBatch = null;
+    commitBatchChecked(ops);
+  }
+
+  /**
+   * Discards every op queued since `beginWorldBatch` without applying them -- called on a generated
+   * transaction block's error path, mirroring a real `ROLLBACK`: nothing was ever written to the
+   * real store while batching, so discarding the queue *is* the rollback.
+   */
+  public synchronized void rollbackWorldBatch() {
+    pendingBatch = null;
+  }
+
+  /**
+   * The `transaction {}` leaf's own accumulation point -- every insert/update/delete in `ops`
+   * validates against one scratch overlay of the live store before any of it is applied for real,
+   * so a violation partway through a batch leaves the store exactly as it was before the call.
+   */
+  private void commitBatchChecked(List<BatchOp> ops) {
+    if (!ops.isEmpty() && failures.shouldFail("db.commit", ops.get(0).table())) {
+      throw new RuntimeException("simulated db.commit failure (injected by FailureEngine)");
+    }
+
+    var overlay = snapshot(tables);
+    List<DeletePlanStep> allDeletes = new ArrayList<>();
+
+    for (BatchOp op : ops) {
+      switch (op.kind()) {
+        case "insert" -> {
+          validateWrite(overlay, op.table(), op.row(), null);
+          overlay.computeIfAbsent(op.table(), k -> new ArrayList<>()).add(op.row());
+        }
+        case "update" -> {
+          validateWrite(overlay, op.table(), op.row(), op.pk());
+          List<Map<String, Object>> rows = overlay.get(op.table());
+          if (rows != null) {
+            for (int i = 0; i < rows.size(); i++) {
+              if (Objects.equals(rowId(rows.get(i)), op.pk())) {
+                rows.set(i, op.row());
+                break;
+              }
+            }
+          }
+        }
+        default -> {
+          List<DeletePlanStep> cascaded = planDelete(overlay, op.table(), op.pk());
+          List<DeletePlanStep> steps = new ArrayList<>();
+          steps.add(new DeletePlanStep(op.table(), op.pk()));
+          steps.addAll(cascaded);
+          for (DeletePlanStep step : steps) {
+            List<Map<String, Object>> rows = overlay.get(step.table());
+            if (rows != null) {
+              rows.removeIf(r -> Objects.equals(rowId(r), step.pk()));
+            }
+          }
+          allDeletes.addAll(steps);
+        }
+      }
+    }
+
+    // Every op above validated against the overlay without ever
+    // touching the real store -- reaching here means the whole
+    // batch is safe to apply for real, all at once.
+    for (BatchOp op : ops) {
+      if (op.kind().equals("insert")) {
+        tables.computeIfAbsent(op.table(), k -> new ArrayList<>()).add(op.row());
+      } else if (op.kind().equals("update")) {
+        List<Map<String, Object>> rows = tables.get(op.table());
+        for (int i = 0; i < rows.size(); i++) {
+          if (Objects.equals(rowId(rows.get(i)), op.pk())) {
+            rows.set(i, op.row());
+            break;
+          }
+        }
+      }
+    }
+    for (DeletePlanStep step : allDeletes) {
+      tables.get(step.table()).removeIf(r -> Objects.equals(rowId(r), step.pk()));
+    }
+  }
+
+  /**
+   * broker.publish's failure check plus the actual (fake) publish -- into both `queue` (the
+   * orphan-subject detection sweep still reads it) and `broker` (the group-aware log every worker
+   * drains from).
+   */
+  public synchronized void publishChecked(String subject, byte[] payload) {
+    if (failures.shouldFail("broker.publish", subject)) {
+      throw new RuntimeException("simulated broker.publish failure (injected by FailureEngine)");
+    }
+    queue.add(new QueuedMessage(subject, payload));
+    broker.publish(subject, payload);
+  }
+
+  /**
+   * Returns every message published since the last drain, removing them -- SimRunner's own
+   * orphan-subject detection sweep.
+   */
+  public synchronized List<QueuedMessage> drainQueue() {
+    List<QueuedMessage> out = new ArrayList<>(queue);
+    queue.clear();
+    return out;
+  }
+
+  /**
+   * Every unconsumed message for `(subject, group)`, in log order, each individually acked as it is
+   * collected -- SimRunner's own per-worker drain step.
+   */
+  public synchronized List<byte[]> drainBroker(String subject, String group) {
+    return broker.drain(subject, group);
+  }
+
+  /**
+   * A non-destructive peek -- expect.quiescence needs to observe whether anything is still
+   * undelivered without consuming it.
+   */
+  public synchronized boolean queueIsEmpty() {
+    return queue.isEmpty();
+  }
+
+  /** Current virtual time, in epoch milliseconds. */
+  public synchronized long nowMs() {
+    return nowMsValue;
+  }
+
+  /**
+   * Advances virtual time forward. Throws if `toMs` is before the current time -- virtual time
+   * never moves backward.
+   */
+  public synchronized void advanceClockTo(long toMs) {
+    if (toMs < nowMsValue) {
+      throw new RuntimeException(
+          "virtual clock cannot move backward: at " + nowMsValue + ", asked for " + toMs);
+    }
+    nowMsValue = toMs;
+  }
+
+  // -- Cache: keyed by the declared cache instance name. --
+
+  /**
+   * `cache.get` -- `null` if absent or expired (against this world's own virtual clock, never wall
+   * time). No failure- injection check, matching Python's own `FakeCache`.
+   */
+  public synchronized String cacheGet(String instance, String key) {
+    return caches.computeIfAbsent(instance, k -> new FakeCache()).get(key, nowMsValue);
+  }
+
+  /** `cache.set`. `ttlMs` is `null` for no expiry. */
+  public synchronized void cacheSet(String instance, String key, String value, Long ttlMs) {
+    caches.computeIfAbsent(instance, k -> new FakeCache()).set(key, value, ttlMs, nowMsValue);
+  }
+
+  /** `cache.delete`. */
+  public synchronized void cacheDelete(String instance, String key) {
+    caches.computeIfAbsent(instance, k -> new FakeCache()).delete(key);
+  }
+
+  private static final class FakeCache {
+    private final Map<String, String> values = new HashMap<>();
+    private final Map<String, Long> expireAt = new HashMap<>();
+
+    String get(String key, long nowMs) {
+      Long exp = expireAt.get(key);
+      if (exp != null && nowMs >= exp) {
+        values.remove(key);
+        expireAt.remove(key);
+        return null;
+      }
+      return values.get(key);
+    }
+
+    void set(String key, String value, Long ttlMs, long nowMs) {
+      values.put(key, value);
+      if (ttlMs != null) {
+        expireAt.put(key, nowMs + ttlMs);
+      } else {
+        expireAt.remove(key);
+      }
+    }
+
+    void delete(String key) {
+      values.remove(key);
+      expireAt.remove(key);
+    }
+  }
+
+  // -- Object store: keyed by the declared object_store instance
+  // name. `ObjectStore.java`'s own `put`/`get`/`delete`/`list`
+  // delegate here when its own injected `world` is set -- see this
+  // class's own doc for why this capability (and email/search/
+  // http, unlike cache) embeds its world-awareness in its own
+  // wrapper class instead of a `lower.rs` guard leaf. --
+
+  /** `object_store.put`. */
+  public synchronized void objectPut(String instance, String key, byte[] body) {
+    objectStores.computeIfAbsent(instance, k -> new LinkedHashMap<>()).put(key, body);
+  }
+
+  /**
+   * `object_store.get` -- `null` on a miss, matching this target's own production `ObjectStore.get`
+   * (a `NoSuchKeyException` caught and converted to `null`, not an exception `object_store.get`'s
+   * own callers ever see) -- the one target-specific divergence from Rust's/TypeScript's/Go's own
+   * "throws on a miss" contract, already true in production before this milestone.
+   */
+  public synchronized byte[] objectGet(String instance, String key) {
+    return objectStores.getOrDefault(instance, Map.of()).get(key);
+  }
+
+  /** `object_store.delete`. */
+  public synchronized void objectDelete(String instance, String key) {
+    Map<String, byte[]> store = objectStores.get(instance);
+    if (store != null) {
+      store.remove(key);
+    }
+  }
+
+  /** `object_store.list` -- every key with the given prefix, sorted. */
+  public synchronized List<String> objectList(String instance, String prefix) {
+    List<String> out = new ArrayList<>();
+    for (String key : objectStores.getOrDefault(instance, Map.of()).keySet()) {
+      if (key.startsWith(prefix)) {
+        out.add(key);
+      }
+    }
+    Collections.sort(out);
+    return out;
+  }
+
+  /**
+   * `expect.object`'s own presence check -- distinct from `objectGet`'s "found or null" shape only
+   * in that a presence assertion should never itself be treated as a scenario error (both are
+   * equally safe here, but the separate method keeps the intent explicit, mirroring
+   * Rust's/TypeScript's/Go's own `objectExists`).
+   */
+  public synchronized boolean objectExists(String instance, String key) {
+    return objectStores.getOrDefault(instance, Map.of()).containsKey(key);
+  }
+
+  // -- Email: recorded, not scoped to one instance for
+  // `expect.email`'s own count query (the scenario schema's
+  // `expect.email` carries no `instance` field, matching Python's
+  // own `_expect_email`). --
+
+  private record SentEmail(String to, String subject, String body) {}
+
+  /** `email.send`. */
+  public synchronized void emailSend(String instance, String to, String subject, String body) {
+    emails.computeIfAbsent(instance, k -> new ArrayList<>()).add(new SentEmail(to, subject, body));
+  }
+
+  /**
+   * `expect.email`'s own count query -- counts across every `email` instance the world has seen.
+   */
+  public synchronized int emailSentCountAll(String to, String subjectContains) {
+    int count = 0;
+    for (List<SentEmail> sent : emails.values()) {
+      for (SentEmail m : sent) {
+        if (to != null && !to.equals(m.to())) {
+          continue;
+        }
+        if (subjectContains != null && !m.subject().contains(subjectContains)) {
+          continue;
+        }
+        count++;
+      }
+    }
+    return count;
+  }
+
+  // -- Search: keyed by the declared search instance name -- the
+  // same narrow, disclosed query evaluator Python's `FakeSearch`
+  // uses: case-insensitive substring match over each document's
+  // JSON, matching the shape `search.query` actually lowers to, not
+  // a real query language. --
+
+  private static final class FakeSearch {
+    private final Map<String, String> docs = new LinkedHashMap<>();
+
+    void index(String docId, String document) {
+      docs.put(docId, document);
+    }
+
+    List<String> query(String text) {
+      if (text.isEmpty()) {
+        return new ArrayList<>(docs.values());
+      }
+      String needle = text.toLowerCase();
+      List<String> out = new ArrayList<>();
+      for (String doc : docs.values()) {
+        if (doc.toLowerCase().contains(needle)) {
+          out.add(doc);
+        }
+      }
+      return out;
+    }
+  }
+
+  /**
+   * `search.index`. `document` is already-serialized JSON text (the same shape `Search.java`'s own
+   * production `index` method receives).
+   */
+  public synchronized void searchIndex(String instance, String docId, String document) {
+    searches.computeIfAbsent(instance, k -> new FakeSearch()).index(docId, document);
+  }
+
+  /**
+   * `search.query` -- returns each hit re-parsed as `JsonNode`, matching `Search.java`'s own
+   * production `search` return shape.
+   */
+  public synchronized List<JsonNode> searchQuery(String instance, String text) {
+    List<JsonNode> out = new ArrayList<>();
+    for (String doc : searches.computeIfAbsent(instance, k -> new FakeSearch()).query(text)) {
+      try {
+        out.add(MAPPER.readTree(doc));
+      } catch (java.io.IOException e) {
+        throw new RuntimeException("parsing indexed document", e);
+      }
+    }
+    return out;
+  }
+
+  // -- External HTTP: a fixture-driven stand-in, consuming
+  // `given.external_http` fixtures in order -- the same portable-
+  // scenario fixtures a scenario already carries drive this fake
+  // directly, not a second ad hoc format. --
+
+  private static final class FakeHttpClient {
+    private List<GivenHttpResponse> responses = List.of();
+    private int next = 0;
+    private int requestCount = 0;
+
+    void setFixtures(List<GivenHttpResponse> responses) {
+      this.responses = responses;
+      this.next = 0;
+    }
+
+    JsonNode post(String url) {
+      requestCount++;
+      if (next >= responses.size()) {
+        throw new RuntimeException(
+            "no fixture response configured for external_http call #"
+                + (next + 1)
+                + " to \""
+                + url
+                + "\"");
+      }
+      GivenHttpResponse resp = responses.get(next);
+      next++;
+      if (resp.error() != null) {
+        throw new RuntimeException("simulated external_http failure: " + resp.error());
+      }
+      return resp.json();
+    }
+  }
+
+  /** Seeds `instance`'s fixture queue from a scenario's own `given.external_http` block. */
+  public synchronized void seedHttpFixtures(String instance, List<GivenHttpResponse> responses) {
+    httpClients.computeIfAbsent(instance, k -> new FakeHttpClient()).setFixtures(responses);
+  }
+
+  /**
+   * `external_http.request`'s POST call -- consumes the next unconsumed fixture in order, throwing
+   * if none remain or the fixture itself declares an error.
+   */
+  public synchronized JsonNode httpPost(String instance, String url) {
+    return httpClients.computeIfAbsent(instance, k -> new FakeHttpClient()).post(url);
+  }
+
+  /** `expect.http_calls`'s own count query. */
+  public synchronized int httpRequestCount(String instance) {
+    FakeHttpClient client = httpClients.get(instance);
+    return client != null ? client.requestCount : 0;
+  }
+
+  // -- Auth: claims-lookup, not real JWT/JWKS crypto -- the
+  // disclosed simplification Python's own FakeAuth already uses.
+  // Singular (unlike cache/store/email/search/http): one identity
+  // provider per world, not per-instance. --
+
+  private static final class FakeAuth {
+    private final Map<String, Object[]> tokens = new HashMap<>();
+
+    void issue(String token, Map<String, Object> claims, Long expireAtMs) {
+      tokens.put(token, new Object[] {claims, expireAtMs});
+    }
+
+    Map<String, Object> verify(String token, long nowMs) {
+      Object[] entry = tokens.get(token);
+      if (entry == null) {
+        throw new RuntimeException("no configured claims for bearer token \"" + token + "\"");
+      }
+      @SuppressWarnings("unchecked")
+      Map<String, Object> claims = (Map<String, Object>) entry[0];
+      Long expireAt = (Long) entry[1];
+      if (expireAt != null && nowMs >= expireAt) {
+        throw new RuntimeException("bearer token \"" + token + "\" has expired");
+      }
+      return claims;
+    }
+  }
+
+  /**
+   * Configures the claims (and optional expiry, against this world's own virtual clock) a bearer
+   * token verifies to -- `SimRunner`'s own equivalent of Python's `FakeAuth.issue`, called from a
+   * scenario's own auth setup, not from generated production code.
+   */
+  public synchronized void authIssue(String token, Map<String, Object> claims, Long expireAtMs) {
+    auth.issue(token, claims, expireAtMs);
+  }
+
+  /**
+   * The generated auth guard's own verification call -- claims- lookup, not real JWT/JWKS crypto,
+   * matching Python's FakeAuth.
+   */
+  public synchronized Map<String, Object> authVerify(String token) {
+    return auth.verify(token, nowMsValue);
+  }
+
+  /**
+   * The failure rules a scenario declared that never matched a real occurrence -- surfaced to
+   * SimRunner rather than silently ignored, matching SIM0007's disclosure discipline.
+   */
+  public List<String> unmatchedFailureRules() {
+    return failures.unmatchedRules();
+  }
+
+  /**
+   * Tracks occurrence-counted (effect, subject) failure rules against a live run's real occurrences
+   * -- mirroring ciac_sim::failure::FailureEngine's record_occurrence, narrowed the same way
+   * Go's/TS's own restatement narrows it (occurrence always required, first-match-only via a set
+   * rather than an ordered rule list, since this checkpoint's scenarios need nothing more general).
+   */
+  private static final class FailureEngine {
+    private final Set<String> rules = new HashSet<>();
+    private final Set<String> matched = new HashSet<>();
+    private final Map<String, Integer> counts = new HashMap<>();
+
+    FailureEngine(List<FailureRule> failureRules) {
+      for (FailureRule r : failureRules) {
+        rules.add(ruleKey(r.effect(), r.subject(), r.occurrence()));
+      }
+    }
+
+    private static String countKey(String effect, String subject) {
+      return effect + " " + subject;
+    }
+
+    private static String ruleKey(String effect, String subject, int occurrence) {
+      return countKey(effect, subject) + " " + occurrence;
+    }
+
+    synchronized boolean shouldFail(String effect, String subject) {
+      String ck = countKey(effect, subject);
+      int occurrence = counts.merge(ck, 1, Integer::sum);
+      String key = ruleKey(effect, subject, occurrence);
+      if (rules.contains(key)) {
+        matched.add(key);
+        return true;
+      }
+      return false;
+    }
+
+    synchronized List<String> unmatchedRules() {
+      List<String> out = new ArrayList<>();
+      for (String r : rules) {
+        if (!matched.contains(r)) {
+          out.add(r);
+        }
+      }
+      Collections.sort(out);
+      return out;
+    }
+  }
+
+  /**
+   * 27UpdatePlan.md M8 (Pillar 2): one ordered log per subject; every consumer *group* holds its
+   * own independent cursor into that log -- two groups on one subject each see every message
+   * (fan-out), two workers sharing one group share its cursor (queue-group semantics). Mirrors
+   * ciac_sim::world::BrokerLog/ TypeScript's/Go's own BrokerLog exactly.
+   */
+  private static final class BrokerLog {
+    private final Map<String, List<byte[]>> logs = new HashMap<>();
+    private final Map<String, Integer> cursors = new HashMap<>();
+
+    private static String cursorKey(String subject, String group) {
+      return subject + " " + group;
+    }
+
+    synchronized void publish(String subject, byte[] payload) {
+      logs.computeIfAbsent(subject, k -> new ArrayList<>()).add(payload);
+    }
+
+    /**
+     * Every unconsumed message for `(subject, group)`, in log order, each individually acked as it
+     * is collected.
+     */
+    synchronized List<byte[]> drain(String subject, String group) {
+      List<byte[]> out = new ArrayList<>();
+      String key = cursorKey(subject, group);
+      List<byte[]> log = logs.getOrDefault(subject, List.of());
+      int pos = cursors.getOrDefault(key, 0);
+      while (pos < log.size()) {
+        out.add(log.get(pos));
+        pos++;
+      }
+      cursors.put(key, pos);
+      return out;
     }
   }
 }
@@ -1662,5 +2795,706 @@ class ScopeTests {
 {"id": "00000000-0000-0000-0000-000000000000", "text": "x"}
 """))
         .andExpect(status().isUnauthorized());
+  }
+}
+============================================================
+src/test/java/com/ciac/oauthecho/sim/SimRunner.java
+============================================================
+// SimRunner.java -- Generated by CIaC.
+//
+// Scenario-driving simulation runner. Interprets the same closed
+// request/publish/advance/drain/expect scenario vocabulary ciac-sim's
+// Scenario JSON schema defines, against this service's own generated
+// `@RestController`s (through Spring's standalone MockMvc, no live
+// listener) and its worker `handleMessageOnce`/job `handleTickOnce`
+// entry points -- line-for-line the same architecture as
+// sim_runner.rs.j2/sim_runner.ts.j2/sim_runner.go.j2, generated (not a
+// shared library) because this needs concrete per-program types,
+// exactly like every other backend's own generated runner. Lives under
+// `src/test/java` (not the packaged application) since `MockMvc`/
+// `spring-test` only ever sit on the `test` classpath; run via `mvn -q
+// test-compile exec:java` (see pom.xml's own `exec-maven-plugin` --
+// compile once, then one `exec:java` invocation per scenario, the same
+// "compile once, run the driver once per scenario" shape every other
+// target's own toolchain gives for free).
+//
+// 27UpdatePlan.md M8 widens this from the v0.25 M9 narrow vocabulary
+// (single-service, db/broker only) to the full given/expect surface
+// `World.java`'s own M8 restatement fakes: `given.cache`/`store`/
+// `search`/`external_http`, `expect.email`/`cache`/`object`/
+// `search_hits`/`http_calls`, group-aware broker drain
+// (`World.drainBroker`, true fan-out across two workers sharing one
+// subject, replacing the old shared-queue "first `if` branch wins"
+// dispatch), and a synthesized bearer token per `request.as` principal
+// (`World.authIssue`, matching Rust's/TypeScript's/Go's own M4/M6/M7
+// `sim_runner`). Still single-service only; `publish` steps (publishing
+// directly to a stream, bypassing an API) are not wired -- the same
+// disclosed scope every other target's own runner still carries. Any
+// scenario step this runner cannot honor is a hard error, never a
+// silently-skipped no-op. Structural scenario parsing only
+// (simulation_version/non-empty steps) -- this is a hand-written
+// restatement of ciac_sim::scenario::Scenario, not that vendored Rust
+// source, the same position Python's/TypeScript's/Go's own hand-written
+// scenario drivers occupy.
+//
+// A raw `AnnotationConfigApplicationContext` scanning only the
+// non-`Application`-root packages below `com.ciac.oauthecho`
+// is used deliberately instead of `SpringApplication`/
+// `@SpringBootTest`: scanning the root package would sweep in
+// `Application.class` itself, whose conditional `@EnableScheduling`/
+// `@EnableWebSocket` would activate Spring's own background
+// `@Scheduled` timer and WebSocket machinery -- exactly the real
+// wall-clock/network side effects this runner exists to replace with
+// explicit, scenario-driven calls. Skipping `SpringApplication`
+// entirely also means no embedded servlet container ever binds a
+// port, and no Spring Boot startup banner/logging ever reaches
+// stdout -- the single JSON outcome line this process prints is
+// always the last line of output, the same "parse the last stdout
+// line" contract every other target's own driver already relies on.
+package com.ciac.oauthecho.sim;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.scheduling.support.CronExpression;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+public final class SimRunner {
+  private SimRunner() {}
+
+  private static final String SERVICE_NAME = "OauthEcho";
+
+  // Own mapper, not `Schemas.MAPPER` -- this file is emitted
+  // whenever this world can fake something the program declares, but
+  // `Schemas.java` only when the program declares at least one
+  // record/resource; a `db`/`queue`/peripheral-capable program with
+  // only classic (untyped) handlers has no `Schemas` class to import
+  // (`World.java`'s own doc explains the same finding). Configured
+  // identically regardless (`SNAKE_CASE` + `JavaTimeModule`), so a
+  // typed worker payload class decodes exactly as it would through
+  // `Schemas.MAPPER`.
+  private static final ObjectMapper MAPPER =
+      new ObjectMapper()
+          .registerModule(new JavaTimeModule())
+          .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+
+  // 27UpdatePlan.md M8: schema facts computed once at codegen time
+  // from the same source the migration DDL itself is built from, so
+  // reference/unique/cascade checking under simulation can never
+  // drift from what the real schema enforces -- mirroring Rust's/
+  // TypeScript's/Go's own `sim_world_tables`/`worldTables` exactly.
+  private static final List<World.WorldTable> WORLD_TABLES = List.of();
+
+  // -- Scenario JSON shape (structural restatement of ciac_sim::scenario) --
+  // `MAPPER`'s `SNAKE_CASE` naming strategy maps every camelCase
+  // component below to/from its wire snake_case key with no
+  // `@JsonProperty` needed, the same discipline every generated
+  // record already relies on.
+
+  private record Principal(String sub, List<String> scopes) {}
+
+  private record RequestStep(
+      String service, String api, JsonNode json, Principal as, String saveAs) {}
+
+  private record PublishStep(String stream, JsonNode json) {}
+
+  private record AdvanceStep(String by) {}
+
+  private record ResponseExpect(String of, Integer status, JsonNode json) {}
+
+  private record RowExpect(
+      String service, String table, Map<String, Object> where, boolean present) {}
+
+  private record WorkerAttemptsExpect(String worker, int count) {}
+
+  private record JobRunsExpect(String job, int count) {}
+
+  private record EmailExpect(String to, String subjectContains, int count) {}
+
+  private record CacheExpect(String instance, String key, boolean present, JsonNode value) {}
+
+  private record ObjectExpect(String store, String key, boolean present) {}
+
+  private record SearchHitsExpect(String instance, String query, int count) {}
+
+  private record HttpCallsExpect(String instance, int count) {}
+
+  private record ExpectStep(
+      ResponseExpect response,
+      RowExpect row,
+      WorkerAttemptsExpect workerAttempts,
+      JobRunsExpect jobRuns,
+      JsonNode quiescence,
+      EmailExpect email,
+      CacheExpect cache,
+      ObjectExpect object,
+      SearchHitsExpect searchHits,
+      HttpCallsExpect httpCalls) {}
+
+  private record ScenarioStep(
+      RequestStep request,
+      PublishStep publish,
+      AdvanceStep advance,
+      JsonNode drain,
+      ExpectStep expect) {}
+
+  private record GivenTableRows(String service, String table, List<Map<String, Object>> rows) {}
+
+  private record GivenCacheEntry(String instance, String key, JsonNode value, String ttl) {}
+
+  private record GivenStoreObject(String instance, String key, String valueBase64) {}
+
+  private record GivenSearchDoc(String instance, String id, JsonNode doc) {}
+
+  private record GivenHttpFixture(String instance, List<World.GivenHttpResponse> responses) {}
+
+  private record FailureSelector(String effect, String subject, int occurrence, String phase) {}
+
+  private record FailureAction(String kind) {}
+
+  private record RawFailureRule(FailureSelector at, FailureAction action) {}
+
+  private record Given(
+      List<GivenTableRows> db,
+      List<GivenCacheEntry> cache,
+      List<GivenStoreObject> store,
+      List<GivenSearchDoc> search,
+      List<GivenHttpFixture> externalHttp,
+      List<RawFailureRule> failures) {}
+
+  private record Scenario(
+      int simulationVersion, String name, String startAt, Given given, List<ScenarioStep> steps) {}
+
+  private record SimScenarioOutcome(
+      String scenario,
+      boolean passed,
+      String error,
+      Map<String, Integer> workerAttempts,
+      Map<String, Integer> jobRuns) {}
+
+  private record SavedResponse(int status, JsonNode json) {}
+
+  private record ApiRoute(String method, String path) {}
+
+  private static final Map<String, ApiRoute> API_ROUTES = new HashMap<>();
+
+  static {
+    API_ROUTES.put("Echo", new ApiRoute("POST", "/echo"));
+  }
+
+  /**
+   * Only the `error` action / `after` phase is implemented -- the same disclosed subset of the full
+   * failure vocabulary Rust's own SimWorld::should_fail supports, for the same reason (it's the one
+   * action this checkpoint's scenarios need). Refused up front rather than silently ignored if a
+   * scenario asks for anything else.
+   */
+  private static List<World.FailureRule> toFailureRules(List<RawFailureRule> raw) {
+    List<World.FailureRule> out = new ArrayList<>();
+    for (RawFailureRule r : raw) {
+      if (!"error".equals(r.action().kind())) {
+        throw new RuntimeException(
+            "failure rule for effect \""
+                + r.at().effect()
+                + "\" uses action \""
+                + r.action().kind()
+                + "\", which this Java world's FailureEngine integration does not support yet"
+                + " (only `error` is implemented)");
+      }
+      if (!"after".equals(r.at().phase())) {
+        throw new RuntimeException(
+            "failure rule for effect \""
+                + r.at().effect()
+                + "\" uses phase \""
+                + r.at().phase()
+                + "\", which this Java world's FailureEngine integration does not support yet"
+                + " (only `after` is implemented)");
+      }
+      String subject = r.at().subject() != null ? r.at().subject() : "";
+      out.add(new World.FailureRule(r.at().effect(), subject, r.at().occurrence()));
+    }
+    return out;
+  }
+
+  private static final Pattern DURATION_RE = Pattern.compile("^(\\d+)(ms|s|m|h|d)$");
+  private static final Map<String, Long> UNIT_MS =
+      Map.of("ms", 1L, "s", 1_000L, "m", 60_000L, "h", 3_600_000L, "d", 86_400_000L);
+
+  /**
+   * Parses `advance.by` strings ("24h", "7d", "30m", ...) -- matches sim/pyrunner/cron.py's
+   * parse_duration_ms and every other target's own generated `parseDurationMs`/`parse_duration_ms`
+   * exactly.
+   */
+  private static long parseDurationMs(String text) {
+    Matcher m = DURATION_RE.matcher(text);
+    if (!m.matches()) {
+      throw new RuntimeException("unrecognized duration: \"" + text + "\"");
+    }
+    return Long.parseLong(m.group(1)) * UNIT_MS.get(m.group(2));
+  }
+
+  /**
+   * Every cron-due instant in (fromMs, toMs] for schedule -- Spring's own `CronExpression.next`
+   * accepts the identical `spring_cron`- translated 6-field seconds-first expression
+   * `@Scheduled(cron=..)` itself parses, so this needs no separate cron dialect of its own.
+   */
+  private static List<Long> dueInstants(CronExpression schedule, long fromMs, long toMs) {
+    List<Long> out = new ArrayList<>();
+    ZonedDateTime cursor = Instant.ofEpochMilli(fromMs).atZone(ZoneOffset.UTC);
+    for (int i = 0; i < 100_000; i++) {
+      ZonedDateTime next = schedule.next(cursor);
+      if (next == null) {
+        break;
+      }
+      long nextMs = next.toInstant().toEpochMilli();
+      if (nextMs > toMs) {
+        break;
+      }
+      out.add(nextMs);
+      cursor = next;
+    }
+    return out;
+  }
+
+  /**
+   * 27UpdatePlan.md M8: synthesizes a bearer token from the step's own `as` principal exactly like
+   * `sim/pyrunner/auto_driver.py`'s `_request` (`f"sim:{sub}:{','.join(scopes)}"`, claims `{"sub":
+   * sub, "scope": " ".join(scopes)}`) -- matching Rust's/ TypeScript's/Go's own `sim_runner`'s
+   * identical synthesis.
+   */
+  private static SavedResponse doRequest(MockMvc mvc, World world, RequestStep spec)
+      throws Exception {
+    if (!SERVICE_NAME.equals(spec.service())) {
+      throw new RuntimeException(
+          "sim_runner only drives service \""
+              + SERVICE_NAME
+              + "\" (single-service only); request named \""
+              + spec.service()
+              + "\"");
+    }
+    ApiRoute route = API_ROUTES.get(spec.api());
+    if (route == null) {
+      throw new RuntimeException("sim_runner: no api registered named \"" + spec.api() + "\"");
+    }
+    var reqBuilder =
+        MockMvcRequestBuilders.request(HttpMethod.valueOf(route.method()), route.path());
+    if (spec.json() != null) {
+      reqBuilder =
+          reqBuilder
+              .contentType(MediaType.APPLICATION_JSON)
+              .content(MAPPER.writeValueAsBytes(spec.json()));
+    }
+    if (spec.as() != null) {
+      List<String> scopes = spec.as().scopes() != null ? spec.as().scopes() : List.of();
+      String token = "sim:" + spec.as().sub() + ":" + String.join(",", scopes);
+      world.authIssue(
+          token, Map.of("sub", spec.as().sub(), "scope", String.join(" ", scopes)), null);
+      reqBuilder = reqBuilder.header("Authorization", "Bearer " + token);
+    }
+    MvcResult result = mvc.perform(reqBuilder).andReturn();
+    String content = result.getResponse().getContentAsString();
+    JsonNode json = content.isEmpty() ? null : MAPPER.readTree(content);
+    return new SavedResponse(result.getResponse().getStatus(), json);
+  }
+
+  /**
+   * Hands every message currently undelivered on `(subject, group)`'s own broker-log cursor to its
+   * worker's `handleMessageOnce` exactly once (with that worker's own retry budget) -- messages a
+   * handler publishes as a side effect of processing are left for the *next* drain step. Two
+   * independent workers sharing one subject now each see every message (true fan-out via
+   * `World.drainBroker`'s own per-(subject, group) cursor), where the old shared-queue dispatch
+   * delivered only to whichever worker's own `if` branch matched first -- matching
+   * Rust's/TypeScript's/Go's own 27UpdatePlan.md M4/M6/M7 `drain()` rewrite. The trailing sweep
+   * over `world.drainQueue()` (dual-written alongside the group-aware broker log --
+   * `World.publishChecked`'s own doc) still refuses a message published to a subject no registered
+   * worker drains above, rather than leaving it to sit undelivered forever; it dispatches by an
+   * if/else-if chain over the subject string (never a `switch`, which would hard-error at compile
+   * time the moment two workers share one subject, e.g. `sim-broker-slice.ciac`'s
+   * `ConsumerA`/`ConsumerB` -- Go's own M7 found this the hard way with its own `switch`; this
+   * runner never risks it).
+   */
+  private static void drain(
+      AnnotationConfigApplicationContext ctx, World world, Map<String, Integer> workerAttempts)
+      throws Exception {
+    for (World.QueuedMessage msg : world.drainQueue()) {
+      boolean delivered = false;
+      if (!delivered) {
+        throw new RuntimeException(
+            "sim_runner: no worker registered to consume subject \""
+                + msg.subject()
+                + "\" (disclosed scope)");
+      }
+    }
+  }
+
+  private static void advance(
+      AnnotationConfigApplicationContext ctx,
+      World world,
+      long fromMs,
+      long toMs,
+      Map<String, Integer> jobRuns)
+      throws Exception {
+    world.advanceClockTo(toMs);
+  }
+
+  private static void expect(
+      ExpectStep spec,
+      World world,
+      Map<String, SavedResponse> saved,
+      Map<String, Integer> workerAttempts,
+      Map<String, Integer> jobRuns)
+      throws Exception {
+    if (spec.response() != null) {
+      SavedResponse got = saved.get(spec.response().of());
+      if (got == null) {
+        throw new RuntimeException(
+            "expect.response.of references unknown save_as \"" + spec.response().of() + "\"");
+      }
+      if (spec.response().status() != null && got.status() != spec.response().status()) {
+        throw new RuntimeException(
+            "expect.response.of=\""
+                + spec.response().of()
+                + "\": expected status "
+                + spec.response().status()
+                + ", got "
+                + got.status());
+      }
+      if (spec.response().json() != null && !spec.response().json().equals(got.json())) {
+        throw new RuntimeException(
+            "expect.response.of=\""
+                + spec.response().of()
+                + "\": expected json "
+                + spec.response().json()
+                + ", got "
+                + got.json());
+      }
+    } else if (spec.row() != null) {
+      if (!SERVICE_NAME.equals(spec.row().service())) {
+        throw new RuntimeException(
+            "sim_runner only drives service \""
+                + SERVICE_NAME
+                + "\" (single-service only); expect.row named \""
+                + spec.row().service()
+                + "\"");
+      }
+      Map<String, Object> where = spec.row().where() != null ? spec.row().where() : Map.of();
+      boolean found = !world.findWhere(spec.row().table(), where).isEmpty();
+      if (found != spec.row().present()) {
+        throw new RuntimeException(
+            "expect.row: table=\""
+                + spec.row().table()
+                + "\" where="
+                + where
+                + " present="
+                + spec.row().present()
+                + ", found="
+                + found);
+      }
+    } else if (spec.workerAttempts() != null) {
+      int actual = workerAttempts.getOrDefault(spec.workerAttempts().worker(), 0);
+      if (actual != spec.workerAttempts().count()) {
+        throw new RuntimeException(
+            "expect.worker_attempts: worker=\""
+                + spec.workerAttempts().worker()
+                + "\" expected "
+                + spec.workerAttempts().count()
+                + ", got "
+                + actual);
+      }
+    } else if (spec.jobRuns() != null) {
+      int actual = jobRuns.getOrDefault(spec.jobRuns().job(), 0);
+      if (actual != spec.jobRuns().count()) {
+        throw new RuntimeException(
+            "expect.job_runs: job=\""
+                + spec.jobRuns().job()
+                + "\" expected "
+                + spec.jobRuns().count()
+                + ", got "
+                + actual);
+      }
+    } else if (spec.quiescence() != null) {
+      if (!world.queueIsEmpty()) {
+        throw new RuntimeException(
+            "expect.quiescence: undelivered message(s) remain in the simulated broker");
+      }
+    } else if (spec.email() != null) {
+      int actual = world.emailSentCountAll(spec.email().to(), spec.email().subjectContains());
+      if (actual != spec.email().count()) {
+        throw new RuntimeException(
+            "expect.email: to="
+                + spec.email().to()
+                + " subject_contains="
+                + spec.email().subjectContains()
+                + " expected "
+                + spec.email().count()
+                + ", got "
+                + actual);
+      }
+    } else if (spec.cache() != null) {
+      String cached = world.cacheGet(spec.cache().instance(), spec.cache().key());
+      boolean found = cached != null;
+      if (found != spec.cache().present()) {
+        throw new RuntimeException(
+            "expect.cache: instance=\""
+                + spec.cache().instance()
+                + "\" key=\""
+                + spec.cache().key()
+                + "\" expected present="
+                + spec.cache().present()
+                + ", found present="
+                + found);
+      }
+      if (spec.cache().value() != null) {
+        JsonNode actual = found ? MAPPER.readTree(cached) : null;
+        if (!spec.cache().value().equals(actual)) {
+          throw new RuntimeException(
+              "expect.cache: instance=\""
+                  + spec.cache().instance()
+                  + "\" key=\""
+                  + spec.cache().key()
+                  + "\" expected value="
+                  + spec.cache().value()
+                  + ", got "
+                  + actual);
+        }
+      }
+    } else if (spec.object() != null) {
+      boolean found = world.objectExists(spec.object().store(), spec.object().key());
+      if (found != spec.object().present()) {
+        throw new RuntimeException(
+            "expect.object: store=\""
+                + spec.object().store()
+                + "\" key=\""
+                + spec.object().key()
+                + "\" expected present="
+                + spec.object().present()
+                + ", found present="
+                + found);
+      }
+    } else if (spec.searchHits() != null) {
+      int actual =
+          world.searchQuery(spec.searchHits().instance(), spec.searchHits().query()).size();
+      if (actual != spec.searchHits().count()) {
+        throw new RuntimeException(
+            "expect.search_hits: instance=\""
+                + spec.searchHits().instance()
+                + "\" query=\""
+                + spec.searchHits().query()
+                + "\" expected "
+                + spec.searchHits().count()
+                + ", got "
+                + actual);
+      }
+    } else if (spec.httpCalls() != null) {
+      int actual = world.httpRequestCount(spec.httpCalls().instance());
+      if (actual != spec.httpCalls().count()) {
+        throw new RuntimeException(
+            "expect.http_calls: instance=\""
+                + spec.httpCalls().instance()
+                + "\" expected "
+                + spec.httpCalls().count()
+                + ", got "
+                + actual);
+      }
+    } else {
+      throw new RuntimeException("sim_runner: unrecognized expect step");
+    }
+  }
+
+  public static void main(String[] args) throws Exception {
+    if (args.length < 1) {
+      System.err.println("usage: SimRunner <scenario.json>");
+      System.exit(1);
+    }
+    Scenario sc = MAPPER.readValue(Files.readString(Path.of(args[0])), Scenario.class);
+    if (sc.simulationVersion() != 1) {
+      System.err.println(
+          "scenario simulation_version "
+              + sc.simulationVersion()
+              + " is not supported (expected 1)");
+      System.exit(1);
+    }
+    if (sc.steps() == null || sc.steps().isEmpty()) {
+      System.err.println("scenario has no steps");
+      System.exit(1);
+    }
+
+    Given given =
+        sc.given() != null
+            ? sc.given()
+            : new Given(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+    List<World.FailureRule> failureRules =
+        toFailureRules(given.failures() != null ? given.failures() : List.of());
+    World world = new World(failureRules, WORLD_TABLES);
+    for (GivenTableRows seed : given.db() != null ? given.db() : List.<GivenTableRows>of()) {
+      if (!SERVICE_NAME.equals(seed.service())) {
+        System.err.println(
+            "sim_runner only drives service \""
+                + SERVICE_NAME
+                + "\" (single-service only); given.db named \""
+                + seed.service()
+                + "\"");
+        System.exit(1);
+      }
+      for (Map<String, Object> row : seed.rows()) {
+        world.seedDb(seed.table(), row);
+      }
+    }
+
+    long nowMs;
+    try {
+      nowMs = Instant.parse(sc.startAt()).toEpochMilli();
+    } catch (Exception e) {
+      System.err.println("scenario start_at \"" + sc.startAt() + "\": not a valid date");
+      System.exit(1);
+      return;
+    }
+    // `World`'s own constructor always starts its virtual clock at
+    // epoch 0 (disclosed in `World.java`'s own doc comment); synced
+    // to `start_at` here, before any TTL-bearing seed below reads
+    // `World.nowMs()`, and kept in lockstep by every `advance()`
+    // step thereafter -- mirroring Rust's/TypeScript's/Go's own
+    // ordering exactly.
+    world.advanceClockTo(nowMs);
+
+    // 27UpdatePlan.md M8: `given.cache`/`store`/`search`/
+    // `external_http` -- mirrors `sim/pyrunner/auto_driver.py`'s
+    // `apply_given` and Rust's/TypeScript's/Go's own `sim_runner`
+    // (M4/M6/M7) exactly.
+    for (GivenCacheEntry entry :
+        given.cache() != null ? given.cache() : List.<GivenCacheEntry>of()) {
+      Long ttlMs = entry.ttl() != null ? parseDurationMs(entry.ttl()) : null;
+      world.cacheSet(
+          entry.instance(), entry.key(), MAPPER.writeValueAsString(entry.value()), ttlMs);
+    }
+    for (GivenStoreObject obj :
+        given.store() != null ? given.store() : List.<GivenStoreObject>of()) {
+      world.objectPut(obj.instance(), obj.key(), Base64.getDecoder().decode(obj.valueBase64()));
+    }
+    for (GivenSearchDoc doc : given.search() != null ? given.search() : List.<GivenSearchDoc>of()) {
+      world.searchIndex(doc.instance(), doc.id(), MAPPER.writeValueAsString(doc.doc()));
+    }
+    for (GivenHttpFixture fixture :
+        given.externalHttp() != null ? given.externalHttp() : List.<GivenHttpFixture>of()) {
+      world.seedHttpFixtures(fixture.instance(), fixture.responses());
+    }
+
+    // Scans everything below the root package EXCEPT `Application`
+    // itself (see the class doc) plus manually registers the one
+    // `World` bean instance every `ObjectProvider<World>`
+    // injection point (Queue, and every `needs_db`/`needs_cache`
+    // typed handler, and each ontology wrapper class) resolves
+    // against -- the only difference from production wiring.
+    AnnotationConfigApplicationContext ctx = new AnnotationConfigApplicationContext();
+    ctx.scan(
+        "com.ciac.oauthecho.routes",
+        "com.ciac.oauthecho.services",
+        "com.ciac.oauthecho.logic",
+        "com.ciac.oauthecho.state",
+        "com.ciac.oauthecho.workers",
+        "com.ciac.oauthecho.clients");
+    // 27UpdatePlan.md M8: `SecurityConfig`'s own `securityFilterChain`
+    // `@Bean` factory needs a real `HttpSecurity` bean, which only
+    // exists once Spring Boot's own security autoconfiguration runs
+    // under a real `SpringApplication` -- never true here (see the
+    // class doc: `Application` itself is deliberately never scanned
+    // for the identical reason). Found live the moment an auth-
+    // declaring program first became sim-reachable this milestone
+    // (`unsupported_sim_capabilities`'s own standalone-refusal is
+    // gone): removed by bean name (Spring's own default -- the
+    // decapitalized simple class name) rather than skipped by
+    // package, since `SecurityConfig` lives in the same `state`
+    // package this runner still needs scanned for `AppState`/
+    // `Queue`/the ontology wrapper classes. A no-op on a program
+    // with no `auth` at all, since the bean is never registered
+    // there.
+    if (ctx.containsBeanDefinition("securityConfig")) {
+      ctx.removeBeanDefinition("securityConfig");
+    }
+    ctx.registerBean("world", World.class, () -> world);
+    ctx.refresh();
+
+    MockMvc mvc =
+        MockMvcBuilders.standaloneSetup(
+                ctx.getBeansWithAnnotation(RestController.class).values().toArray())
+            .setControllerAdvice(
+                ctx.getBeansWithAnnotation(RestControllerAdvice.class).values().toArray())
+            .build();
+
+    Map<String, SavedResponse> saved = new HashMap<>();
+    Map<String, Integer> workerAttempts = new HashMap<>();
+    Map<String, Integer> jobRuns = new HashMap<>();
+
+    Exception runErr = null;
+    for (ScenarioStep step : sc.steps()) {
+      try {
+        if (step.request() != null) {
+          SavedResponse resp = doRequest(mvc, world, step.request());
+          if (step.request().saveAs() != null) {
+            saved.put(step.request().saveAs(), resp);
+          }
+        } else if (step.publish() != null) {
+          throw new RuntimeException(
+              "sim_runner does not support `publish` steps (disclosed scope)");
+        } else if (step.advance() != null) {
+          long deltaMs = parseDurationMs(step.advance().by());
+          long toMs = nowMs + deltaMs;
+          advance(ctx, world, nowMs, toMs, jobRuns);
+          nowMs = toMs;
+        } else if (step.drain() != null) {
+          drain(ctx, world, workerAttempts);
+        } else if (step.expect() != null) {
+          expect(step.expect(), world, saved, workerAttempts, jobRuns);
+        } else {
+          throw new RuntimeException("sim_runner: unrecognized step");
+        }
+      } catch (Exception e) {
+        runErr = e;
+      }
+      if (runErr != null) {
+        break;
+      }
+    }
+    if (runErr == null) {
+      List<String> unmatched = world.unmatchedFailureRules();
+      if (!unmatched.isEmpty()) {
+        runErr =
+            new RuntimeException(
+                unmatched.size()
+                    + " failure rule(s) declared in `given.failures` never matched a real"
+                    + " occurrence: "
+                    + unmatched);
+      }
+    }
+
+    SimScenarioOutcome outcome =
+        new SimScenarioOutcome(
+            sc.name(),
+            runErr == null,
+            runErr != null ? runErr.getMessage() : null,
+            workerAttempts,
+            jobRuns);
+    ctx.close();
+    System.out.println(MAPPER.writeValueAsString(outcome));
   }
 }

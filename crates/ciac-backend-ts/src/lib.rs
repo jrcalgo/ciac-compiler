@@ -102,6 +102,9 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     sim: SimSupport::Narrow {
         unsupported: unsupported_sim_capabilities,
     },
+    // 27UpdatePlan.md M1: see ciac-backend-rust's identical comment —
+    // depth and replay-tape support are decoupled fields on purpose.
+    sim_replay: false,
 };
 
 /// Human-readable, closed list of reasons `ciac sim --target typescript`

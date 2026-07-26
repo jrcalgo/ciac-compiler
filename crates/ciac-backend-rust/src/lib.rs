@@ -103,6 +103,11 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     sim: SimSupport::Narrow {
         unsupported: unsupported_sim_capabilities,
     },
+    // 27UpdatePlan.md M1: the generated runner is a plain scenario
+    // interpreter with no plan/source-hash arguments and no replay
+    // tape — decoupled from `sim` depth so a future `Full` flip
+    // doesn't silently imply replay support this runner never grew.
+    sim_replay: false,
 };
 
 #[derive(Debug, Default)]

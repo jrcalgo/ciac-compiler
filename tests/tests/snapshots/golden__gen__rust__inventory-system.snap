@@ -1320,6 +1320,19 @@ pub struct Scenario {
 pub struct Given {
     #[serde(default)]
     pub db: Vec<GivenTableRows>,
+    /// 27UpdatePlan.md M1 (Pillar 5): seed cache entries, optionally
+    /// TTL-stamped against the virtual clock at scenario start.
+    #[serde(default)]
+    pub cache: Vec<GivenCacheEntry>,
+    /// 27UpdatePlan.md M1 (Pillar 5): seed object-store entries.
+    /// `value_base64` keeps the scenario file JSON-clean for binary
+    /// payloads -- the one place this schema acknowledges a non-JSON
+    /// value, matching the object store's byte-map semantics.
+    #[serde(default)]
+    pub store: Vec<GivenStoreObject>,
+    /// 27UpdatePlan.md M1 (Pillar 5): seed search-index documents.
+    #[serde(default)]
+    pub search: Vec<GivenSearchDoc>,
     #[serde(default)]
     pub external_http: Vec<GivenHttpFixture>,
     /// v0.17 M10: failure rules a scenario declares up front (Pillar
@@ -1330,6 +1343,33 @@ pub struct Given {
     /// per-fixture configuration a hand-written script used to supply.
     #[serde(default)]
     pub failures: Vec<crate::failure::FailureRule>,
+}
+
+/// 27UpdatePlan.md M1 (Pillar 5). `ttl` is a duration string like
+/// `AdvanceStep::by` (e.g. `"30m"`); absent means no expiry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GivenCacheEntry {
+    pub instance: String,
+    pub key: String,
+    pub value: serde_json::Value,
+    #[serde(default)]
+    pub ttl: Option<String>,
+}
+
+/// 27UpdatePlan.md M1 (Pillar 5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GivenStoreObject {
+    pub instance: String,
+    pub key: String,
+    pub value_base64: String,
+}
+
+/// 27UpdatePlan.md M1 (Pillar 5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GivenSearchDoc {
+    pub instance: String,
+    pub id: String,
+    pub doc: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1445,6 +1485,53 @@ pub enum ExpectStep {
         count: u32,
     },
     Quiescence {},
+    /// 27UpdatePlan.md M1 (Pillar 5): the email fake's observation
+    /// surface. `to`/`subject_contains` are optional filters over the
+    /// send log; `count` is the number of matching sends (exact, per
+    /// the point-assertion discipline -- no ranges).
+    Email {
+        #[serde(default)]
+        to: Option<String>,
+        #[serde(default)]
+        subject_contains: Option<String>,
+        count: u32,
+    },
+    Cache {
+        instance: String,
+        key: String,
+        present: bool,
+        #[serde(default)]
+        value: Option<serde_json::Value>,
+    },
+    /// Named `store`/`key` rather than `instance`/`key` to read
+    /// unambiguously next to `expect.row`'s `service`/`table` shape --
+    /// `store` is this expectation's own name for the object-store
+    /// instance being asked about.
+    Object {
+        store: String,
+        key: String,
+        present: bool,
+    },
+    /// Corrected from the plan's own drafted `"index"` field name
+    /// (27UpdatePlan.md Pillar 5) to `instance`, matching
+    /// `given.search`'s field and the design rule that every new
+    /// given/expect names its capability *instance* consistently.
+    SearchHits {
+        instance: String,
+        query: String,
+        count: u32,
+    },
+    /// Corrected from the plan's own drafted `"fixture"` field name
+    /// (27UpdatePlan.md Pillar 5) to `instance` -- the current
+    /// `given.external_http` schema keys a fixture by `instance`
+    /// (there is no separate "fixture key" concept it also carries),
+    /// so `instance` is what a runner can actually resolve this
+    /// expectation against: the count of responses consumed so far
+    /// for that named HTTP client instance.
+    HttpCalls {
+        instance: String,
+        count: u32,
+    },
 }
 
 /// Errors a scenario document can fail with before any simulated
@@ -1637,6 +1724,129 @@ mod tests {
     fn given_failures_defaults_to_empty() {
         let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
         assert!(scenario.given.failures.is_empty());
+    }
+
+    #[test]
+    fn given_peripherals_parse_pillar_5_worked_examples() {
+        let json = r#"
+        {
+          "simulation_version": 1,
+          "name": "peripherals",
+          "start_at": "2030-01-01T00:00:00Z",
+          "given": {
+            "cache": [
+              { "instance": "sessions", "key": "u1", "value": {"a": 1}, "ttl": "30m" }
+            ],
+            "store": [
+              { "instance": "uploads", "key": "a.png", "value_base64": "AAA=" }
+            ],
+            "search": [
+              { "instance": "catalog", "id": "p1", "doc": {"name": "widget"} }
+            ]
+          },
+          "steps": [{"drain": {}}]
+        }
+        "#;
+        let scenario = Scenario::parse(json).expect("parses");
+        assert_eq!(scenario.given.cache[0].instance, "sessions");
+        assert_eq!(scenario.given.cache[0].ttl.as_deref(), Some("30m"));
+        assert_eq!(scenario.given.store[0].value_base64, "AAA=");
+        assert_eq!(scenario.given.search[0].doc["name"], "widget");
+        scenario.validate().expect("structurally valid");
+    }
+
+    #[test]
+    fn given_peripherals_default_to_empty() {
+        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
+        assert!(scenario.given.cache.is_empty());
+        assert!(scenario.given.store.is_empty());
+        assert!(scenario.given.search.is_empty());
+    }
+
+    type ExpectCheck = fn(&ExpectStep);
+
+    #[test]
+    fn expect_peripherals_parse_pillar_5_worked_examples() {
+        let cases: &[(&str, ExpectCheck)] = &[
+            (
+                r#"{"email": {"to": "ops@example.com", "subject_contains": "reconciled", "count": 1}}"#,
+                |e| match e {
+                    ExpectStep::Email {
+                        to,
+                        subject_contains,
+                        count,
+                    } => {
+                        assert_eq!(to.as_deref(), Some("ops@example.com"));
+                        assert_eq!(subject_contains.as_deref(), Some("reconciled"));
+                        assert_eq!(*count, 1);
+                    }
+                    other => panic!("expected email, got {other:?}"),
+                },
+            ),
+            (
+                r#"{"cache": {"instance": "sessions", "key": "u1", "present": false}}"#,
+                |e| match e {
+                    ExpectStep::Cache {
+                        instance,
+                        key,
+                        present,
+                        value,
+                    } => {
+                        assert_eq!(instance, "sessions");
+                        assert_eq!(key, "u1");
+                        assert!(!present);
+                        assert!(value.is_none());
+                    }
+                    other => panic!("expected cache, got {other:?}"),
+                },
+            ),
+            (
+                r#"{"object": {"store": "uploads", "key": "a.png", "present": true}}"#,
+                |e| match e {
+                    ExpectStep::Object {
+                        store,
+                        key,
+                        present,
+                    } => {
+                        assert_eq!(store, "uploads");
+                        assert_eq!(key, "a.png");
+                        assert!(*present);
+                    }
+                    other => panic!("expected object, got {other:?}"),
+                },
+            ),
+            (
+                r#"{"search_hits": {"instance": "catalog", "query": "widget", "count": 2}}"#,
+                |e| match e {
+                    ExpectStep::SearchHits {
+                        instance,
+                        query,
+                        count,
+                    } => {
+                        assert_eq!(instance, "catalog");
+                        assert_eq!(query, "widget");
+                        assert_eq!(*count, 2);
+                    }
+                    other => panic!("expected search_hits, got {other:?}"),
+                },
+            ),
+            (
+                r#"{"http_calls": {"instance": "payments", "count": 3}}"#,
+                |e| match e {
+                    ExpectStep::HttpCalls { instance, count } => {
+                        assert_eq!(instance, "payments");
+                        assert_eq!(*count, 3);
+                    }
+                    other => panic!("expected http_calls, got {other:?}"),
+                },
+            ),
+        ];
+        for (json, check) in cases {
+            let step: ExpectStep = serde_json::from_str(json).expect("parses");
+            check(&step);
+            let rendered = serde_json::to_string(&step).unwrap();
+            serde_json::from_str::<ExpectStep>(&rendered).expect("round-trips");
+        }
     }
 
     #[test]

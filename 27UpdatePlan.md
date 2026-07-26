@@ -106,8 +106,8 @@ reference fake set, with the extension rows marked:
 | Family | Reference behavior (Python today) | Notes for the four ports |
 | --- | --- | --- |
 | Relational store | `insert`/`get`(pk)/`delete`/`count`/`snapshot`; schema-aware: reference existence, `unique`, cascade/restrict on delete (`_check_insert` :234, `_plan_delete` :267); atomic `commit_batch(inserts, deletes)` validating against a scratch overlay (:200) | the shared `ciac-sim` world (Pillar 2) becomes the reference restatement; schema arrives via the SimPlan's table topology |
-| **`db.update` (extension)** | **not implemented — added this arc, all five targets** | attribute-level update by pk + filtered update, matching the production verb's semantics |
-| **read verbs (extension)** | `count` exists; the `query`/filtered-read subset the production verbs actually lower to is completed where handler-reachable | scope fixed at M1 by scanning the corpus's actual verb usage, not speculative SQL |
+| **`db.update` (extension)** | **fake not implemented — added this arc, all five targets** | **M1 finding, corrected from this row's own original draft:** `db.update` is not a missing *language* or *production* verb — `Verb::DbUpdate` has shipped in HIR since v0.14 M1 and every one of the five backends' `HostSyntax` implementations (`ciac-codegen/src/lower/dispatch.rs` dispatching to each backend's `db_update_expr`) already lowers it to real SQL (`UPDATE <table> SET <every column> WHERE id = <pk>`, confirmed live in `ciac-backend-rust/src/lower.rs:357`). It is a **by-pk full-record replace**, not attribute-level, and there is **no filtered/where-clause update verb in the language at all** (only `db.delete_where` exists in that shape — no `db.update_where`). What this arc actually adds is the *simulation fake* for the verb that already exists in production: `db_update_checked(table, pk, changes)`, full-record semantics, no filtered variant. |
+| **read verbs (extension)** | `count` exists in Python's fake; `db.query`/`db.count`/`db.delete_where` are likewise already fully implemented in *production* on all five targets (same `HostSyntax`/`dispatch.rs` mechanism, confirmed live: three matched arms per backend) | **M1 finding:** this row too is a simulation-fake gap, not a production or language gap — scope fixed by the verb set HIR already defines (`db.query`/`db.count`/`db.delete_where`), not by scanning for speculative SQL the language has no syntax for |
 | Broker | ordered per-subject log; **independent per-(subject, group) cursors** (`take_next`/`drain`/`pending_count` :340) — real fan-out | the narrow worlds' single-consumer queue is replaced, not extended; this is the structural upgrade |
 | Virtual clock | `now_ms`/`advance_by` (:400); TTLs and schedules measured against it | Rust's `clock.rs` already exists in ciac-sim; the three restatements gain a clock struct |
 | Cache | redis-shaped `get`/`set(ex=)`/`delete`; TTL vs virtual clock (:418) | |
@@ -272,8 +272,12 @@ effect name each routes through the failure engine in parentheses:
 ```text
 // relational (M2)
 db_insert_checked(table, row)                  (db.commit — existing)
+// db_update_checked is by-pk, full-record replace only -- M1 found
+// no `db.update_where` verb exists in the language (only
+// `db.delete_where` has a filtered shape), so there is no
+// `db_update_where_checked` to build; matches production's real
+// `UPDATE <table> SET <every column> WHERE id = <pk>`.
 db_update_checked(table, pk, changes)          (db.commit)
-db_update_where_checked(table, filter, changes)(db.commit)
 db_delete_checked(table, pk)                   (db.commit)
 db_get(table, pk) / db_count(table, filter)    (db.read)
 commit_batch_checked(inserts, deletes)         (db.commit)
@@ -415,9 +419,9 @@ list is the shared scan's verb vocabulary, which is what
 | Verb family | Guarded arms | World call |
 | --- | --- | --- |
 | db.insert | already guarded (M9 slices) | `db_insert_checked` |
-| db.update / filtered update | update arm(s) | `db_update_checked` / `db_update_where_checked` |
+| db.update (by-pk, full-record — no filtered form exists) | update arm | `db_update_checked` |
 | db.delete | delete arm | `db_delete_checked` |
-| db.get / db.query subset / db.count | read arms | `db_get` / `find_where`-backed reads / `db_count` |
+| db.get / db.query / db.count / db.delete_where | read + filtered-delete arms | `db_get` / `find_where`-backed reads / `db_count` / `db_delete_where` guard on the existing `db_delete_checked` shape |
 | transaction | tx leaf (special: atomic fake) | `commit_batch_checked` |
 | publish | already guarded | `publish_checked` |
 | cache.get/set/delete | cache arms | `cache_*` |
@@ -861,11 +865,28 @@ the restatements) and in M9's retrospective (for the whole):
 
 | Milestone | Expected churn |
 | --- | --- |
-| M1 | none (schema/crate/CLI internals; scenario fixtures only) |
-| M2–M3 | none in generated projects (shared crate only — Rust inherits at M4's regeneration, not before) |
+| M1 | **corrected at M1 itself, not predicted correctly in the original draft** — see the note below |
+| M2–M3 | same correction applies: any `ciac-sim` source edit reaches every Rust golden immediately |
 | M4 | Rust goldens: world/runner files wholesale + guard diffs on verb-bearing files; production branches byte-identical under review |
 | M6/M7/M8 | same shape, one target each |
 | M9 | Python pyrunner files (CLI-embedded, not golden-snapshotted) + docs + version churn |
+
+**M1 correction, found live, not armchair:** the original draft predicted M1 and M2–M3
+would cause *zero* golden churn, reasoning that Rust "inherits at M4's
+regeneration, not before." That reasoning was wrong about the mechanism:
+`ciac-backend-rust` vendors `ciac-sim`'s source verbatim via `include_str!`
+(Pillar 2), and `golden.rs` regenerates every checked-in example's Rust
+project fresh on every test run — there is no separate "M4 regeneration
+event" the vendored copy waits for. Any edit to `crates/ciac-sim/src/
+scenario.rs` (or `world.rs`, `cron.rs`, `failure.rs`) shows up in **every
+one of the 26 Rust golden snapshots** the next time `cargo test` runs,
+immediately, regardless of which milestone touched it. M1's additive
+scenario-schema change triggered all 26 (`cargo insta accept` run
+iteratively, one panic-and-accept cycle per example, since `insta`'s
+snapshot assertion panics on the first mismatch per test run rather than
+collecting all of them). This is disclosed here because M2 and M3 will hit
+the exact same churn shape for the exact same reason — expected from here
+forward, not a surprise each time.
 
 ### The config/env surface
 
@@ -898,6 +919,119 @@ a commit + push; Shipped notes append in place per convention.
    exists to get wrong. No world code yet: this milestone is the
    arc's contract, and it is deliberately small enough to review
    as one.
+
+   **Shipped (v0.27 M1):** `SimCode::ReplayNotSupported` (`SIM0010`)
+   landed in `ciac-sim/src/codes.rs` with wording fixed to the
+   decoupled-capability framing. `TargetInfo::sim_replay: bool`
+   landed on `ciac-codegen::TargetInfo` and every construction site
+   (`python` = `true`; `rust`/`typescript`/`go`/`java` = `false`;
+   the external-protocol stub = `false`) — Open question 3 resolved
+   to the plan's own bias, a bare bool rather than an enum, since
+   `TargetInfo`'s other capability fields (`sim`, `dev`) are already
+   plain data with no shared enum forcing a shape here. `sim_inner`
+   (`crates/ciac/src/commands.rs`) rewired to check
+   `target_info.sim_replay` instead of `matches!(sim_support,
+   SimSupport::Narrow { .. })` for the `--record`/`--replay`
+   refusal — the exact bug the milestone existed to pre-empt (a
+   `Narrow`→`Full` flip silently promising replay) is now
+   structurally impossible, since the two fields are independent.
+   Scenario schema: `given.cache`/`given.store`/`given.search` and
+   `expect.email`/`expect.cache`/`expect.object`/`expect.search_hits`/
+   `expect.http_calls` landed additively in `ciac-sim/src/scenario.rs`
+   with structural parsing + round-trip fixture tests (5 new tests,
+   all passing); `SCENARIO_VERSION` held at `1` per Open question 1's
+   stated bias (no cross-version scenario ecosystem exists yet to
+   protect). **Two field-naming corrections made against the plan's
+   own drafted JSON, not silently followed:** Pillar 5's worked
+   example used `"index"` for `expect.search_hits`'s capability name
+   and `"fixture"` for `expect.http_calls`'s, both inconsistent with
+   the design rule stated three sentences earlier in the same
+   section ("every new given/expect names its capability
+   *instance*") and with `given.search`'s own `instance` field —
+   corrected to `instance` in both, disclosed via a doc comment at
+   each corrected variant rather than silently diverging from the
+   plan's own draft.
+
+   **Open question 2 resolved: no `SimPlan` extension needed.**
+   Reading `crates/ciac-sim/src/plan.rs` found `SimFieldType::Reference`
+   already carries `target_table`, `cardinality`, `on_delete`,
+   `on_update`, and `unique` — every fact `_check_insert`/
+   `_plan_delete`'s reference/cascade/restrict/uniqueness checks need.
+   The language's own `unique` attribute exists only on `Reference<T>`
+   fields (v0.16 M1; confirmed via `ciac-sema/src/build.rs`'s
+   `apply_reference_attrs`) — there is no scalar-field `unique`
+   attribute in the language to have missed. `SimTable.columns` gives
+   the full per-table column list. Nothing added.
+
+   **The two bold contract rows, corrected against the real code
+   rather than assumed from the armchair draft — the single largest
+   finding of this milestone.** The original draft framed `db.update`
+   and the read-verb subset as verbs *the language and production
+   backends don't implement yet*, added this arc. Reading
+   `crates/ciac-ir/src/hir.rs` found `Verb::DbUpdate`/`DbQuery`/
+   `DbCount`/`DbDeleteWhere` have existed in HIR since v0.14 M1, and
+   reading `crates/ciac-codegen/src/lower/dispatch.rs` (the shared
+   `HostSyntax`-trait driver 26 M1's own Shipped note already named)
+   found every one of the five backends' `HostSyntax` implementations
+   already lowers all four verbs to real code — confirmed live for
+   Rust: `db_update_expr` (`ciac-backend-rust/src/lower.rs:357`) emits
+   a genuine `UPDATE <table> SET <every column> WHERE id = <pk>`, and
+   `db.query`/`db.count`/`db.delete_where` each have three matched
+   arms per backend (grepped across all five `lower.rs` files, three
+   hits each). An initial grep confined to `ciac-backend-rust/src/
+   lower.rs` alone found `db_update_expr` apparently uncalled and
+   nearly got recorded as "dead code, db.update unimplemented
+   anywhere" before tracing the call into `dispatch.rs`'s trait
+   dispatch corrected that reading — worth naming since it is exactly
+   the kind of single-file-grep mistake this arc's whole verification
+   discipline exists to catch before it reaches a Shipped note.
+   **The corrected contract:** `db.update` is production-complete
+   everywhere already, is a **by-pk full-record replace** (not
+   attribute-level), and **no filtered-update verb exists in the
+   language at all** (only `db.delete_where` has a filtered shape —
+   there is no `db.update_where`). What this arc actually adds for
+   both bold rows is exclusively the *simulation fake* for verbs
+   production already implements correctly — smaller, lower-risk
+   scope than the draft claimed, since no production or language
+   surface changes at all. Pillar 1's table, Pillar 2's world method
+   surface draft (`db_update_where_checked` removed — no verb to
+   fake), and Pillar 3's guard inventory table are corrected in place
+   above to reflect this. `db.insert`/`cache.*`/`store.*`/`email.send`/
+   `search.*`/`http.*` verbs were spot-checked the same way (grepped
+   for `Verb::` matches in `dispatch.rs`) and confirmed already
+   production-real on all five targets, consistent with the plan's
+   own uncorrected claim for those rows.
+
+   Full `cargo build`/targeted `cargo test -p ciac-sim scenario`
+   green; workspace-wide `cargo build` across `ciac-codegen` and all
+   five backend crates plus `ciac` itself green with the new
+   `sim_replay` field threaded through every `TargetInfo` literal
+   (a sixth construction site, `backends/skeleton-internal`, was
+   missed on the first pass and caught by the compiler, not by
+   review — `E0063: missing field` on the next `cargo clippy
+   --workspace --all-targets`).
+
+   **Golden churn, found live and corrected in the "Predicted golden
+   churn" section above:** the scenario-schema additive change
+   surfaced as a snapshot mismatch in **all 26** Rust example golden
+   snapshots, not the "none" the plan's own draft predicted for M1 —
+   `ciac-backend-rust` vendors `ciac-sim`'s source verbatim via
+   `include_str!`, and `golden.rs` regenerates every project fresh
+   per run, so a vendored-crate edit reaches every Rust golden the
+   moment the file changes, not at some later "M4 regeneration
+   event." Each of the 26 was regenerated with `cargo insta accept`
+   in an iterative panic-and-accept loop (`insta` stops at the first
+   mismatched assertion per run) and every diff reviewed as
+   containing exactly the new `scenario.rs` structs/enum variants
+   and nothing else — no production-branch content changed, only the
+   vendored schema file's own byte content. This is now a standing
+   expectation for M2 and M3 too, not a one-off surprise.
+
+   Full `cargo test --workspace --no-fail-fast` (fmt/clippy clean
+   beforehand) green a second time after the snapshot regeneration:
+   the same one pre-existing, already-disclosed `backfill_cli`
+   ruff-drift failure (unrelated, confirmed unchanged by this
+   milestone) and nothing else.
 
 2. **M2 — The shared world, stage one: the stateful core.**
    `ciac-sim`'s relational store to the reference contract

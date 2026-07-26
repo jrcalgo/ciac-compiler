@@ -89,6 +89,9 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     },
     source_extension: "py",
     sim: SimSupport::Full,
+    // 27UpdatePlan.md M1: the only target whose generated runner
+    // implements a replay tape.
+    sim_replay: true,
 };
 
 #[derive(Debug, Default)]

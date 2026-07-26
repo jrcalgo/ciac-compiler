@@ -123,6 +123,18 @@ sim_codes! {
          is a hard failure, not a silently-ignored gap -- simulation \
          cannot claim determinism for an effect it didn't observe."
     ),
+    ReplayNotSupported = (
+        "SIM0010",
+        "--record/--replay not supported on this target",
+        "27UpdatePlan.md M1: record/replay is its own capability, \
+         decoupled from simulation depth -- a target can simulate every \
+         verb the language has (`SimSupport::Full`) and still not \
+         implement a replay tape. `TargetInfo::sim_replay` names which \
+         targets do; today only Python's runner does. This is a \
+         disclosed scope limit, not a bug: the target's own generated \
+         runner has no plan/source-hash arguments and no transcript \
+         format to replay against."
+    ),
 }
 
 impl std::fmt::Display for SimCode {

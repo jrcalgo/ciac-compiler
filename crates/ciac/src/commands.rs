@@ -1149,7 +1149,8 @@ fn sim_inner(
                 "`ciac sim`: unknown target `{target}`; see `ciac targets` for the registered set"
             )
         })?;
-    let sim_support = sim_backend.target_info().sim;
+    let target_info = sim_backend.target_info();
+    let sim_support = target_info.sim;
     if let SimSupport::None { reason } = sim_support {
         bail!("`ciac sim --target {target}` cannot simulate this target: {reason}");
     }
@@ -1159,15 +1160,17 @@ fn sim_inner(
     if (record.is_some() || replay.is_some()) && scenarios.len() != 1 {
         bail!("--record/--replay require exactly one --scenario");
     }
-    if matches!(sim_support, SimSupport::Narrow { .. }) && (record.is_some() || replay.is_some()) {
-        // Every `Narrow` target's generated runner (Rust's, v0.17 M11;
-        // TypeScript's, v0.23 M9) is a plain scenario interpreter (no
-        // plan/source-hash arguments, no replay tape) -- disclosed,
-        // not silently ignored. Target-generic message for the same
-        // reason the `unsupported` refusal above is (v0.23 M9).
+    if !target_info.sim_replay && (record.is_some() || replay.is_some()) {
+        // 27UpdatePlan.md M1: `sim_replay` is its own field, decoupled
+        // from `SimSupport` depth -- a target can simulate every verb
+        // the language has (`Full`) and still not implement a replay
+        // tape (today: every target but Python). Disclosed, not
+        // silently ignored; target-generic message for the same reason
+        // the `unsupported` refusal below is (v0.23 M9).
         bail!(
-            "`ciac sim --target {target}` does not yet support --record/--replay (disclosed \
-             scope); see docs/simulation.md"
+            "`ciac sim --target {target}` does not yet support --record/--replay ({}); see \
+             docs/simulation.md",
+            ciac_sim::SimCode::ReplayNotSupported
         );
     }
 

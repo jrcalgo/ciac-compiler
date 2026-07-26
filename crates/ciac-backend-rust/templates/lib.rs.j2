@@ -10,6 +10,7 @@ pub mod observability;
 pub mod queue;
 {%- endif %}
 {%- if c.has_db or c.has_queue %}
+pub mod clock;
 pub mod failure;
 pub mod scenario;
 pub mod world;

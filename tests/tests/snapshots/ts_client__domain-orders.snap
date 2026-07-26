@@ -52,6 +52,14 @@ export interface Customer {
   email: string;
 }
 
+export interface DeleteResult {
+  deleted: boolean;
+}
+
+export interface IdOnly {
+  id: string;
+}
+
 export interface InvalidOrder {
   reason: string;
 }
@@ -75,6 +83,10 @@ export interface OrderAudit {
   id: string;
   note: string;
   total: number;
+}
+
+export interface OrderCountFilter {
+  min_total: number;
 }
 
 ============================================================
@@ -132,6 +144,18 @@ export async function checkout(opts: ClientOptions, payload: Types.Order): Promi
 
 export async function items(opts: ClientOptions, payload: Types.LineItem): Promise<Types.Envelope<Types.LineItem>> {
   return request(opts, "/line-items", "POST", payload);
+}
+
+export async function updateOrderRoute(opts: ClientOptions, payload: Types.Order): Promise<Types.Envelope<Types.Order>> {
+  return request(opts, "/orders/update", "POST", payload);
+}
+
+export async function deleteOrderRoute(opts: ClientOptions, payload: Types.IdOnly): Promise<Types.Envelope<Types.IdOnly>> {
+  return request(opts, "/orders/delete", "POST", payload);
+}
+
+export async function countOrdersRoute(opts: ClientOptions, payload: Types.OrderCountFilter): Promise<Types.Envelope<Types.OrderCountFilter>> {
+  return request(opts, "/orders/count", "POST", payload);
 }
 
 ============================================================

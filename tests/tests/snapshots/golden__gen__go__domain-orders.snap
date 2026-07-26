@@ -78,6 +78,29 @@ cmd/api/apidoc.json
         ],
         "type": "object"
       },
+      "DeleteResult": {
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "IdOnly": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "InvalidOrder": {
         "properties": {
           "reason": {
@@ -158,6 +181,17 @@ cmd/api/apidoc.json
           "id",
           "note",
           "total"
+        ],
+        "type": "object"
+      },
+      "OrderCountFilter": {
+        "properties": {
+          "min_total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "min_total"
         ],
         "type": "object"
       }
@@ -310,6 +344,123 @@ cmd/api/apidoc.json
           }
         }
       }
+    },
+    "/orders/count": {
+      "post": {
+        "operationId": "count_orders_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCountFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/OrderCountFilter"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/delete": {
+      "post": {
+        "operationId": "delete_order_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdOnly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IdOnly"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/update": {
+      "post": {
+        "operationId": "update_order_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Order"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
     }
   }
 }
@@ -424,6 +575,9 @@ var apiRoutes = map[string]apiRoute{
 	"CreateCustomerRoute": {Method: "POST", Path: "/customers"},
 	"Checkout":            {Method: "POST", Path: "/orders"},
 	"Items":               {Method: "POST", Path: "/line-items"},
+	"UpdateOrderRoute":    {Method: "POST", Path: "/orders/update"},
+	"DeleteOrderRoute":    {Method: "POST", Path: "/orders/delete"},
+	"CountOrdersRoute":    {Method: "POST", Path: "/orders/count"},
 }
 
 // -- Scenario JSON shape (structural restatement of ciac_sim::scenario) --
@@ -1444,6 +1598,30 @@ func AddLineItem(ctx context.Context, st *state.AppState, item schemas.LineItem)
 	return item, nil
 }
 ============================================================
+internal/logic/count_orders.go
+============================================================
+// internal/logic/count_orders.go -- Generated by CIaC.
+// Compiler-owned typed handler `CountOrders`, lowered
+// straight from the `.ciac` source. Regenerated on every build;
+// business logic lives in the `.ciac` source, not here.
+package logic
+
+import (
+	"context"
+	"domain-orders/internal/schemas"
+	"domain-orders/internal/state"
+)
+
+// CountOrders implements the `CountOrders` typed handler.
+func CountOrders(ctx context.Context, st *state.AppState, filter schemas.OrderCountFilter) (int64, error) {
+	__row0 := st.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM orders WHERE total >= $1", filter.MinTotal)
+	var __count2 int64
+	if __err1 := __row0.Scan(&__count2); __err1 != nil {
+		return 0, __err1
+	}
+	return __count2, nil
+}
+============================================================
 internal/logic/create_customer.go
 ============================================================
 // internal/logic/create_customer.go -- Generated by CIaC.
@@ -1472,6 +1650,34 @@ func CreateCustomer(ctx context.Context, st *state.AppState, c schemas.Customer)
 	}
 	_ = __row0
 	return c, nil
+}
+============================================================
+internal/logic/delete_order.go
+============================================================
+// internal/logic/delete_order.go -- Generated by CIaC.
+// Compiler-owned typed handler `DeleteOrder`, lowered
+// straight from the `.ciac` source. Regenerated on every build;
+// business logic lives in the `.ciac` source, not here.
+package logic
+
+import (
+	"context"
+	"domain-orders/internal/schemas"
+	"domain-orders/internal/state"
+)
+
+// DeleteOrder implements the `DeleteOrder` typed handler.
+func DeleteOrder(ctx context.Context, st *state.AppState, payload schemas.IdOnly) (schemas.DeleteResult, error) {
+	__result0, __err1 := st.DB.ExecContext(ctx, "DELETE FROM orders WHERE id = $1", payload.ID)
+	if __err1 != nil {
+		return schemas.DeleteResult{}, __err1
+	}
+	__n2, __err3 := __result0.RowsAffected()
+	if __err3 != nil {
+		return schemas.DeleteResult{}, __err3
+	}
+	v1 := __n2 > 0
+	return schemas.DeleteResult{Deleted: v1}, nil
 }
 ============================================================
 internal/logic/place_order.go
@@ -1531,6 +1737,44 @@ func PlaceOrder(ctx context.Context, st *state.AppState, order schemas.Order) (s
 			return schemas.Order{}, __err5
 		}
 	}
+	return order, nil
+}
+============================================================
+internal/logic/update_order_total.go
+============================================================
+// internal/logic/update_order_total.go -- Generated by CIaC.
+// Compiler-owned typed handler `UpdateOrderTotal`, lowered
+// straight from the `.ciac` source. Regenerated on every build;
+// business logic lives in the `.ciac` source, not here.
+package logic
+
+import (
+	"context"
+	"domain-orders/internal/schemas"
+	"domain-orders/internal/state"
+)
+
+// UpdateOrderTotal implements the `UpdateOrderTotal` typed handler.
+func UpdateOrderTotal(ctx context.Context, st *state.AppState, order schemas.Order) (schemas.Order, error) {
+	__v0, __err1 := func() (*schemas.Order, error) {
+		__row := order
+		__result, __err := st.DB.ExecContext(ctx, "UPDATE orders SET customer_id = $1, total = $2 WHERE id = $3", __row.CustomerID, __row.Total, order.ID)
+		if __err != nil {
+			return nil, __err
+		}
+		__n, __err2 := __result.RowsAffected()
+		if __err2 != nil {
+			return nil, __err2
+		}
+		if __n == 0 {
+			return nil, nil
+		}
+		return &__row, nil
+	}()
+	if __err1 != nil {
+		return schemas.Order{}, __err1
+	}
+	_ = __v0
 	return order, nil
 }
 ============================================================
@@ -1653,6 +1897,47 @@ func CheckoutHandler(st *state.AppState) http.HandlerFunc {
 	}
 }
 ============================================================
+internal/routes/count_orders_route_api.go
+============================================================
+// internal/routes/count_orders_route_api.go -- Generated by CIaC.
+//
+// Pipeline: CountOrdersRoute.
+package routes
+
+import (
+	"domain-orders/internal/httpx"
+	"domain-orders/internal/logic"
+	"domain-orders/internal/schemas"
+	"domain-orders/internal/state"
+	"net/http"
+)
+
+func CountOrdersRouteHandler(st *state.AppState) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// ctx may go unused (a pipeline with no handler/publish/call
+		// step, e.g. plain `Return`) or genuinely used below,
+		// depending on this api's steps -- always declaring it keeps
+		// this handler's shape stable as the pipeline grows.
+		ctx := r.Context()
+		_ = ctx
+		decoded, err := schemas.DecodeOrderCountFilter(r.Body)
+		if err != nil {
+			httpx.WriteError(w, httpx.BadRequest(err))
+			return
+		}
+		var result any = decoded
+
+		if v, err := logic.CountOrders(ctx, st, result.(schemas.OrderCountFilter)); err != nil {
+			httpx.WriteError(w, err)
+			return
+		} else {
+			result = v
+		}
+
+		httpx.Accepted(w, result)
+	}
+}
+============================================================
 internal/routes/create_customer_route_api.go
 ============================================================
 // internal/routes/create_customer_route_api.go -- Generated by CIaC.
@@ -1684,6 +1969,47 @@ func CreateCustomerRouteHandler(st *state.AppState) http.HandlerFunc {
 		var result any = decoded
 
 		if v, err := logic.CreateCustomer(ctx, st, result.(schemas.Customer)); err != nil {
+			httpx.WriteError(w, err)
+			return
+		} else {
+			result = v
+		}
+
+		httpx.Accepted(w, result)
+	}
+}
+============================================================
+internal/routes/delete_order_route_api.go
+============================================================
+// internal/routes/delete_order_route_api.go -- Generated by CIaC.
+//
+// Pipeline: DeleteOrderRoute.
+package routes
+
+import (
+	"domain-orders/internal/httpx"
+	"domain-orders/internal/logic"
+	"domain-orders/internal/schemas"
+	"domain-orders/internal/state"
+	"net/http"
+)
+
+func DeleteOrderRouteHandler(st *state.AppState) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// ctx may go unused (a pipeline with no handler/publish/call
+		// step, e.g. plain `Return`) or genuinely used below,
+		// depending on this api's steps -- always declaring it keeps
+		// this handler's shape stable as the pipeline grows.
+		ctx := r.Context()
+		_ = ctx
+		decoded, err := schemas.DecodeIdOnly(r.Body)
+		if err != nil {
+			httpx.WriteError(w, httpx.BadRequest(err))
+			return
+		}
+		var result any = decoded
+
+		if v, err := logic.DeleteOrder(ctx, st, result.(schemas.IdOnly)); err != nil {
 			httpx.WriteError(w, err)
 			return
 		} else {
@@ -1760,11 +2086,55 @@ func Router(st *state.AppState) *http.ServeMux {
 	mux.Handle("POST /customers", CreateCustomerRouteHandler(st))
 	mux.Handle("POST /orders", CheckoutHandler(st))
 	mux.Handle("POST /line-items", ItemsHandler(st))
+	mux.Handle("POST /orders/update", UpdateOrderRouteHandler(st))
+	mux.Handle("POST /orders/delete", DeleteOrderRouteHandler(st))
+	mux.Handle("POST /orders/count", CountOrdersRouteHandler(st))
 	return mux
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+============================================================
+internal/routes/update_order_route_api.go
+============================================================
+// internal/routes/update_order_route_api.go -- Generated by CIaC.
+//
+// Pipeline: UpdateOrderRoute.
+package routes
+
+import (
+	"domain-orders/internal/httpx"
+	"domain-orders/internal/logic"
+	"domain-orders/internal/schemas"
+	"domain-orders/internal/state"
+	"net/http"
+)
+
+func UpdateOrderRouteHandler(st *state.AppState) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// ctx may go unused (a pipeline with no handler/publish/call
+		// step, e.g. plain `Return`) or genuinely used below,
+		// depending on this api's steps -- always declaring it keeps
+		// this handler's shape stable as the pipeline grows.
+		ctx := r.Context()
+		_ = ctx
+		decoded, err := schemas.DecodeOrder(r.Body)
+		if err != nil {
+			httpx.WriteError(w, httpx.BadRequest(err))
+			return
+		}
+		var result any = decoded
+
+		if v, err := logic.UpdateOrderTotal(ctx, st, result.(schemas.Order)); err != nil {
+			httpx.WriteError(w, err)
+			return
+		} else {
+			result = v
+		}
+
+		httpx.Accepted(w, result)
+	}
 }
 ============================================================
 internal/schemas/schemas.go
@@ -1960,6 +2330,87 @@ func DecodeInvalidOrder(r io.Reader) (InvalidOrder, error) {
 	}
 	if err := validate.Struct(out); err != nil {
 		return InvalidOrder{}, err
+	}
+	return out, nil
+}
+
+type IdOnly struct {
+	ID string `json:"id" validate:"uuid4"`
+}
+
+// DecodeIdOnly decodes and validates a IdOnly from r.
+func DecodeIdOnly(r io.Reader) (IdOnly, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return IdOnly{}, fmt.Errorf("malformed body: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return IdOnly{}, fmt.Errorf("malformed body: %w", err)
+	}
+	if err := requireKeys(raw, "id"); err != nil {
+		return IdOnly{}, err
+	}
+	var out IdOnly
+	if err := json.Unmarshal(body, &out); err != nil {
+		return IdOnly{}, fmt.Errorf("malformed body: %w", err)
+	}
+	if err := validate.Struct(out); err != nil {
+		return IdOnly{}, err
+	}
+	return out, nil
+}
+
+type OrderCountFilter struct {
+	MinTotal float64 `json:"min_total"`
+}
+
+// DecodeOrderCountFilter decodes and validates a OrderCountFilter from r.
+func DecodeOrderCountFilter(r io.Reader) (OrderCountFilter, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return OrderCountFilter{}, fmt.Errorf("malformed body: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return OrderCountFilter{}, fmt.Errorf("malformed body: %w", err)
+	}
+	if err := requireKeys(raw, "min_total"); err != nil {
+		return OrderCountFilter{}, err
+	}
+	var out OrderCountFilter
+	if err := json.Unmarshal(body, &out); err != nil {
+		return OrderCountFilter{}, fmt.Errorf("malformed body: %w", err)
+	}
+	if err := validate.Struct(out); err != nil {
+		return OrderCountFilter{}, err
+	}
+	return out, nil
+}
+
+type DeleteResult struct {
+	Deleted bool `json:"deleted"`
+}
+
+// DecodeDeleteResult decodes and validates a DeleteResult from r.
+func DecodeDeleteResult(r io.Reader) (DeleteResult, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return DeleteResult{}, fmt.Errorf("malformed body: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return DeleteResult{}, fmt.Errorf("malformed body: %w", err)
+	}
+	if err := requireKeys(raw, "deleted"); err != nil {
+		return DeleteResult{}, err
+	}
+	var out DeleteResult
+	if err := json.Unmarshal(body, &out); err != nil {
+		return DeleteResult{}, fmt.Errorf("malformed body: %w", err)
+	}
+	if err := validate.Struct(out); err != nil {
+		return DeleteResult{}, err
 	}
 	return out, nil
 }
@@ -2323,6 +2774,29 @@ openapi.json
         ],
         "type": "object"
       },
+      "DeleteResult": {
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "IdOnly": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "InvalidOrder": {
         "properties": {
           "reason": {
@@ -2403,6 +2877,17 @@ openapi.json
           "id",
           "note",
           "total"
+        ],
+        "type": "object"
+      },
+      "OrderCountFilter": {
+        "properties": {
+          "min_total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "min_total"
         ],
         "type": "object"
       }
@@ -2520,6 +3005,123 @@ openapi.json
     "/orders": {
       "post": {
         "operationId": "checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Order"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/count": {
+      "post": {
+        "operationId": "count_orders_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCountFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/OrderCountFilter"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/delete": {
+      "post": {
+        "operationId": "delete_order_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdOnly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IdOnly"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/update": {
+      "post": {
+        "operationId": "update_order_route",
         "requestBody": {
           "content": {
             "application/json": {

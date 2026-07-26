@@ -150,12 +150,15 @@ part is stated:
   same commit. The plan-then-apply shape is contract because it
   is observable (a restricted delete leaves *everything*,
   including cascade candidates already visited).
-- **`db.update` (new, specified here)**: by-pk attribute update —
-  missing pk is the checked error; updated fields re-validate
-  `unique` (excluding self) and reference existence; unspecified
-  fields persist. Filtered update (where-clause form) updates
-  every matching row under the same per-row validation, count
-  observable via `expect.row`. No upsert semantics — the
+- **`db.update` (fake specified here, corrected against real
+  production semantics at M1):** by-pk **full-record replace** —
+  missing pk is the checked error; the replacement record's
+  reference fields re-validate existence and its `unique`
+  reference fields re-validate uniqueness (excluding the row being
+  replaced); there is no partial/attribute-level form and no
+  filtered (where-clause) form — the language has neither, only
+  `db.update(table, pk, record)` and, separately, `db.delete_where`
+  (a different verb, delete-only). No upsert semantics — the
   production verb has none.
 - **`commit_batch`**: the transaction fake — inserts and deletes
   validated together against a scratch overlay of committed
@@ -1053,6 +1056,205 @@ a commit + push; Shipped notes append in place per convention.
    surface unbroken; world.py adjusted only where a both-references
    resolution demands it, with pyrunner's fixtures extended to
    cover the adjustment.
+
+   **Shipped (v0.27 M2):** `crates/ciac-sim/src/world.rs` deepened
+   as planned — `RelationalSchema` (reference existence, `unique`,
+   cascade/restrict-on-delete), `BrokerLog` (per-`(subject, group)`
+   cursor log; `take_next`/`ack`/`nack`/`drain`/`pending_count`/
+   `queues_empty`), `SimWorld::{db_update_checked, db_delete_checked,
+   commit_batch_checked}` (scratch-overlay validated, atomic), and
+   `VirtualClock`/`Entropy` wired through as owned `SimWorld` fields
+   (`now_ms`/`advance_clock_to`/`next_uuid`). 19 new unit tests, all
+   passing, including the two the exit checklist names by name
+   (`commit_batch_checked_rolls_back_the_whole_batch_on_a_mid_batch_violation`,
+   `broker_two_groups_on_one_subject_each_see_every_message_fan_out`)
+   plus reference/unique-violation, cascade-delete, restrict-delete,
+   full-replace-update, and clock/entropy coverage. `SimWorld::new`'s
+   signature and every pre-existing method are byte-for-byte
+   unchanged; the new `with_schema` constructor and `broker` field
+   are purely additive, confirmed by the pre-existing tests passing
+   unmodified.
+
+   **Correction: the schema types are self-contained, not
+   `plan::SimTable`-shaped as drafted.** The milestone's own working
+   design (and this file's earlier text) assumed `SimWorld::with_schema`
+   would take `Vec<plan::SimTable>` directly. Wiring that up and then
+   actually building a vendored Rust project surfaced two real,
+   previously-latent bugs this milestone's own live-proof discipline
+   exists to catch, both now fixed:
+   - `ciac-backend-rust` vendors `world.rs` via `include_str!` into
+     every generated Rust project *without* `ciac-ir` as a
+     dependency (`plan.rs` is deliberately not vendored for exactly
+     this reason, per that file's own pre-existing doc comment) — so
+     `world.rs` importing `crate::plan::{SimTable, SimFieldType,
+     SimRefAction}` broke every `ciac sim --target rust` invocation
+     with `E0432: could not find plan in the crate root`, silently,
+     since no existing test builds a generated Rust project's
+     `sim_runner` binary end-to-end (`golden.rs` only diffs generated
+     *source text*, never compiles it). Fixed by giving `world.rs`
+     its own self-contained `WorldTable`/`WorldReference`/
+     `WorldRefAction` types (zero dependency beyond `serde_json`/std)
+     instead of importing `plan`'s IR-dependent ones; `clock.rs`
+     (already dependency-free) joins the vendored set for the same
+     reason `RelationalSchema` needed `VirtualClock`/`Entropy`
+     in-process. A generated Rust project's own `sim_runner.rs` (M4)
+     will build `WorldTable`/`WorldReference` values as literal
+     struct-literal Rust source at codegen time, the same way other
+     compile-time-known facts already reach generated code — there
+     is no runtime `plan::SimTable → WorldTable` bridge, and none is
+     needed.
+   - The same probe also caught `sim_runner.rs.j2`'s `match spec`
+     over `ExpectStep` non-exhaustive against M1's five new variants
+     (`Email`/`Cache`/`Object`/`SearchHits`/`HttpCalls`) — a second
+     instance of the identical "no test actually compiles a
+     generated Rust sim binary" blind spot, latent since M1's commit.
+     Fixed with five explicit refusal arms ("not yet faked on this
+     target (27UpdatePlan.md M3)"), matching this runner's own
+     "refused, not guessed" contract.
+
+   **A third, more consequential bug found and fixed while authoring
+   the corpus, in Python's driver, not this milestone's own Rust
+   code:** `sim/pyrunner/auto_driver.py` — the actual `ciac sim`
+   entry point for every real invocation — has always constructed
+   `SimWorld(failure_rules=failure_rules)` with no `schema=` argument,
+   defaulting to `Schema.empty()`. `Schema.from_plan_json(plan)` (the
+   real relational-schema parser, correct and unit-tested since v0.17
+   M6) was, until this fix, wired only by `inner_proof_domain_orders.py`,
+   a bespoke dev-only proof script never exercised by `ciac sim`
+   itself. The practical effect: reference/unique/cascade/restrict
+   checking has been silently inert for every real `ciac sim`
+   invocation against every example, on every prior run of this
+   arc's own verification — a live cascade-delete probe against
+   `domain-orders.ciac` returned success while leaving the dependent
+   `LineItem` row in place, which traced back to this, not to
+   `FakeDatabase`/`Schema` (both already correct). Fixed with a
+   one-line change (`schema=Schema.from_plan_json(plan)`), live-
+   verified: the same probe now correctly cascades.
+
+   **A fourth bug found, disclosed, and deliberately not fixed here
+   (out of this milestone's scope):** `crates/ciac-codegen/src/ts_client.rs`'s
+   `write_api_function` derives an API route's response envelope type
+   from its *request* payload type (`Types.Envelope<{payload_ty}>`),
+   not its actual return type — correct for every pre-existing
+   checked-in example (where a route's output always happens to equal
+   its input, e.g. echo-style create/update), silently wrong for any
+   handler whose declared type differs, which no example exercised
+   until this milestone's own `DeleteOrder`/`CountOrders` additions
+   (see below). Confirmed pre-existing and not something this
+   milestone introduced: `query-verbs.ciac`'s already-checked-in
+   `removeApi` (`Remove(payload: IdOnly) -> Bool`) has carried the
+   identical wrong annotation (`Promise<Envelope<IdOnly>>` instead of
+   `Envelope<boolean>`) since it was authored, unnoticed. This is a
+   real, disclosed TypeScript-client type-safety gap (the generated
+   *runtime* behavior is correct — verified live via `ciac sim`; only
+   the compile-time type annotation lies) — real, disclosed future
+   work, not attempted in this milestone, since fixing it needs a
+   `ciac-codegen` model change (plumbing the pipeline's actual return
+   type through `ApiCtx`) unrelated to `ciac-sim`'s own deepening.
+
+   **Correction: `db.update`'s status, re-verified precisely.** M1's
+   note characterized `db.update` as "already production-complete on
+   all five targets," true for its *lowering* (confirmed again this
+   milestone: `db.update`'s SQL shape is correct on all five). But a
+   live round-trip probe through `ciac sim --target python` (checking
+   actual row content, not just HTTP status — an under-verification
+   this milestone's own probing caught and corrected) shows generated
+   Python's `db.update` lowers to `session.get()` + `setattr()`
+   attribute mutation + `session.commit()`, and `_FakeSession.commit()`
+   only applies rows from `_pending_adds`/`_pending_deletes` — the
+   mutated, `.get()`-returned object was never `.add()`-ed, so the
+   commit silently persists nothing in simulation mode. `db.delete`
+   (which does correctly call `session.delete(row)`, landing in
+   `_pending_deletes`) is unaffected and confirmed working live. This
+   *is* the disclosed "`_FakeSession` attribute-mutation update
+   unsupported" gap from the module's own docstring — real, and
+   exactly what M9's `sim/pyrunner/world.py` closure targets; not
+   fixed here, and `relational-depth.ciac-sim.json`'s scenario was
+   designed around this finding (see below) rather than asserting a
+   false pass.
+
+   **Corpus: `relational-depth`/`atomic-batch`/`fanout`, all three
+   authored and live-verified.** `examples/domain-orders.ciac`
+   extended with `UpdateOrderTotal`/`DeleteOrder`/`CountOrders`
+   handlers and routes (the update/delete/count trio the corpus
+   family needs; `db.get` deliberately omitted — the family
+   description names only "update/delete/count, uniques, references,
+   cascade + restrict") — the existing customer/order (`restrict`)
+   and order/line-item (`cascade`+`unique`) schema already covered
+   the reference half, per Pillar 7's "fewest new moving parts"
+   criterion, so no new `sim-relational.ciac` was needed.
+   `DeleteOrder` returns a `DeleteResult { deleted: Bool }` record
+   rather than a bare `Bool` — a bare-scalar handler return crashes
+   the generated route wrapper (`result.model_dump()` on a `bool`), a
+   fifth real, pre-existing, disclosed-not-fixed bug (out of scope;
+   same category as the `ts_client.rs` one above) this milestone
+   worked around rather than fixed. `sim/relational-depth.ciac-sim.json`
+   exercises insert-with-reference-validation, cascade-delete (now
+   correctly cascading, per the `auto_driver.py` fix above), and
+   confirms the deleted rows' absence — live green on Python;
+   `db.update`/`db.count` deliberately excluded from the scenario's
+   own assertions, per the correction above, rather than asserting a
+   false pass. `sim/atomic-batch.ciac-sim.json` reuses the existing
+   `PlaceOrder` `transaction {}` (insert Orders, conditional `fail`,
+   insert OrderAudits) with an injected `db.commit` failure on
+   occurrence 1, asserting zero partial rows, then a clean retry
+   commits both — live green on Python. **`sim/fanout.ciac-sim.json`
+   targets the existing `examples/sim-broker-slice.ciac`
+   (`ConsumerA`/`ConsumerB`, two queue groups on one `Pings`
+   stream, from v0.17 M7) rather than a new `sim-fanout.ciac` as
+   Pillar 7's table drafted** — that program already exercises this
+   exact topology cleanly, so a new program would have been pure
+   duplication; the corpus-authoring-time "fewest new moving parts"
+   decision documented here per Pillar 7's own delegation. Live
+   green on Python (both consumers see both pings); live red on Rust
+   at the second consumer's row (`FakeQueue::take_all()`'s
+   single-consumer drain semantics — `BrokerLog` exists now but
+   isn't wired into the Rust runner yet, correctly deferred to M4) —
+   exactly the "runnable ×1–2 until targets deepen" state the plan's
+   own exit checklist named, though the *reason* (Python's real
+   pre-existing broker fake, not `ciac-sim`'s new one) differs from
+   what the plan likely assumed when it wrote that line, worth
+   disclosing as a drift rather than silently taking credit for the
+   prediction. All three scenarios wired into CI's `generated-sim`
+   job (`.github/workflows/ci.yml`), Python-only for now; a `--target
+   rust` row is deferred to M4 alongside the world-guard leaves that
+   would make it meaningful.
+
+   **Golden churn, exactly as M1's own corrected table predicted:**
+   `world.rs`'s further deepening flowed into all 26 Rust golden
+   snapshots again (the same `include_str!` vendoring mechanism);
+   `domain-orders.ciac`'s new handlers/records additionally touched
+   its own dot/IR/gen(all five targets)/ts-client snapshots and two
+   new `host_syntax_identity` snapshot families. Regenerated via the
+   same `cargo insta test --accept` iteration approach as M1 (this
+   time converging in one pass); every diff reviewed and confirmed
+   additive/expected before accepting.
+
+   **Full verification:** `cargo fmt --all --check` clean; `cargo
+   clippy --workspace --all-targets` zero warnings; `cargo test
+   --workspace --no-fail-fast` — every suite green (including the
+   ~450s conformance.rs, ~710s determinism.rs, ~355s golden.rs,
+   ~365s openapi.rs, and `ciac-sim`'s own 68 unit tests) except the
+   one already-disclosed pre-existing `backfill_cli` ruff-drift
+   failure carried forward unchanged from every prior run this
+   session (confirmed environmental, not a regression — the same
+   ruff import-sort drift independently reproduces against an
+   entirely untouched example, `sim-broker-slice.ciac`, via plain
+   `ciac verify` with none of this milestone's changes in play).
+   Both canonical sim anchors re-confirmed byte-exact post-change:
+   `{"ProcessOrder":3}/{"Reconcile":1}` (vertical-slice.ciac-sim.json)
+   and `{"ProcessOrder":100}/{"Reconcile":7}` (virtual-week.ciac-sim.json).
+
+   **M2 exit checklist — met:** relational/broker/clock behaviors
+   unit-tested in-crate including batch rollback and two-group
+   fan-out (✓, 19 new tests); corpus scenarios authored (✓, all
+   three, live-verified rather than merely written); existing crate
+   surface unbroken (✓, `SimWorld::new` and every pre-existing method
+   byte-identical, confirmed by unmodified pre-existing tests passing
+   as-is); both canonical anchors untouched (✓, confirmed above).
+   `world.py` was not adjusted — no both-references resolution
+   demanded it this milestone (the `auto_driver.py` fix is a driver-
+   wiring bug, not a `world.py`/`world.rs` semantic divergence).
 
 3. **M3 — The shared world, stage two: the peripheral fakes.**
    Cache (TTL vs clock), object store, email, search (substring

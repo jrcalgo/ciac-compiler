@@ -41,7 +41,7 @@ from pydantic import BaseModel
 from cron import CronSchedule
 from replay import ReplayError, build_replay, check_compatible
 from scenario_runner import ApiEntry, JobEntry, ScenarioRunner, WorkerEntry
-from world import SimWorld
+from world import Schema, SimWorld
 
 
 class RegistryError(Exception):
@@ -192,7 +192,18 @@ async def main() -> None:
         print(json.dumps({"scenario": scenario["name"], "passed": False, "error": str(exc)}))
         return
 
-    world = SimWorld(failure_rules=failure_rules)
+    # 27UpdatePlan.md M2: `Schema.from_plan_json(plan)` (proven since
+    # v0.17 M6) was, until this fix, only ever wired by the bespoke
+    # `inner_proof_domain_orders.py` dev script -- the real `ciac sim`
+    # driver here built every `SimWorld` with `Schema.empty()` (the
+    # `SimWorld.schema` dataclass field's own default), silently
+    # disabling reference/unique/cascade/restrict checking for every
+    # actual `ciac sim` invocation regardless of target program.
+    # Discovered live while authoring this arc's `relational-depth`
+    # corpus scenario: a cascade-delete request returned success but
+    # left the dependent row in place, which traced back to this gap,
+    # not to `FakeDatabase`/`Schema` themselves (both already correct).
+    world = SimWorld(failure_rules=failure_rules, schema=Schema.from_plan_json(plan))
     from app.state import AppState, set_current
 
     set_current(AppState.simulation(world))

@@ -347,6 +347,28 @@ impl Runner {
                 }
                 Ok(())
             }
+            // 27UpdatePlan.md M1 added these `ExpectStep` kinds to the
+            // shared scenario schema for the peripheral fakes (cache,
+            // object store, email, search, external HTTP) M3 builds
+            // into this world -- refused with the specific reason here
+            // rather than silently no-op'd, matching this runner's own
+            // "refused, not guessed" contract for anything it does not
+            // yet fake (v0.17 M11).
+            ExpectStep::Email { .. } => anyhow::bail!(
+                "sim_runner: expect.email is not yet faked on this target (27UpdatePlan.md M3)"
+            ),
+            ExpectStep::Cache { .. } => anyhow::bail!(
+                "sim_runner: expect.cache is not yet faked on this target (27UpdatePlan.md M3)"
+            ),
+            ExpectStep::Object { .. } => anyhow::bail!(
+                "sim_runner: expect.object is not yet faked on this target (27UpdatePlan.md M3)"
+            ),
+            ExpectStep::SearchHits { .. } => anyhow::bail!(
+                "sim_runner: expect.search_hits is not yet faked on this target (27UpdatePlan.md M3)"
+            ),
+            ExpectStep::HttpCalls { .. } => anyhow::bail!(
+                "sim_runner: expect.http_calls is not yet faked on this target (27UpdatePlan.md M3)"
+            ),
         }
     }
 }

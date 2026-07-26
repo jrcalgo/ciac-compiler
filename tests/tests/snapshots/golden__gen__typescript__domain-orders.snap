@@ -146,6 +146,29 @@ openapi.json
         ],
         "type": "object"
       },
+      "DeleteResult": {
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "IdOnly": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
       "InvalidOrder": {
         "properties": {
           "reason": {
@@ -226,6 +249,17 @@ openapi.json
           "id",
           "note",
           "total"
+        ],
+        "type": "object"
+      },
+      "OrderCountFilter": {
+        "properties": {
+          "min_total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "min_total"
         ],
         "type": "object"
       }
@@ -343,6 +377,123 @@ openapi.json
     "/orders": {
       "post": {
         "operationId": "checkout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Order"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/count": {
+      "post": {
+        "operationId": "count_orders_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCountFilter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/OrderCountFilter"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/delete": {
+      "post": {
+        "operationId": "delete_order_route",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdOnly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/IdOnly"
+                    },
+                    "status": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        }
+      }
+    },
+    "/orders/update": {
+      "post": {
+        "operationId": "update_order_route",
         "requestBody": {
           "content": {
             "application/json": {
@@ -6007,6 +6158,25 @@ export class AddLineItem {
   }
 }
 ============================================================
+src/logic/count_orders.ts
+============================================================
+
+// Compiler-owned typed handler `CountOrders`, lowered
+// straight from the `.ciac` source. Regenerated on every build;
+// business logic lives in the `.ciac` source, not here.
+
+import type { AppState } from "../state.js";
+import type { OrderCountFilter } from "../schemas.js";
+
+export class CountOrders {
+  constructor(private readonly state: AppState) {}
+
+  async handle(filter: OrderCountFilter): Promise<number> {
+    const __result0 = await this.state.db.$client.query("SELECT COUNT(*) as count FROM orders WHERE total >= $1", [filter.min_total]);
+    return Number(__result0.rows[0].count);
+  }
+}
+============================================================
 src/logic/create_customer.ts
 ============================================================
 
@@ -6029,6 +6199,27 @@ export class CreateCustomer {
     }
     void (__row0);
     return c;
+  }
+}
+============================================================
+src/logic/delete_order.ts
+============================================================
+
+// Compiler-owned typed handler `DeleteOrder`, lowered
+// straight from the `.ciac` source. Regenerated on every build;
+// business logic lives in the `.ciac` source, not here.
+
+import type { AppState } from "../state.js";
+import type { DeleteResult } from "../schemas.js";
+import type { IdOnly } from "../schemas.js";
+
+export class DeleteOrder {
+  constructor(private readonly state: AppState) {}
+
+  async handle(payload: IdOnly): Promise<DeleteResult> {
+    const __result0 = await this.state.db.$client.query("DELETE FROM orders WHERE id = $1", [payload.id]);
+    const v1 = (__result0.rowCount ?? 0) > 0;
+    return ({ deleted: v1 } satisfies DeleteResult);
   }
 }
 ============================================================
@@ -6089,6 +6280,31 @@ export class PlaceOrder {
   }
 }
 ============================================================
+src/logic/update_order_total.ts
+============================================================
+
+// Compiler-owned typed handler `UpdateOrderTotal`, lowered
+// straight from the `.ciac` source. Regenerated on every build;
+// business logic lives in the `.ciac` source, not here.
+
+import type { AppState } from "../state.js";
+import type { Order } from "../schemas.js";
+
+export class UpdateOrderTotal {
+  constructor(private readonly state: AppState) {}
+
+  async handle(order: Order): Promise<Order> {
+    const __row0 = order;
+    const __result1 = await this.state.db.$client.query("UPDATE orders SET customer_id = $1, total = $2 WHERE id = $3", [__row0.customer_id, __row0.total, order.id]);
+    if (__result1.rowCount === 0) {
+        void (null);
+    } else {
+        void (__row0);
+    }
+    return order;
+  }
+}
+============================================================
 src/main.ts
 ============================================================
 // Application assembly for DomainOrders. Generated by CIaC.
@@ -6105,6 +6321,9 @@ import { createState, type AppState } from "./state.js";
 import { create_customer_routeRoute } from "./routes/create_customer_route.js";
 import { checkoutRoute } from "./routes/checkout.js";
 import { itemsRoute } from "./routes/items.js";
+import { update_order_routeRoute } from "./routes/update_order_route.js";
+import { delete_order_routeRoute } from "./routes/delete_order_route.js";
+import { count_orders_routeRoute } from "./routes/count_orders_route.js";
 
 // Emitted by `ciac build` alongside this file (openapi.json, derived
 // straight from the IR) — the single source of truth for the API
@@ -6128,6 +6347,9 @@ export function buildApp(state: AppState, opts?: { logger?: boolean }) {
   app.register(create_customer_routeRoute, { state });
   app.register(checkoutRoute, { state });
   app.register(itemsRoute, { state });
+  app.register(update_order_routeRoute, { state });
+  app.register(delete_order_routeRoute, { state });
+  app.register(count_orders_routeRoute, { state });
 
   return app;
 }
@@ -6233,6 +6455,34 @@ export const checkoutRoute: FastifyPluginAsync<{ state: AppState }> = async (
   });
 };
 ============================================================
+src/routes/count_orders_route.ts
+============================================================
+// Request pipeline for `api CountOrdersRoute`. Generated by CIaC.
+import type { FastifyPluginAsync } from "fastify";
+import { CountOrders } from "../logic/count_orders.js";
+import type { AppState } from "../state.js";
+
+export const count_orders_routeRoute: FastifyPluginAsync<{ state: AppState }> = async (
+  app,
+  { state },
+) => {
+  // A no-op read: `state` may go unused (a pipeline with no db/cache/
+  // handler/publish/call step, e.g. `Return`-only) or genuinely used
+  // below, depending on the pipeline's steps — computing which
+  // per-route isn't worth it when a harmless `void` covers both, kept
+  // in the plugin signature so route registration doesn't change shape
+  // as this api's pipeline grows.
+  void state;
+  app.post("/orders/count", async (request) => {
+    let result: unknown = request.body;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see _steps.ts.j2's own doc comment on why `result` stays `unknown`
+    result = await new CountOrders(state).handle(result as any);
+
+    return { status: "accepted", data: result };
+  });
+};
+============================================================
 src/routes/create_customer_route.ts
 ============================================================
 // Request pipeline for `api CreateCustomerRoute`. Generated by CIaC.
@@ -6261,6 +6511,34 @@ export const create_customer_routeRoute: FastifyPluginAsync<{ state: AppState }>
   });
 };
 ============================================================
+src/routes/delete_order_route.ts
+============================================================
+// Request pipeline for `api DeleteOrderRoute`. Generated by CIaC.
+import type { FastifyPluginAsync } from "fastify";
+import { DeleteOrder } from "../logic/delete_order.js";
+import type { AppState } from "../state.js";
+
+export const delete_order_routeRoute: FastifyPluginAsync<{ state: AppState }> = async (
+  app,
+  { state },
+) => {
+  // A no-op read: `state` may go unused (a pipeline with no db/cache/
+  // handler/publish/call step, e.g. `Return`-only) or genuinely used
+  // below, depending on the pipeline's steps — computing which
+  // per-route isn't worth it when a harmless `void` covers both, kept
+  // in the plugin signature so route registration doesn't change shape
+  // as this api's pipeline grows.
+  void state;
+  app.post("/orders/delete", async (request) => {
+    let result: unknown = request.body;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see _steps.ts.j2's own doc comment on why `result` stays `unknown`
+    result = await new DeleteOrder(state).handle(result as any);
+
+    return { status: "accepted", data: result };
+  });
+};
+============================================================
 src/routes/items.ts
 ============================================================
 // Request pipeline for `api Items`. Generated by CIaC.
@@ -6284,6 +6562,34 @@ export const itemsRoute: FastifyPluginAsync<{ state: AppState }> = async (
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see _steps.ts.j2's own doc comment on why `result` stays `unknown`
     result = await new AddLineItem(state).handle(result as any);
+
+    return { status: "accepted", data: result };
+  });
+};
+============================================================
+src/routes/update_order_route.ts
+============================================================
+// Request pipeline for `api UpdateOrderRoute`. Generated by CIaC.
+import type { FastifyPluginAsync } from "fastify";
+import { UpdateOrderTotal } from "../logic/update_order_total.js";
+import type { AppState } from "../state.js";
+
+export const update_order_routeRoute: FastifyPluginAsync<{ state: AppState }> = async (
+  app,
+  { state },
+) => {
+  // A no-op read: `state` may go unused (a pipeline with no db/cache/
+  // handler/publish/call step, e.g. `Return`-only) or genuinely used
+  // below, depending on the pipeline's steps — computing which
+  // per-route isn't worth it when a harmless `void` covers both, kept
+  // in the plugin signature so route registration doesn't change shape
+  // as this api's pipeline grows.
+  void state;
+  app.post("/orders/update", async (request) => {
+    let result: unknown = request.body;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see _steps.ts.j2's own doc comment on why `result` stays `unknown`
+    result = await new UpdateOrderTotal(state).handle(result as any);
 
     return { status: "accepted", data: result };
   });
@@ -6342,6 +6648,24 @@ export class InvalidOrder extends Error {
   }
 }
 
+
+export const IdOnlySchema = z.object({
+  id: z.string().uuid(),
+});
+export type IdOnly = z.infer<typeof IdOnlySchema>;
+
+
+export const OrderCountFilterSchema = z.object({
+  min_total: z.number(),
+});
+export type OrderCountFilter = z.infer<typeof OrderCountFilterSchema>;
+
+
+export const DeleteResultSchema = z.object({
+  deleted: z.boolean(),
+});
+export type DeleteResult = z.infer<typeof DeleteResultSchema>;
+
 ============================================================
 src/sim_runner.ts
 ============================================================
@@ -6381,6 +6705,9 @@ const API_ROUTES: Record<string, { method: InjectOptions["method"]; path: string
   "CreateCustomerRoute": { method: "POST", path: "/customers" },
   "Checkout": { method: "POST", path: "/orders" },
   "Items": { method: "POST", path: "/line-items" },
+  "UpdateOrderRoute": { method: "POST", path: "/orders/update" },
+  "DeleteOrderRoute": { method: "POST", path: "/orders/delete" },
+  "CountOrdersRoute": { method: "POST", path: "/orders/count" },
 };
 
 // -- Scenario JSON shape (structural restatement of `ciac_sim::scenario`) --

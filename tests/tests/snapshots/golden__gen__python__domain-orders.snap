@@ -98,7 +98,12 @@ async def checkout(
     result = payload
 
     result = await PlaceOrder(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/count_orders_route.py
 ============================================================
@@ -127,7 +132,12 @@ async def count_orders_route(
     result = payload
 
     result = await CountOrders(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/create_customer_route.py
 ============================================================
@@ -156,7 +166,12 @@ async def create_customer_route(
     result = payload
 
     result = await CreateCustomer(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/delete_order_route.py
 ============================================================
@@ -185,7 +200,12 @@ async def delete_order_route(
     result = payload
 
     result = await DeleteOrder(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/items.py
 ============================================================
@@ -214,7 +234,12 @@ async def items(
     result = payload
 
     result = await AddLineItem(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/update_order_route.py
 ============================================================
@@ -243,7 +268,12 @@ async def update_order_route(
     result = payload
 
     result = await UpdateOrderTotal(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/config.py
 ============================================================

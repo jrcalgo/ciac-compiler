@@ -96,7 +96,12 @@ async def call_upstream_api(
     result = payload
 
     result = await CallUpstream(http=get_http_client("upstream")).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/evict_cache_api.py
 ============================================================
@@ -123,7 +128,12 @@ async def evict_cache_api(
     result = payload
 
     result = await EvictCache(cache=get_cache()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/index_doc_api.py
 ============================================================
@@ -150,7 +160,12 @@ async def index_doc_api(
     result = payload
 
     result = await IndexDoc(search=get_search()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/list_docs_api.py
 ============================================================
@@ -177,7 +192,12 @@ async def list_docs_api(
     result = payload
 
     result = await ListDocs(object_store=get_object_store()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/notify_user_api.py
 ============================================================
@@ -204,7 +224,12 @@ async def notify_user_api(
     result = payload
 
     result = await NotifyUser(email=get_email()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/remove_doc_api.py
 ============================================================
@@ -231,7 +256,12 @@ async def remove_doc_api(
     result = payload
 
     result = await RemoveDoc(object_store=get_object_store()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/search_docs_api.py
 ============================================================
@@ -258,7 +288,12 @@ async def search_docs_api(
     result = payload
 
     result = await SearchDocs(search=get_search()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/cache.py
 ============================================================

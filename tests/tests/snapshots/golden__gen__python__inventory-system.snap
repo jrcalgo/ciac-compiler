@@ -211,7 +211,12 @@ async def price(
     result = payload
 
     result = await ComputePrice(session=session, cache=get_cache()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 catalog/app/cache.py
 ============================================================
@@ -1201,7 +1206,12 @@ async def quote(
     result = payload
 
     result = await CatalogClient().price(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 gateway/app/clients/__init__.py
 ============================================================

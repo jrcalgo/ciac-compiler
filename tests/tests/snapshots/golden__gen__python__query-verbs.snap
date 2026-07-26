@@ -98,7 +98,12 @@ async def count_active_api(
     result = payload
 
     result = await CountActive(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/delete_by_active_api.py
 ============================================================
@@ -127,7 +132,12 @@ async def delete_by_active_api(
     result = payload
 
     result = await DeleteByActive(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/list_active_api.py
 ============================================================
@@ -156,7 +166,12 @@ async def list_active_api(
     result = payload
 
     result = await ListActive(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/remove_api.py
 ============================================================
@@ -185,7 +200,12 @@ async def remove_api(
     result = payload
 
     result = await Remove(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/replace_api.py
 ============================================================
@@ -214,7 +234,12 @@ async def replace_api(
     result = payload
 
     result = await Replace(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/config.py
 ============================================================

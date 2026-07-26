@@ -130,7 +130,12 @@ async def charge(
     result = payload
 
     result = await CapturePayment().handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 billing/app/config.py
 ============================================================
@@ -2643,7 +2648,12 @@ async def upload(
     result = await BillingClient().charge(result)
     result = await StoreVideo().handle(result)
     await publish("media_system.uploaded", result.model_dump(mode="json"))
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 upload-api/app/clients/__init__.py
 ============================================================

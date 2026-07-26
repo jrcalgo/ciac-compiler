@@ -101,7 +101,12 @@ async def ingest(
     result = payload
 
     await publish("clickstream.clicks", result.model_dump(mode="json"))
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/config.py
 ============================================================

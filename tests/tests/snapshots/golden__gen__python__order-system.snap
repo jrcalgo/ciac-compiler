@@ -194,7 +194,12 @@ async def ingest_order_event(
     result = payload
 
     result = await ReceiveOrderEvent().handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/limited_order.py
 ============================================================
@@ -223,7 +228,12 @@ async def limited_order(
     result = payload
 
     result = await CheckLimitOrder(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/mark_shipped_api.py
 ============================================================
@@ -255,7 +265,12 @@ async def mark_shipped_api(
     result = payload
 
     result = await MarkShipped(session=session, cache=get_cache()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/shipped_summary_api.py
 ============================================================
@@ -287,7 +302,12 @@ async def shipped_summary_api(
     result = payload
 
     result = await ShippedSummary(session=session, cache=get_cache()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/auth.py
 ============================================================

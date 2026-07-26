@@ -1,6 +1,5 @@
 ---
 source: tests/tests/golden.rs
-assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -136,7 +135,12 @@ async def submit(
 
     result = await PaymentsClient().charge(result)
     await publish("traced_checkout.placed", result.model_dump(mode="json"))
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 checkout/app/clients/__init__.py
 ============================================================
@@ -963,7 +967,12 @@ async def charge(
 ) -> dict[str, Any]:
     result = payload
 
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 payments/app/config.py
 ============================================================

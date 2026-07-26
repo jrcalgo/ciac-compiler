@@ -323,6 +323,44 @@ row-level ID values.
 `verify --json` use, with a `sim` field: `plan_hash`, `source_hash`,
 and one outcome per scenario).
 
+## Fidelity boundary: families with no cheap real counterpart
+
+27UpdatePlan.md M3's fidelity ratchet compares fake-vs-real wherever a
+real counterpart is cheap to stand up — relational semantics against
+an embedded SQLite database (`crates/ciac-sim/tests/sqlite_ratchet.rs`,
+zero Docker), and cache TTL / broker fan-out remain delegated to the
+existing Docker-backed rows under `verify --system`. Three families
+have no such cheap real counterpart, and get the opposite treatment: an
+explicit statement of what the fake deliberately is not, rather than a
+parity claim it can't back up.
+
+- **Email.** `FakeEmail` records sent messages (`to`/`subject`/`body`)
+  instead of talking SMTP. It never establishes a connection, never
+  validates an address, and never simulates bounce/deferral/rate-limit
+  behavior a real mail provider would apply.
+- **Search.** `FakeSearch` matches the *shape* `search.query` actually
+  lowers to (`{"query": {"query_string": {"query": <text>}}}`) with a
+  case-insensitive substring match over each document's JSON — not a
+  real query language. There is no ranking, no tokenization, no fuzzy
+  matching, and no index configuration; a scenario asserting anything
+  beyond "this text appears somewhere in this document" is asserting
+  something the fake was never built to model.
+- **Auth (claims-lookup).** `FakeAuth` verifies a bearer token by
+  direct lookup against claims a scenario configured ahead of time
+  (`world.auth.issue`), instead of real JWT/JWKS cryptography. It
+  bypasses signature verification, key rotation, and the JWKS HTTP
+  round-trip entirely, while keeping scope enforcement real — the same
+  simplification behind "dev-identity scope behavior passes with fake
+  JWKS and no Keycloak process" (see 17UpdatePlan.md's M8 milestone
+  entry). A green `expect.response` on a scope-gated route proves the
+  generated authorization *logic* is correct; it proves nothing about
+  token forgery resistance or a real identity provider's behavior.
+
+These three boundaries are ported verbatim into each target's own
+`world.rs`/`world.py`/(TypeScript/Go/Java restatements as they land)
+doc comments — the disclosure lives next to the code it describes, not
+only here.
+
 ## Scenarios
 
 A scenario is a versioned JSON document (`ciac_sim::Scenario`), not

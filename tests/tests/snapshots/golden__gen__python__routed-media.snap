@@ -1,6 +1,5 @@
 ---
 source: tests/tests/golden.rs
-assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1616,12 +1615,12 @@ transport below does not trigger the startup lifespan.
 
 import time
 
-import jwt
 import httpx
+import jwt
 import pytest
 
-from app.main import app
 from app.config import get_settings
+from app.main import app
 
 
 def _client(*, raise_app_exceptions: bool = True) -> httpx.AsyncClient:

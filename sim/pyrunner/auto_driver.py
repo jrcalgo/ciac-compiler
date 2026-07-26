@@ -20,16 +20,27 @@ disclosed scope) enumerate APIs, so APIs are instead discovered
 directly from the scenario's own `request` steps: each `api` name is
 snake_cased (matching `ciac-codegen`'s own file-naming exactly) and
 imported from `app.api.<snake>`. A route is auto-called only in the
-common case -- its only parameter besides `payload` is named
-`session`; anything else (auth claims, a second capability instance)
-is refused with a clear, disclosed error naming the exact route and
-its extra parameters, not a silent skip or an opaque crash.
+common case -- its only parameters besides `payload` are named
+`session` and/or `claims`; anything else (a second capability
+instance) is refused with a clear, disclosed error naming the exact
+route and its extra parameters, not a silent skip or an opaque crash.
+
+27UpdatePlan.md M3: a `claims` parameter (`Depends(require_auth)` or
+`Depends(require_scope(...))`, the shape every generated auth-gated
+route carries -- see `app/auth.py.j2`) is resolved by walking that
+`Depends` chain directly (`_resolve_claims`) and synthesizing a bearer
+token from the scenario step's own `"as": {"sub": ..., "scopes": [...]}`
+principal via `world.auth.issue`, rather than replicating FastAPI's
+request-scoped dependency resolution wholesale. A request step naming
+an auth-gated api with no `as` principal is refused, not silently
+treated as anonymous.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import importlib
 import inspect
 import json
@@ -38,10 +49,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from cron import CronSchedule
+from cron import CronSchedule, parse_duration_ms
 from replay import ReplayError, build_replay, check_compatible
 from scenario_runner import ApiEntry, JobEntry, ScenarioRunner, WorkerEntry
-from world import Schema, SimWorld
+from world import SEARCH_INDEX_NAME, Schema, SimWorld
 
 
 class RegistryError(Exception):
@@ -130,6 +141,70 @@ def build_failure_rules(scenario: dict[str, Any]) -> list[tuple[str, str | None,
     return rules
 
 
+async def apply_given(world: SimWorld, scenario: dict[str, Any]) -> None:
+    """27UpdatePlan.md M3: seeds `given.db`/`given.cache`/`given.store`/
+    `given.search`/`given.external_http` into `world` before the runner
+    executes any step. Until this fix, `build_failure_rules` was the
+    *only* `given.*` list this driver ever consumed -- every other
+    `given.*` list was parsed by `ciac_sim::scenario` and then silently
+    dropped on the floor, discovered while authoring this milestone's
+    corpus scenarios (all of which lean on seeding to set up state
+    without a bespoke handler call for every fixture)."""
+    given = scenario.get("given", {})
+    for table_rows in given.get("db", []):
+        table = table_rows["table"]
+        for row in table_rows["rows"]:
+            world.db.insert(table, str(row["id"]), row)
+    for entry in given.get("cache", []):
+        ex_seconds = parse_duration_ms(entry["ttl"]) // 1000 if entry.get("ttl") else None
+        await world.fake_cache(entry["instance"]).set(
+            entry["key"], json.dumps(entry["value"]), ex=ex_seconds
+        )
+    for obj in given.get("store", []):
+        body = base64.b64decode(obj["value_base64"])
+        await world.fake_object_store(obj["instance"]).put(obj["key"], body)
+    for doc in given.get("search", []):
+        await world.fake_search(doc["instance"]).index(SEARCH_INDEX_NAME, doc["id"], doc["doc"])
+    # `given.external_http` is read lazily by `fake_http_client` on its
+    # first access per instance (see `SimWorld.fake_http_client`), so
+    # seeding `world.http_fixtures` directly -- before any request step
+    # can trigger that first access -- is enough; no constructor plumbing
+    # needed.
+    for fixture in given.get("external_http", []):
+        world.http_fixtures[fixture["instance"]] = fixture["responses"]
+
+
+async def _resolve_claims(dependency: Any, credentials: Any) -> Any:
+    """27UpdatePlan.md M3: walks a generated route's `claims` parameter's
+    FastAPI `Depends` chain (`require_auth`, or `require_scope(...)`'s
+    returned closure wrapping `require_auth`) without a real ASGI
+    request -- every leaf in that chain only ever needs a bearer
+    credentials object, which the caller already synthesized from the
+    scenario step's `as` principal via `world.auth.issue`. This is not a
+    general FastAPI dependency-injection resolver; it only recurses
+    through `Depends`-typed parameters and fills a `credentials`-named
+    leaf, which is all `app/auth.py.j2`'s own two functions ever need."""
+    from fastapi import params as fastapi_params
+
+    sig = inspect.signature(dependency)
+    kwargs: dict[str, Any] = {}
+    for name, param in sig.parameters.items():
+        if name == "credentials":
+            # The chain's leaf: `require_auth`'s own bearer-credentials
+            # parameter, normally filled by `Depends(_bearer)` resolving
+            # a real `Request`'s Authorization header -- supplied
+            # directly here instead of recursing into `_bearer` itself.
+            kwargs[name] = credentials
+        elif isinstance(param.default, fastapi_params.Depends):
+            kwargs[name] = await _resolve_claims(param.default.dependency, credentials)
+        else:
+            raise RegistryError(
+                f"auth dependency {dependency!r} has an unrecognized parameter {name!r} "
+                f"this driver's claims resolver does not know how to supply"
+            )
+    return await dependency(**kwargs)
+
+
 def build_apis(scenario: dict[str, Any]) -> dict[str, ApiEntry]:
     api_names = {
         step["request"]["api"] for step in scenario["steps"] if "request" in step
@@ -139,24 +214,52 @@ def build_apis(scenario: dict[str, Any]) -> dict[str, ApiEntry]:
         snake = to_snake_case(api_name)
         module = importlib.import_module(f"app.api.{snake}")
         route = getattr(module, snake)
-        params = [p for p in inspect.signature(route).parameters if p != "payload"]
-        if params not in ([], ["session"]):
+        sig = inspect.signature(route)
+        params = [p for p in sig.parameters if p != "payload"]
+        extra = set(params) - {"session", "claims"}
+        if extra:
             raise RegistryError(
                 f"api {api_name!r} (app.api.{snake}.{snake}) needs manual registration -- "
-                f"auto-discovery only handles no extra parameters or a single `session` "
-                f"parameter, found {params!r}"
+                f"auto-discovery only handles `session` and `claims` beyond `payload`, "
+                f"found extra parameter(s) {sorted(extra)!r}"
             )
         payload_cls = _payload_constructor(route)
-        needs_session = params == ["session"]
+        needs_session = "session" in params
+        claims_dependency = sig.parameters["claims"].default.dependency if "claims" in params else None
 
-        async def call(payload: dict, _route=route, _cls=payload_cls, _needs=needs_session) -> Any:
+        async def call(
+            payload: dict,
+            principal: dict[str, Any] | None,
+            _route=route,
+            _cls=payload_cls,
+            _needs_session=needs_session,
+            _claims_dep=claims_dependency,
+            _api_name=api_name,
+        ) -> Any:
             value = _cls(**payload) if _cls is not None else payload
-            if _needs:
+            kwargs: dict[str, Any] = {}
+            if _claims_dep is not None:
+                if principal is None:
+                    raise RegistryError(
+                        f"api {_api_name!r} requires auth claims but the scenario's "
+                        f"request step supplied no `as` principal"
+                    )
+                from fastapi.security import HTTPAuthorizationCredentials
+
+                from app.state import current
+
+                token = f"sim:{principal['sub']}:{','.join(principal.get('scopes', []))}"
+                current().world.auth.issue(
+                    token, {"sub": principal["sub"], "scope": " ".join(principal.get("scopes", []))}
+                )
+                credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+                kwargs["claims"] = await _resolve_claims(_claims_dep, credentials)
+            if _needs_session:
                 from app.db import get_sessionmaker
 
                 async with get_sessionmaker("default")() as session:
-                    return await _route(value, session)
-            return await _route(value)
+                    return await _route(value, **kwargs, session=session)
+            return await _route(value, **kwargs)
 
         apis[api_name] = ApiEntry(service="", call=call)
     return apis
@@ -207,6 +310,7 @@ async def main() -> None:
     from app.state import AppState, set_current
 
     set_current(AppState.simulation(world))
+    await apply_given(world, scenario)
     runner = ScenarioRunner(world=world, apis=apis, workers=workers, jobs=jobs)
 
     error = None

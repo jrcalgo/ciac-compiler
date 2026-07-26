@@ -3362,6 +3362,220 @@ impl BrokerLog {
     }
 }
 
+/// 27UpdatePlan.md M3: cache-aside `cache.get`/`cache.set`/
+/// `cache.delete`, TTL measured against `SimWorld`'s own
+/// `VirtualClock` (never wall time) -- ported from
+/// `sim/pyrunner/world.py`'s `FakeCache` (v0.17 M8). One per declared
+/// `cache <Provider>` instance name, lazily created on first access,
+/// exactly like Python's own `fake_cache(instance)`.
+#[derive(Debug, Default)]
+struct FakeCache {
+    values: BTreeMap<String, String>,
+    expire_at_ms: BTreeMap<String, i64>,
+}
+
+impl FakeCache {
+    fn get(&mut self, key: &str, now_ms: i64) -> Option<String> {
+        if let Some(&expire_at) = self.expire_at_ms.get(key) {
+            if now_ms >= expire_at {
+                self.values.remove(key);
+                self.expire_at_ms.remove(key);
+                return None;
+            }
+        }
+        self.values.get(key).cloned()
+    }
+
+    fn set(&mut self, key: &str, value: String, ttl_ms: Option<i64>, now_ms: i64) {
+        self.values.insert(key.to_owned(), value);
+        match ttl_ms {
+            Some(ttl) => {
+                self.expire_at_ms.insert(key.to_owned(), now_ms + ttl);
+            }
+            None => {
+                self.expire_at_ms.remove(key);
+            }
+        }
+    }
+
+    fn delete(&mut self, key: &str) {
+        self.values.remove(key);
+        self.expire_at_ms.remove(key);
+    }
+}
+
+/// Enough of an S3/MinIO-shaped object store's interface
+/// (`put`/`get`/`delete`/`list`) for `object_store.*` verbs -- an
+/// in-memory key/bytes map, ported from Python's `FakeObjectStore`
+/// (v0.17 M8).
+#[derive(Debug, Default)]
+struct FakeObjectStore {
+    objects: BTreeMap<String, Vec<u8>>,
+}
+
+impl FakeObjectStore {
+    fn put(&mut self, key: &str, body: Vec<u8>) {
+        self.objects.insert(key.to_owned(), body);
+    }
+
+    fn get(&self, key: &str) -> Option<Vec<u8>> {
+        self.objects.get(key).cloned()
+    }
+
+    fn delete(&mut self, key: &str) {
+        self.objects.remove(key);
+    }
+
+    fn list(&self, prefix: &str) -> Vec<String> {
+        self.objects
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SentEmail {
+    to: String,
+    subject: String,
+    #[allow(dead_code)]
+    body: String,
+}
+
+/// `email.send`, recording sent messages instead of talking SMTP --
+/// ported from Python's `FakeEmail` (v0.17 M8). `body` is recorded
+/// (matching Python's own `sent: list[dict]`, which keeps it) even
+/// though `expect.email` only ever asserts `to`/`subject_contains`/
+/// `count` today -- ported for parity, not for a hypothetical future
+/// assertion.
+#[derive(Debug, Default)]
+struct FakeEmail {
+    sent: Vec<SentEmail>,
+}
+
+impl FakeEmail {
+    fn send(&mut self, to: &str, subject: &str, body: &str) {
+        self.sent.push(SentEmail {
+            to: to.to_owned(),
+            subject: subject.to_owned(),
+            body: body.to_owned(),
+        });
+    }
+}
+
+/// `search.index`/`search.query`/`search.delete` -- an in-memory
+/// index/doc_id/document map with the same narrow, disclosed query
+/// evaluator Python's `FakeSearch` (v0.17 M8) uses: case-insensitive
+/// substring match over each document's JSON, matching the shape
+/// `search.query` actually lowers to (`docs/expressions.md`'s own
+/// `{"query": {"query_string": {"query": <text>}}}` note), not a
+/// real query language.
+#[derive(Debug, Default)]
+struct FakeSearch {
+    docs: BTreeMap<String, Value>,
+}
+
+impl FakeSearch {
+    fn index(&mut self, doc_id: &str, document: Value) {
+        self.docs.insert(doc_id.to_owned(), document);
+    }
+
+    fn query(&self, text: &str) -> Vec<Value> {
+        if text.is_empty() {
+            return self.docs.values().cloned().collect();
+        }
+        let needle = text.to_lowercase();
+        self.docs
+            .values()
+            .filter(|doc| doc.to_string().to_lowercase().contains(&needle))
+            .cloned()
+            .collect()
+    }
+
+    fn delete(&mut self, doc_id: &str) {
+        self.docs.remove(doc_id);
+    }
+}
+
+/// A fixture-driven stand-in for an external HTTP client, consuming
+/// [`crate::scenario::GivenHttpResponse`] fixtures in order -- the
+/// same portable-scenario fixtures a `given.external_http` block
+/// already carries drive this fake directly, not a second ad hoc
+/// format, matching Python's `FakeHttpClient` (v0.17 M8).
+#[derive(Debug, Default)]
+struct FakeHttpClient {
+    responses: Vec<crate::scenario::GivenHttpResponse>,
+    next: usize,
+    requests: Vec<(String, Value)>,
+}
+
+impl FakeHttpClient {
+    fn post(&mut self, url: &str, json: Value) -> anyhow::Result<Value> {
+        self.requests.push((url.to_owned(), json.clone()));
+        let Some(response) = self.responses.get(self.next) else {
+            anyhow::bail!(
+                "no fixture response configured for external_http call #{} to {url:?}",
+                self.next + 1
+            );
+        };
+        self.next += 1;
+        match response {
+            crate::scenario::GivenHttpResponse::Error { error } => {
+                anyhow::bail!("simulated external_http failure: {error}")
+            }
+            crate::scenario::GivenHttpResponse::Ok { json, .. } => Ok(json.clone()),
+        }
+    }
+}
+
+/// A bearer token had no configured claims, or its configured expiry
+/// (against the virtual clock, never wall time) has passed -- mapped
+/// to a 401 by the generated auth guard, matching what real JWT/JWKS
+/// verification failure already does today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthError(String);
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for AuthError {}
+
+/// Verifies a bearer token by direct lookup against claims the
+/// runner configured ahead of time, instead of real JWT/JWKS crypto
+/// -- the disclosed simplification Python's own `FakeAuth` (v0.17 M8)
+/// already uses: rather than faking the JWKS HTTP round-trip, this
+/// bypasses JWT/JWKS verification entirely while keeping scope
+/// enforcement real. Singular (unlike cache/store/email/search/http),
+/// matching Python's own `SimWorld.auth: FakeAuth` -- one identity
+/// provider per world, not per-instance.
+#[derive(Debug, Default)]
+struct FakeAuth {
+    tokens: BTreeMap<String, (Value, Option<i64>)>,
+}
+
+impl FakeAuth {
+    fn issue(&mut self, token: &str, claims: Value, expire_at_ms: Option<i64>) {
+        self.tokens.insert(token.to_owned(), (claims, expire_at_ms));
+    }
+
+    fn verify(&self, token: &str, now_ms: i64) -> Result<Value, AuthError> {
+        let (claims, expire_at) = self
+            .tokens
+            .get(token)
+            .ok_or_else(|| AuthError(format!("no configured claims for bearer token {token:?}")))?;
+        if let Some(expire_at) = expire_at {
+            if now_ms >= *expire_at {
+                return Err(AuthError(format!("bearer token {token:?} has expired")));
+            }
+        }
+        Ok(claims.clone())
+    }
+}
+
 /// The simulation adapter `AppState::simulation(world)` constructs
 /// from in generated Rust code -- one instance per running scenario,
 /// shared (via `Arc`) across every cloned `AppState` handle exactly
@@ -3375,6 +3589,10 @@ impl BrokerLog {
 /// `sim_runner.rs.j2` template calls `SimWorld::new(...)`,
 /// `world.db.insert(...)`, `world.queue.take_all()`/`is_empty()`
 /// directly and cannot be disturbed before M4's runner swap-over).
+/// 27UpdatePlan.md M3 adds the peripheral fakes (cache/object store/
+/// email/search/http/auth) the same way -- additive fields, instance-
+/// keyed maps lazily populated on first access except `auth`
+/// (singular, per Python's own shape).
 #[derive(Debug)]
 pub struct SimWorld {
     pub db: FakeDatabase,
@@ -3386,6 +3604,12 @@ pub struct SimWorld {
     failures: Mutex<FailureEngine>,
     clock: Mutex<VirtualClock>,
     entropy: Mutex<Entropy>,
+    caches: Mutex<BTreeMap<String, FakeCache>>,
+    object_stores: Mutex<BTreeMap<String, FakeObjectStore>>,
+    emails: Mutex<BTreeMap<String, FakeEmail>>,
+    searches: Mutex<BTreeMap<String, FakeSearch>>,
+    http_clients: Mutex<BTreeMap<String, FakeHttpClient>>,
+    auth: Mutex<FakeAuth>,
 }
 
 impl SimWorld {
@@ -3414,6 +3638,12 @@ impl SimWorld {
             // through -- disclosed here rather than left implicit.
             clock: Mutex::new(VirtualClock::new(0)),
             entropy: Mutex::new(Entropy::new(0)),
+            caches: Mutex::new(BTreeMap::new()),
+            object_stores: Mutex::new(BTreeMap::new()),
+            emails: Mutex::new(BTreeMap::new()),
+            searches: Mutex::new(BTreeMap::new()),
+            http_clients: Mutex::new(BTreeMap::new()),
+            auth: Mutex::new(FakeAuth::default()),
         }
     }
 
@@ -3694,6 +3924,228 @@ impl SimWorld {
             .lock()
             .expect("Entropy mutex poisoned")
             .next_uuid()
+    }
+
+    /// 27UpdatePlan.md M3: `cache.get` -- `None` if absent or expired
+    /// (against this world's own virtual clock, never wall time). No
+    /// failure-injection check, matching Python's own `FakeCache`
+    /// (which never calls `should_fail` either).
+    pub fn cache_get(&self, instance: &str, key: &str) -> Option<String> {
+        let now = self.now_ms();
+        self.caches
+            .lock()
+            .expect("cache mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .get(key, now)
+    }
+
+    /// `cache.set`. `ttl_ms` is `None` for no expiry -- parsing a
+    /// scenario's `given.cache.ttl` duration string (`"30m"`) into
+    /// milliseconds is the runner's own job (the same split
+    /// `advance.by` already uses), not this method's.
+    pub fn cache_set(&self, instance: &str, key: &str, value: String, ttl_ms: Option<i64>) {
+        let now = self.now_ms();
+        self.caches
+            .lock()
+            .expect("cache mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .set(key, value, ttl_ms, now);
+    }
+
+    /// `cache.delete`.
+    pub fn cache_delete(&self, instance: &str, key: &str) {
+        self.caches
+            .lock()
+            .expect("cache mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .delete(key);
+    }
+
+    /// `object_store.put`.
+    pub fn object_put(&self, instance: &str, key: &str, body: Vec<u8>) {
+        self.object_stores
+            .lock()
+            .expect("object store mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .put(key, body);
+    }
+
+    /// `object_store.get` -- errors if no object exists at `key`,
+    /// matching Python's `FakeObjectStore.get` (`self._objects[key]`,
+    /// which raises `KeyError` on a miss rather than returning
+    /// `None`).
+    pub fn object_get(&self, instance: &str, key: &str) -> anyhow::Result<Vec<u8>> {
+        self.object_stores
+            .lock()
+            .expect("object store mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .get(key)
+            .ok_or_else(|| {
+                anyhow::anyhow!("object_store: no object at key {key:?} in instance {instance:?}")
+            })
+    }
+
+    /// `object_store.delete`.
+    pub fn object_delete(&self, instance: &str, key: &str) {
+        self.object_stores
+            .lock()
+            .expect("object store mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .delete(key);
+    }
+
+    /// `object_store.list` -- every key with the given prefix, sorted
+    /// (matching Python's `sorted(...)`; `BTreeMap`'s own iteration
+    /// order already guarantees this).
+    pub fn object_list(&self, instance: &str, prefix: &str) -> Vec<String> {
+        self.object_stores
+            .lock()
+            .expect("object store mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .list(prefix)
+    }
+
+    /// `expect.object`'s own presence check -- distinct from
+    /// `object_get`'s "found or error" shape, since a presence
+    /// assertion should never itself be treated as a scenario error.
+    pub fn object_exists(&self, instance: &str, key: &str) -> bool {
+        self.object_stores
+            .lock()
+            .expect("object store mutex poisoned")
+            .get(instance)
+            .is_some_and(|store| store.objects.contains_key(key))
+    }
+
+    /// `email.send`.
+    pub fn email_send(&self, instance: &str, to: &str, subject: &str, body: &str) {
+        self.emails
+            .lock()
+            .expect("email mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .send(to, subject, body);
+    }
+
+    /// `expect.email`'s own count query: every sent message on
+    /// `instance` matching `to` (if given) and containing
+    /// `subject_contains` (if given).
+    pub fn email_sent_count(
+        &self,
+        instance: &str,
+        to: Option<&str>,
+        subject_contains: Option<&str>,
+    ) -> usize {
+        self.emails
+            .lock()
+            .expect("email mutex poisoned")
+            .get(instance)
+            .into_iter()
+            .flat_map(|email| email.sent.iter())
+            .filter(|m| to.is_none_or(|t| m.to == t))
+            .filter(|m| subject_contains.is_none_or(|s| m.subject.contains(s)))
+            .count()
+    }
+
+    /// `search.index`.
+    pub fn search_index(&self, instance: &str, doc_id: &str, document: Value) {
+        self.searches
+            .lock()
+            .expect("search mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .index(doc_id, document);
+    }
+
+    /// `search.query` -- case-insensitive substring match over each
+    /// document's JSON, matching Python's own disclosed evaluator
+    /// (not a real query language; see `FakeSearch`'s own doc
+    /// comment above).
+    pub fn search_query(&self, instance: &str, text: &str) -> Vec<Value> {
+        self.searches
+            .lock()
+            .expect("search mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .query(text)
+    }
+
+    /// `search.delete`.
+    pub fn search_delete(&self, instance: &str, doc_id: &str) {
+        self.searches
+            .lock()
+            .expect("search mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .delete(doc_id);
+    }
+
+    /// Seeds `instance`'s fixture queue from a scenario's own
+    /// `given.external_http` block -- the exact
+    /// [`crate::scenario::GivenHttpResponse`] shape a checked-in
+    /// scenario already carries, consumed directly rather than
+    /// translated into a second ad hoc format.
+    pub fn seed_http_fixtures(
+        &self,
+        instance: &str,
+        responses: Vec<crate::scenario::GivenHttpResponse>,
+    ) {
+        self.http_clients
+            .lock()
+            .expect("http mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .responses = responses;
+    }
+
+    /// `external_http.request`'s POST call -- consumes the next
+    /// unconsumed fixture in order, erroring if none remain or the
+    /// fixture itself declares `{"error": ..}`.
+    pub fn http_post(&self, instance: &str, url: &str, json: Value) -> anyhow::Result<Value> {
+        self.http_clients
+            .lock()
+            .expect("http mutex poisoned")
+            .entry(instance.to_owned())
+            .or_default()
+            .post(url, json)
+    }
+
+    /// `expect.http_calls`'s own count query.
+    pub fn http_request_count(&self, instance: &str) -> usize {
+        self.http_clients
+            .lock()
+            .expect("http mutex poisoned")
+            .get(instance)
+            .map_or(0, |client| client.requests.len())
+    }
+
+    /// Configures the claims (and optional expiry, against this
+    /// world's own virtual clock) a bearer token verifies to --
+    /// the runner's own equivalent of Python's `FakeAuth.issue`,
+    /// called from a scenario's own auth setup, not from generated
+    /// production code.
+    pub fn auth_issue(&self, token: &str, claims: Value, expire_at_ms: Option<i64>) {
+        self.auth
+            .lock()
+            .expect("auth mutex poisoned")
+            .issue(token, claims, expire_at_ms);
+    }
+
+    /// The generated auth guard's own verification call -- claims-
+    /// lookup, not real JWT/JWKS crypto, matching Python's `FakeAuth`
+    /// (see its own doc comment above for the disclosed rationale).
+    pub fn auth_verify(&self, token: &str) -> Result<Value, AuthError> {
+        let now = self.now_ms();
+        self.auth
+            .lock()
+            .expect("auth mutex poisoned")
+            .verify(token, now)
     }
 
     fn should_fail(&self, effect: &str, subject: Option<&str>) -> anyhow::Result<bool> {
@@ -4136,5 +4588,206 @@ mod tests {
         let b = world.next_uuid();
         assert_ne!(a, b, "the seeded stream advances on every call");
         assert_eq!(a.len(), 36);
+    }
+
+    #[test]
+    fn cache_get_is_none_for_a_key_never_set() {
+        let world = SimWorld::new(Vec::new());
+        assert_eq!(world.cache_get("sessions", "u1"), None);
+    }
+
+    #[test]
+    fn cache_set_then_get_round_trips_without_a_ttl() {
+        let world = SimWorld::new(Vec::new());
+        world.cache_set("sessions", "u1", "alice".into(), None);
+        assert_eq!(world.cache_get("sessions", "u1"), Some("alice".to_owned()));
+    }
+
+    #[test]
+    fn cache_ttl_expires_across_a_clock_advance_not_before() {
+        let world = SimWorld::new(Vec::new());
+        world.cache_set("sessions", "u1", "alice".into(), Some(30_000));
+        assert_eq!(
+            world.cache_get("sessions", "u1"),
+            Some("alice".to_owned()),
+            "not yet expired"
+        );
+        world.advance_clock_to(29_999);
+        assert_eq!(
+            world.cache_get("sessions", "u1"),
+            Some("alice".to_owned()),
+            "one millisecond before the boundary"
+        );
+        world.advance_clock_to(30_000);
+        assert_eq!(
+            world.cache_get("sessions", "u1"),
+            None,
+            "exactly at the boundary counts as expired (>=, matching Python's FakeCache)"
+        );
+    }
+
+    #[test]
+    fn cache_delete_removes_the_value_and_its_ttl() {
+        let world = SimWorld::new(Vec::new());
+        world.cache_set("sessions", "u1", "alice".into(), Some(1_000));
+        world.cache_delete("sessions", "u1");
+        assert_eq!(world.cache_get("sessions", "u1"), None);
+    }
+
+    #[test]
+    fn cache_instances_are_independent() {
+        let world = SimWorld::new(Vec::new());
+        world.cache_set("sessions", "k", "a".into(), None);
+        world.cache_set("ratelimits", "k", "b".into(), None);
+        assert_eq!(world.cache_get("sessions", "k"), Some("a".to_owned()));
+        assert_eq!(world.cache_get("ratelimits", "k"), Some("b".to_owned()));
+    }
+
+    #[test]
+    fn object_store_put_get_delete_list_round_trip() {
+        let world = SimWorld::new(Vec::new());
+        assert!(world.object_get("uploads", "a.png").is_err());
+        assert!(!world.object_exists("uploads", "a.png"));
+        world.object_put("uploads", "a.png", b"first".to_vec());
+        world.object_put("uploads", "b.png", b"second".to_vec());
+        world.object_put("uploads", "reports/c.csv", b"third".to_vec());
+        assert!(world.object_exists("uploads", "a.png"));
+        assert_eq!(world.object_get("uploads", "a.png").unwrap(), b"first");
+        assert_eq!(world.object_list("uploads", "a"), vec!["a.png".to_owned()]);
+        assert_eq!(
+            world.object_list("uploads", ""),
+            vec![
+                "a.png".to_owned(),
+                "b.png".to_owned(),
+                "reports/c.csv".to_owned()
+            ],
+            "list is sorted"
+        );
+        world.object_delete("uploads", "a.png");
+        assert!(!world.object_exists("uploads", "a.png"));
+    }
+
+    #[test]
+    fn email_sent_count_filters_by_to_and_subject_substring() {
+        let world = SimWorld::new(Vec::new());
+        world.email_send("smtp", "ops@example.com", "order reconciled", "body 1");
+        world.email_send("smtp", "ops@example.com", "order failed", "body 2");
+        world.email_send("smtp", "other@example.com", "order reconciled", "body 3");
+        assert_eq!(world.email_sent_count("smtp", None, None), 3);
+        assert_eq!(
+            world.email_sent_count("smtp", Some("ops@example.com"), None),
+            2
+        );
+        assert_eq!(world.email_sent_count("smtp", None, Some("reconciled")), 2);
+        assert_eq!(
+            world.email_sent_count("smtp", Some("ops@example.com"), Some("reconciled")),
+            1
+        );
+        assert_eq!(world.email_sent_count("unused-instance", None, None), 0);
+    }
+
+    #[test]
+    fn search_query_is_a_case_insensitive_substring_match_over_the_document() {
+        let world = SimWorld::new(Vec::new());
+        world.search_index(
+            "catalog",
+            "1",
+            serde_json::json!({"name": "Blue Widget", "sku": "W-1"}),
+        );
+        world.search_index(
+            "catalog",
+            "2",
+            serde_json::json!({"name": "Red Gadget", "sku": "G-1"}),
+        );
+        assert_eq!(world.search_query("catalog", "widget").len(), 1);
+        assert_eq!(
+            world.search_query("catalog", "WIDGET").len(),
+            1,
+            "case-insensitive"
+        );
+        assert_eq!(
+            world.search_query("catalog", "").len(),
+            2,
+            "empty query matches everything"
+        );
+        assert_eq!(world.search_query("catalog", "nonexistent").len(), 0);
+        world.search_delete("catalog", "1");
+        assert_eq!(world.search_query("catalog", "widget").len(), 0);
+    }
+
+    #[test]
+    fn http_post_consumes_fixtures_in_order_and_errors_when_exhausted() {
+        let world = SimWorld::new(Vec::new());
+        world.seed_http_fixtures(
+            "payments",
+            vec![
+                crate::scenario::GivenHttpResponse::Ok {
+                    status: 200,
+                    json: serde_json::json!({"accepted": true}),
+                },
+                crate::scenario::GivenHttpResponse::Error {
+                    error: "timeout".into(),
+                },
+            ],
+        );
+        let first = world
+            .http_post(
+                "payments",
+                "https://payments.example/charge",
+                serde_json::json!({}),
+            )
+            .unwrap();
+        assert_eq!(first, serde_json::json!({"accepted": true}));
+        let second = world.http_post(
+            "payments",
+            "https://payments.example/charge",
+            serde_json::json!({}),
+        );
+        assert!(
+            second.is_err(),
+            "the fixture's own declared error propagates"
+        );
+        let third = world.http_post(
+            "payments",
+            "https://payments.example/charge",
+            serde_json::json!({}),
+        );
+        assert!(
+            third.is_err(),
+            "exhausted fixtures refuse rather than guess"
+        );
+        assert_eq!(world.http_request_count("payments"), 3);
+    }
+
+    #[test]
+    fn auth_verify_refuses_an_unconfigured_token() {
+        let world = SimWorld::new(Vec::new());
+        let err = world.auth_verify("no-such-token").unwrap_err();
+        assert!(err.to_string().contains("no configured claims"));
+    }
+
+    #[test]
+    fn auth_verify_grants_a_configured_token_and_denies_after_expiry() {
+        let world = SimWorld::new(Vec::new());
+        world.auth_issue(
+            "tok-1",
+            serde_json::json!({"sub": "u1", "scopes": ["orders:write"]}),
+            Some(60_000),
+        );
+        let claims = world.auth_verify("tok-1").unwrap();
+        assert_eq!(claims["sub"], "u1");
+        world.advance_clock_to(59_999);
+        assert!(world.auth_verify("tok-1").is_ok(), "not yet expired");
+        world.advance_clock_to(60_000);
+        let err = world.auth_verify("tok-1").unwrap_err();
+        assert!(err.to_string().contains("expired"));
+    }
+
+    #[test]
+    fn auth_verify_grants_a_token_with_no_expiry_forever() {
+        let world = SimWorld::new(Vec::new());
+        world.auth_issue("tok-1", serde_json::json!({"sub": "u1"}), None);
+        world.advance_clock_to(1_000_000_000);
+        assert!(world.auth_verify("tok-1").is_ok());
     }
 }

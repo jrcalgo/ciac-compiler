@@ -1,6 +1,5 @@
 ---
 source: tests/tests/golden.rs
-assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1480,9 +1479,10 @@ tests/test_logic_store_video.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
+from uuid import uuid4
+
 import pytest
 
-from uuid import uuid4
 from app.logic.store_video import StoreVideo
 from app.schemas import Video
 

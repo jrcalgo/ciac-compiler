@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(expr-stmt (http-call (field-access payload path) (field-access payload payload)))
+(return (record-cons Ack (ok true)))

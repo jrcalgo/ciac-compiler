@@ -1001,10 +1001,11 @@ tests/test_logic_handle_order_created.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.handle_order_created import HandleOrderCreated
 from app.schemas import Order
 
@@ -1028,10 +1029,11 @@ tests/test_logic_place_order.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.place_order import PlaceOrder
 from app.schemas import Order
 
@@ -1055,10 +1057,11 @@ tests/test_logic_record_audit.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.record_audit import RecordAudit
 from app.schemas import Order
 

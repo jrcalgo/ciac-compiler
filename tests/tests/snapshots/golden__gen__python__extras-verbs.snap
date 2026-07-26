@@ -1464,8 +1464,9 @@ tests/test_logic_call_upstream.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.call_upstream import CallUpstream
 from app.schemas import HttpRequest
@@ -1487,8 +1488,9 @@ tests/test_logic_evict_cache.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.evict_cache import EvictCache
 from app.schemas import KeyOnly
@@ -1510,8 +1512,9 @@ tests/test_logic_index_doc.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.index_doc import IndexDoc
 from app.schemas import IndexRequest
@@ -1533,8 +1536,9 @@ tests/test_logic_list_docs.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.list_docs import ListDocs
 from app.schemas import PrefixOnly
@@ -1558,8 +1562,9 @@ tests/test_logic_notify_user.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.notify_user import NotifyUser
 from app.schemas import Notification
@@ -1581,8 +1586,9 @@ tests/test_logic_remove_doc.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.remove_doc import RemoveDoc
 from app.schemas import KeyOnly
@@ -1604,8 +1610,9 @@ tests/test_logic_search_docs.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.search_docs import SearchDocs
 from app.schemas import SearchRequest

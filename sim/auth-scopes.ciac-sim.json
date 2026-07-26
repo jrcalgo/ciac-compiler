@@ -1,0 +1,38 @@
+{
+  "simulation_version": 1,
+  "name": "27-m3-auth-scopes",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {},
+  "steps": [
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "EchoApi",
+        "json": {"key": "granted"},
+        "as": {"sub": "ada", "scopes": ["peripherals:admin"]},
+        "save_as": "granted"
+      }
+    },
+    {"expect": {"response": {"of": "granted", "status": 200}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "EchoApi",
+        "json": {"key": "denied"},
+        "as": {"sub": "bob", "scopes": ["peripherals:read"]},
+        "save_as": "denied"
+      }
+    },
+    {"expect": {"response": {"of": "denied", "status": 403}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "EchoApi",
+        "json": {"key": "no-scopes"},
+        "as": {"sub": "carol", "scopes": []},
+        "save_as": "no_scopes"
+      }
+    },
+    {"expect": {"response": {"of": "no_scopes", "status": 403}}}
+  ]
+}

@@ -1103,8 +1103,9 @@ tests/test_logic_count_active.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.count_active import CountActive
 from app.schemas import ActiveFilter
@@ -1132,8 +1133,9 @@ tests/test_logic_delete_by_active.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.delete_by_active import DeleteByActive
 from app.schemas import ActiveFilter
@@ -1161,8 +1163,9 @@ tests/test_logic_list_active.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.list_active import ListActive
 from app.schemas import ActiveFilter
@@ -1190,10 +1193,11 @@ tests/test_logic_remove.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.remove import Remove
 from app.schemas import IdOnly
 
@@ -1215,13 +1219,13 @@ tests/test_logic_replace.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.replace import Replace
-from app.schemas import Note
-from app.schemas import NoteUpdate
+from app.schemas import Note, NoteUpdate
 
 
 @pytest.mark.anyio

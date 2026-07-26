@@ -838,10 +838,11 @@ tests/test_logic_store_video.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.store_video import StoreVideo
 from app.schemas import Video
 

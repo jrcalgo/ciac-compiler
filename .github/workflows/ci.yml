@@ -394,6 +394,17 @@ jobs:
           cargo run -q -p ciac -- verify examples/sim-broker-slice.ciac \
             --target python --out /tmp/gen-sim-broker-slice --sim \
             --scenario sim/fanout.ciac-sim.json
+          # 27UpdatePlan.md M3: the cache-ttl/peripherals/http-fixtures/
+          # auth-scopes corpus, exercising the peripheral fakes (cache
+          # TTL, object store, email, search, external HTTP fixtures,
+          # auth claims/scopes) added this milestone -- Python-only for
+          # now, same as M2's own row above.
+          cargo run -q -p ciac -- verify examples/sim-peripherals.ciac \
+            --target python --out /tmp/gen-sim-peripherals --sim \
+            --scenario sim/cache-ttl.ciac-sim.json \
+            --scenario sim/peripherals.ciac-sim.json \
+            --scenario sim/http-fixtures.ciac-sim.json \
+            --scenario sim/auth-scopes.ciac-sim.json
       - name: assert no Docker container was started
         run: |
           set -euo pipefail

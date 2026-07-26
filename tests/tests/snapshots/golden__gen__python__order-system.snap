@@ -1,6 +1,5 @@
 ---
 source: tests/tests/golden.rs
-assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -1872,10 +1871,11 @@ tests/test_logic_check_limit_order.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.check_limit_order import CheckLimitOrder
 from app.schemas import Order
 
@@ -1904,13 +1904,13 @@ tests/test_logic_mark_shipped.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.mark_shipped import MarkShipped
-from app.schemas import Order
-from app.schemas import OrderUpdate
+from app.schemas import Order, OrderUpdate
 
 
 @pytest.mark.anyio
@@ -1931,10 +1931,11 @@ tests/test_logic_receive_order_event.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.receive_order_event import ReceiveOrderEvent
 from app.schemas import OrderEvent
 
@@ -1957,8 +1958,9 @@ tests/test_logic_shipped_summary.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.shipped_summary import ShippedSummary
 from app.schemas import SummaryFilter
@@ -1991,12 +1993,12 @@ transport below does not trigger the startup lifespan.
 
 import time
 
-import jwt
 import httpx
+import jwt
 import pytest
 
-from app.main import app
 from app.config import get_settings
+from app.main import app
 
 
 def _client(*, raise_app_exceptions: bool = True) -> httpx.AsyncClient:

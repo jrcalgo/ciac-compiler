@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(discard (search-query (field-access payload query)))
+(return (record-cons Ack (ok true)))

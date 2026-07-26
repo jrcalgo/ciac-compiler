@@ -19,6 +19,10 @@ sha2.workspace = true
 ciac-diagnostics.workspace = true
 ciac-sema.workspace = true
 ciac-syntax.workspace = true
+# 27UpdatePlan.md M3: the SQLite fidelity ratchet (`tests/sqlite_ratchet.rs`)
+# -- zero-Docker since SQLite is embedded, unlike the Postgres/MySQL rows
+# the v0.17 ratchet delegates to `verify --system`'s compose containers.
+rusqlite.workspace = true
 
 [lints]
 workspace = true

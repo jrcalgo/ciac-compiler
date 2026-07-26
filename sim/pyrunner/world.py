@@ -71,6 +71,15 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+# Matches `ciac_backend_python::lower::SEARCH_INDEX_NAME` (lower.rs:68)
+# and `ciac_sim::world::SEARCH_INDEX_NAME` (Rust) exactly -- every
+# generated `search.index`/`search.query` call is hardcoded to this one
+# index name, so callers seeding or asserting against `FakeSearch`
+# (`auto_driver.py`'s `apply_given`, `scenario_runner.py`'s
+# `expect.search_hits`) use it too rather than adding a dimension no
+# generated code ever varies.
+SEARCH_INDEX_NAME = "documents"
+
 
 class ReferenceViolation(Exception):
     """A `Reference<T>` field pointed at a row that doesn't exist, or a

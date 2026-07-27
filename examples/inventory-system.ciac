@@ -1,11 +1,33 @@
 // v0.9 M2 flagship: a small multi-service system whose *capabilities*
-// are verifiable end-to-end. Catalog owns an auth-less typed CRUD
-// resource on Postgres with cached reads — `ciac verify --system`
-// generates round-trip tests that create an Item over real HTTP, then
-// read it back through a second, independent connection (asyncpg
-// straight into Postgres; a direct Redis client for the cache entry).
-// Gateway adds a cross-service `call` edge so the system also
-// exercises the v0.8 call-reachability tests.
+// are verifiable end-to-end. Catalog owns a typed CRUD resource on
+// Postgres with cached reads, and Gateway adds a cross-service `call`
+// edge so the system also exercises the v0.8 call-reachability tests.
+//
+// 28UpdatePlan.md M4: added `Catalog.Restock` and `Gateway.Quote`
+// scopes to prove scoped auth across services under simulation (below).
+// `Price` stays auth-less on purpose -- it's only ever reached via
+// Gateway's routed `call`, and a routed call carries no caller identity
+// (sim or real: `client.py.j2`'s HTTP branch attaches no Authorization
+// header either), so a scope on a call-only callee could never be
+// satisfied. `Gateway.Quote` (the system's own ingress, gating the
+// whole call chain behind it) and `Catalog.Restock` (an independent
+// entrypoint on the other service) each carry their own scope, both
+// checked against the one shared, system-scoped `FakeAuth` (27's fake)
+// rather than two isolated per-service stores.
+//
+// Collateral, disclosed rather than avoided: declaring `auth JWT;` on
+// Catalog at all -- needed for `Restock`'s scope -- also flips `crud
+// Item`'s own `has_auth` (docs/language.md's "crud gates every route
+// with that capability automatically once it's declared"), even though
+// `Item` itself sets no `read_scope`/`write_scope`. `ciac verify
+// --system`'s v0.9 M2 capability round-trip check for `Item` (this
+// project's original reason for existing) is consequently no longer
+// generated for this example -- `ciac-codegen::system_tests::
+// build_capability_checks` already and correctly skips any `has_auth`
+// resource ("no credentials to present"), so this is a real, silent
+// loss of that one check's coverage, not a crash -- confirmed by
+// generating this project and finding `tests/system/` now emits only
+// `test_calls.py`, no `test_capabilities.py`.
 project InventorySystem;
 
 record Item {
@@ -17,6 +39,7 @@ service Catalog {
     use {
         db Postgres;
         cache Redis;
+        auth JWT;
     }
 
     crud Item: Item;
@@ -26,12 +49,24 @@ service Catalog {
         path: "/price";
     }
     pipeline Price: ComputePrice -> Return;
+
+    api Restock: Item {
+        method: POST;
+        path: "/restock";
+        scope: "catalog:restock";
+    }
+    pipeline Restock: Auth -> ComputeRestock -> Return;
 }
 
 service Gateway {
+    use {
+        auth JWT;
+    }
+
     api Quote: Item {
         method: POST;
         path: "/quote";
+        scope: "gateway:quote";
     }
-    pipeline Quote: call Catalog.Price -> Return;
+    pipeline Quote: Auth -> call Catalog.Price -> Return;
 }

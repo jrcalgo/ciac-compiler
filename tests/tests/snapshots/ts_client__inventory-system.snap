@@ -109,11 +109,15 @@ export async function catalogPrice(opts: ClientOptions, payload: Types.Item): Pr
   return request(opts, "/price", "POST", payload);
 }
 
-export async function catalogCreateItem(opts: ClientOptions, payload: Types.ItemIn): Promise<Types.ItemOut> {
+export async function catalogRestock(opts: AuthenticatedClientOptions, payload: Types.Item): Promise<Types.Envelope<Types.Item>> {
+  return request(opts, "/restock", "POST", payload);
+}
+
+export async function catalogCreateItem(opts: AuthenticatedClientOptions, payload: Types.ItemIn): Promise<Types.ItemOut> {
   return request(opts, "/items", "POST", payload);
 }
 
-export async function catalogListItems(opts: ClientOptions, params?: { limit?: number; offset?: number }): Promise<Types.ItemOut[]> {
+export async function catalogListItems(opts: AuthenticatedClientOptions, params?: { limit?: number; offset?: number }): Promise<Types.ItemOut[]> {
   const q = new URLSearchParams();
   if (params?.limit !== undefined) q.set("limit", String(params.limit));
   if (params?.offset !== undefined) q.set("offset", String(params.offset));
@@ -121,19 +125,19 @@ export async function catalogListItems(opts: ClientOptions, params?: { limit?: n
   return request(opts, qs ? `/items?${qs}` : "/items", "GET");
 }
 
-export async function catalogGetItem(opts: ClientOptions, id: string): Promise<Types.ItemOut> {
+export async function catalogGetItem(opts: AuthenticatedClientOptions, id: string): Promise<Types.ItemOut> {
   return request(opts, `/items/{}`.replace("{}", encodeURIComponent(id)), "GET");
 }
 
-export async function catalogUpdateItem(opts: ClientOptions, id: string, payload: Types.ItemIn): Promise<Types.ItemOut> {
+export async function catalogUpdateItem(opts: AuthenticatedClientOptions, id: string, payload: Types.ItemIn): Promise<Types.ItemOut> {
   return request(opts, `/items/{}`.replace("{}", encodeURIComponent(id)), "PUT", payload);
 }
 
-export async function catalogDeleteItem(opts: ClientOptions, id: string): Promise<void> {
+export async function catalogDeleteItem(opts: AuthenticatedClientOptions, id: string): Promise<void> {
   return request(opts, `/items/{}`.replace("{}", encodeURIComponent(id)), "DELETE");
 }
 
-export async function gatewayQuote(opts: ClientOptions, payload: Types.Item): Promise<Types.Envelope<Types.Item>> {
+export async function gatewayQuote(opts: AuthenticatedClientOptions, payload: Types.Item): Promise<Types.Envelope<Types.Item>> {
   return request(opts, "/quote", "POST", payload);
 }
 

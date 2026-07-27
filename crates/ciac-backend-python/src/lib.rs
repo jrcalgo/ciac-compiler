@@ -272,7 +272,7 @@ fn emit_service(
         // is always a plain identifier -- avoiding a dependency on
         // minijinja's optional `tojson` filter for what is otherwise a
         // one-line literal.
-        let service_for_sim_literal = match multi.then(|| ctx.service_name.as_str()) {
+        let service_for_sim_literal = match multi.then_some(ctx.service_name.as_str()) {
             Some(name) => format!("{name:?}"),
             None => "None".to_owned(),
         };

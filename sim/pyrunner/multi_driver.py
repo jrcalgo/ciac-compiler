@@ -144,6 +144,24 @@ def build_service_workers_jobs_apis(
     for api_name in api_names:
         snake = to_snake_case(api_name)
         module = importlib.import_module(f"app.api.{snake}")
+        # 28UpdatePlan.md M4c: `crud <Name>;` lowers to a same-shaped
+        # `NodeKind::Api` node (`ciac-sema/src/build.rs`'s own `crud()`
+        # expansion), so it shows up in `plan.apis` exactly like a plain
+        # typed api -- but its module is a REST-resource file with five
+        # verb functions (`create_item`, `get_item`, ...), never a
+        # single function named after the resource itself. Such a
+        # resource is not a valid `call <Service>.<Api>` target (there's
+        # no single verb a bare call could mean) and no scenario
+        # `request` step can address it by this name either (found
+        # live: `AttributeError: module 'app.api.item' has no attribute
+        # 'item'` when inventory-system.ciac's `Catalog` -- which owns
+        # both a `crud Item` and a plain `api Price` -- first ran
+        # through this loop). Skip it here; if a program ever really
+        # does write `call Catalog.Item`, `world.call_checked` still
+        # raises its own clear `RoutingError` for the unregistered
+        # target, so this is silent-skip, not silent-wrong.
+        if not hasattr(module, snake):
+            continue
         route = getattr(module, snake)
         sig = inspect.signature(route)
         params = [p for p in sig.parameters if p != "payload"]

@@ -22,11 +22,13 @@ class {{ t.class_name }}:
     `SimWorld.call_checked` against `{{ t.service }}`'s own registered
     handler instead of real HTTP, the same `state.world is not None`
     guard `app/db.py`'s `get_sessionmaker` already uses for the database
-    seam. `call_checked`'s contract is a direct JSON-boundary function
-    call (no HTTP response envelope to unwrap): its return value is
-    already the target handler's own payload, so this branch validates
-    it exactly the way the real-HTTP branch validates `response.json()
-    ["data"]` -- same post-processing, different transport."""
+    seam. `call_checked` invokes the target api route function directly
+    (`world.register_api`'s own handler), so its return value carries
+    the *same* `{"status": ..., "data": ...}` envelope every route
+    function's own body already builds (see `api.py.j2`) -- this
+    unwraps `["data"]` from it exactly the way the real-HTTP branch
+    unwraps `response.json()["data"]`, same post-processing, different
+    transport."""
 
     def __init__(self) -> None:
         self._base_url = get_settings().{{ t.url_field }}
@@ -46,9 +48,9 @@ class {{ t.class_name }}:
                 "{{ caller }}", "{{ t.service }}", "{{ a.name }}", req
             )
 {%- if a.payload %}
-            return {{ a.payload.class_name }}.model_validate(result)
+            return {{ a.payload.class_name }}.model_validate(result["data"])
 {%- else %}
-            return result
+            return result["data"]
 {%- endif %}
         async with httpx.AsyncClient(base_url=self._base_url) as client:
 {%- if a.has_body and a.payload %}

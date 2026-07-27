@@ -998,6 +998,134 @@ push, in-place Shipped notes).
    data, which is this milestone's second deliverable beyond
    working code).
 
+   **Shipped (v0.28 M3) — the aliasing sharp edge resolved by
+   capture-and-swap, plus one production-code bug the live proof
+   found and fixed.** Every generated Python project's top-level
+   package is literally named `app`; loading N such projects into one
+   process the straightforward way (`sys.path` holding all N project
+   directories at once) is unsound — whichever project's `app.db`
+   resolves first on `sys.path` wins for *every* service's own `from
+   app.db import ...`, silently misrouting every other service's
+   database access. This was reproduced live in scratch testing before
+   the fix, not just reasoned about. `sim/pyrunner/multi_service.py`'s
+   `ServiceModules` is the resolution: each service's fully imported
+   `app.*` module tree is captured once (`sys.path` scoped to just that
+   project during the import so a not-yet-cached submodule resolves to
+   the right files), then swapped into `sys.modules` immediately before
+   invoking any of that service's code. Sound specifically because the
+   driver's event loop never runs two coroutines' bodies concurrently
+   on the same thread — `ScenarioRunner` awaits every step in strict
+   sequence — so "which service's `app.*` is live" is a well-defined
+   value at every point in execution; a lazy, call-time import (e.g.
+   `db.py.j2`'s own `from app.db import ...` inside `get_sessionmaker`,
+   reached only when a route actually runs) resolves correctly because
+   the target module was already cached during that service's own
+   `load()` pass. Confirmed by a standalone smoke test against the real
+   generated `multi-service-media.ciac` output before wiring it into
+   the driver proper: `billing.app.config` and `upload-api.app.config`
+   captured as distinct module objects, module identity round-tripping
+   correctly across repeated `activate()` calls, and a lazy call-time
+   `from app.state import current` resolving to the *currently active*
+   service's own state, not whichever service loaded last.
+
+   `sim/pyrunner/multi_driver.py` is the new N-service counterpart to
+   `auto_driver.py` (which is untouched in shape — a single-service run
+   still uses it unchanged): it loads every service in `plan.services`
+   declaration order into one shared `world.SimWorld`, registers each
+   service's workers/jobs/apis wrapped in `_service_scoped` (a
+   save-current/activate-target/restore-in-`finally` wrapper, symmetric
+   at any nesting depth so a routed call into another service that
+   itself routes into a third composes correctly without any call site
+   needing to know about `ServiceModules` at all — the same recursive-
+   symmetry discipline `CallDepthGuard` uses in Rust), and routes every
+   `call <Service>.<Api>` step through `world.call_checked` instead of
+   real HTTP via M3b's already-shipped `client.py.j2` guard. `commands.
+   rs`'s `sim_drive_python` is now two functions (`_single`, unchanged
+   shape, and `_multi`, new): the multi-service path matches each
+   `plan.services` entry to its generated project directory by kebab-
+   casing the service name (`ciac_codegen::model::Ctx::dir`'s own
+   derivation, now also a direct `heck` dependency of the `ciac` crate)
+   rather than guessing, `uv sync`s each project's own venv (a service
+   may declare dependencies none of the others need — `nats-py` only
+   where a queue is used, `aioboto3` only where an object store is
+   used), and assembles one `PYTHONPATH` unioning every venv's own
+   `site-packages` directory (found by globbing, since the exact
+   `pythonX.Y` component varies) alongside the sim scratch dir — third-
+   party packages need this global union; `app.*` resolution is what
+   `ServiceModules` handles per call.
+
+   **Two bugs the live proof found, neither hypothetical, both fixed
+   before this milestone could exit — the API registration gap.**
+   Building the live proof against `multi-service-media.ciac` (Billing,
+   UploadApi, Transcoder, Notifier, ProgressFeed; `UploadApi.Upload`
+   calls `Billing.Charge`, then publishes into a three-hop worker
+   chain) surfaced two real defects, not scenario-authoring mistakes:
+   (1) the api-discovery logic borrowed from single-service `build_apis`
+   only ever registers apis a scenario's own `request` steps name
+   directly — correct for single-service (nothing else could call an
+   api), wrong for multi-service, where `Billing.Charge` is reached
+   *only* via `UploadApi`'s own routed call and is never itself a
+   `request` step. Reproduced exactly: `RoutingError: no handler
+   registered for Billing.Charge (called from UploadApi)`. Fixed by
+   discovering each service's apis from `plan["apis"]` filtered by
+   `service_key` — every api the service declares, the same source
+   `build_workers_and_jobs` already used for workers/jobs — not from
+   scenario steps. (2) Once routing worked, `Video.model_validate`
+   failed with three field errors: `call_checked`'s return value turned
+   out to carry the *same* `{"status": ..., "data": ...}` envelope
+   every route function's own body already builds (`api.py.j2`'s
+   `Return` step wraps every pipeline outcome this way, confirmed by
+   reading the generated `charge.py`), contradicting M3b's own
+   documented assumption ("no HTTP response envelope to unwrap") — a
+   real error in that milestone's design note, not just an
+   implementation gap. Fixed in `client.py.j2`'s world-guard branch:
+   `result["data"]` unwrapped before validation, exactly mirroring the
+   real-HTTP branch's `response.json()["data"]`; the doc comment
+   corrected to match. Both fixes are additive to the sim-only branch
+   only — `client.py.j2`'s production (real-HTTP) branch is untouched,
+   confirmed byte-identical by the golden diff review this milestone's
+   own exit checklist requires.
+
+   `sim/multi-service-media.ciac-sim.json` (new) is the live-proof
+   scenario: one `request` (`UploadApi.Upload`), an `expect.response`
+   assertion (proving the routed call round-tripped), two `drain`
+   steps, and `expect.quiescence`. Two drains, not one, was itself a
+   finding worth recording: `plan.services` (and therefore worker
+   registration order, since `ScenarioRunner.workers` is a plain dict
+   in registration order) is alphabetical, not source-declaration
+   order, so `_drain()`'s single pass reaches `Notifier`'s own worker
+   *before* `Transcoder`'s worker has published the `Transcoded`
+   message that worker consumes — one drain leaves `Notifier` with an
+   undelivered message, exactly as `expect.quiescence` reported before
+   the second `drain` step was added. Not a bug: `_drain()`'s single-
+   pass-in-registration-order semantics are unchanged from single-
+   service and this is the expected shape of a multi-hop cascade
+   needing multiple drains, not a defect — but real enough that it
+   belongs in this note for whoever authors M4's own three-scenario
+   corpus next, rather than being silently absorbed into "the proof
+   passed."
+
+   Both single-service anchors reconfirmed unaffected after every fix
+   in this milestone (`client.py.j2` is only ever rendered for a
+   multi-service system — a single-service program has no `call
+   <Service>.<Api>` target to reach): Python-target `order-system.ciac`
+   (`[PASS] 27-m9-order-system-flagship`) and Rust-target
+   `sim-vertical-slice.ciac` (`[PASS] v0.17-m5-vertical-slice`, unaffected
+   since this milestone touched no vendored file). Full `cargo test
+   --workspace --no-fail-fast` (`cargo fmt --check` and `cargo clippy
+   --workspace --all-targets -- -D warnings` both clean) exits with
+   only the same disclosed pre-existing `ruff`-version-drift failure in
+   `backfill_cli`. All three multi-service Python golden snapshots
+   (`inventory-system`, `multi-service-media`, `traced-checkout`)
+   regenerated for the `client.py.j2` change, reviewed, and stable
+   under a second, non-updating run; the 26 Rust golden snapshots from
+   M2's own fix are untouched by this milestone (no vendored file
+   changed). The "sim-only shim fallback" branch this milestone's own
+   description names as a possible outcome was not needed — capture-
+   and-swap resolved the aliasing edge outright, so M5's checkpoint
+   inherits real multi-service data from an actually-working driver,
+   not a documented workaround.
+
 4. **M4 — The system corpus, proven on Python.** The three
    scenarios authored (outcomes frozen); `sim-three-service.ciac`
    added and verifying ×5 as an example; the corpus green on

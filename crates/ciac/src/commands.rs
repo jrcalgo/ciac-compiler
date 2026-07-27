@@ -11,6 +11,7 @@ use ciac_codegen::{Backend, GenOptions, GeneratedProject, SimSupport, ValidateSt
 use ciac_diagnostics::render::{AriadneRenderer, Render};
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
 use ciac_ir::{FieldType, NormalizedIr};
+use heck::ToKebabCase;
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -1050,6 +1051,13 @@ const PYRUNNER_CRON: &str = include_str!("../../../sim/pyrunner/cron.py");
 const PYRUNNER_SCENARIO_RUNNER: &str = include_str!("../../../sim/pyrunner/scenario_runner.py");
 const PYRUNNER_REPLAY: &str = include_str!("../../../sim/pyrunner/replay.py");
 const PYRUNNER_AUTO_DRIVER: &str = include_str!("../../../sim/pyrunner/auto_driver.py");
+// 28UpdatePlan.md M3c: the multi-service counterpart to
+// `auto_driver.py`/its own package-aliasing seam -- written out
+// alongside the single-service files always (harmless, unused dead
+// weight for a single-service run) rather than conditionally, so
+// `write_pyrunner` stays one unconditional list.
+const PYRUNNER_MULTI_SERVICE: &str = include_str!("../../../sim/pyrunner/multi_service.py");
+const PYRUNNER_MULTI_DRIVER: &str = include_str!("../../../sim/pyrunner/multi_driver.py");
 
 fn write_pyrunner(sim_dir: &Path) -> Result<()> {
     for (name, content) in [
@@ -1058,6 +1066,8 @@ fn write_pyrunner(sim_dir: &Path) -> Result<()> {
         ("scenario_runner.py", PYRUNNER_SCENARIO_RUNNER),
         ("replay.py", PYRUNNER_REPLAY),
         ("auto_driver.py", PYRUNNER_AUTO_DRIVER),
+        ("multi_service.py", PYRUNNER_MULTI_SERVICE),
+        ("multi_driver.py", PYRUNNER_MULTI_DRIVER),
     ] {
         let path = sim_dir.join(name);
         std::fs::write(&path, content)
@@ -1344,34 +1354,25 @@ fn sim_drive_python(
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let projects = find_project_dirs(out, "pyproject.toml")?;
-    let project_dir = match projects.as_slice() {
-        [] => bail!("no generated python project found under {}", out.display()),
-        [one] => one.clone(),
-        // Multi-service simulation (one driver process per service,
-        // coordinated through one shared virtual clock) is real, but
-        // disclosed future work — see docs/simulation.md.
-        many => bail!(
-            "`ciac sim` only supports a single-service Python project in v0.17 (found {} \
-             under {}); see docs/simulation.md",
-            many.len(),
-            out.display()
-        ),
-    };
+    if projects.is_empty() {
+        bail!("no generated python project found under {}", out.display());
+    }
 
-    // Deliberately *outside* `project_dir`: this is `ciac sim`'s own
+    // Deliberately *outside* any project dir: this is `ciac sim`'s own
     // scratch state (the embedded runner, the plan JSON), not part of
-    // the generated project. Writing it inside `project_dir` was tried
+    // any generated project. Writing it inside a project dir was tried
     // first and found to be a real bug -- `validate_generated`'s
     // `ruff check .` (run by plain `verify` and by `verify --sim`'s own
-    // static pass before it) would then lint the runner's own source
-    // as if it were the user's generated code. Keyed by a hash of the
-    // project directory's canonical path so repeat runs against the
-    // same `--out` reuse (and overwrite) one scratch directory instead
-    // of accumulating a fresh one per invocation.
-    let project_dir_abs = resolve_path(&project_dir)?;
+    // static pass before it) would then lint the runner's own source as
+    // if it were the user's generated code. Keyed by a hash of `out`'s
+    // own canonical path (not any one project's -- 28UpdatePlan.md M3c:
+    // a multi-service run has no single project to key off) so repeat
+    // runs against the same `--out` reuse (and overwrite) one scratch
+    // directory instead of accumulating a fresh one per invocation.
+    let out_abs = resolve_path(out)?;
     let sim_dir = std::env::temp_dir().join(format!(
         "ciac-sim-{}",
-        hash_bytes(project_dir_abs.as_os_str().as_encoded_bytes())
+        hash_bytes(out_abs.as_os_str().as_encoded_bytes())
     ));
     std::fs::create_dir_all(&sim_dir)
         .with_context(|| format!("cannot create {}", sim_dir.display()))?;
@@ -1383,9 +1384,52 @@ fn sim_drive_python(
     )
     .with_context(|| format!("cannot write {}", plan_path.display()))?;
 
-    run_in(&project_dir, "uv", &["sync", "-q"])?;
+    if let [project_dir] = projects.as_slice() {
+        return sim_drive_python_single(
+            project_dir,
+            &sim_dir,
+            &plan_path,
+            scenarios,
+            record,
+            replay,
+            source_hash,
+            plan_hash,
+            wall_timeout,
+        );
+    }
+    sim_drive_python_multi(
+        &projects,
+        &sim_dir,
+        &plan_path,
+        plan,
+        scenarios,
+        record,
+        replay,
+        source_hash,
+        plan_hash,
+        wall_timeout,
+    )
+}
 
-    let pythonpath = std::env::join_paths([sim_dir.clone(), project_dir.clone()])
+/// The single-service path, unchanged in shape from before 28's M3c
+/// (`sim_drive_python` used to be this function's own body directly) --
+/// factored out so `sim_drive_python` can dispatch to it or to
+/// [`sim_drive_python_multi`] once it knows how many projects it found.
+#[allow(clippy::too_many_arguments)]
+fn sim_drive_python_single(
+    project_dir: &Path,
+    sim_dir: &Path,
+    plan_path: &Path,
+    scenarios: &[PathBuf],
+    record: Option<&Path>,
+    replay: Option<&Path>,
+    source_hash: &str,
+    plan_hash: &str,
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    run_in(project_dir, "uv", &["sync", "-q"])?;
+
+    let pythonpath = std::env::join_paths([sim_dir.to_path_buf(), project_dir.to_path_buf()])
         .context("cannot build PYTHONPATH for the sim runner")?;
 
     let mut scenario_outcomes = Vec::new();
@@ -1395,13 +1439,13 @@ fn sim_drive_python(
         cmd.arg("run")
             .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
             .arg(sim_dir.join("auto_driver.py"))
-            .arg(&plan_path)
+            .arg(plan_path)
             .arg(&scenario_abs)
             .arg("--source-hash")
             .arg(source_hash)
             .arg("--plan-hash")
             .arg(plan_hash)
-            .current_dir(&project_dir)
+            .current_dir(project_dir)
             .env("PYTHONPATH", &pythonpath);
         if let Some(record_path) = record {
             cmd.arg("--record").arg(resolve_path(record_path)?);
@@ -1433,6 +1477,144 @@ fn sim_drive_python(
             .with_context(|| {
                 format!(
                     "cannot parse auto_driver.py's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// 28UpdatePlan.md M3c: N services, one shared world, one process --
+/// `multi_driver.py` (see its own module doc for the package-aliasing
+/// mechanism this depends on). Each generated project keeps its own
+/// `uv`-managed venv (a service may declare dependencies none of the
+/// others need — `nats-py` only where a queue is used, `aioboto3` only
+/// where an object store is used, ...), so no single venv has the
+/// union of every service's own packages; this function assembles that
+/// union itself by pointing `PYTHONPATH` at every project's own
+/// `.venv`'s `site-packages` directory (found by globbing, since the
+/// exact `pythonX.Y` component varies by whatever Python `uv` resolved)
+/// alongside `sim_dir` — `multi_driver.py`'s own `ServiceModules` is
+/// what handles `app.*` module resolution per service; this function's
+/// job is only making every *third-party* dependency importable
+/// regardless of which service is currently active.
+#[allow(clippy::too_many_arguments)]
+fn sim_drive_python_multi(
+    projects: &[PathBuf],
+    sim_dir: &Path,
+    plan_path: &Path,
+    plan: &ciac_sim::SimPlan,
+    scenarios: &[PathBuf],
+    record: Option<&Path>,
+    replay: Option<&Path>,
+    source_hash: &str,
+    plan_hash: &str,
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    // Matches each of `plan.services` (in the plan's own declaration
+    // order — the order every registration in `multi_driver.py` must
+    // follow) to the project directory `ciac build`'s own per-service
+    // emission wrote it to: that directory's basename is exactly
+    // `service.name.to_kebab_case()` (`ciac_codegen::model::Ctx::dir`'s
+    // own derivation; see that field's doc comment) for a multi-service
+    // system, so this is a lookup, not a guess -- and it bails with a
+    // clear error rather than silently skipping a service if the
+    // expected directory is somehow missing.
+    let mut service_args: Vec<(String, PathBuf)> = Vec::with_capacity(plan.services.len());
+    for service in &plan.services {
+        let kebab = service.name.to_kebab_case();
+        let dir = projects
+            .iter()
+            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(kebab.as_str()))
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "`ciac sim`: no generated project directory named {kebab:?} for service \
+                     {:?} (found {} project(s) under this system's --out)",
+                    service.name,
+                    projects.len()
+                )
+            })?;
+        run_in(&dir, "uv", &["sync", "-q"])?;
+        service_args.push((service.name.clone(), resolve_path(&dir)?));
+    }
+
+    let mut pythonpath_entries = vec![sim_dir.to_path_buf()];
+    for (name, dir) in &service_args {
+        let venv_lib = dir.join(".venv").join("lib");
+        let site_packages = std::fs::read_dir(&venv_lib)
+            .ok()
+            .and_then(|mut entries| entries.find_map(|e| e.ok().map(|e| e.path().join("site-packages"))))
+            .ok_or_else(|| {
+                anyhow!(
+                    "`ciac sim`: cannot find a site-packages directory under {} for service {name:?}",
+                    venv_lib.display()
+                )
+            })?;
+        pythonpath_entries.push(site_packages);
+    }
+    let pythonpath = std::env::join_paths(pythonpath_entries)
+        .context("cannot build PYTHONPATH for the multi-service sim runner")?;
+
+    // Any of the N venvs' own interpreter works equally well to *run*
+    // `multi_driver.py` itself (only the third-party packages on
+    // `PYTHONPATH` matter, not which `.venv`'s own `python` binary is
+    // invoked) -- the first service's, arbitrarily but deterministically
+    // (declaration order), keeps this reproducible.
+    let (_, driver_project) = &service_args[0];
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("uv");
+        cmd.arg("run")
+            .arg("--project")
+            .arg(driver_project)
+            .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
+            .arg(sim_dir.join("multi_driver.py"))
+            .arg(plan_path)
+            .arg(&scenario_abs)
+            .arg("--source-hash")
+            .arg(source_hash)
+            .arg("--plan-hash")
+            .arg(plan_hash)
+            .current_dir(sim_dir)
+            .env("PYTHONPATH", &pythonpath);
+        for (name, dir) in &service_args {
+            cmd.arg("--service")
+                .arg(format!("{name}={}", dir.display()));
+        }
+        if let Some(record_path) = record {
+            cmd.arg("--record").arg(resolve_path(record_path)?);
+        }
+        if let Some(replay_path) = replay {
+            cmd.arg("--replay").arg(resolve_path(replay_path)?);
+        }
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run multi_driver.py for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "multi_driver.py for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse multi_driver.py's result for scenario {}: {last_line:?}",
                     scenario_path.display()
                 )
             })?;

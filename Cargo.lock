@@ -202,6 +202,7 @@ dependencies = [
  "ciac-syntax",
  "clap",
  "ctrlc",
+ "heck",
  "lsp-server",
  "lsp-types",
  "notify",

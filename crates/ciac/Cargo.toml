@@ -26,6 +26,7 @@ ciac-sim.workspace = true
 ciac-syntax.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
+heck.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true
 notify.workspace = true

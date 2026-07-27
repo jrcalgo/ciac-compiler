@@ -89,9 +89,20 @@ def _payload_constructor(fn, param_name: str = "payload"):
 
 def build_workers_and_jobs(
     plan: dict[str, Any],
+    service_key: str,
 ) -> tuple[dict[str, WorkerEntry], dict[str, JobEntry]]:
+    """`service_key` (`SimPlan`'s own `"service/<Name>"` scheme) filters
+    `plan["workers"]`/`plan["jobs"]` down to this driver's own service --
+    for a single-service program every entry already belongs to the one
+    known service, so this filter is a no-op there (28UpdatePlan.md M3:
+    for a multi-service program, `plan["workers"]`/`plan["jobs"]` list
+    *every* service's own entries, tagged by `service_key`, and
+    importing another service's `app.workers.<name>` while a different
+    service's tree is active would resolve to the wrong module)."""
     workers: dict[str, WorkerEntry] = {}
     for worker in plan.get("workers", []):
+        if worker.get("service_key") != service_key:
+            continue
         snake = to_snake_case(worker["name"])
         module = importlib.import_module(f"app.workers.{snake}")
         handle_once = module.handle_message_once
@@ -110,6 +121,8 @@ def build_workers_and_jobs(
 
     jobs: dict[str, JobEntry] = {}
     for job in plan.get("jobs", []):
+        if job.get("service_key") != service_key:
+            continue
         snake = to_snake_case(job["name"])
         module = importlib.import_module(f"app.workers.{snake}")
         jobs[job["name"]] = JobEntry(
@@ -205,11 +218,23 @@ async def _resolve_claims(dependency: Any, credentials: Any) -> Any:
     return await dependency(**kwargs)
 
 
-def build_apis(scenario: dict[str, Any]) -> dict[str, ApiEntry]:
+def build_apis(scenario: dict[str, Any], service_name: str) -> dict[tuple[str, str], ApiEntry]:
+    """`service_name` filters the scenario's own `request` steps down to
+    this driver's own service (single-service: every step already
+    names the one known service -- SIM0011 refuses anything else before
+    this driver ever runs -- so the filter is a no-op there;
+    28UpdatePlan.md M3, multi-service: importing another service's
+    `app.api.<name>` while a different service's tree is active would
+    resolve to the wrong module, so only this service's own api names
+    may be imported while it's the one active). Registered under
+    `(service, api)`, not `api` alone -- see `ApiEntry`'s own
+    docstring, `scenario_runner.py`."""
     api_names = {
-        step["request"]["api"] for step in scenario["steps"] if "request" in step
+        step["request"]["api"]
+        for step in scenario["steps"]
+        if "request" in step and step["request"]["service"] == service_name
     }
-    apis: dict[str, ApiEntry] = {}
+    apis: dict[tuple[str, str], ApiEntry] = {}
     for api_name in api_names:
         snake = to_snake_case(api_name)
         module = importlib.import_module(f"app.api.{snake}")
@@ -261,7 +286,7 @@ def build_apis(scenario: dict[str, Any]) -> dict[str, ApiEntry]:
                     return await _route(value, **kwargs, session=session)
             return await _route(value, **kwargs)
 
-        apis[api_name] = ApiEntry(service="", call=call)
+        apis[(service_name, api_name)] = ApiEntry(service=service_name, call=call)
     return apis
 
 
@@ -288,8 +313,12 @@ async def main() -> None:
             return
 
     try:
-        workers, jobs = build_workers_and_jobs(plan)
-        apis = build_apis(scenario)
+        # `plan["services"][0]` is this single-service driver's own,
+        # only service -- SIM0011 already refuses a scenario naming any
+        # other, per `build_apis`'s own docstring.
+        service = plan["services"][0]
+        workers, jobs = build_workers_and_jobs(plan, service["key"])
+        apis = build_apis(scenario, service["name"])
         failure_rules = build_failure_rules(scenario)
     except RegistryError as exc:
         print(json.dumps({"scenario": scenario["name"], "passed": False, "error": str(exc)}))

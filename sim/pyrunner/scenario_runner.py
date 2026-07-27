@@ -49,10 +49,13 @@ class ScenarioAssertionError(AssertionError):
 class ApiEntry:
     """One registered API: `call(payload_json) -> Any`, raising on
     failure. `service` is the scenario's own name for the owning
-    service, matching `request.service` -- unused for routing today
-    (single-service only, see module docstring) but recorded so a
-    scenario naming the wrong service is at least visible in the
-    registry, not silently ignored."""
+    service, matching `request.service` -- consulted for routing
+    (28UpdatePlan.md M3: `ScenarioRunner.apis` is keyed by
+    `(service, api)`, not `api` alone, since two services may declare
+    an api with the same name), and still doubles as its single-
+    service-era self-check: a scenario naming the wrong service simply
+    fails the `(service, api)` lookup with a clear `KeyError` rather
+    than silently routing to some other service's handler."""
 
     service: str
     call: Callable[[dict[str, Any], dict[str, Any] | None], Awaitable[Any]]
@@ -89,7 +92,16 @@ class StreamEntry:
 @dataclass
 class ScenarioRunner:
     world: Any  # world.SimWorld
-    apis: dict[str, ApiEntry] = field(default_factory=dict)
+    # 28UpdatePlan.md M3: keyed by `(service, api)`, not `api` alone --
+    # see `ApiEntry`'s own docstring for why. `workers`/`jobs` stay
+    # keyed by bare name: `expect.worker_attempts`/`expect.job_runs`
+    # carry no `service` field to disambiguate by (only `request`/
+    # `given.db`/`expect.row` do), so those two names must already be
+    # unique per system for a scenario to assert against them
+    # unambiguously at all -- a scenario-schema-level constraint this
+    # milestone did not introduce and is not this milestone's job to
+    # widen.
+    apis: dict[tuple[str, str], ApiEntry] = field(default_factory=dict)
     workers: dict[str, WorkerEntry] = field(default_factory=dict)
     jobs: dict[str, JobEntry] = field(default_factory=dict)
     streams: dict[str, StreamEntry] = field(default_factory=dict)
@@ -121,7 +133,7 @@ class ScenarioRunner:
             raise ScenarioAssertionError(f"unrecognized scenario step: {step!r}")
 
     async def _request(self, spec: dict[str, Any]) -> None:
-        entry = self.apis[spec["api"]]
+        entry = self.apis[(spec["service"], spec["api"])]
         ok, value = True, None
         try:
             value = await entry.call(spec.get("json", {}), spec.get("as"))

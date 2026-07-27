@@ -1,0 +1,37 @@
+{
+  "simulation_version": 1,
+  "name": "28-m3-upload-charges-transcodes-notifies",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "db": []
+  },
+  "steps": [
+    {
+      "request": {
+        "service": "UploadApi",
+        "api": "Upload",
+        "json": {
+          "id": "b3b6f2b0-0000-4000-8000-000000000001",
+          "title": "First light",
+          "status": "Ready"
+        },
+        "save_as": "upload"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "upload",
+          "status": 200
+        }
+      }
+    },
+    { "drain": {} },
+    { "drain": {} },
+    {
+      "expect": {
+        "quiescence": {}
+      }
+    }
+  ]
+}

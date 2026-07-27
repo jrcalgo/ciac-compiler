@@ -294,7 +294,16 @@ fn emit_service(
         for target in &ctx.call_targets {
             project.add_file(
                 at(&format!("app/clients/{}.py", target.module)),
-                render("client.py.j2", context! { t => target })?,
+                // 28UpdatePlan.md M3: `caller` is this project's own
+                // service name -- `call_checked`'s `caller` argument is
+                // informational only (used in its own error messages),
+                // but it still needs a real value baked in here since
+                // this template has no other way to know its own
+                // identity at render time.
+                render(
+                    "client.py.j2",
+                    context! { t => target, caller => ctx.service_name },
+                )?,
             );
         }
     }

@@ -2671,22 +2671,40 @@ it at the `billing` container.
 import httpx
 
 from app.config import get_settings
+from app.state import current
 from app.schemas import Video
 
 
 class BillingClient:
-    """Calls `Billing` over HTTP and unwraps its response envelope."""
+    """Calls `Billing` over HTTP and unwraps its response envelope
+    -- or, under `ciac sim` (28UpdatePlan.md M3), routes through
+    `SimWorld.call_checked` against `Billing`'s own registered
+    handler instead of real HTTP, the same `state.world is not None`
+    guard `app/db.py`'s `get_sessionmaker` already uses for the database
+    seam. `call_checked`'s contract is a direct JSON-boundary function
+    call (no HTTP response envelope to unwrap): its return value is
+    already the target handler's own payload, so this branch validates
+    it exactly the way the real-HTTP branch validates `response.json()
+    ["data"]` -- same post-processing, different transport."""
 
     def __init__(self) -> None:
         self._base_url = get_settings().billing_url
 
     async def charge(self, payload: Video) -> Video:
+        state = current()
+        if state.world is not None:
+            req = payload.model_dump(mode="json")
+            result = await state.world.call_checked(
+                "UploadApi", "Billing", "Charge", req
+            )
+            return Video.model_validate(result)
         async with httpx.AsyncClient(base_url=self._base_url) as client:
             response = await client.post(
                 "/charge", json=payload.model_dump(mode="json")
             )
         response.raise_for_status()
         return Video.model_validate(response.json()["data"])
+
 ============================================================
 upload-api/app/config.py
 ============================================================

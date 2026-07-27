@@ -10,19 +10,46 @@ from typing import Any
 import httpx
 
 from app.config import get_settings
+from app.state import current
 {%- if t.schema_imports %}
 from app.schemas import {{ t.schema_imports | join(", ") }}
 {%- endif %}
 
 
 class {{ t.class_name }}:
-    """Calls `{{ t.service }}` over HTTP and unwraps its response envelope."""
+    """Calls `{{ t.service }}` over HTTP and unwraps its response envelope
+    -- or, under `ciac sim` (28UpdatePlan.md M3), routes through
+    `SimWorld.call_checked` against `{{ t.service }}`'s own registered
+    handler instead of real HTTP, the same `state.world is not None`
+    guard `app/db.py`'s `get_sessionmaker` already uses for the database
+    seam. `call_checked`'s contract is a direct JSON-boundary function
+    call (no HTTP response envelope to unwrap): its return value is
+    already the target handler's own payload, so this branch validates
+    it exactly the way the real-HTTP branch validates `response.json()
+    ["data"]` -- same post-processing, different transport."""
 
     def __init__(self) -> None:
         self._base_url = get_settings().{{ t.url_field }}
 {% for a in t.apis %}
 {%- set payload_type = a.payload.class_name if a.payload else "dict[str, Any]" %}
     async def {{ a.method }}(self, payload: {{ payload_type }}) -> {{ payload_type }}:
+        state = current()
+        if state.world is not None:
+{%- if a.has_body and a.payload %}
+            req = payload.model_dump(mode="json")
+{%- elif a.has_body %}
+            req = payload
+{%- else %}
+            req = {}
+{%- endif %}
+            result = await state.world.call_checked(
+                "{{ caller }}", "{{ t.service }}", "{{ a.name }}", req
+            )
+{%- if a.payload %}
+            return {{ a.payload.class_name }}.model_validate(result)
+{%- else %}
+            return result
+{%- endif %}
         async with httpx.AsyncClient(base_url=self._base_url) as client:
 {%- if a.has_body and a.payload %}
             response = await client.{{ a.http_method_lower }}(

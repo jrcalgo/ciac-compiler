@@ -29,6 +29,13 @@ chrono = { version = "0.4", features = ["serde"] }
 # regardless of which capabilities this particular service declares --
 # the runner is generic over the whole scenario schema.
 base64 = "0.22"
+{%- if multi %}
+# 28UpdatePlan.md M6b: the vendored simulation modules (`clock`/
+# `failure`/`scenario`/`world`/`cron`), shared with every other service
+# in this system and the system-runner crate so `SimWorld` is one
+# nominal type across all of them, not one private copy per crate.
+sim-shared = { path = "../sim-shared" }
+{%- endif %}
 {%- endif %}
 {%- if c.jobs %}
 cron = "0.12"

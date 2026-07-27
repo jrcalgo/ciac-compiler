@@ -2998,6 +2998,13 @@ fn service_roots(
     let mut roots: Vec<String> = project
         .files_with_roles()
         .filter_map(|(path, _, _)| path.strip_suffix(marker).map(str::to_owned))
+        // 28UpdatePlan.md M6b: `sim-shared/Cargo.toml` (the vendored-
+        // simulation crate every Rust service in a multi-service system
+        // depends on by path) satisfies this same marker check without
+        // being a deployable service in its own right -- it owns no
+        // table, so it must never receive its own copy of the system's
+        // migration files the way every real service root does.
+        .filter(|root| root != "sim-shared/")
         .collect();
     if roots.is_empty() {
         roots.push(String::new());
@@ -3219,6 +3226,16 @@ fn find_project_dirs(root: &Path, marker: &str) -> Result<Vec<std::path::PathBuf
                 if child.file_name().is_some_and(|name| name == "system")
                     && path.file_name().is_some_and(|name| name == "tests")
                 {
+                    continue;
+                }
+                // 28UpdatePlan.md M6b: `sim-shared/` (the vendored-
+                // simulation crate a multi-service Rust system's own
+                // services depend on by path) has a `Cargo.toml` like
+                // any real service, but is a library, not a deployable
+                // project -- it has no `src/bin/sim_runner.rs`, no
+                // routes, nothing `ciac verify`/`ciac sim`'s per-service
+                // walk could ever run.
+                if child.file_name().is_some_and(|name| name == "sim-shared") {
                     continue;
                 }
                 walk(&child, marker, out)?;

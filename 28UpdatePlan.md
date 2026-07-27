@@ -1135,6 +1135,144 @@ push, in-place Shipped notes).
    + anchors re-proven untouched. The wall-clock data for
    Python's system runs recorded.
 
+   **Shipped (v0.28 M4) — the three-scenario corpus landed as
+   planned, plus two real defects the live proofs found (not
+   scenario-authoring mistakes) and a documented, intentional
+   coverage trade the second one exposed.** Split into three
+   passes rather than one: M4a threaded per-service database
+   namespacing end-to-end (the gap M3c's own Shipped note
+   disclosed and deferred); M4b authored and proved the new N=3
+   example; M4c authored and proved `inventory-system.ciac`'s
+   scenario and reviewed `multi-service-media.ciac`'s existing
+   M3c scenario against this milestone's own proof-ledger row.
+
+   **M4a — `world.py`'s `namespaced_table_key` (M3a) actually
+   wired into the write path, failure-injection subject, and
+   transcript, plus the read path.** `_FakeSession._key` composes
+   `namespaced_table_key(self._service, table)` once per session
+   and every storage/delete/select/commit call site now goes
+   through it instead of the bare table name; `ScenarioRunner`
+   gained a `multi_service: bool` field so `_expect_row` namespaces
+   its own lookup the same way, mirroring `db.py.j2`'s own
+   `SERVICE_FOR_SIM` constant — baked in at codegen time (`multi.
+   then_some(ctx.service_name.as_str())`, Rust `{:?}`-formatted
+   into a Python literal), not derived at runtime, so a
+   single-service project's degenerate case (`None` → bare table
+   name) is exactly what it was before this milestone touched
+   nothing in that path. Disclosed, not fixed: schema-based
+   reference/uniqueness validation (Python's `_check_write`,
+   Rust's `validate_write`) is keyed by bare table names on both
+   targets and silently no-ops against an already-namespaced key —
+   traced to M2's own original design, confirmed identical in Rust
+   by reading `RelationalSchema::from_tables`/`outgoing`/`incoming`,
+   and deliberately unexercised by any of this milestone's three
+   scenarios (`sim-three-service.ciac`'s two tables declare no
+   `Reference<T>` across the namespaced boundary, by design). A
+   real gap, filed for whichever future milestone first needs
+   cross-service relations under simulation.
+
+   **M4b — `sim-three-service.ciac`, the N>2 proof.** `Intake`
+   calls `Billing.Charge` synchronously, then publishes
+   `OrderAccepted` for `Fulfillment`'s worker to consume, each
+   downstream service owning its own table (no cross-service
+   `Reference<T>`, sidestepping M4a's disclosed gap on purpose).
+   The scenario asserts the routed call's effect, the
+   cross-service stream delivery, and a `call.request` failure
+   injected on `Charge` at occurrence 2 — no charge row, no
+   shipment row for the failed order, confirmed genuinely causal
+   by a negative control (removing the failure rule, watching the
+   previously-failing request succeed instead). All twelve ×5
+   golden snapshots (dot/ir/five gen targets/four host-syntax-
+   identity/ts-client) generated clean on the first `INSTA_UPDATE`
+   pass once `queue NATS` capabilities were added to `Intake` and
+   `Fulfillment` (both initially omitted, caught immediately by
+   `ciac check`'s CIAC0005).
+
+   **M4c — `inventory-system.ciac`'s call round trip and scoped
+   auth, plus two real defects the live proof found.** Extended
+   the existing flagship with two scope-gated apis rather than
+   inventing a new program: `Gateway.Quote` (the system's own
+   ingress) and `Catalog.Restock` (an independent entrypoint on
+   the other service), both checked against the one shared,
+   system-scoped `FakeAuth`; `Catalog.Price` stays auth-less since
+   it's reached only by Gateway's routed `call`, and Pillar 4's own
+   "Identity propagation through routed calls" finding — production
+   forwards no caller identity through the existing call clients,
+   so the router must not invent one — means a call-only callee
+   could never satisfy a scope in the first place, sim or real.
+
+   First defect: `multi_driver.py`'s per-service api
+   auto-registration loop assumed every `plan["apis"]` entry
+   resolves to a single `app.api.<snake>.<snake>` function —
+   true for a plain `api`, false for `crud <Name>;`, which lowers
+   to a same-shaped `NodeKind::Api` node (`ciac-sema/src/build.rs`'s
+   `crud()` expansion) whose module is a five-verb REST resource
+   file with no such function. Reproduced live: `AttributeError:
+   module 'app.api.item' has no attribute 'item'` the moment
+   `Catalog` — which already owned `crud Item` before this
+   milestone — was loaded by the multi-service driver for the
+   first time. This means the M3c driver could never have loaded
+   *any* multi-service system with a `crud` resource, regardless of
+   what a scenario actually exercised; not a regression from this
+   milestone's own changes, but a latent gap this milestone's
+   first `crud`-bearing multi-service proof was always going to
+   hit. Fixed by skipping non-single-function modules in that
+   loop; a program that genuinely writes `call Catalog.Item` (which
+   `ciac check` does not reject — `resolve_call` only checks the
+   node exists and the payload type matches, another disclosed,
+   pre-existing gap) still fails loudly at simulation time via
+   `call_checked`'s own `RoutingError`, not silently.
+
+   Second finding, a correct consequence rather than a bug:
+   declaring `auth JWT;` on `Catalog` at all — needed for
+   `Restock`'s scope — also flips `crud Item`'s own `has_auth`
+   (`docs/language.md`: "`crud` gates every route with that
+   capability automatically once it's declared"), even though
+   `Item` sets neither `read_scope` nor `write_scope`. This
+   silently drops the project's original v0.9 M2 capability
+   round-trip system test for `Item` from generation, since
+   `ciac-codegen::system_tests::build_capability_checks` already
+   and correctly skips any `has_auth` resource ("no credentials to
+   present") — confirmed by regenerating the project and finding
+   `tests/system/` now emits only `test_calls.py`, no
+   `test_capabilities.py`. Documented in the example's own doc
+   comment as a disclosed trade rather than avoided by picking a
+   different design; `ciac verify --system`'s call-reachability
+   test for `Gateway`→`Catalog.Price` is unaffected. Reviewed
+   `multi-service-media.ciac`'s existing M3c scenario against this
+   milestone's own proof-ledger row ("per-service row assertions")
+   and found it genuinely unsatisfiable as written — the program
+   declares zero `table`s in any of its five services, a v0.5-era
+   topology choice predating this arc — so `sim-three-service.ciac`
+   is the proof that actually delivers request→publish→
+   cross-service-worker *with* per-service row assertions;
+   retrofitting a table onto the v0.5 flagship for this row alone
+   was judged higher-risk than worth it (that example's handlers
+   are old-style capability-bound stubs, not typed-handler bodies,
+   so giving `TranscodeVideo` a real `db.insert` would mean
+   changing its fundamental shape, not just adding a field) and is
+   left as a named, undone option rather than done silently.
+
+   One clippy regression from M4a's own already-committed code
+   (`multi.then(|| ctx.service_name.as_str())`, `clippy::
+   unnecessary_lazy_evaluations` under this toolchain) was caught
+   and fixed by this milestone's own verification pass
+   (`then_some`), not introduced by M4b/M4c.
+
+   Both single-service anchors reconfirmed green:
+   `sim-vertical-slice.ciac` at `{"ProcessOrder": 3}`/
+   `{"Reconcile": 1}` (`[PASS] v0.17-m5-vertical-slice`) and at
+   `{"Reconcile": 7}` via `virtual-week.ciac-sim.json` (`[PASS]
+   v0.17-m5-virtual-week`); Python-target `order-system.ciac` via
+   the full workspace test suite. Wall-clock data for Python's
+   system runs (`ciac sim`, cold, including codegen — not isolated
+   scenario-runner time): `multi-service-media` 3.34s,
+   `inventory-system` 3.14s, `sim-three-service` 2.77s. Full `cargo
+   test --workspace --no-fail-fast` (`cargo fmt --check` and
+   `cargo clippy --workspace --all-targets -- -D warnings` both
+   clean) exits with only the same disclosed pre-existing `ruff`-
+   version-drift failure in `backfill_cli`.
+
 5. **M5 — CHECKPOINT.** The composition go/no-go for compiled
    targets, priced on M3/M4's measured reality: Python's
    composition cost, the observed sharp edges, and a concrete

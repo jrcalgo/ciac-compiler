@@ -1,0 +1,457 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "ThreeService",
+  "multi_service": true,
+  "services": [
+    {
+      "id": 0,
+      "name": "Intake"
+    },
+    {
+      "id": 1,
+      "name": "Billing"
+    },
+    {
+      "id": 2,
+      "name": "Fulfillment"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": null,
+      "kind": "Stream",
+      "name": "OrderAccepted",
+      "subject": "three_service.order_accepted",
+      "record": 0
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Api",
+      "name": "SubmitOrder",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/orders",
+        "scope": null
+      }
+    },
+    {
+      "id": 3,
+      "service": 1,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 4,
+      "service": 1,
+      "kind": "Api",
+      "name": "Charge",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/charge",
+        "scope": null
+      }
+    },
+    {
+      "id": 5,
+      "service": 2,
+      "kind": "Database",
+      "name": "default",
+      "engine": "Postgres"
+    },
+    {
+      "id": 6,
+      "service": 2,
+      "kind": "Queue",
+      "name": "default",
+      "engine": "Nats"
+    },
+    {
+      "id": 7,
+      "service": 2,
+      "kind": "Worker",
+      "name": "Ship",
+      "config": {
+        "concurrency": 1,
+        "max_retries": 0
+      }
+    },
+    {
+      "id": 8,
+      "service": 1,
+      "kind": "Service",
+      "name": "RecordCharge",
+      "signature": {
+        "params": [
+          [
+            "order",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 3,
+                "verb": {
+                  "DbInsert": 0
+                },
+                "args": [
+                  {
+                    "RecordCons": {
+                      "record": 1,
+                      "base_value": null,
+                      "fields": [
+                        [
+                          "id",
+                          {
+                            "BuiltinCall": "UuidNew"
+                          }
+                        ],
+                        [
+                          "order_id",
+                          {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 0
+                                  }
+                                }
+                              },
+                              "field": "id",
+                              "ty": "Uuid"
+                            }
+                          }
+                        ],
+                        [
+                          "amount",
+                          {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 0
+                                  }
+                                }
+                              },
+                              "field": "total",
+                              "ty": "Float"
+                            }
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "service": 2,
+      "kind": "Service",
+      "name": "RecordShipment",
+      "signature": {
+        "params": [
+          [
+            "order",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 0
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 5,
+                "verb": {
+                  "DbInsert": 1
+                },
+                "args": [
+                  {
+                    "RecordCons": {
+                      "record": 2,
+                      "base_value": null,
+                      "fields": [
+                        [
+                          "id",
+                          {
+                            "BuiltinCall": "UuidNew"
+                          }
+                        ],
+                        [
+                          "order_id",
+                          {
+                            "FieldAccess": {
+                              "base": {
+                                "Local": {
+                                  "slot": 0,
+                                  "ty": {
+                                    "Record": 0
+                                  }
+                                }
+                              },
+                              "field": "id",
+                              "ty": "Uuid"
+                            }
+                          }
+                        ]
+                      ]
+                    }
+                  }
+                ],
+                "ty": {
+                  "Record": 2
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 0,
+      "to": 6,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 1,
+      "from": 0,
+      "to": 7,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 2,
+      "from": 0,
+      "to": 1,
+      "kind": "DependsOn"
+    },
+    {
+      "id": 3,
+      "from": 2,
+      "to": 4,
+      "kind": "ServiceCall"
+    },
+    {
+      "id": 4,
+      "from": 2,
+      "to": 0,
+      "kind": "AsyncMessage"
+    },
+    {
+      "id": 5,
+      "from": 8,
+      "to": 3,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 6,
+      "from": 4,
+      "to": 8,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 7,
+      "from": 9,
+      "to": 5,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 8,
+      "from": 7,
+      "to": 9,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "Order",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "ChargeRecord",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "order_id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "amount",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "Shipment",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        },
+        {
+          "name": "order_id",
+          "ty": {
+            "type": "Uuid"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [
+    {
+      "name": "Charges",
+      "record": 1,
+      "service": 1,
+      "db_instance": 3
+    },
+    {
+      "name": "Shipments",
+      "record": 2,
+      "service": 2,
+      "db_instance": 5
+    }
+  ],
+  "pipelines": [
+    {
+      "name": "SubmitOrder",
+      "service": 0,
+      "owner": 2,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Call",
+          "target": 4
+        },
+        {
+          "step": "Publish",
+          "stream": 0
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Charge",
+      "service": 1,
+      "owner": 4,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 8
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Ship",
+      "service": 2,
+      "owner": 7,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 9
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

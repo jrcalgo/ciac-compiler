@@ -1,0 +1,26 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph ThreeService {
+    rankdir=LR;
+    n0 [label="stream OrderAccepted", shape=parallelogram];
+    n1 [label="queue default Nats", shape=cds];
+    n2 [label="api SubmitOrder", shape=rarrow];
+    n3 [label="database default Postgres", shape=cylinder];
+    n4 [label="api Charge", shape=rarrow];
+    n5 [label="database default Postgres", shape=cylinder];
+    n6 [label="queue default Nats", shape=cds];
+    n7 [label="worker Ship", shape=component];
+    n8 [label="service RecordCharge", shape=box];
+    n9 [label="service RecordShipment", shape=box];
+    n0 -> n6 [label="DependsOn", style=dotted];
+    n0 -> n7 [label="AsyncMessage", style=dashed];
+    n0 -> n1 [label="DependsOn", style=dotted];
+    n2 -> n4 [label="ServiceCall", style=solid];
+    n2 -> n0 [label="AsyncMessage", style=dashed];
+    n8 -> n3 [label="DataFlow", style=bold];
+    n4 -> n8 [label="RequestFlow", style=solid];
+    n9 -> n5 [label="DataFlow", style=bold];
+    n7 -> n9 [label="RequestFlow", style=solid];
+}

@@ -1,0 +1,80 @@
+// 28UpdatePlan.md M4: the N>2 proof -- the smallest topology where
+// "global delivery order across three services" is actually a claim
+// worth checking (two services can't distinguish "ordered" from
+// "happened," three can). `Intake` calls `Billing` synchronously, then
+// publishes to a stream `Fulfillment` consumes -- a routed call and a
+// cross-service stream hop in the same request, plus each downstream
+// service owning its own table so the scenario can assert per-service
+// rows land (or don't, when the call fails) without any cross-service
+// `Reference<T>` -- this example deliberately declares none, since
+// schema-based reference validation is not yet namespace-aware (see
+// 28UpdatePlan.md's M4 Shipped note).
+project ThreeService;
+
+record Order {
+    id: Uuid;
+    total: Float;
+}
+
+record ChargeRecord {
+    id: Uuid;
+    order_id: Uuid;
+    amount: Float;
+}
+
+record Shipment {
+    id: Uuid;
+    order_id: Uuid;
+}
+
+stream OrderAccepted: Order;
+
+service Intake {
+    use { queue NATS; }
+
+    api SubmitOrder: Order {
+        method: POST;
+        path: "/orders";
+    }
+
+    pipeline SubmitOrder:
+        call Billing.Charge
+        -> publish OrderAccepted
+        -> Return;
+}
+
+service Billing {
+    use { db Postgres; }
+
+    table Charges: ChargeRecord;
+
+    api Charge: Order {
+        method: POST;
+        path: "/charge";
+    }
+
+    handler RecordCharge(order: Order) -> Order {
+        db.insert(Charges, ChargeRecord { id: Uuid.new(), order_id: order.id, amount: order.total });
+        return order;
+    }
+
+    pipeline Charge:
+        RecordCharge
+        -> Return;
+}
+
+service Fulfillment {
+    use { db Postgres; queue NATS; }
+
+    table Shipments: Shipment;
+
+    worker Ship on OrderAccepted;
+
+    handler RecordShipment(order: Order) -> Order {
+        db.insert(Shipments, Shipment { id: Uuid.new(), order_id: order.id });
+        return order;
+    }
+
+    pipeline Ship:
+        RecordShipment;
+}

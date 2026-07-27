@@ -1288,6 +1288,103 @@ push, in-place Shipped notes).
    — pre-registered as always, expected never). Checkpoint
    report lands in this file.
 
+   **Shipped (v0.28 M5) — go, with the biggest priced risk
+   already retired and a different, unpriced one found in its
+   place.** This plan's own text called the Rust lib+bin
+   reshaping "the single most golden-visible item in the arc" —
+   checked against the actual generator (`crates/ciac-backend-
+   rust/src/lib.rs`) rather than against the M1 estimate's
+   assumption, **it has already shipped**: every generated Rust
+   project has carried both `src/lib.rs` (a full `pub mod` tree —
+   `routes`, `state`, `db`, `models`, `services`, `clients`,
+   `world`, everything) and a thin `src/main.rs` that only calls
+   into `{{ c.module }}::` since v0.17 M11, when `src/bin/
+   sim_runner.rs` first needed to import the service's own routes
+   and state as a library rather than duplicating them. `Cargo.
+   toml.j2` carries no explicit `[lib]`/`[[bin]]` sections at
+   all — Cargo's own convention (a package with both `src/lib.rs`
+   and `src/main.rs` gets both target kinds for free) already does
+   the job. **Net effect: M6 owes zero golden churn for the
+   reshaping itself** — every one of the 28 Rust golden snapshots
+   the plan expected to touch for this reason alone stays
+   untouched by it, because there is nothing left to reshape.
+   Reshape-first is consequently not a live outcome: there is no
+   separable "reshaping" step left to isolate as its own review.
+
+   That finding does not, on its own, clear M6 — it just means the
+   M1 estimate's *named* risk was already retired by earlier work
+   for an unrelated reason, not that composition is free. Reading
+   the generator further surfaced the risk the M1 estimate never
+   named: `crates/ciac-backend-rust/src/lib.rs` vendors `ciac-sim`'s
+   `world.rs` (and `clock.rs`/`cron.rs`/`failure.rs`/`scenario.rs`)
+   via `include_str!`, pasting the same source text into **every**
+   generated project's own `src/world.rs` — a deliberate choice
+   (a generated project depends on nothing from this repo's own
+   crates, staying self-contained for a user who never sees `ciac`'s
+   source) which this plan's own Pillar 3 correctly named as a
+   consequence of "Rust: generated projects are binary crates" but
+   did not carry one step further: N services built this way get N
+   *nominally distinct* `SimWorld` types (same source, but Rust's
+   type identity is per-crate, not per-source-text), and a
+   system-runner crate depending on all N service crates as
+   libraries cannot construct "one world" of a type any of them
+   share — the exact "one memory space, one world" property Pillar
+   3 opens by naming as the whole reason single-process composition
+   was chosen over the rejected N-process design. Python has no
+   analogous problem (`sim/pyrunner/world.py` is one file the driver
+   imports directly, never duplicated per project), so M3/M4's
+   measured experience gives no precedent either way for this one.
+
+   Two paths were weighed, not yet chosen (M6's own first
+   pre-registered open question, resolved on contact, in the exact
+   tradition M3's aliasing-vs-shim question was): **(a)** extract
+   the vendored sim modules into one small path-dependency crate
+   that a multi-service system's own N service crates *and* its
+   system-runner crate all depend on in place of their private
+   `include_str!` copy — single-service projects keep today's
+   vendored-and-self-contained shape untouched, since this only
+   ever applies when a system-runner crate exists at all; **(b)**
+   accept the pre-registered process-fallback for Rust specifically
+   (an N-process system runner coordinating N `sim_runner`
+   binaries over the existing one-line-stdout protocol, multiplied)
+   if (a) proves more invasive than it looks on paper — a
+   legitimate, plan-sanctioned outcome for exactly this shape of
+   structural wall, not a failure. (a) is the working assumption
+   for M6 to open with, since it preserves the single-process
+   design Pillar 3 argues for and touches no single-service golden
+   file.
+
+   Python's own measured composition cost (M3/M4, cross-checked
+   against this checkpoint rather than restated) supports proceeding
+   rather than hesitating: `multi_driver.py` (331 lines) + `multi_
+   service.py` (153 lines) is the full second driver, and every
+   sharp edge the plan predicted in Pillar 3 (import identity in M3,
+   database namespacing and API-registration completeness in M4)
+   was found live, diagnosed, and fixed with a small, targeted
+   change — the aliasing shim fallback was never needed, and no
+   scenario ever required a design reversal. The lesson worth
+   carrying into M6 specifically: M4c's `crud`-shaped-api
+   registration bug (a plan-level api entry that doesn't resolve to
+   a single callable, found only once a `crud`-bearing multi-service
+   program was actually driven) has no Rust analogue to check for
+   yet, since Rust's own call/route registration is direct function
+   wiring at codegen time rather than reflective module lookup — but
+   the general shape of the lesson ("a system-runner's registration
+   pass must be checked against every api-*shaped* IR node the
+   corpus actually produces, not just the ones today's examples
+   happen to exercise") carries forward regardless of mechanism.
+
+   **Decision: go.** M6–M8 proceed. No reshape-first step (there is
+   nothing left to reshape); no process-fallback taken pre-emptively
+   (path (a) above is untried, not ruled out); no no-go (nothing
+   found here is structural in the sense Pillar 3 reserves that
+   outcome for — the vendored-world type-identity question has a
+   credible single-process answer that simply wasn't written down
+   before this checkpoint went looking for it). M6's own exit
+   checklist gains one concrete addition beyond what M1 specified:
+   record which of (a)/(b) above was actually taken, and why, the
+   same way M3 recorded aliasing-over-shim.
+
 6. **M6 — Rust composition.** The lib+bin project reshaping
    (uniform, behavior-neutral, golden-reviewed under the 26
    invariant discipline — likely pre-shipped per M5), the

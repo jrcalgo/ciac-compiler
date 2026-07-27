@@ -757,19 +757,35 @@ use crate::schemas::{Order};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::state::AppState;
 
-/// Calls `Payments` over HTTP and unwraps its response envelope.
+/// Calls `Payments` over HTTP and unwraps its response envelope --
+/// or, under `ciac sim` (28UpdatePlan.md M6), routes through
+/// `SimWorld::call_checked` against `Payments`'s own registered
+/// handler instead of real HTTP, the same `state.world` guard `db.rs`'s
+/// own world-guarded verbs already use. `call_checked` invokes the target
+/// api's registered handler directly, so its return value carries the
+/// *same* `{"status": ..., "data": ...}` envelope every route function's
+/// own body already builds (see `route_api.rs.j2`) -- this unwraps
+/// `["data"]` from it exactly the way the real-HTTP branch unwraps
+/// `body["data"]`, same post-processing, different transport.
 pub struct PaymentsClient<'a> {
     base_url: &'a str,
+    world: Option<std::sync::Arc<crate::world::SimWorld>>,
 }
 
 impl<'a> PaymentsClient<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self {
             base_url: &state.config.payments_url,
+            world: state.world.clone(),
         }
     }
 
     pub async fn charge(&self, payload: Order) -> anyhow::Result<Order> {
+        if let Some(world) = &self.world {
+            let req = serde_json::to_value(&payload)?;
+            let result = world.call_checked("Checkout", "Payments", "Charge", req)?;
+            return Ok(serde_json::from_value(result["data"].clone())?);
+        }
         let mut headers = reqwest::header::HeaderMap::new();
         opentelemetry::global::get_text_map_propagator(|propagator| {
             propagator.inject_context(

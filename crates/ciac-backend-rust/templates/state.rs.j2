@@ -33,7 +33,7 @@ pub struct AppState {
     /// each token's `kid`.
     pub jwks: crate::auth::Jwks,
 {%- endif %}
-{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
     /// `None` in production; `Some` only when constructed via
     /// [`AppState::simulation`] (v0.17 M11) -- every world-guarded
     /// call site (`db.insert`, broker `publish`, and every peripheral
@@ -135,12 +135,12 @@ impl AppState {
 {%- if c.auth_scheme == "oauth2" %}
             jwks,
 {%- endif %}
-{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
             world: None,
 {%- endif %}
         })
     }
-{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
 
     /// Constructs `AppState` against an in-memory [`crate::world::
     /// SimWorld`] instead of real infrastructure (v0.17 M11). Delegates

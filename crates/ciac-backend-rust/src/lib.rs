@@ -418,6 +418,7 @@ fn emit_service(
         || ctx.has_search
         || ctx.has_external_http
         || ctx.has_auth
+        || !ctx.call_targets.is_empty()
     {
         project.add_file(at("src/clock.rs"), VENDORED_SIM_CLOCK);
         project.add_file(at("src/failure.rs"), VENDORED_SIM_FAILURE);
@@ -510,7 +511,10 @@ fn emit_service(
         for target in &ctx.call_targets {
             project.add_file(
                 at(&format!("src/clients/{}.rs", target.module)),
-                render("client.rs.j2", context! { t => target })?,
+                render(
+                    "client.rs.j2",
+                    context! { t => target, caller => ctx.service_name },
+                )?,
             );
         }
     }

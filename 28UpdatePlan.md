@@ -1658,6 +1658,50 @@ push, in-place Shipped notes).
    split (mirroring `sim_drive_rust`/`sim_drive_python`) is the
    remaining TS work this milestone still owes, tracked next.
 
+   **Shipped (v0.28 M7b) — the driver split, and the same three
+   scenarios re-proved through the real `ciac sim --target
+   typescript` CLI end-to-end.** `sim_drive_typescript` gained the
+   identical `_single`/`_multi` split `sim_drive_rust`/`sim_drive_
+   python` already carry: `find_project_dirs(out, "package.json")`
+   (already excluding both `sim-shared/` and `system-runner/`, per
+   M6b/M6c's own additions to that walk) dispatches to
+   `sim_drive_typescript_single` for exactly one project (unchanged
+   body) or `sim_drive_typescript_multi` for more than one. Unlike
+   Rust's own `_multi` (where `cargo build` inside `system-runner/`
+   resolves the whole path-dependency graph unaided), M7a's own
+   live repro already established that npm does not hoist a `file:`
+   dependency's transitive dependencies, so `_multi` builds `sim-
+   shared`, then every service project, then `system-runner`
+   itself, in that order (`npm ci && npm run build` at each step)
+   before driving it -- the same three-phase build order the manual
+   scratchpad proof used, now the actual driver's own behavior. Both
+   `_single` and `_multi` funnel through one new shared helper,
+   `run_node_sim_runner` (`node dist/sim_runner.js <scenario>`,
+   one-line-JSON-on-stdout parsing), factored out since the drive
+   loop itself was byte-identical between the two paths -- only the
+   build steps beforehand differ.
+
+   Live-proofed through the real CLI this time, not by hand: `ciac
+   sim --target typescript --out <dir> --scenario <path> <file>`
+   against all three system scenarios (`sim-three-service.ciac`,
+   `multi-service-media.ciac`, `inventory-system.ciac`), each from a
+   clean `--out` directory so every `npm ci` was a genuine cold
+   install. All three printed `[PASS]` (and, separately, verified
+   with `--json`, produced a well-formed envelope with `sim.
+   scenarios[0].passed: true`). Timings (cold, no npm cache reuse
+   across services): `sim-three-service` (3 services + sim-shared +
+   system-runner, 5 `npm ci`s) ~56s wall; `multi-service-media` (5
+   services) ~72s wall; `inventory-system` (2 services) ~31s wall --
+   scaling with service count as expected, dominated by `npm ci`
+   itself rather than `tsc` or the scenario run (every individual
+   `node dist/sim_runner.js` invocation after the builds completed
+   was sub-second, matching Rust's own M6d timing note). `cargo fmt
+   --check`, `cargo clippy -p ciac --all-targets` (zero warnings),
+   and `cargo test -p ciac --no-fail-fast` (skipping the same
+   standing, pre-existing `backfill_cli` ruff case) all ran clean.
+   This closes the TS half of M7 in full; Go's half (M7c/M7d)
+   remains, tracked next.
+
 8. **M8 — Java composition.** N isolated
    `AnnotationConfigApplicationContext`s in one JVM sharing the
    world bean; the classpath-assembly decision (aggregator POM

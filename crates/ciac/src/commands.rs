@@ -1793,25 +1793,35 @@ fn sim_drive_rust_multi(
 /// verify`, `sim_inner` never runs a target's full `validate` sequence
 /// before driving the runner, so this installs dependencies itself
 /// rather than assuming a prior `npm ci` already happened.
+///
+/// 28UpdatePlan.md M7b: dispatches to [`sim_drive_typescript_multi`] for
+/// a multi-service system, mirroring [`sim_drive_rust`]'s own
+/// `_single`/`_multi` split exactly.
 fn sim_drive_typescript(
     out: &Path,
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let projects = find_project_dirs(out, "package.json")?;
-    let project_dir = match projects.as_slice() {
-        [] => bail!(
+    if projects.is_empty() {
+        bail!(
             "no generated typescript project found under {}",
             out.display()
-        ),
-        [one] => one.clone(),
-        many => bail!(
-            "`ciac sim` only supports a single-service TypeScript project in v0.23 (found {} \
-             under {}); see docs/simulation.md",
-            many.len(),
-            out.display()
-        ),
-    };
+        );
+    }
+    if let [project_dir] = projects.as_slice() {
+        return sim_drive_typescript_single(project_dir, scenarios, wall_timeout);
+    }
+    sim_drive_typescript_multi(out, &projects, scenarios, wall_timeout)
+}
+
+/// The single-service path, unchanged in shape from before 28's M7b
+/// (`sim_drive_typescript` used to be this function's own body directly).
+fn sim_drive_typescript_single(
+    project_dir: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     if !project_dir.join("src/sim_runner.ts").exists() {
         bail!(
             "no `src/sim_runner.ts` in {} -- this program declares nothing v0.23 M9's \
@@ -1819,16 +1829,67 @@ fn sim_drive_typescript(
             project_dir.display()
         );
     }
-    run_in(&project_dir, "npm", &["ci"])?;
-    run_in(&project_dir, "npm", &["run", "build"])?;
+    run_in(project_dir, "npm", &["ci"])?;
+    run_in(project_dir, "npm", &["run", "build"])?;
+    run_node_sim_runner(project_dir, scenarios, wall_timeout)
+}
 
+/// 28UpdatePlan.md M7b: N services, one shared world, one process --
+/// `system-runner/` (see `system_sim_runner.ts.j2`'s own doc comment) is
+/// a normal npm package `TsBackend::generate` already wrote with `file:`
+/// dependencies on every service package plus `sim-shared`. Unlike Rust
+/// (where `cargo build` inside `system-runner/` resolves the whole
+/// path-dependency graph itself), npm's `file:` dependencies are not
+/// transitively built -- confirmed live in the scratchpad (see M7a's own
+/// Shipped note): each service still needs its own independent `npm ci
+/// && npm run build` to produce the `dist/*.js`+`.d.ts` `system-runner`
+/// imports, so this function builds `sim-shared`, then every service,
+/// then `system-runner` itself, in that order, before driving it.
+fn sim_drive_typescript_multi(
+    out: &Path,
+    projects: &[PathBuf],
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let runner_dir = out.join("system-runner");
+    if !runner_dir.join("src/sim_runner.ts").exists() {
+        bail!(
+            "no `system-runner/src/sim_runner.ts` under {} -- this system declares nothing \
+             28UpdatePlan.md M7's simulation world can fake in any service (no `db`/`queue`/... \
+             use anywhere); see docs/simulation.md (found {} generated project(s) under this \
+             system's --out)",
+            out.display(),
+            projects.len()
+        );
+    }
+    let sim_shared_dir = out.join("sim-shared");
+    run_in(&sim_shared_dir, "npm", &["ci"])?;
+    run_in(&sim_shared_dir, "npm", &["run", "build"])?;
+    for project_dir in projects {
+        run_in(project_dir, "npm", &["ci"])?;
+        run_in(project_dir, "npm", &["run", "build"])?;
+    }
+    run_in(&runner_dir, "npm", &["ci"])?;
+    run_in(&runner_dir, "npm", &["run", "build"])?;
+    run_node_sim_runner(&runner_dir, scenarios, wall_timeout)
+}
+
+/// Shared `node dist/sim_runner.js <scenario>` drive loop both
+/// [`sim_drive_typescript_single`] and [`sim_drive_typescript_multi`]
+/// funnel through once their respective builds are done -- the same
+/// one-line-JSON-on-stdout protocol every generated runner speaks.
+fn run_node_sim_runner(
+    project_dir: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let mut scenario_outcomes = Vec::new();
     for scenario_path in scenarios {
         let scenario_abs = resolve_path(scenario_path)?;
         let mut cmd = Command::new("node");
         cmd.arg("dist/sim_runner.js")
             .arg(&scenario_abs)
-            .current_dir(&project_dir);
+            .current_dir(project_dir);
 
         let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
             format!(

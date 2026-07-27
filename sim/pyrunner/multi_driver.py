@@ -237,7 +237,7 @@ async def main() -> None:
         return
     world = SimWorld(failure_rules=failure_rules, schema=Schema.from_plan_json(plan))
 
-    runner = ScenarioRunner(world=world)
+    runner = ScenarioRunner(world=world, multi_service=True)
     try:
         for service in plan["services"]:
             name = service["name"]

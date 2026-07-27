@@ -260,7 +260,26 @@ fn emit_service(
         project.add_file(at("app/auth.py"), render("auth.py.j2", empty())?);
     }
     if ctx.has_db {
-        project.add_file(at("app/db.py"), render("db.py.j2", empty())?);
+        // 28UpdatePlan.md M4: `db.py.j2` bakes this into a
+        // `SERVICE_FOR_SIM` constant, threaded to `world.
+        // fake_sessionmaker`'s `service` argument so a multi-service
+        // simulation namespaces this project's own table keys
+        // (`SimWorld.namespaced_table_key`, world.py) -- `None` for a
+        // single-service project keeps that path's degenerate case
+        // (bare table name) exactly as it was before this milestone.
+        // `{name:?}` renders as a double-quoted, backslash-escaped
+        // literal -- valid Python syntax for every service name, which
+        // is always a plain identifier -- avoiding a dependency on
+        // minijinja's optional `tojson` filter for what is otherwise a
+        // one-line literal.
+        let service_for_sim_literal = match multi.then(|| ctx.service_name.as_str()) {
+            Some(name) => format!("{name:?}"),
+            None => "None".to_owned(),
+        };
+        project.add_file(
+            at("app/db.py"),
+            render("db.py.j2", context! { service_for_sim_literal })?,
+        );
     }
     if ctx.has_cache {
         project.add_file(at("app/cache.py"), render("cache.py.j2", empty())?);

@@ -225,6 +225,15 @@ class Base(DeclarativeBase):
     """Declarative base for all models."""
 
 
+# 28UpdatePlan.md M4: this project's own name, or `None` for a
+# single-service project -- threaded to `world.fake_sessionmaker`'s
+# `service` argument so a multi-service simulation namespaces this
+# project's table keys (`SimWorld.namespaced_table_key`, `world.py`);
+# `None` keeps the single-service degenerate case (bare table name)
+# unchanged.
+SERVICE_FOR_SIM: str | None = None
+
+
 def _urls() -> dict[str, str]:
     settings = get_settings()
     return {
@@ -249,8 +258,11 @@ def get_sessionmaker(instance: str = "default") -> async_sessionmaker[AsyncSessi
         # a fake session factory instead of a real engine-backed one; every
         # call site below (`session_dep`, worker/job `session_with`) is
         # unaware of the difference, since both shapes are used the same
-        # way: `async with sessionmaker() as session:`.
-        return state.world.fake_sessionmaker(instance)
+        # way: `async with sessionmaker() as session:`. 28UpdatePlan.md
+        # M4: `service` namespaces this project's own table keys in a
+        # multi-service simulation's shared `FakeDatabase` -- see
+        # `SERVICE_FOR_SIM`'s own doc comment above.
+        return state.world.fake_sessionmaker(instance, service=SERVICE_FOR_SIM)
     sessionmakers = state.sessionmakers
     if instance not in sessionmakers:
         sessionmakers[instance] = async_sessionmaker(

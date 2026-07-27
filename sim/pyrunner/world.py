@@ -687,9 +687,11 @@ class SimWorld:
         self.db = FakeDatabase(self.schema)
         self.auth = FakeAuth(self.clock)
 
-    def fake_sessionmaker(self, instance: str) -> Callable[[], "_FakeSession"]:
+    def fake_sessionmaker(
+        self, instance: str, service: str | None = None
+    ) -> Callable[[], "_FakeSession"]:
         def factory() -> "_FakeSession":
-            return _FakeSession(self, instance)
+            return _FakeSession(self, instance, service)
 
         return factory
 
@@ -984,18 +986,32 @@ class _FakeSession:
     `db.delete_where` build, via `_compile_predicate` above.
     """
 
-    def __init__(self, world: SimWorld, instance: str) -> None:
+    def __init__(self, world: SimWorld, instance: str, service: str | None = None) -> None:
         self._world = world
         self._instance = instance
+        self._service = service
         self._pending_adds: list[Any] = []
         self._pending_deletes: list[Any] = []
         self._tracked: list[tuple[Any, dict[str, Any]]] = []
+
+    def _key(self, table: str) -> str:
+        """28UpdatePlan.md M4: namespaces `table` by this session's own
+        service (`None` for a single-service project, matching the
+        degenerate case `namespaced_table_key` itself defines) -- every
+        table string this class passes to `self._world.db` or the
+        failure engine goes through here first, so the storage key, the
+        failure-injection subject, and the transcript's own `subject`
+        all agree, exactly mirroring Rust's own `db_insert_checked_for`
+        (`crates/ciac-sim/src/world.rs`, M2): the caller composes the
+        namespaced key once, `FakeDatabase`'s own methods stay bare-
+        string-keyed and unaware of namespacing entirely."""
+        return namespaced_table_key(self._service, table)
 
     def add(self, obj: Any) -> None:
         self._pending_adds.append(obj)
 
     async def get(self, model: type, pk: Any) -> Any | None:
-        table = model.__tablename__
+        table = self._key(model.__tablename__)
         row = self._world.db.get(table, str(pk))
         if row is None:
             return None
@@ -1010,7 +1026,7 @@ class _FakeSession:
         from sqlalchemy import Delete
 
         if isinstance(stmt, Delete):
-            table = stmt.table.name
+            table = self._key(stmt.table.name)
             predicate = _compile_predicate(stmt.whereclause)
             matched = [pk for pk, row in self._world.db.rows(table) if predicate(row)]
             for _pk in matched:
@@ -1026,7 +1042,7 @@ class _FakeSession:
                 self._world.transcript.append({"effect": "db.delete", "subject": table})
             return _FakeResult(_rowcount=len(matched))
 
-        table = stmt.get_final_froms()[0].name
+        table = self._key(stmt.get_final_froms()[0].name)
         predicate = _compile_predicate(stmt.whereclause)
         matched_rows = [row for _pk, row in self._world.db.rows(table) if predicate(row)]
         entity = stmt.column_descriptions[0]["entity"] if stmt.column_descriptions else None
@@ -1043,7 +1059,7 @@ class _FakeSession:
         # stream name, for broker effects) distinguishes different
         # streams on one broker.
         pending = self._pending_adds or self._pending_deletes or [obj for obj, _snap in self._tracked]
-        subject = pending[0].__table__.name if pending else self._instance
+        subject = self._key(pending[0].__table__.name) if pending else self._instance
         if self._world.failures.should_fail("db.commit", subject):
             self._pending_adds.clear()
             self._pending_deletes.clear()
@@ -1052,7 +1068,7 @@ class _FakeSession:
 
         inserts = []
         for obj in self._pending_adds:
-            table = obj.__table__.name
+            table = self._key(obj.__table__.name)
             pk_col = next(iter(obj.__table__.primary_key.columns)).name
             row = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
             inserts.append((table, str(row[pk_col]), row))
@@ -1061,12 +1077,12 @@ class _FakeSession:
             row = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
             if row == snapshot:
                 continue  # untouched since .get() -- no UPDATE, matching real dirty-tracking
-            table = obj.__table__.name
+            table = self._key(obj.__table__.name)
             pk_col = next(iter(obj.__table__.primary_key.columns)).name
             updates.append((table, str(row[pk_col]), row))
         deletes = []
         for obj in self._pending_deletes:
-            table = obj.__table__.name
+            table = self._key(obj.__table__.name)
             pk_col = next(iter(obj.__table__.primary_key.columns)).name
             deletes.append((table, str(getattr(obj, pk_col))))
 

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from cron import CronSchedule, parse_duration_ms
-from world import SEARCH_INDEX_NAME
+from world import SEARCH_INDEX_NAME, namespaced_table_key
 
 
 class ScenarioAssertionError(AssertionError):
@@ -105,6 +105,14 @@ class ScenarioRunner:
     workers: dict[str, WorkerEntry] = field(default_factory=dict)
     jobs: dict[str, JobEntry] = field(default_factory=dict)
     streams: dict[str, StreamEntry] = field(default_factory=dict)
+    # 28UpdatePlan.md M4: `False` (the default, `auto_driver.py`'s own
+    # single-service path) keeps `expect.row`'s table lookup on the
+    # degenerate bare-key path even though `spec["service"]` is always
+    # populated in the scenario JSON -- matching `SERVICE_FOR_SIM`'s own
+    # codegen-time decision (`db.py.j2`) exactly, so a write and the
+    # `expect.row` that checks it always agree on which key it landed
+    # under. `multi_driver.py` sets this `True`.
+    multi_service: bool = False
 
     _saved: dict[str, tuple[bool, Any]] = field(default_factory=dict, init=False)
     _worker_attempts: dict[str, int] = field(default_factory=dict, init=False)
@@ -223,7 +231,7 @@ class ScenarioRunner:
                 )
 
     def _expect_row(self, spec: dict[str, Any]) -> None:
-        table = spec["table"]
+        table = namespaced_table_key(spec["service"] if self.multi_service else None, spec["table"])
         where = spec.get("where", {})
         rows = self.world.db.snapshot().get(table, {}).values()
         found = any(all(row.get(k) == v for k, v in where.items()) for row in rows)

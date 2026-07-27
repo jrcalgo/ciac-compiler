@@ -177,9 +177,32 @@ struct TsSyntax<'a> {
     /// Names `collect_branching_lets` found — see its own doc and
     /// `assign`'s.
     branching_locals: std::collections::HashSet<String>,
+    /// 28UpdatePlan.md M7a: this handler's own service, `None` in
+    /// single-service mode -- mirrors `ciac-backend-rust`'s `RustSyntax.
+    /// service_name` exactly (see that field's own doc comment). Feeds
+    /// `world_table_key` below so a multi-service system's world-guard
+    /// db verbs compose `"{service}::{table}"` instead of colliding
+    /// across two same-named tables in different services.
+    service_name: Option<String>,
 }
 
 impl TsSyntax<'_> {
+    /// Composes the namespaced key every world-guarded db verb below
+    /// addresses through -- see `RustSyntax::world_table_key`'s
+    /// identical doc comment (`ciac-backend-rust/src/lower.rs`) for the
+    /// full rationale; this is a codegen-time (Rust) computation
+    /// embedding a literal string into the generated TypeScript, not a
+    /// runtime call into `namespacedTableKey` (that runtime function
+    /// exists for the system-runner's own scenario-driven seeding/
+    /// assertions, which don't know the service name until they parse
+    /// the scenario JSON).
+    fn world_table_key(&self, table_snake: &str) -> String {
+        match &self.service_name {
+            Some(service) => format!("{service}::{table_snake}"),
+            None => table_snake.to_owned(),
+        }
+    }
+
     fn fresh(&self, base: &str) -> String {
         let n = self.tmp.get();
         self.tmp.set(n + 1);
@@ -629,6 +652,7 @@ impl HostSyntax for TsSyntax<'_> {
             ),
             self.db_engine,
         );
+        let world_key = self.world_table_key(&table_snake);
         let mut out = vec![format!("{indent}const {row} = {value};")];
         // v0.23 M9's world guard: the one HostSyntax leaf `ciac sim`
         // needs to fake, mirroring Rust's `SimWorld::db_insert_checked`
@@ -639,7 +663,7 @@ impl HostSyntax for TsSyntax<'_> {
         // `transaction { .. }` are both simulated the same way.
         out.push(format!("{indent}if (this.state.world) {{"));
         out.push(format!(
-            "{indent}  this.state.world.dbInsertChecked({table_snake:?}, {row});"
+            "{indent}  this.state.world.dbInsertChecked({world_key:?}, {row});"
         ));
         out.push(format!("{indent}}} else {{"));
         if self.db_engine == "sqlite" {
@@ -695,6 +719,7 @@ impl HostSyntax for TsSyntax<'_> {
         // declared inside one arm and read after the block closes is a
         // real `ReferenceError`/compile error, not a style nit; found
         // live via `tsc` against `domain-orders.ciac`.
+        let world_key = self.world_table_key(&table_snake);
         let mut out = vec![
             format!("{indent}const {row} = {value};"),
             format!("{indent}let {out_var}: {record_name} | null;"),
@@ -704,7 +729,7 @@ impl HostSyntax for TsSyntax<'_> {
         // row exactly like `rowCount === 0`.
         out.push(format!("{indent}if (this.state.world) {{"));
         out.push(format!(
-            "{indent}  {out_var} = this.state.world.dbUpdateChecked({table_snake:?}, {key}, {row}) as unknown as {record_name} | null;"
+            "{indent}  {out_var} = this.state.world.dbUpdateChecked({world_key:?}, {key}, {row}) as unknown as {record_name} | null;"
         ));
         out.push(format!("{indent}}} else {{"));
         match self.db_engine {
@@ -760,13 +785,14 @@ impl HostSyntax for TsSyntax<'_> {
         // world/production split, and only ever *assigned* inside each
         // branch -- see `db_update_tail`'s own doc for why (TS's `if {}
         // else {}` block scope; found live via `tsc`).
+        let world_key = self.world_table_key(&table_snake);
         let mut out = vec![format!("{indent}let {out_var}: boolean;")];
         // World guard -- `dbDeleteChecked` resolves cascade/restrict
         // references the same way production's `ON DELETE` behavior
         // would (enforced at the schema level, not per-statement).
         out.push(format!("{indent}if (this.state.world) {{"));
         out.push(format!(
-            "{indent}  {out_var} = this.state.world.dbDeleteChecked({table_snake:?}, {key});"
+            "{indent}  {out_var} = this.state.world.dbDeleteChecked({world_key:?}, {key});"
         ));
         out.push(format!("{indent}}} else {{"));
         match self.db_engine {
@@ -823,6 +849,7 @@ impl HostSyntax for TsSyntax<'_> {
                 let world_pred = self.world_predicate_expr(predicate, "__r");
                 let cast_ty = self.row_cast_type(&record);
                 let record_name = record_class_name(self.ir, self.ir.table(table).record);
+                let world_key = self.world_table_key(&table_snake);
                 // 27UpdatePlan.md M6: `{out_var}` is declared once,
                 // above the world/production split, and only ever
                 // *assigned* inside each branch -- see
@@ -831,7 +858,7 @@ impl HostSyntax for TsSyntax<'_> {
                 let mut out = vec![format!("{indent}let {out_var}: {record_name}[];")];
                 out.push(format!("{indent}if (this.state.world) {{"));
                 out.push(format!(
-                    "{indent}  const {rows} = this.state.world.db.findWhere({table_snake:?}, {{}}).filter((__r) => {world_pred});"
+                    "{indent}  const {rows} = this.state.world.db.findWhere({world_key:?}, {{}}).filter((__r) => {world_pred});"
                 ));
                 // World rows are already in the record's own in-memory
                 // shape (the same object `dbInsertChecked`'s own `row`
@@ -878,10 +905,11 @@ impl HostSyntax for TsSyntax<'_> {
                     self.db_engine,
                 );
                 let world_pred = self.world_predicate_expr(predicate, "__r");
+                let world_key = self.world_table_key(&table_snake);
                 let mut out = vec![format!("{indent}let {out_var}: number;")];
                 out.push(format!("{indent}if (this.state.world) {{"));
                 out.push(format!(
-                    "{indent}  {out_var} = this.state.world.db.findWhere({table_snake:?}, {{}}).filter((__r) => {world_pred}).length;"
+                    "{indent}  {out_var} = this.state.world.db.findWhere({world_key:?}, {{}}).filter((__r) => {world_pred}).length;"
                 ));
                 out.push(format!("{indent}}} else {{"));
                 match self.db_engine {
@@ -934,6 +962,7 @@ impl HostSyntax for TsSyntax<'_> {
                     self.db_engine,
                 );
                 let world_pred = self.world_predicate_expr(predicate, "__r");
+                let world_key = self.world_table_key(&table_snake);
                 let matching = self.fresh("__matching");
                 let pk = self.fresh("__pk");
                 // 27UpdatePlan.md M6: `SimWorld` has no bulk
@@ -956,12 +985,12 @@ impl HostSyntax for TsSyntax<'_> {
                 // to persist across an intervening method call.
                 out.push(format!("{indent}  const {world} = this.state.world;"));
                 out.push(format!(
-                    "{indent}  const {matching} = {world}.db.findWhere({table_snake:?}, {{}}).filter((__r) => {world_pred}).map((__r) => __r.id as string);"
+                    "{indent}  const {matching} = {world}.db.findWhere({world_key:?}, {{}}).filter((__r) => {world_pred}).map((__r) => __r.id as string);"
                 ));
                 out.push(format!("{indent}  {out_var} = 0;"));
                 out.push(format!("{indent}  for (const {pk} of {matching}) {{"));
                 out.push(format!(
-                    "{indent}    if ({world}.dbDeleteChecked({table_snake:?}, {pk})) {{"
+                    "{indent}    if ({world}.dbDeleteChecked({world_key:?}, {pk})) {{"
                 ));
                 out.push(format!("{indent}      {out_var} += 1;"));
                 out.push(format!("{indent}    }}"));
@@ -1157,11 +1186,12 @@ impl HostSyntax for TsSyntax<'_> {
             self.db_engine,
         );
         let map_expr = self.map_row_expr(&record, "__row");
+        let world_key = self.world_table_key(&table_snake);
         // 27UpdatePlan.md M6: the world guard is prepended as an early
         // return inside the same IIFE -- the original per-engine body
         // below is otherwise untouched.
         let world_guard = format!(
-            "if (this.state.world) {{ return this.state.world.db.get({table_snake:?}, {key}) as unknown as {record_name} | null; }}"
+            "if (this.state.world) {{ return this.state.world.db.get({world_key:?}, {key}) as unknown as {record_name} | null; }}"
         );
         match self.db_engine {
             "sqlite" => {
@@ -1325,7 +1355,12 @@ pub struct LogicFileCtx {
 
 /// Builds the render context for one typed handler node. `name` is the
 /// handler's declared name (`node.component.name()`).
-pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx {
+pub fn render(
+    ir: &NormalizedIr,
+    name: &str,
+    hir: &HandlerBody,
+    service_name: Option<&str>,
+) -> LogicFileCtx {
     let needs = lower::scan(ir, hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
@@ -1392,6 +1427,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
                 http_instance: http_instance.clone(),
                 tmp: std::cell::Cell::new(0),
                 branching_locals: locals.iter().cloned().collect(),
+                service_name: service_name.map(str::to_owned),
             };
             lower::lower_body_stmt(&syntax, ir, hir, "    ")
         }

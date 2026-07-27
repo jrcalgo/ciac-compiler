@@ -8256,6 +8256,62 @@ export class SimWorld {
   unmatchedFailureRules(): string[] {
     return this.failures.unmatchedRules();
   }
+
+  /** 28UpdatePlan.md M7a: call-router registry -- populated once per
+   * scenario by a system-runner, in service declaration order, before
+   * any scenario step runs. Mirrors `ciac-sim`'s `world.rs` `register_
+   * api`/`call_checked` (added there in 28's M2) and Rust's own M6c
+   * system-runner, with one simplification JS's single-threaded async
+   * model buys for free: a registered handler can just be `async`
+   * (`Promise`-returning) since `callChecked` itself is `async` and a
+   * system-runner can simply `await` it -- unlike Rust, which needs a
+   * synchronous bridge (`block_on_ready`) because `register_api`'s
+   * handler type there must stay callable from a synchronous context. */
+  private readonly apis = new Map<string, (req: unknown) => Promise<unknown>>();
+  private callDepth = 0;
+  private static readonly MAX_CALL_DEPTH = 64;
+
+  /** Registers `handler` as `service`'s `api` -- the target `callChecked`
+   * resolves a routed call against. Re-registering the same `(service,
+   * api)` replaces the earlier handler rather than erroring. */
+  registerApi(service: string, api: string, handler: (req: unknown) => Promise<unknown>): void {
+    this.apis.set(`${service} ${api}`, handler);
+  }
+
+  /** Routes a `call <Service>.<Api>` step -- inline on the caller's own
+   * logical async chain, against the registered handler instead of real
+   * HTTP. Counts against `call.request` failure injection; an
+   * unregistered target is a clear error, never a silent no-op. */
+  async callChecked(caller: string, calleeService: string, api: string, req: unknown): Promise<unknown> {
+    if (this.shouldFail("call.request", api)) {
+      throw new Error("simulated call.request failure (injected by FailureEngine)");
+    }
+    const handler = this.apis.get(`${calleeService} ${api}`);
+    if (handler === undefined) {
+      throw new Error(`no handler registered for ${calleeService}.${api} (called from ${caller})`);
+    }
+    if (this.callDepth >= SimWorld.MAX_CALL_DEPTH) {
+      throw new Error(
+        `routed call depth exceeded ${SimWorld.MAX_CALL_DEPTH} calling ${calleeService}.${api} from ${caller}`,
+      );
+    }
+    this.callDepth += 1;
+    try {
+      return await handler(req);
+    } finally {
+      this.callDepth -= 1;
+    }
+  }
+}
+
+/** 28UpdatePlan.md M7a: composes the per-service namespaced database key
+ * every multi-service world-guarded db verb addresses through -- the
+ * TypeScript counterpart to `ciac_sim::world::SimWorld::namespaced_
+ * table_key` (28's M2)/`ciac-backend-rust`'s `RustSyntax::world_table_
+ * key` (M6c). `service` is `null` in single-service mode, degenerating
+ * to the bare table name. */
+export function namespacedTableKey(service: string | null, table: string): string {
+  return service === null ? table : `${service}::${table}`;
 }
 ============================================================
 tests/state.test.ts

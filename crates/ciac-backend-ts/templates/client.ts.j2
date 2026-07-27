@@ -4,18 +4,42 @@
 // The base URL comes from `config.{{ t.url_field }}`; the system
 // docker-compose points it at the `{{ t.kebab }}` container. Uses the
 // Node-global `fetch` (no HTTP client dependency needed).
+//
+// 28UpdatePlan.md M7a: under simulation, routes through `state.world.
+// callChecked` instead of a real HTTP call -- the same `{"status": ...,
+// "data": ...}` envelope every route function's own return value
+// already carries (`route_api.ts.j2`'s `{ status: "accepted", data:
+// result }`), so this unwraps `["data"]` from it exactly the way the
+// real-HTTP branch unwraps `body.data` -- same post-processing,
+// different transport. No synchronous bridge is needed here, unlike
+// Rust's `block_on_ready`: see `world.ts.j2`'s own doc comment on
+// `registerApi`/`callChecked` for why JS's single-threaded async model
+// makes that unnecessary.
 
 {%- for name in t.schema_imports %}
 import { {{ name }}Schema, type {{ name }} } from "../schemas.js";
 {%- endfor %}
-import type { Config } from "../config.js";
+import type { AppState } from "../state.js";
 
 /** Calls `{{ t.service }}` over HTTP and unwraps its response envelope. */
 export class {{ t.class_name }} {
-  constructor(private readonly config: Config) {}
+  constructor(private readonly state: AppState) {}
 {% for a in t.apis %}
   async {{ a.method }}(payload: unknown): Promise<{% if a.payload %}{{ a.payload.class_name }}{% else %}unknown{% endif %}> {
-    const response = await fetch(`${this.config.{{ t.url_field }}}{{ a.path }}`, {
+    if (this.state.world) {
+      const result = (await this.state.world.callChecked(
+        "{{ c.service_name }}",
+        "{{ t.service }}",
+        "{{ a.name }}",
+        payload,
+      )) as { data: unknown };
+{%- if a.payload %}
+      return {{ a.payload.class_name }}Schema.parse(result.data);
+{%- else %}
+      return result.data;
+{%- endif %}
+    }
+    const response = await fetch(`${this.state.config.{{ t.url_field }}}{{ a.path }}`, {
       method: "{{ a.http_method_lower | upper }}",
 {%- if a.has_body %}
       headers: { "content-type": "application/json" },

@@ -29,7 +29,7 @@ import { buildApp } from "./main.js";
 {%- endif %}
 import { loadConfig } from "./config.js";
 import { createSimulationState, type AppState } from "./state.js";
-import { SimWorld, type FailureRule, type GivenHttpResponse, type WorldTable } from "./world.js";
+import { SimWorld, type FailureRule, type GivenHttpResponse, type WorldTable } from "{% if multi %}sim-shared{% else %}./world.js{% endif %}";
 {%- for worker in c.workers %}
 import * as {{ worker.snake | pascal_case }}Worker from "./workers/{{ worker.snake }}.js";
 {%- endfor %}

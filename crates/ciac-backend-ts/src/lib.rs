@@ -192,6 +192,171 @@ fn sim_world_tables(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
         .collect()
 }
 
+/// Multi-service counterpart of [`sim_world_tables`], namespacing every
+/// table name (and FK `targetTable`) `"{service}::{table}"` the same way
+/// `lower.rs`'s `world_table_key` composes them at typed-handler
+/// lowering time -- mirrors `ciac-backend-rust::sim_world_tables_multi`
+/// exactly (see that function's own doc comment for the full rationale;
+/// `heck`'s `to_snake_case` mirrors `ciac_codegen::migrations`'s private
+/// `physical_table_name` the same way that one does).
+fn sim_world_tables_multi(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    use heck::ToSnakeCase;
+
+    let mut owner_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (_, table) in ir.tables() {
+        if let Some(sid) = table.service {
+            owner_of.insert(table.name.to_snake_case(), ir.service(sid).name.clone());
+        }
+    }
+    let namespace = |physical: &str| -> String {
+        let key = physical
+            .split_once("__")
+            .map_or(physical, |(prefix, _)| prefix);
+        match owner_of.get(key) {
+            Some(service) => format!("{service}::{physical}"),
+            None => physical.to_owned(),
+        }
+    };
+
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(namespace(&fk.target_table)),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "cascade"
+                    } else {
+                        "restrict"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx {
+                name: namespace(&name),
+                references,
+            }
+        })
+        .collect()
+}
+
+/// The `sim-shared` npm package's own fixed files (28UpdatePlan.md M7):
+/// mirrors Rust's M6b `sim-shared` crate -- TypeScript's `SimWorld`
+/// class declares `private` fields, and TypeScript's structural typing
+/// treats two independently-declared classes with private members as
+/// mutually incompatible even when textually identical, so today's
+/// per-service emission (each service rendering its own byte-identical
+/// copy of `world.ts.j2`) hits the exact same nominal-type-identity
+/// problem Rust's M6b found, just via TS's private-member rule instead
+/// of Rust's per-crate type identity. One canonical `world.ts`, built
+/// once and depended on by every service (and the system-runner) via a
+/// `file:../sim-shared` npm dependency, fixes it the same way. Real
+/// `package-lock.json` content (verified live against `npm ci`/`npm run
+/// build` producing `dist/world.js`+`.d.ts`) -- not hand-guessed, since
+/// npm's lockfile format requires exact integrity hashes for its
+/// (`typescript`, the package's only dependency) resolved packages.
+const SIM_SHARED_PACKAGE_JSON: &str = r#"{
+  "name": "sim-shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/world.js",
+  "types": "dist/world.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  }
+}
+"#;
+
+const SIM_SHARED_PACKAGE_LOCK_JSON: &str = r#"{
+  "name": "sim-shared",
+  "version": "0.1.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "sim-shared",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/node": "22.20.1",
+        "typescript": "5.9.3"
+      }
+    },
+    "node_modules/@types/node": {
+      "version": "22.20.1",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
+      "integrity": "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "undici-types": "~6.21.0"
+      }
+    },
+    "node_modules/typescript": {
+      "version": "5.9.3",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    },
+    "node_modules/undici-types": {
+      "version": "6.21.0",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+      "dev": true,
+      "license": "MIT"
+    }
+  }
+}
+"#;
+
+const SIM_SHARED_TSCONFIG_JSON: &str = r#"{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "sourceMap": false,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+"#;
+
+const SIM_SHARED_TSCONFIG_BUILD_JSON: &str = r#"{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+"#;
+
+const SIM_SHARED_GITIGNORE: &str = "/node_modules\n/dist\n";
+
 #[derive(Debug, Default)]
 pub struct TsBackend;
 
@@ -256,6 +421,37 @@ impl Backend for TsBackend {
         }
 
         if model.multi {
+            // 28UpdatePlan.md M7a: one `sim-shared` npm package per
+            // system -- see `SIM_SHARED_PACKAGE_JSON`'s own doc comment
+            // for why TS needs this despite structural typing (private
+            // class members break the structural-compatibility
+            // shortcut). Only emitted when at least one service
+            // actually needs the simulation world, mirroring Rust's
+            // identical gate.
+            if model.services.iter().any(|ctx| {
+                ctx.has_db
+                    || ctx.queue_engine.is_some()
+                    || ctx.has_cache
+                    || ctx.has_object_store
+                    || ctx.has_email
+                    || ctx.has_search
+                    || ctx.has_external_http
+                    || ctx.has_auth
+                    || !ctx.call_targets.is_empty()
+            }) {
+                project.add_file("sim-shared/package.json", SIM_SHARED_PACKAGE_JSON);
+                project.add_file("sim-shared/package-lock.json", SIM_SHARED_PACKAGE_LOCK_JSON);
+                project.add_file("sim-shared/tsconfig.json", SIM_SHARED_TSCONFIG_JSON);
+                project.add_file(
+                    "sim-shared/tsconfig.build.json",
+                    SIM_SHARED_TSCONFIG_BUILD_JSON,
+                );
+                project.add_file("sim-shared/.gitignore", SIM_SHARED_GITIGNORE);
+                project.add_file(
+                    "sim-shared/src/world.ts",
+                    env.get_template("world.ts.j2")?.render(context! {})?,
+                );
+            }
             let m = minijinja::Value::from_serialize(&model);
             project.add_file(
                 "docker-compose.yml",
@@ -293,7 +489,7 @@ fn emit_service(
     let render = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
         Ok(env
             .get_template(name)?
-            .render(context! { c => base, ..extra })?)
+            .render(context! { c => base, multi, ..extra })?)
     };
     let empty = || context! {};
     let at = |path: &str| format!("{prefix}{path}");
@@ -361,8 +557,17 @@ fn emit_service(
         || ctx.has_search
         || ctx.has_external_http
         || ctx.has_auth
+        || !ctx.call_targets.is_empty()
     {
-        project.add_file(at("src/world.ts"), render("world.ts.j2", empty())?);
+        // 28UpdatePlan.md M7a: multi-service systems get one shared
+        // `sim-shared/src/world.ts` instead (see `SIM_SHARED_PACKAGE_
+        // JSON`'s own doc comment) -- `state.ts.j2`/`queue.ts.j2`/
+        // `sim_runner.ts.j2`'s own `SimWorld` import already switches
+        // to the bare `"sim-shared"` specifier when `multi` (this
+        // `render` closure passes `multi` into every template).
+        if !multi {
+            project.add_file(at("src/world.ts"), render("world.ts.j2", empty())?);
+        }
         project.add_file(
             at("src/sim_runner.ts"),
             render(
@@ -448,8 +653,9 @@ fn emit_service(
             _ => None,
         })
         .collect();
+    let service_for_sim = multi.then_some(ctx.service_name.as_str());
     for (name, hir) in &typed_handlers {
-        let handler = lower::render(ir, name, hir);
+        let handler = lower::render(ir, name, hir, service_for_sim);
         let content = render(
             "logic.ts.j2",
             context! { handler => minijinja::Value::from_serialize(&handler) },

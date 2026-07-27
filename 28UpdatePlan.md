@@ -1394,6 +1394,136 @@ push, in-place Shipped notes).
    Rust; outcomes identical to Python's byte-for-byte; build
    timings recorded.
 
+   **Shipped (v0.28 M6) — path (a) taken as planned, a new
+   system-runner crate generated and driven, three-scenario corpus
+   green with Python-identical outcomes.** M6a (call-client
+   world-guard) and M6b (the shared `sim-shared` crate, resolving
+   M5's vendored-type-identity finding via path (a) exactly as
+   that checkpoint recorded) had already shipped by the time this
+   note was written; M6c/M6d close the milestone.
+
+   A gap M5's own checkpoint reading missed surfaced first: Rust's
+   vendored `world.rs` had carried M2's namespaced `_for`-suffixed
+   methods (`db_insert_checked_for`, etc.) since 28's M2, but
+   nothing in `ciac-backend-rust/src/lower.rs`'s typed-handler
+   lowering ever called them — every db verb wrote/read the bare
+   table name regardless of service, the exact collision risk
+   Python's M4a closed for `world.py`. Fixed the same way: `lower.
+   rs`'s `RustSyntax` gained a `service_name: Option<String>` field
+   (populated from `emit_service`'s own `multi.then_some(ctx.
+   service_name.as_str())`, mirroring the Python driver's own
+   per-service scoping) and a `world_table_key(&self, table_snake)`
+   helper composing `"{service}::{table}"` (`None` degenerates to
+   the bare name — the single-service path is untouched, confirmed
+   by every single-service Rust golden staying byte-identical
+   through this change). Every world-guard branch across `db_
+   insert_expr`/`db_update_expr`/`db_delete_expr`/`query_expr`'s
+   three arms/`db_get` now composes this key instead of the bare
+   `table_snake`, while the real-SQL branch beside it keeps using
+   the bare name unconditionally (the physical table itself is
+   never namespaced) — the same split M4a drew in Python. A
+   `sim_world_tables_multi` counterpart to the existing single-
+   service `sim_world_tables` builds the system-runner's own
+   `SimWorld::with_schema` table list with the identical namespaced
+   keys (and namespaced FK `target_table`s, resolved through a
+   `physical name -> owning service` map built from `ir.tables()`),
+   so the schema a reference/uniqueness check validates against can
+   never drift from what the lowered code actually addresses.
+
+   The system-runner crate itself (`system-runner/`, sibling to
+   `sim-shared/` and every service directory) is a plain Cargo
+   binary crate with path dependencies on `sim-shared` and every
+   service crate by its real package name — since (unlike Python's
+   uniformly-`app`-named packages, which needed `multi_driver.py`'s
+   `ServiceModules` aliasing shim) every generated Rust service
+   crate already has a distinct crate name, there is no aliasing
+   problem to solve at all; the driver just names each service
+   crate directly. Its `main.rs` (`system_sim_runner.rs.j2`, a new
+   template) builds one shared `Arc<sim_shared::world::SimWorld>`,
+   constructs each service's own `AppState::simulation(config,
+   world.clone())` (sound because `crate::world::SimWorld` is a
+   `pub use sim_shared::world` re-export in multi-service mode, so
+   every service's "own" world type is the identical nominal type
+   M6b's extraction bought), and registers every api in every
+   service on the shared world's call router up front, in
+   declaration order — mirroring `multi_driver.py`'s own coverage
+   rule (an api reachable only via a routed `call` needs an entry
+   too, not just the ones a scenario's `request` steps name
+   directly). `request`/`advance`/`drain`/`expect` mirror the
+   single-service runner's own methods almost verbatim, generalized
+   across the `services` list; the one new piece of machinery is
+   `block_on_ready`, a same-file helper that polls a future exactly
+   once with a no-op waker rather than parking a thread — needed
+   because `world.register_api`'s handler type is a *synchronous*
+   `Fn(Value) -> anyhow::Result<Value>` (so it stays callable from
+   `call_checked`'s own synchronous body), while dispatching a
+   routed call still has to drive the same async `axum::Router::
+   oneshot` the direct `request` path awaits normally. This is sound
+   specifically because full simulation coverage (27's M4: "no
+   longer refuses anything") means no world-guarded call site ever
+   really suspends on first poll — confirmed live, not just argued:
+   every one of the three corpus scenarios (including `sim-three-
+   service`'s own cross-service `call` through the Billing/
+   Fulfillment seam) ran clean with no `Poll::Pending` panic.
+   `commands.rs`'s `sim_drive_rust` gained the same `_single`/
+   `_multi` split `sim_drive_python` already has (`find_project_dirs`
+   now also excludes `system-runner/`, the same treatment M6b gave
+   `sim-shared/`); `_multi` needs no `PYTHONPATH`-style dependency
+   assembly at all — `cargo build`/`cargo run` inside `system-
+   runner/` already resolves the whole path-dependency graph through
+   Cargo itself.
+
+   Live-proofed against all three system scenarios through the real
+   `ciac sim` CLI (`--target rust`): `sim-three-service` (N=3,
+   cross-service `call` + failure injection), `multi-service-media`
+   (upload/charge/transcode/notify fan-out), `inventory-system`
+   (call round-trip + scoped auth). All three passed with `error:
+   null`, and every field of the JSON outcome matched the Python
+   run byte-for-byte with one disclosed, *pre-existing* exception:
+   Python's `_drain` unconditionally records `_worker_attempts
+   [worker] = 0 + attempts` for every registered worker on every
+   `drain` step (so a worker that never fires still appears in the
+   dumped map with count `0`, e.g. `multi-service-media`'s own
+   `DeadLetterSink`), while the single-service Rust runner's `drain`
+   — and this milestone's system-runner, which deliberately mirrors
+   it rather than diverging — only touches the map entry inside the
+   loop draining that worker's actual messages, so a never-fired
+   worker is simply absent from the map rather than present at `0`.
+   This predates M6c (the identical structure already existed in
+   `sim_runner.rs.j2` since v0.17 M11) and is cosmetic, not
+   behavioral: `expect.worker_attempts`/`expect.job_runs` on both
+   sides default a missing key to `0` before comparing, so no
+   scenario assertion can observe the difference — tracked as an
+   open ledger row for a future milestone to close by aligning
+   Rust's bookkeeping to Python's, not fixed here since it would
+   also require touching the already-shipped single-service
+   template, out of this milestone's own scope.
+
+   Golden churn matched the shape M5 predicted for path (a): the
+   five multi-service Rust examples (`audited-crud`, `inventory-
+   system`, `multi-service-media`, `sim-three-service`, `traced-
+   checkout` — every multi-service program in the corpus, no more
+   and no fewer) picked up `system-runner/Cargo.toml` + `system-
+   runner/src/main.rs`, plus (only in `sim-three-service`, the one
+   example with a `table` declaration reachable from a typed
+   handler) the two-line bare-to-namespaced `db_insert_checked`
+   diff described above (`"charges"` → `"Billing::charges"`,
+   `"shipments"` → `"Fulfillment::shipments"`); every single-service
+   Rust golden in the corpus stayed byte-identical, confirming the
+   `service_name: None` degenerate path is truly a no-op. `cargo
+   fmt --check`, `cargo clippy --workspace --all-targets` (zero
+   warnings), and `cargo test --workspace --no-fail-fast` all ran
+   clean, the latter's only failure being the one standing,
+   pre-existing `backfill_cli` ruff-version-drift case this whole
+   arc has carried since before it started. Timings: a cold `cargo
+   check`/`cargo build` of a fresh `system-runner` crate (first
+   resolution of the union of every service's own dependency tree
+   plus `tower`/`base64`) took ~35-40s; every subsequent `cargo
+   run -- <scenario.json>` was sub-second; the full golden-snapshot
+   regeneration across the whole example corpus and all five
+   backends (not Rust alone) took ~370-380s, unchanged in shape
+   from prior milestones' own recorded runs.
+
 7. **M7 — TypeScript and Go compositions.** TS: system entry
    module importing N app factories; the dependency-skew
    assertion; driver + guard. Go: system-runner module with

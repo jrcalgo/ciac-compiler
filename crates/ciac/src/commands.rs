@@ -1630,22 +1630,34 @@ fn sim_drive_python_multi(
 /// runner compiled against this program's own concrete types. No
 /// plan/source-hash arguments (the runner doesn't take any — see its
 /// own doc comment for the narrower, disclosed CLI contract).
+///
+/// `find_project_dirs` (28UpdatePlan.md M6c) already excludes
+/// `sim-shared/` and `system-runner/` from its walk, so more than one
+/// remaining project directory means a real multi-service system —
+/// dispatches to [`sim_drive_rust_multi`], mirroring `sim_drive_python`'s
+/// own `_single`/`_multi` split.
 fn sim_drive_rust(
     out: &Path,
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let projects = find_project_dirs(out, "Cargo.toml")?;
-    let project_dir = match projects.as_slice() {
-        [] => bail!("no generated rust project found under {}", out.display()),
-        [one] => one.clone(),
-        many => bail!(
-            "`ciac sim` only supports a single-service Rust project in v0.17 (found {} under \
-             {}); see docs/simulation.md",
-            many.len(),
-            out.display()
-        ),
-    };
+    if projects.is_empty() {
+        bail!("no generated rust project found under {}", out.display());
+    }
+    if let [project_dir] = projects.as_slice() {
+        return sim_drive_rust_single(project_dir, scenarios, wall_timeout);
+    }
+    sim_drive_rust_multi(out, &projects, scenarios, wall_timeout)
+}
+
+/// The single-service path, unchanged in shape from before 28's M6c
+/// (`sim_drive_rust` used to be this function's own body directly).
+fn sim_drive_rust_single(
+    project_dir: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     if !project_dir.join("src/bin/sim_runner.rs").exists() {
         bail!(
             "no `src/bin/sim_runner.rs` in {} -- this program declares nothing v0.17 M11's \
@@ -1654,7 +1666,7 @@ fn sim_drive_rust(
         );
     }
     run_in(
-        &project_dir,
+        project_dir,
         "cargo",
         &["build", "-q", "--bin", "sim_runner"],
     )?;
@@ -1669,7 +1681,7 @@ fn sim_drive_rust(
             .arg("sim_runner")
             .arg("--")
             .arg(&scenario_abs)
-            .current_dir(&project_dir);
+            .current_dir(project_dir);
 
         let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
             format!(
@@ -1694,6 +1706,75 @@ fn sim_drive_rust(
             .with_context(|| {
                 format!(
                     "cannot parse sim_runner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// 28UpdatePlan.md M6c: N services, one shared world, one process --
+/// `system-runner/` (see `system_sim_runner.rs.j2`'s own doc comment)
+/// is a normal Cargo binary crate `RustBackend::generate` already wrote
+/// with path dependencies on every service crate plus `sim-shared`, so
+/// unlike Python's `sim_drive_python_multi` (which has to assemble a
+/// `PYTHONPATH` union across N separately-managed venvs at drive time),
+/// there is nothing left to assemble here — `cargo build`/`cargo run`
+/// inside `system-runner/` already resolves the whole dependency graph
+/// through Cargo's own workspace-free path-dependency resolution.
+fn sim_drive_rust_multi(
+    out: &Path,
+    projects: &[PathBuf],
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let runner_dir = out.join("system-runner");
+    if !runner_dir.join("src/main.rs").exists() {
+        bail!(
+            "no `system-runner/src/main.rs` under {} -- this system declares nothing \
+             28UpdatePlan.md M6c's simulation world can fake in any service (no `db`/`queue`/... \
+             use anywhere); see docs/simulation.md (found {} generated project(s) under this \
+             system's --out)",
+            out.display(),
+            projects.len()
+        );
+    }
+    run_in(&runner_dir, "cargo", &["build", "-q"])?;
+
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("cargo");
+        cmd.arg("run")
+            .arg("-q")
+            .arg("--")
+            .arg(&scenario_abs)
+            .current_dir(&runner_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run system-runner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "system-runner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse system-runner's result for scenario {}: {last_line:?}",
                     scenario_path.display()
                 )
             })?;
@@ -2998,13 +3079,15 @@ fn service_roots(
     let mut roots: Vec<String> = project
         .files_with_roles()
         .filter_map(|(path, _, _)| path.strip_suffix(marker).map(str::to_owned))
-        // 28UpdatePlan.md M6b: `sim-shared/Cargo.toml` (the vendored-
+        // 28UpdatePlan.md M6b/M6c: `sim-shared/Cargo.toml` (the vendored-
         // simulation crate every Rust service in a multi-service system
-        // depends on by path) satisfies this same marker check without
-        // being a deployable service in its own right -- it owns no
-        // table, so it must never receive its own copy of the system's
-        // migration files the way every real service root does.
-        .filter(|root| root != "sim-shared/")
+        // depends on by path) and `system-runner/Cargo.toml` (the
+        // generated scenario-driver crate depending on all of them)
+        // both satisfy this same marker check without being a
+        // deployable service in their own right -- neither owns a
+        // table, so neither must ever receive its own copy of the
+        // system's migration files the way every real service root does.
+        .filter(|root| root != "sim-shared/" && root != "system-runner/")
         .collect();
     if roots.is_empty() {
         roots.push(String::new());
@@ -3236,6 +3319,21 @@ fn find_project_dirs(root: &Path, marker: &str) -> Result<Vec<std::path::PathBuf
                 // routes, nothing `ciac verify`/`ciac sim`'s per-service
                 // walk could ever run.
                 if child.file_name().is_some_and(|name| name == "sim-shared") {
+                    continue;
+                }
+                // 28UpdatePlan.md M6c: `system-runner/` (the generated
+                // multi-service scenario driver -- see `system_sim_
+                // runner.rs.j2`'s own doc comment) has a `Cargo.toml`
+                // too, but it is `ciac sim`'s own driver binary for this
+                // system, not a deployable service in its own right --
+                // no routes of its own, nothing `ciac verify`'s
+                // per-service walk should run against it, and `ciac sim`
+                // drives it directly (see `sim_drive_rust_multi`) rather
+                // than discovering it through this walk.
+                if child
+                    .file_name()
+                    .is_some_and(|name| name == "system-runner")
+                {
                     continue;
                 }
                 walk(&child, marker, out)?;

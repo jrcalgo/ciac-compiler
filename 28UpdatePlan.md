@@ -882,6 +882,112 @@ push, in-place Shipped notes).
    always (unexercised until M6 — recorded, familiar from 27's
    M2/M3 shape).
 
+   **Shipped (v0.28 M2) — as designed, plus a found-and-fixed M1
+   regression.** `SimWorld::namespaced_table_key(service: Option<&str>,
+   table: &str) -> String` (`crates/ciac-sim/src/world.rs`) is the
+   whole namespacing scheme: `None` (or, once a runner is driving,
+   the single-service degenerate case) returns the bare table name
+   unchanged, `Some(service)` returns `"{service}/{table}"`; every
+   `db_*` entry point funnels through it, so the single-service
+   corpus is byte-identical to before this milestone by construction,
+   not by a separate code path. `SimWorld` grew an `apis:
+   Mutex<ApiRegistry>` (`BTreeMap<(String, String), Arc<ApiHandler>>`,
+   `ApiHandler = dyn Fn(Value) -> anyhow::Result<Value> + Send +
+   Sync`) plus `register_api`/`call_checked`: routing is inline and
+   synchronous on the caller's own logical thread (production's own
+   typed call-client shape, just against a registered handler instead
+   of real HTTP), an unregistered `(service, api)` is a clear `Err`
+   rather than a silent no-op, and `call.request` participates in the
+   existing failure-injection vocabulary the same way `db.commit`/
+   `broker.publish` already do. The handler map is cloned out and its
+   lock dropped *before* invoking the handler (`std::sync::Mutex`
+   isn't reentrant; holding the lock across a call that might itself
+   call back in would deadlock the first recursive call on the same
+   thread) — a `CallDepthGuard` RAII-decrements a `call_depth: Mutex<u32>`
+   bounded at `MAX_CALL_DEPTH = 64`, unwinding correctly even through a
+   handler panic. That guard is deliberately *not* a cycle detector:
+   `ciac-sema`'s `CycleDetection` pass already treats
+   `EdgeKind::ServiceCall` as a flow edge in its combined cycle check
+   (M1's own finding, reconfirmed here), so a compiled program can
+   never reach it — it exists only for a hand-built `SimWorld` (this
+   crate's own tests, or a future non-generated driver) whose handlers
+   call each other in a way the compiler never saw, turning what would
+   otherwise be an unrecoverable stack overflow into a graceful `Err`.
+   The negative fixture proving that compile-time refusal
+   (`tests/ui/service-call-cycle.ciac`, `expect: CIAC0006`, two
+   services calling each other's apis) was added this milestone, not
+   M1 — M1's Shipped note recorded the *investigation* that found
+   `CycleDetection` already sufficient; M2 is what actually landed the
+   fixture proving it, closing that coverage gap. `SchedulingKey`'s
+   `service` field (`crates/ciac-sim/src/schedule.rs`) needed **no
+   code change at all** — it was already part of 17UpdatePlan.md
+   Pillar 6's documented total order (`virtual_timestamp_ms`, `phase`,
+   `service`, `actor`, ...), ahead of `actor` in field-declaration
+   order, which is comparison order for a derived `Ord`. "Service-aware
+   scheduler tiebreak" was a verification item, not an implementation
+   item: the new
+   `events_from_different_services_tiebreak_by_service_before_actor`
+   test schedules two same-timestamp, same-phase events from different
+   services with actor names that would sort the *other* way, and
+   asserts service identity wins the tie — proving the M1-era design
+   was already correct rather than adding behavior that wasn't there.
+
+   **The found-and-fixed regression:** running this milestone's own
+   required live Rust-target sim proof (`ciac sim --target rust` against
+   `examples/sim-vertical-slice.ciac`) — needed because M2's own changes
+   live in `world.rs`, which Rust inherits via `include_str!`
+   vendoring — failed to compile with `E0433: could not find 'plan' in
+   the crate root`. Root cause, unrelated to any M2 code: 28's M1 added
+   `Scenario::validate_against_plan(&self, plan: &crate::plan::SimPlan)`
+   directly inside `crates/ciac-sim/src/scenario.rs`, but `scenario.rs`
+   is one of the files `ciac-backend-rust` vendors verbatim
+   (`include_str!`) into *every* generated Rust project's own crate
+   (`VENDORED_SIM_SCENARIO` in `crates/ciac-backend-rust/src/lib.rs`),
+   while `plan.rs` is never vendored and cannot easily be — it hard-
+   depends on the compiler-only `ciac_ir` crate and `sha2`, neither
+   available nor appropriate in a generated runtime project's own
+   dependency tree. This broke compilation of every generated Rust
+   project's own `sim_runner` binary for any Rust-target `ciac sim`
+   invocation since M1 shipped (M1's own verification apparently
+   exercised only the Python-target flagship and compile-time
+   cycle-detection checks, never a live Rust-target proof — the same
+   class of gap 26/27 have surfaced before: a milestone's own
+   verification not reaching every path its change touches). Fixed by
+   relocating the method (renamed `SimPlan::validate_scenario(&self,
+   scenario: &crate::scenario::Scenario) -> Result<(), ScenarioPlanError>`,
+   receiver/argument swapped, otherwise behavior-identical) plus
+   `ScenarioPlanError` into `plan.rs`, where `ciac_ir` is already a
+   legitimate dependency — confirmed via grep that the method is
+   called only from the compiler-side CLI preflight
+   (`crates/ciac/src/commands.rs`'s `sim_inner`, before any target's
+   driver runs), never from within any vendored/generated code path,
+   making the relocation semantically safe. `lib.rs`'s re-export and
+   the `commands.rs` call site (`plan.validate_scenario(&scenario)`,
+   swapped from `scenario.validate_against_plan(&plan)`) were updated
+   to match; the two tests that exercised the old method moved from
+   `scenario.rs` to `plan.rs` (renamed, same assertions). All 26 Rust
+   golden snapshots were regenerated a second time this milestone (the
+   vendored `scenario.rs` content changed), reviewed, and are stable
+   under a stability re-run. Re-running the Rust-target live proof
+   after the fix: `[PASS] v0.17-m5-vertical-slice`, no compile error —
+   the regression this milestone found is also the regression this
+   milestone closed, disclosed here rather than silently folded into
+   "M2 shipped as designed."
+
+   `ciac-sim`'s unit suite grew from 87 (M1's exit count) to 93: the
+   namespacing/router/depth-guard/tiebreak coverage above, net of the
+   validate_against_plan -> validate_scenario relocation (2 tests
+   moved, not added — same coverage, new home). Full `cargo test
+   --workspace --no-fail-fast` (`cargo fmt --check` and `cargo clippy
+   --workspace --all-targets -- -D warnings` both clean) exits with
+   only the same disclosed pre-existing `ruff`-version-drift failure in
+   `backfill_cli` (27 M9's own finding, reconfirmed unrelated to this
+   milestone). Both live-proof anchors reconfirmed after the fix:
+   Python-target `order-system.ciac` (`[PASS]
+   27-m9-order-system-flagship`) and Rust-target
+   `sim-vertical-slice.ciac` (`[PASS] v0.17-m5-vertical-slice`, the one
+   that originally failed).
+
 3. **M3 — Python composition, the pathfinder.** The pyrunner
    system driver: N services loaded under package aliases, one
    world, routes/consumers/jobs registered per service in

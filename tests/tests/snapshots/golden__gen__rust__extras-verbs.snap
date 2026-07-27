@@ -2603,7 +2603,10 @@ impl Scenario {
 
     /// Structural validation only (see module docs): version and
     /// non-emptiness. Name/reference resolution against a `SimPlan` is
-    /// [`Scenario::validate_against_plan`], not this.
+    /// `SimPlan::validate_scenario`, not this -- deliberately not a
+    /// method here (see that method's own doc comment for why: this
+    /// file is vendored verbatim into every generated Rust project,
+    /// which has no `ciac_ir`/`SimPlan` dependency to reference).
     pub fn validate(&self) -> Result<(), ScenarioError> {
         if self.simulation_version != SCENARIO_VERSION {
             return Err(ScenarioError::UnsupportedVersion {
@@ -2616,75 +2619,7 @@ impl Scenario {
         }
         Ok(())
     }
-
-    /// 28UpdatePlan.md M1: the "every named service resolves" preflight
-    /// promised (and deferred) since v0.17 -- checks every
-    /// `request.service`, `given.db[].service`, and `expect.row.service`
-    /// value against the real program's own `SimPlan.services`, once,
-    /// before any scenario step runs. Deliberately narrower than a full
-    /// name-resolution pass (api/table/stream names are not checked
-    /// here -- each target's own runner still refuses those with its
-    /// own clear error at drive time, matching the pre-arc behavior);
-    /// service addressing is what Pillar 1 scoped SIM0011 to, and
-    /// widening it is real, disclosed future work, not silently done
-    /// here.
-    pub fn validate_against_plan(
-        &self,
-        plan: &crate::plan::SimPlan,
-    ) -> Result<(), ScenarioPlanError> {
-        let known: Vec<String> = plan.services.iter().map(|s| s.name.clone()).collect();
-        let check = |referenced: &str| -> Result<(), ScenarioPlanError> {
-            if known.iter().any(|k| k == referenced) {
-                Ok(())
-            } else {
-                Err(ScenarioPlanError::UnknownService {
-                    referenced: referenced.to_owned(),
-                    known: known.clone(),
-                })
-            }
-        };
-        for row in &self.given.db {
-            check(&row.service)?;
-        }
-        for step in &self.steps {
-            match step {
-                ScenarioStep::Request(r) => check(&r.service)?,
-                ScenarioStep::Expect(ExpectStep::Row { service, .. }) => check(service)?,
-                _ => {}
-            }
-        }
-        Ok(())
-    }
 }
-
-/// 28UpdatePlan.md M1: errors only knowable once a scenario is checked
-/// against a real `SimPlan` (unlike [`ScenarioError`], which is
-/// structural/parse-level and needs no plan at all).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScenarioPlanError {
-    UnknownService {
-        referenced: String,
-        known: Vec<String>,
-    },
-}
-
-impl std::fmt::Display for ScenarioPlanError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ScenarioPlanError::UnknownService { referenced, known } => write!(
-                f,
-                "unknown service {referenced:?} (known services: {})",
-                if known.is_empty() {
-                    "none".to_owned()
-                } else {
-                    known.join(", ")
-                }
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ScenarioPlanError {}
 
 #[cfg(test)]
 mod tests {
@@ -2782,48 +2717,10 @@ mod tests {
         );
     }
 
-    fn minimal_plan(service_names: &[&str]) -> crate::plan::SimPlan {
-        crate::plan::SimPlan {
-            plan_version: crate::plan::PLAN_VERSION,
-            source_hash: "sha256:fixed".into(),
-            project_name: "X".into(),
-            multi_service: service_names.len() > 1,
-            services: service_names
-                .iter()
-                .map(|n| crate::plan::SimService {
-                    key: format!("service/{n}"),
-                    name: (*n).to_owned(),
-                })
-                .collect(),
-            tables: vec![],
-            streams: vec![],
-            jobs: vec![],
-            workers: vec![],
-            apis: vec![],
-            call_edges: vec![],
-        }
-    }
-
-    #[test]
-    fn validate_against_plan_passes_when_every_referenced_service_is_known() {
-        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
-        let plan = minimal_plan(&["Orders", "Gateway"]);
-        assert_eq!(scenario.validate_against_plan(&plan), Ok(()));
-    }
-
-    #[test]
-    fn validate_against_plan_rejects_an_unknown_service() {
-        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
-        // "Gateway" (referenced by the `request` step) is missing.
-        let plan = minimal_plan(&["Orders"]);
-        assert_eq!(
-            scenario.validate_against_plan(&plan),
-            Err(ScenarioPlanError::UnknownService {
-                referenced: "Gateway".to_owned(),
-                known: vec!["Orders".to_owned()],
-            })
-        );
-    }
+    // `SimPlan::validate_scenario` (relocated from this file's own
+    // `validate_against_plan` -- see that method's doc comment in
+    // `plan.rs`) has its test coverage in `plan.rs`'s own test module,
+    // since it now lives there.
 
     // The M5-checkpoint fixture-file test moved to
     // `tests/scenario_fixtures.rs` (v0.17 M11): it reads
@@ -3912,6 +3809,68 @@ pub struct SimWorld {
     searches: Mutex<BTreeMap<String, FakeSearch>>,
     http_clients: Mutex<BTreeMap<String, FakeHttpClient>>,
     auth: Mutex<FakeAuth>,
+    /// 28UpdatePlan.md M2 (Pillar 3): every registered api handler,
+    /// keyed by `(service, api)` -- `register_api`'s own bookkeeping.
+    /// `Arc`, not `Box`: `call_checked` must clone the handler out and
+    /// drop this map's lock before invoking it, since the handler may
+    /// itself call back into `call_checked` (a `std::sync::Mutex` is
+    /// not reentrant -- holding this lock across the call would
+    /// deadlock the very first recursive call, on the same thread).
+    apis: Mutex<ApiRegistry>,
+    /// 28UpdatePlan.md M2: routed-call recursion depth, incremented for
+    /// the duration of one `call_checked` invocation (RAII-released via
+    /// `CallDepthGuard` so it unwinds correctly even if the handler
+    /// panics). Not a cycle detector -- `ciac-sema`'s own
+    /// `CycleDetection` pass already refuses a call cycle at compile
+    /// time (`EdgeKind::ServiceCall` is one of the edge kinds its
+    /// combined flow-graph check considers), so a cycle can never reach
+    /// a compiled program's own routed calls. This guard exists for
+    /// the case that check cannot cover -- a hand-built [`SimWorld`]
+    /// (this crate's own tests, or a future non-generated driver)
+    /// whose registered handlers call each other in a way the compiler
+    /// never saw -- turning what would otherwise be an unrecoverable
+    /// stack overflow into a graceful `Err`.
+    call_depth: Mutex<u32>,
+}
+
+/// 28UpdatePlan.md M2: one registered api's logic, at the same JSON
+/// boundary every other fake (`FakeHttpClient::post`, most directly)
+/// already crosses -- `ciac-sim` has no knowledge of any particular
+/// `.ciac` program's typed request/response shapes, so a handler is
+/// exactly the bridge a world-guarded generated call site builds: one
+/// `serde_json::to_value`/`from_value` round trip around the real
+/// (fake-world-routed) handler logic.
+pub type ApiHandler = dyn Fn(Value) -> anyhow::Result<Value> + Send + Sync;
+
+/// A trait object has no `Debug` impl of its own, and `SimWorld` derives
+/// `Debug` -- this newtype just reports how many handlers are
+/// registered rather than trying to print them.
+#[derive(Default)]
+struct ApiRegistry(BTreeMap<(String, String), std::sync::Arc<ApiHandler>>);
+
+impl std::fmt::Debug for ApiRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ApiRegistry({} handlers)", self.0.len())
+    }
+}
+
+/// The `call_checked` recursion depth this crate refuses past --
+/// generous relative to any real `.ciac` call chain (the compiler
+/// already refuses cycles, so a legitimate chain is only ever as deep
+/// as the program's own longest acyclic `call` path), tight enough to
+/// fail long before it would risk a real stack overflow.
+const MAX_CALL_DEPTH: u32 = 64;
+
+/// RAII decrement for [`SimWorld::call_depth`] -- guarantees the depth
+/// counter unwinds even if the routed handler panics, so a caught panic
+/// elsewhere (a test harness, a future non-generated driver) never
+/// leaves every subsequent call permanently refused.
+struct CallDepthGuard<'a>(&'a Mutex<u32>);
+
+impl Drop for CallDepthGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.lock().expect("call depth mutex poisoned") -= 1;
+    }
 }
 
 impl SimWorld {
@@ -3946,7 +3905,77 @@ impl SimWorld {
             searches: Mutex::new(BTreeMap::new()),
             http_clients: Mutex::new(BTreeMap::new()),
             auth: Mutex::new(FakeAuth::default()),
+            apis: Mutex::new(ApiRegistry::default()),
+            call_depth: Mutex::new(0),
         }
+    }
+
+    /// 28UpdatePlan.md M2 (Pillar 3, "registration bookkeeping,
+    /// runner-only"): registers `handler` as `service`'s `api`, the
+    /// target `call_checked` resolves a routed call against. A system
+    /// runner (M3+) calls this once per api, in service declaration
+    /// order, before any scenario runs; re-registering the same
+    /// `(service, api)` replaces the earlier handler rather than
+    /// erroring, matching how a runner would simply rebuild the world
+    /// (and re-register everything) between scenario runs rather than
+    /// asking this registry to detect staleness itself.
+    pub fn register_api(&self, service: &str, api: &str, handler: std::sync::Arc<ApiHandler>) {
+        self.apis
+            .lock()
+            .expect("api handlers mutex poisoned")
+            .0
+            .insert((service.to_owned(), api.to_owned()), handler);
+    }
+
+    /// 28UpdatePlan.md M2 (Pillar 2/3): routes a `call <Service>.<Api>`
+    /// step -- inline and synchronous on the caller's own logical
+    /// thread, exactly as production's typed call client behaves, just
+    /// against the registered handler instead of real HTTP. `call`s
+    /// count against the `call.request` failure vocabulary the same
+    /// way `db.commit`/`broker.publish` do; an injected failure fires
+    /// before the handler ever runs, and an unregistered `(callee_service,
+    /// api)` is a clear error rather than a silent no-op -- the same
+    /// "fail closed on a missing seam" discipline `FakeHttpClient`
+    /// already uses for an unmatched fixture. The handler's own
+    /// `Ok`/`Err` passes through verbatim, matching production's own
+    /// "the callee's real response or real error, not a synthesized
+    /// one."
+    pub fn call_checked(
+        &self,
+        caller: &str,
+        callee_service: &str,
+        api: &str,
+        req: Value,
+    ) -> anyhow::Result<Value> {
+        if self.should_fail("call.request", Some(api))? {
+            anyhow::bail!("simulated call.request failure (injected by FailureEngine)");
+        }
+        let handler = {
+            let handlers = self.apis.lock().expect("api handlers mutex poisoned");
+            handlers
+                .0
+                .get(&(callee_service.to_owned(), api.to_owned()))
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no handler registered for {callee_service}.{api} (called from {caller})"
+                    )
+                })?
+        };
+        {
+            let mut depth = self.call_depth.lock().expect("call depth mutex poisoned");
+            if *depth >= MAX_CALL_DEPTH {
+                anyhow::bail!(
+                    "routed call depth exceeded {MAX_CALL_DEPTH} calling {callee_service}.{api} \
+                     from {caller} -- ciac-sema's own CycleDetection pass already refuses a call \
+                     cycle at compile time, so this guards against a process-ending stack \
+                     overflow in a hand-built world, not a reachable cycle in a compiled program"
+                );
+            }
+            *depth += 1;
+        }
+        let _guard = CallDepthGuard(&self.call_depth);
+        handler(req)
     }
 
     /// `db.commit`'s failure check, schema-aware reference/uniqueness
@@ -4091,6 +4120,64 @@ impl SimWorld {
             self.db.delete(table, pk);
         }
         Ok(all_deletes)
+    }
+
+    /// 28UpdatePlan.md M2 (Pillar 2): the storage key a service-
+    /// addressed relational call actually uses -- `service::table` when
+    /// a service is given, or the bare table name for the single-
+    /// service degenerate path. Un-suffixed callers (`db_insert_checked`
+    /// and friends, every one of 27's own call sites) never pass a
+    /// service and so always resolve to the bare key, unchanged --
+    /// 27's own corpus staying green through this milestone is the
+    /// proof the degenerate path really is a no-op, not just a claim.
+    ///
+    /// Composition matters here specifically because `ciac-sim` is
+    /// usable standalone (this crate's own tests build a [`SimWorld`]
+    /// directly, and a future non-generated driver could too) --
+    /// `ciac-sema`'s `DuplicateDeclaration` check only rules out two
+    /// same-named tables for a real compiled `.ciac` program, not for
+    /// two hand-built [`WorldTable`]s a caller happens to name alike.
+    pub fn namespaced_table_key(service: Option<&str>, table: &str) -> String {
+        match service {
+            Some(service) => format!("{service}::{table}"),
+            None => table.to_owned(),
+        }
+    }
+
+    /// 28UpdatePlan.md M2: [`Self::db_insert_checked`], addressed
+    /// through `service` -- composes the namespaced key and delegates,
+    /// so failure injection, reference/uniqueness validation, and the
+    /// actual write all happen exactly once, in the un-suffixed method.
+    pub fn db_insert_checked_for(
+        &self,
+        service: Option<&str>,
+        table: &str,
+        row: Value,
+    ) -> anyhow::Result<()> {
+        self.db_insert_checked(&Self::namespaced_table_key(service, table), row)
+    }
+
+    /// 28UpdatePlan.md M2: [`Self::db_update_checked`], addressed
+    /// through `service`.
+    pub fn db_update_checked_for(
+        &self,
+        service: Option<&str>,
+        table: &str,
+        pk: &str,
+        record: Value,
+    ) -> anyhow::Result<Option<Value>> {
+        self.db_update_checked(&Self::namespaced_table_key(service, table), pk, record)
+    }
+
+    /// 28UpdatePlan.md M2: [`Self::db_delete_checked`], addressed
+    /// through `service`.
+    pub fn db_delete_checked_for(
+        &self,
+        service: Option<&str>,
+        table: &str,
+        pk: &str,
+    ) -> anyhow::Result<bool> {
+        self.db_delete_checked(&Self::namespaced_table_key(service, table), pk)
     }
 
     /// A prospective write's reference/uniqueness check against
@@ -5173,5 +5260,173 @@ mod tests {
         world.auth_issue("tok-1", serde_json::json!({"sub": "u1"}), None);
         world.advance_clock_to(1_000_000_000);
         assert!(world.auth_verify("tok-1").is_ok());
+    }
+
+    // 28UpdatePlan.md M2: (service, table) namespacing.
+
+    #[test]
+    fn namespaced_table_key_is_bare_for_the_single_service_degenerate_path() {
+        assert_eq!(SimWorld::namespaced_table_key(None, "orders"), "orders");
+        assert_eq!(
+            SimWorld::namespaced_table_key(Some("Billing"), "orders"),
+            "Billing::orders"
+        );
+    }
+
+    #[test]
+    fn two_services_naming_a_table_identically_do_not_collide() {
+        // Two schemas, each with its own table literally named "orders"
+        // -- exactly the case `ciac-sema`'s `DuplicateDeclaration` check
+        // rules out for a real compiled program, but `ciac-sim` itself
+        // must still keep separate since it is usable standalone.
+        let world = SimWorld::with_schema(
+            Vec::new(),
+            vec![
+                WorldTable {
+                    name: "Billing::orders".into(),
+                    references: vec![],
+                },
+                WorldTable {
+                    name: "Shipping::orders".into(),
+                    references: vec![],
+                },
+            ],
+        );
+        world
+            .db_insert_checked_for(Some("Billing"), "orders", serde_json::json!({"id": "b1"}))
+            .unwrap();
+        world
+            .db_insert_checked_for(Some("Shipping"), "orders", serde_json::json!({"id": "s1"}))
+            .unwrap();
+        assert_eq!(world.db.count("Billing::orders"), 1);
+        assert_eq!(world.db.count("Shipping::orders"), 1);
+        assert_eq!(
+            world
+                .db
+                .get("Billing::orders", "b1")
+                .unwrap()
+                .get("id")
+                .unwrap(),
+            "b1"
+        );
+        // The un-suffixed path stays bare-keyed and untouched by either
+        // service-addressed insert above -- the proof the degenerate
+        // path really is unaffected.
+        assert_eq!(world.db.count("orders"), 0);
+    }
+
+    #[test]
+    fn service_addressed_update_and_delete_use_the_same_namespaced_key() {
+        let world = SimWorld::with_schema(
+            Vec::new(),
+            vec![WorldTable {
+                name: "Billing::orders".into(),
+                references: vec![],
+            }],
+        );
+        world
+            .db_insert_checked_for(
+                Some("Billing"),
+                "orders",
+                serde_json::json!({"id": "b1", "total": 1}),
+            )
+            .unwrap();
+        let updated = world
+            .db_update_checked_for(
+                Some("Billing"),
+                "orders",
+                "b1",
+                serde_json::json!({"id": "b1", "total": 2}),
+            )
+            .unwrap();
+        assert_eq!(updated.unwrap()["total"], 2);
+        assert!(world
+            .db_delete_checked_for(Some("Billing"), "orders", "b1")
+            .unwrap());
+        assert_eq!(world.db.count("Billing::orders"), 0);
+    }
+
+    // 28UpdatePlan.md M2: the call router.
+
+    #[test]
+    fn call_checked_routes_to_the_registered_handler_and_returns_its_response() {
+        let world = SimWorld::new(Vec::new());
+        world.register_api(
+            "Billing",
+            "Charge",
+            std::sync::Arc::new(|req: Value| Ok(serde_json::json!({"charged": req["amount"]}))),
+        );
+        let resp = world
+            .call_checked(
+                "Gateway",
+                "Billing",
+                "Charge",
+                serde_json::json!({"amount": 42}),
+            )
+            .unwrap();
+        assert_eq!(resp["charged"], 42);
+    }
+
+    #[test]
+    fn call_checked_passes_through_the_handler_s_error_envelope_verbatim() {
+        let world = SimWorld::new(Vec::new());
+        world.register_api(
+            "Billing",
+            "Charge",
+            std::sync::Arc::new(|_req: Value| anyhow::bail!("card declined")),
+        );
+        let err = world
+            .call_checked("Gateway", "Billing", "Charge", Value::Null)
+            .unwrap_err();
+        assert!(err.to_string().contains("card declined"), "{err}");
+    }
+
+    #[test]
+    fn call_checked_refuses_an_unregistered_api_with_a_clear_error() {
+        let world = SimWorld::new(Vec::new());
+        let err = world
+            .call_checked("Gateway", "Billing", "Charge", Value::Null)
+            .unwrap_err();
+        assert!(err.to_string().contains("Billing.Charge"), "{err}");
+    }
+
+    #[test]
+    fn call_checked_honors_an_injected_call_request_failure() {
+        let world = SimWorld::new(vec![FailureRule {
+            at: crate::failure::FailureSelector {
+                effect: "call.request".into(),
+                subject: None,
+                occurrence: None,
+                phase: FailurePhase::After,
+            },
+            action: FailureAction::Error,
+        }]);
+        world.register_api(
+            "Billing",
+            "Charge",
+            std::sync::Arc::new(|_req: Value| Ok(Value::Null)),
+        );
+        let err = world
+            .call_checked("Gateway", "Billing", "Charge", Value::Null)
+            .unwrap_err();
+        assert!(err.to_string().contains("simulated"), "{err}");
+    }
+
+    #[test]
+    fn call_checked_depth_guard_refuses_runaway_recursion_instead_of_overflowing_the_stack() {
+        // A handler that unconditionally calls itself back through the
+        // world -- not a shape a compiled `.ciac` program can produce
+        // (`ciac-sema`'s `CycleDetection` refuses the cycle first), but
+        // exactly the hand-built-world case the depth guard exists for.
+        let world = std::sync::Arc::new(SimWorld::new(Vec::new()));
+        let recursive = {
+            let world = std::sync::Arc::clone(&world);
+            move |req: Value| world.call_checked("Self", "Loop", "Again", req)
+        };
+        world.register_api("Loop", "Again", std::sync::Arc::new(recursive));
+        let err = world
+            .call_checked("Gateway", "Loop", "Again", Value::Null)
+            .unwrap_err();
+        assert!(err.to_string().contains("depth"), "{err}");
     }
 }

@@ -1262,7 +1262,7 @@ fn sim_inner(
         scenario
             .validate()
             .with_context(|| format!("scenario file {} is invalid", scenario_path.display()))?;
-        if let Err(err) = scenario.validate_against_plan(&plan) {
+        if let Err(err) = plan.validate_scenario(&scenario) {
             bail!(
                 "`ciac sim`: scenario {} {} ({})",
                 scenario_path.display(),

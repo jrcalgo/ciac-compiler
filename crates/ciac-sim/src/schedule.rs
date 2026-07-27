@@ -313,4 +313,36 @@ mod tests {
         let mut s: Scheduler<&str> = Scheduler::new(1_000);
         s.advance_to(0);
     }
+
+    /// 28UpdatePlan.md M2: confirms a finding rather than adding new
+    /// behavior -- `SchedulingKey`'s field order (this module's own
+    /// docs, unchanged since 17UpdatePlan.md's original design) already
+    /// puts `service` ahead of `actor`, so two events tying on
+    /// `virtual_timestamp_ms`/`phase` from *different* services
+    /// tiebreak by service identity before anything else -- exactly
+    /// the "service-aware scheduler tiebreak" M2's own exit checklist
+    /// asks for, with zero code change to this module needed.
+    #[test]
+    fn events_from_different_services_tiebreak_by_service_before_actor() {
+        fn req_for(service: &str, actor: &str) -> ScheduleRequest {
+            ScheduleRequest {
+                virtual_timestamp_ms: 0,
+                phase: Phase::Deliver,
+                service: service.into(),
+                actor: actor.into(),
+                stream_sequence: None,
+                delivery_attempt: 0,
+            }
+        }
+        let mut s: Scheduler<&str> = Scheduler::new(0);
+        // Scheduled in reverse-alphabetical order and with an actor
+        // name that would sort the other way (`worker/A` < `worker/Z`)
+        // if `actor` won the tiebreak -- only `service` winning first
+        // produces the assertion below.
+        s.schedule(req_for("service/Zeta", "worker/A"), "zeta");
+        s.schedule(req_for("service/Alpha", "worker/Z"), "alpha");
+        s.advance_to(0);
+        assert_eq!(s.pop_eligible().map(|(_, p)| p), Some("alpha"));
+        assert_eq!(s.pop_eligible().map(|(_, p)| p), Some("zeta"));
+    }
 }

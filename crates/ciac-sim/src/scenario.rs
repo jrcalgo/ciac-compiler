@@ -273,7 +273,10 @@ impl Scenario {
 
     /// Structural validation only (see module docs): version and
     /// non-emptiness. Name/reference resolution against a `SimPlan` is
-    /// [`Scenario::validate_against_plan`], not this.
+    /// `SimPlan::validate_scenario`, not this -- deliberately not a
+    /// method here (see that method's own doc comment for why: this
+    /// file is vendored verbatim into every generated Rust project,
+    /// which has no `ciac_ir`/`SimPlan` dependency to reference).
     pub fn validate(&self) -> Result<(), ScenarioError> {
         if self.simulation_version != SCENARIO_VERSION {
             return Err(ScenarioError::UnsupportedVersion {
@@ -286,75 +289,7 @@ impl Scenario {
         }
         Ok(())
     }
-
-    /// 28UpdatePlan.md M1: the "every named service resolves" preflight
-    /// promised (and deferred) since v0.17 -- checks every
-    /// `request.service`, `given.db[].service`, and `expect.row.service`
-    /// value against the real program's own `SimPlan.services`, once,
-    /// before any scenario step runs. Deliberately narrower than a full
-    /// name-resolution pass (api/table/stream names are not checked
-    /// here -- each target's own runner still refuses those with its
-    /// own clear error at drive time, matching the pre-arc behavior);
-    /// service addressing is what Pillar 1 scoped SIM0011 to, and
-    /// widening it is real, disclosed future work, not silently done
-    /// here.
-    pub fn validate_against_plan(
-        &self,
-        plan: &crate::plan::SimPlan,
-    ) -> Result<(), ScenarioPlanError> {
-        let known: Vec<String> = plan.services.iter().map(|s| s.name.clone()).collect();
-        let check = |referenced: &str| -> Result<(), ScenarioPlanError> {
-            if known.iter().any(|k| k == referenced) {
-                Ok(())
-            } else {
-                Err(ScenarioPlanError::UnknownService {
-                    referenced: referenced.to_owned(),
-                    known: known.clone(),
-                })
-            }
-        };
-        for row in &self.given.db {
-            check(&row.service)?;
-        }
-        for step in &self.steps {
-            match step {
-                ScenarioStep::Request(r) => check(&r.service)?,
-                ScenarioStep::Expect(ExpectStep::Row { service, .. }) => check(service)?,
-                _ => {}
-            }
-        }
-        Ok(())
-    }
 }
-
-/// 28UpdatePlan.md M1: errors only knowable once a scenario is checked
-/// against a real `SimPlan` (unlike [`ScenarioError`], which is
-/// structural/parse-level and needs no plan at all).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScenarioPlanError {
-    UnknownService {
-        referenced: String,
-        known: Vec<String>,
-    },
-}
-
-impl std::fmt::Display for ScenarioPlanError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ScenarioPlanError::UnknownService { referenced, known } => write!(
-                f,
-                "unknown service {referenced:?} (known services: {})",
-                if known.is_empty() {
-                    "none".to_owned()
-                } else {
-                    known.join(", ")
-                }
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ScenarioPlanError {}
 
 #[cfg(test)]
 mod tests {
@@ -452,48 +387,10 @@ mod tests {
         );
     }
 
-    fn minimal_plan(service_names: &[&str]) -> crate::plan::SimPlan {
-        crate::plan::SimPlan {
-            plan_version: crate::plan::PLAN_VERSION,
-            source_hash: "sha256:fixed".into(),
-            project_name: "X".into(),
-            multi_service: service_names.len() > 1,
-            services: service_names
-                .iter()
-                .map(|n| crate::plan::SimService {
-                    key: format!("service/{n}"),
-                    name: (*n).to_owned(),
-                })
-                .collect(),
-            tables: vec![],
-            streams: vec![],
-            jobs: vec![],
-            workers: vec![],
-            apis: vec![],
-            call_edges: vec![],
-        }
-    }
-
-    #[test]
-    fn validate_against_plan_passes_when_every_referenced_service_is_known() {
-        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
-        let plan = minimal_plan(&["Orders", "Gateway"]);
-        assert_eq!(scenario.validate_against_plan(&plan), Ok(()));
-    }
-
-    #[test]
-    fn validate_against_plan_rejects_an_unknown_service() {
-        let scenario = Scenario::parse(RETRY_AND_CLEANUP).unwrap();
-        // "Gateway" (referenced by the `request` step) is missing.
-        let plan = minimal_plan(&["Orders"]);
-        assert_eq!(
-            scenario.validate_against_plan(&plan),
-            Err(ScenarioPlanError::UnknownService {
-                referenced: "Gateway".to_owned(),
-                known: vec!["Orders".to_owned()],
-            })
-        );
-    }
+    // `SimPlan::validate_scenario` (relocated from this file's own
+    // `validate_against_plan` -- see that method's doc comment in
+    // `plan.rs`) has its test coverage in `plan.rs`'s own test module,
+    // since it now lives there.
 
     // The M5-checkpoint fixture-file test moved to
     // `tests/scenario_fixtures.rs` (v0.17 M11): it reads

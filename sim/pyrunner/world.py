@@ -87,6 +87,17 @@ class UniqueViolation(Exception):
     row. Unmapped to any HTTP status -- see the module docstring."""
 
 
+class RoutingError(Exception):
+    """28UpdatePlan.md M3: a `call_checked` routed call named an
+    unregistered `(service, api)`, or exceeded `SimWorld.
+    MAX_CALL_DEPTH` -- reported clearly, not silently ignored or left
+    to crash as an opaque `RecursionError`. Distinct from `auto_driver.
+    py`'s own `RegistryError` (a scenario-level "this driver doesn't
+    know how to auto-wire that name" refusal) -- this one is
+    world-level, raised by `call_checked` itself regardless of which
+    driver built the registry."""
+
+
 def to_snake_case(name: str) -> str:
     """Matches `ciac_sim::plan::snake_case` (Rust) exactly, which is
     itself documented there as matching `heck::ToSnakeCase` closely
@@ -102,6 +113,23 @@ def to_snake_case(name: str) -> str:
         else:
             out.append(c)
     return "".join(out)
+
+
+def namespaced_table_key(service: str | None, table: str) -> str:
+    """28UpdatePlan.md M3: mirrors `ciac_sim::world::SimWorld::
+    namespaced_table_key` (Rust, M2) exactly -- `None` (the single-
+    service degenerate case, still every project generated before this
+    arc and every single-service project generated after it) returns
+    `table` unchanged; `Some(service)` returns `f"{service}/{table}"`.
+    A free function, not a `FakeDatabase`/`SimWorld` method, so the
+    degenerate path is provably a no-op by inspection: nothing about
+    `FakeDatabase` itself changes for this milestone, only what key a
+    caller chooses to pass it -- exactly Rust's own M2 shape, where
+    `namespaced_table_key` composes the key a caller passes to
+    `FakeDatabase`'s own unmodified, bare-string-keyed methods."""
+    if service is None:
+        return table
+    return f"{service}/{table}"
 
 
 @dataclass
@@ -641,6 +669,18 @@ class SimWorld:
     _emails: dict[str, FakeEmail] = field(default_factory=dict, init=False)
     _searches: dict[str, FakeSearch] = field(default_factory=dict, init=False)
     _http_clients: dict[str, FakeHttpClient] = field(default_factory=dict, init=False)
+    # 28UpdatePlan.md M3: the call-router registry, mirroring
+    # `ciac_sim::world::SimWorld`'s `apis`/`call_depth` (Rust, M2)
+    # exactly, adapted to this driver's single-threaded asyncio event
+    # loop -- no lock is needed the way Rust's `Mutex<ApiRegistry>`
+    # is, since nothing here ever runs two coroutines' bodies
+    # concurrently on the same thread; a `try`/`finally` around the
+    # depth counter is this file's RAII-guard equivalent to Rust's
+    # `CallDepthGuard`.
+    _apis: dict[tuple[str, str], Callable[[dict[str, Any]], Any]] = field(
+        default_factory=dict, init=False
+    )
+    _call_depth: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self.failures = FailureEngine(self.failure_rules)
@@ -681,6 +721,73 @@ class SimWorld:
     async def publish(self, subject: str, payload: dict[str, Any]) -> None:
         self.transcript.append({"effect": "broker.publish", "subject": subject})
         self.broker.record(subject, payload)
+
+    # 28UpdatePlan.md M3 (Pillar 2/3): a `call <Service>.<Api>` pipeline
+    # step routed here instead of over real HTTP, mirroring `ciac_sim::
+    # world::SimWorld::register_api`/`call_checked` (Rust, M2) exactly.
+    MAX_CALL_DEPTH = 64
+
+    def register_api(
+        self, service: str, api: str, handler: Callable[[dict[str, Any]], Any]
+    ) -> None:
+        """Registers `handler` as `service`'s `api`, the target
+        `call_checked` resolves a routed call against. A system driver
+        (M3+) calls this once per api, in service declaration order,
+        before any scenario runs; re-registering the same `(service,
+        api)` replaces the earlier handler rather than erroring,
+        matching how a driver would simply rebuild the world (and
+        re-register everything) between scenario runs rather than
+        asking this registry to detect staleness itself."""
+        self._apis[(service, api)] = handler
+
+    async def call_checked(
+        self, caller: str, callee_service: str, api: str, req: dict[str, Any]
+    ) -> Any:
+        """Routes a `call <Service>.<Api>` step -- inline and
+        synchronous (`await`ed straight through) on the caller's own
+        logical coroutine, exactly as production's typed call client
+        behaves, just against the registered handler instead of real
+        HTTP. `call`s count against the `call.request` failure
+        vocabulary the same way `db.commit`/`broker.publish` do; an
+        injected failure fires before the handler ever runs, and an
+        unregistered `(callee_service, api)` is a clear error rather
+        than a silent no-op -- the same "fail closed on a missing seam"
+        discipline `FakeHttpClient` already uses for an unmatched
+        fixture. The handler's own return value or raised exception
+        passes through verbatim, matching production's own "the
+        callee's real response or real error, not a synthesized one."
+
+        `_call_depth` is not a cycle detector -- `ciac-sema`'s own
+        `CycleDetection` pass already refuses a call cycle at compile
+        time (`EdgeKind::ServiceCall` is one of the edge kinds its
+        combined flow-graph check considers, confirmed live via
+        `tests/ui/service-call-cycle.ciac`), so a cycle can never reach
+        a compiled program's own routed calls. This guard exists for
+        the case that check cannot cover -- a hand-built registration
+        (this file's own tests, or a future non-generated driver) whose
+        registered handlers call each other in a way the compiler
+        never saw -- turning what would otherwise be an unrecoverable
+        `RecursionError` into a graceful, named exception."""
+        if self.failures.should_fail("call.request", api):
+            raise RuntimeError("simulated call.request failure (injected by FailureEngine)")
+        handler = self._apis.get((callee_service, api))
+        if handler is None:
+            raise RoutingError(
+                f"no handler registered for {callee_service}.{api} (called from {caller})"
+            )
+        if self._call_depth >= self.MAX_CALL_DEPTH:
+            raise RoutingError(
+                f"routed call depth exceeded {self.MAX_CALL_DEPTH} calling "
+                f"{callee_service}.{api} from {caller} -- ciac-sema's own CycleDetection pass "
+                f"already refuses a call cycle at compile time, so this guards against runaway "
+                f"recursion in a hand-built registration, not a reachable cycle in a compiled "
+                f"program"
+            )
+        self._call_depth += 1
+        try:
+            return await handler(req)
+        finally:
+            self._call_depth -= 1
 
     async def deliver(self, subject: str, group: str, handle_message) -> int:
         """Drains every undelivered message for `(subject, group)` and

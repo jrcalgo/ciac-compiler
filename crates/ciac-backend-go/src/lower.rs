@@ -256,6 +256,13 @@ struct GoSyntax<'a> {
     /// `(name, HirType)` pairs `collect_branching_lets` found — see
     /// its own doc and `assign`'s.
     branching_locals: std::collections::HashMap<String, HirType>,
+    /// 28UpdatePlan.md M7c: this handler's own service name in a
+    /// multi-service system (`None` for a single-service program) —
+    /// mirrors `ciac-backend-rust`'s `RustSyntax::service_name`/
+    /// `ciac-backend-ts`'s `TsSyntax.service_name` exactly. Feeds
+    /// [`Self::world_table_key`], the same namespacing composition
+    /// those two backends' own lowering already applies.
+    service_name: Option<String>,
 }
 
 impl GoSyntax<'_> {
@@ -263,6 +270,21 @@ impl GoSyntax<'_> {
         let n = self.tmp.get();
         self.tmp.set(n + 1);
         format!("{base}{n}")
+    }
+
+    /// Composes the namespaced key every world-guard db-verb branch
+    /// addresses through — `"{service}::{table}"`, degenerating to the
+    /// bare `table_snake` when `service_name` is `None` (single-service
+    /// mode; the real-SQL branch beside each of these call sites keeps
+    /// using the bare `table_snake` unconditionally regardless, since
+    /// the physical table itself is never namespaced). Mirrors
+    /// `RustSyntax::world_table_key`/`TsSyntax::world_table_key`
+    /// exactly.
+    fn world_table_key(&self, table_snake: &str) -> String {
+        match &self.service_name {
+            Some(service) => format!("{service}::{table_snake}"),
+            None => table_snake.to_owned(),
+        }
     }
 
     /// The `*sql.DB`-or-`*sql.Tx` handle a db verb reaches through:
@@ -718,9 +740,10 @@ impl HostSyntax for GoSyntax<'_> {
         // way -- `st` (the outer AppState) stays in scope through a
         // transaction block the same way `self.handle(in_tx)`'s own
         // `st.{}.BeginTx` call site already relies on.
+        let world_key = self.world_table_key(&table_snake);
         out.push(format!("{indent}if st.World != nil {{"));
         out.push(format!(
-            "{indent}\tif {err} := st.World.DBInsertChecked({table_snake:?}, {row}); {err} != nil {{"
+            "{indent}\tif {err} := st.World.DBInsertChecked({world_key:?}, {row}); {err} != nil {{"
         ));
         out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
         out.push(format!("{indent}\t}}"));
@@ -790,8 +813,9 @@ impl HostSyntax for GoSyntax<'_> {
         // `transaction_stmt`'s own `BeginWorldBatch` is active), so no
         // `in_tx`-specific branching is needed here at all, mirroring
         // TypeScript's own `dbUpdateChecked` design exactly.
+        let world_key = self.world_table_key(&table_snake);
         let closure = format!(
-            "func() (*{record_name}, error) {{ __row := {value}; if st.World != nil {{ var __wout {record_name}; __ok, __werr := st.World.DBUpdateChecked({table_snake:?}, {key}, __row, &__wout); if __werr != nil {{ return nil, __werr }}; if !__ok {{ return nil, nil }}; return &__wout, nil }}; __result, __err := {handle}.ExecContext(ctx, {sql:?}, {}); if __err != nil {{ return nil, __err }}; __n, __err2 := __result.RowsAffected(); if __err2 != nil {{ return nil, __err2 }}; if __n == 0 {{ return nil, nil }}; return &__row, nil }}()",
+            "func() (*{record_name}, error) {{ __row := {value}; if st.World != nil {{ var __wout {record_name}; __ok, __werr := st.World.DBUpdateChecked({world_key:?}, {key}, __row, &__wout); if __werr != nil {{ return nil, __werr }}; if !__ok {{ return nil, nil }}; return &__wout, nil }}; __result, __err := {handle}.ExecContext(ctx, {sql:?}, {}); if __err != nil {{ return nil, __err }}; __n, __err2 := __result.RowsAffected(); if __err2 != nil {{ return nil, __err2 }}; if __n == 0 {{ return nil, nil }}; return &__row, nil }}()",
             binds.join(", ")
         );
         self.fallible_tail(&closure, dest, indent)
@@ -819,13 +843,14 @@ impl HostSyntax for GoSyntax<'_> {
         // mirroring TypeScript's own M6 fix for the identical bug
         // class (found live there via `tsc`; applied here from the
         // start rather than re-discovering it).
+        let world_key = self.world_table_key(&table_snake);
         let out_var = self.fresh("__out");
         let mut out = vec![format!("{indent}var {out_var} bool")];
         out.push(format!("{indent}if st.World != nil {{"));
         let v = self.fresh("__v");
         let werr = self.fresh("__err");
         out.push(format!(
-            "{indent}\t{v}, {werr} := st.World.DBDeleteChecked({table_snake:?}, {key})"
+            "{indent}\t{v}, {werr} := st.World.DBDeleteChecked({world_key:?}, {key})"
         ));
         out.push(format!("{indent}\tif {werr} != nil {{"));
         out.push(format!("{indent}\t\treturn {}, {werr}", self.zero_return));
@@ -874,6 +899,7 @@ impl HostSyntax for GoSyntax<'_> {
                     self.db_engine,
                 );
                 let world_pred = self.world_predicate_expr(predicate);
+                let world_key = self.world_table_key(&table_snake);
                 // 27UpdatePlan.md M7: `{out_var}` hoisted above the
                 // world/production split (see `db_delete_tail`'s own
                 // doc on why), but via `:=` with a literal empty-slice
@@ -896,7 +922,7 @@ impl HostSyntax for GoSyntax<'_> {
                 ));
                 let werr = self.fresh("__err");
                 out.push(format!(
-                    "{indent}\tif {werr} := st.World.DBQuery({table_snake:?}, {pred_var}, &{out_var}); {werr} != nil {{"
+                    "{indent}\tif {werr} := st.World.DBQuery({world_key:?}, {pred_var}, &{out_var}); {werr} != nil {{"
                 ));
                 out.push(format!("{indent}\t\treturn {}, {werr}", self.zero_return));
                 out.push(format!("{indent}\t}}"));
@@ -948,6 +974,7 @@ impl HostSyntax for GoSyntax<'_> {
                     self.db_engine,
                 );
                 let world_pred = self.world_predicate_expr(predicate);
+                let world_key = self.world_table_key(&table_snake);
                 let count = self.fresh("__count");
                 let mut out = vec![format!("{indent}var {count} int64")];
                 out.push(format!("{indent}if st.World != nil {{"));
@@ -956,7 +983,7 @@ impl HostSyntax for GoSyntax<'_> {
                     "{indent}\t{pred_var} := func(row world.Row) bool {{ return {world_pred} }}"
                 ));
                 out.push(format!(
-                    "{indent}\t{count} = st.World.DBCount({table_snake:?}, {pred_var})"
+                    "{indent}\t{count} = st.World.DBCount({world_key:?}, {pred_var})"
                 ));
                 out.push(format!("{indent}}} else {{"));
                 let row = self.fresh("__row");
@@ -983,6 +1010,7 @@ impl HostSyntax for GoSyntax<'_> {
                     self.db_engine,
                 );
                 let world_pred = self.world_predicate_expr(predicate);
+                let world_key = self.world_table_key(&table_snake);
                 // `World` has no bulk delete-by-predicate method
                 // (`CommitBatchChecked` takes explicit `(table, pk)`
                 // pairs, not a filter), so the world branch resolves
@@ -1001,14 +1029,14 @@ impl HostSyntax for GoSyntax<'_> {
                 ));
                 let ids = self.fresh("__ids");
                 out.push(format!(
-                    "{indent}\t{ids} := st.World.DBMatchingIDs({table_snake:?}, {pred_var})"
+                    "{indent}\t{ids} := st.World.DBMatchingIDs({world_key:?}, {pred_var})"
                 ));
                 let id = self.fresh("__id");
                 out.push(format!("{indent}\tfor _, {id} := range {ids} {{"));
                 let ok = self.fresh("__ok");
                 let werr = self.fresh("__err");
                 out.push(format!(
-                    "{indent}\t\t{ok}, {werr} := st.World.DBDeleteChecked({table_snake:?}, {id})"
+                    "{indent}\t\t{ok}, {werr} := st.World.DBDeleteChecked({world_key:?}, {id})"
                 ));
                 out.push(format!("{indent}\t\tif {werr} != nil {{"));
                 out.push(format!("{indent}\t\t\treturn {}, {werr}", self.zero_return));
@@ -1200,8 +1228,9 @@ impl HostSyntax for GoSyntax<'_> {
             ),
             self.db_engine,
         );
+        let world_key = self.world_table_key(&table_snake);
         format!(
-            "func() (*{record_name}, error) {{ if st.World != nil {{ var __wrow {record_name}; __ok, __werr := st.World.DBGet({table_snake:?}, {key}, &__wrow); if __werr != nil {{ return nil, __werr }}; if !__ok {{ return nil, nil }}; return &__wrow, nil }}; var __row {record_name}; if err := {handle}.QueryRowContext(ctx, {sql:?}, {key}).Scan({}); err != nil {{ if err == sql.ErrNoRows {{ return nil, nil }}; return nil, err }}; return &__row, nil }}()",
+            "func() (*{record_name}, error) {{ if st.World != nil {{ var __wrow {record_name}; __ok, __werr := st.World.DBGet({world_key:?}, {key}, &__wrow); if __werr != nil {{ return nil, __werr }}; if !__ok {{ return nil, nil }}; return &__wrow, nil }}; var __row {record_name}; if err := {handle}.QueryRowContext(ctx, {sql:?}, {key}).Scan({}); err != nil {{ if err == sql.ErrNoRows {{ return nil, nil }}; return nil, err }}; return &__row, nil }}()",
             self.scan_targets(&record, "__row")
         )
     }
@@ -1494,8 +1523,16 @@ pub struct LogicFileCtx {
 }
 
 /// Builds the render context for one typed handler node. `name` is the
-/// handler's declared name (`node.component.name()`).
-pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx {
+/// handler's declared name (`node.component.name()`). `service_name` is
+/// `Some(..)` in a multi-service system (mirrors `ciac-backend-rust`'s/
+/// `ciac-backend-ts`'s own `render` signature exactly), threaded into
+/// [`GoSyntax::world_table_key`].
+pub fn render(
+    ir: &NormalizedIr,
+    name: &str,
+    hir: &HandlerBody,
+    service_name: Option<&str>,
+) -> LogicFileCtx {
     let needs = lower::scan(ir, hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
@@ -1557,6 +1594,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
                 zero_return: go_zero(ir, &hir.return_ty),
                 tmp: std::cell::Cell::new(0),
                 branching_locals: branching.iter().cloned().collect(),
+                service_name: service_name.map(str::to_owned),
             };
             lower::lower_body_stmt(&syntax, ir, hir, "\t")
         }

@@ -1702,6 +1702,171 @@ push, in-place Shipped notes).
    This closes the TS half of M7 in full; Go's half (M7c/M7d)
    remains, tracked next.
 
+   **Shipped (v0.28 M7c) — Go's half of M7: the `simbridge` facade
+   package (a discovery beyond what Pillar 3 anticipated), the
+   `sim-shared` module, `world.go`'s call router, the `client.go`
+   world-guard, and `system-runner`'s own `go.mod`/`main.go`.**
+   Unlike TS's file-boundary friction (all solved by M7a's own
+   npm findings) or Rust's crate-boundary friction (solved cleanly
+   by M6b's vendored `sim-shared` crate alone), Go's own module
+   boundary turned out to need a *second*, independent fix once
+   actually attempted: Go's `internal/` package-visibility rule is
+   directory-based and scoped to the import-path prefix rooted at
+   `internal`'s own parent, and this scoping holds **at the module
+   level too** — a live `go build -mod=mod` against a hand-built
+   `system-runner` module reached only through a `go.mod` `replace`
+   directive produced `"use of internal package billing/internal/
+   config not allowed"` the moment it tried to import anything under
+   a service's own `internal/` tree, not just `internal/world` as
+   the plan's own composition matrix had assumed. `world.World`
+   itself was already solved the same way `sim-shared` solves it for
+   Rust — moving `world.go` out of any single service's `internal/`
+   tree into its own `sim-shared` module, imported identically by
+   every service and by `system-runner` — but every *other* internal
+   symbol `system-runner` needs (`Config`, `AppState`, `FromEnv`,
+   `New`, `NewSimulation`, `Router`, worker/job handler funcs and
+   their subject/queue-group/retry constants, typed payload structs)
+   still needed a per-service answer, since those types must stay
+   each service's own distinct types, not one shared type the way
+   `world.World` could be.
+
+   The fix: a new `simbridge.go.j2` template emitting a non-
+   `internal` `simbridge` package per service (`simbridge/
+   simbridge.go`, gated to multi-service emission only, unconditional
+   whenever `system-runner` exists since `Config`/`AppState`/`New`
+   always exist regardless of which capabilities a service declares)
+   whose entire content is bare re-exports of already-`internal`
+   symbols — Go type aliases (`type Config = config.Config`) and
+   function-value vars (`var FromEnv = config.FromEnv`) — mirroring
+   how a Rust crate's `pub use` or a TypeScript package's named
+   export already cross an equivalent boundary for free; Go's own
+   directory-based visibility needed an explicit facade package to
+   do the same job. `system_sim_runner.go.j2` imports one aliased
+   `simbridge` package per service (`{{ suffix }} "{{ svc.package }}/
+   simbridge"`) rather than four separate `internal/*` imports per
+   service, and every previously-`{{ suffix }}Workers.`/`{{ suffix
+   }}Schemas.`/`{{ suffix }}Config.`/`{{ suffix }}State.`/`{{ suffix
+   }}Routes.`-prefixed reference collapses to one `{{ suffix }}.`
+   prefix. One live bug the corpus caught before this shipped: two
+   workers in the `notifier` service (`Notify` and
+   `DeadLetterSink`) both consume `Video`-typed payloads, and the
+   per-worker Jinja loop originally emitted `type Video =
+   schemas.Video` twice — a `go vet` "Video redeclared in this
+   block" failure. Fixed with a `{%- set ns =
+   namespace(seen_payloads=[]) %}` loop tracking already-emitted
+   `worker.payload.class_name` values, only emitting the alias once
+   per distinct payload type.
+
+   `world.go.j2` gained the call router M2's design already named:
+   `type ApiHandler func(req any) (any, error)`, an `apiKey{service,
+   api}` map key, `const maxCallDepth = 64`, `apis
+   map[apiKey]ApiHandler` and `callDepth int` fields on `World`, and
+   `RegisterAPI`/`CallChecked` methods. Go's handler-invocation chain
+   is naturally synchronous — no async bridge was needed at all here,
+   unlike Rust's `block_on_ready` seam or even TypeScript's own
+   (trivial) `async`/`await` — `CallChecked` just unlocks `w.mu`
+   before invoking the handler, since the handler may itself call
+   back into `World` and the mutex is not reentrant. A
+   `NamespacedTableKey` free function (`if service == "" { return
+   table }; return service + "::" + table`) mirrors Rust's
+   `SimWorld::namespaced_table_key`/TS's `namespacedTableKey`,
+   used only by `system-runner`'s own `given.db` seeding at scenario-
+   load time (runtime service/table values); codegen-time call
+   sites still bake the equivalent key in as a literal via the
+   already-existing `GoSyntax::world_table_key`. `client.go.j2`
+   gained the same world-guard shape as Rust's/TS's own clients: a
+   `world *world.World` field plus, per api method, an `if
+   c.world != nil { ...c.world.CallChecked(...)... }` branch that
+   unwraps `result.(map[string]any)["data"]` from the real `{
+   "status":"accepted","data":<result>}` envelope `httpx.Accepted`
+   already builds, falling through to the real HTTP path when
+   `world` is nil (single-service, unchanged).
+
+   `system-runner`'s own `go.mod` needed one more empirically-found
+   correction: a first attempt hand-wrote a minimal `require` list
+   (just `sim-shared` plus per-service `replace` targets and a
+   conditional `robfig/cron/v3`), which failed under Go's default
+   `-mod=readonly` build mode with `"go: updates to go.mod needed"`
+   — `system-runner` transitively needs every third-party package
+   any service's own `simbridge` package pulls in (aws-sdk-s3,
+   redis, nats, jwt/validator deps, …), and `-mod=readonly` refuses
+   to resolve anything not already declared. `go build -mod=mod`
+   confirmed the auto-populated `// indirect` block was exactly the
+   same fixed, capability-independent set every service's own `go.
+   mod.j2` already declares unconditionally — so
+   `system_runner_go_mod()` was rewritten to actually **render**
+   `go.mod.j2` itself (with `c.package = "system-runner"`, `multi =
+   true`) rather than hand-duplicating a dependency list, appending
+   only the genuinely per-system `require <pkg> v0.0.0` / `replace
+   <pkg> => ../<dir>` lines as plain text afterward. `sim-shared`'s
+   own `go.mod` needed no such treatment — `world.go.j2` has zero
+   per-service template variables and imports only Go stdlib, so its
+   `SIM_SHARED_GO_MOD` constant is a fixed three-line module
+   declaration.
+
+   `system_sim_runner.go.j2` (the new, ~800-line multi-service
+   scenario-driving runner, mirroring TS's own `system_sim_runner.
+   ts.j2` but simplified) took one genuine, disclosed shortcut TS
+   couldn't: Go's `*http.ServeMux` is a plain non-generic concrete
+   type, unlike TS's per-app Fastify generic types (the friction
+   that forced M7a to inline every `app.inject()` call site rather
+   than share one helper), so Go's runner drives every `(service,
+   api)` pair through one shared `doInject(mux *http.ServeMux,
+   method, path string, body []byte, headers map[string]string)
+   (int, any, error)` function — no per-pair inlining needed. One
+   compile-time lesson the corpus caught: `drain`/`advance` were
+   first written as top-level functions taking `*world.World` and a
+   counts map, but `go build` reported `undefined: stTranscoder`
+   (etc.) — Go has no closures over top-level functions, so a
+   separate `func drain(...)` can't see a `st{{suffix}}` variable
+   declared inside `main()`. Fixed by converting both into local
+   closures declared inside `main()` right after the per-service
+   state-building loop, dropping their `world`/state parameters
+   entirely since closures capture the enclosing scope directly —
+   the same reason TS's own runner nests its equivalent two
+   functions inside its own `main()`-equivalent. A second, unrelated
+   compile error (`declared and not used: stProgressFeed`, for a
+   service with zero apis/workers/jobs of its own) was fixed with an
+   unconditional `_ = st{{ suffix }}` right after each service's
+   state construction.
+
+   Build-verified (not yet run through `ciac sim` end-to-end — that
+   CLI wiring is M7d's own remaining work, matching the M7a/M7b
+   split TS just went through) across the full corpus: `gofmt -l`
+   and `go vet ./...` came back clean under Go's *default*
+   `-mod=readonly` mode for every one of the five multi-service
+   corpus examples (`audited-crud`, `inventory-system`, `multi-
+   service-media`, `sim-three-service`, `traced-checkout`) — every
+   service directory, `sim-shared`, and `system-runner` itself, each
+   regenerated fresh into a clean scratch directory rather than
+   reusing a stale build cache. Single-service Go golden output was
+   spot-checked unaffected beyond the new call-router additions to
+   `world.go.j2` (present in every target, single- or multi-service,
+   since the router costs nothing when `RegisterAPI` is never
+   called). `cargo fmt -p ciac-backend-go -- --check` initially
+   flagged two spots (the `sim_needs_context` closure and the `client.
+   go.j2` render call site) needing rustfmt's own line-wrapping;
+   `cargo fmt -p ciac-backend-go` fixed both. `cargo clippy -p ciac-
+   backend-go --all-targets -- -D warnings` was clean on the first
+   run; `cargo test -p ciac-backend-go` passed 5/5 with no
+   regressions. Golden-snapshot regeneration (`INSTA_UPDATE=always
+   cargo test -p ciac-integration-tests --test golden
+   example_generated_project_snapshots`, 464.75s) updated 27 `golden__
+   gen__go__*.snap` files with zero cross-target contamination
+   (verified: no non-Go golden file touched) — 20 single-service Go
+   examples picked up only the call-router section, and the five
+   multi-service examples picked up the full new `simbridge/
+   simbridge.go`, `sim-shared/go.mod`, `sim-shared/world/world.go`,
+   `system-runner/go.mod`, `system-runner/go.sum`, `system-runner/
+   main.go` file set. Full `cargo test --workspace -q --no-fail-fast`
+   (skipping the one standing, pre-existing, already-disclosed
+   `backfill_cli` ruff-drift case every prior milestone's own note
+   also excludes) ran clean end to end, `EXIT_CODE:0`, zero `FAILED`
+   lines anywhere in the log. Go's half of M7 now has its
+   implementation and build-verification half done; the driver
+   wiring, `ciac sim`-CLI-driven live proof against all three system
+   scenarios, and M7 close-out remain, tracked next as M7d.
+
 8. **M8 — Java composition.** N isolated
    `AnnotationConfigApplicationContext`s in one JVM sharing the
    world bean; the classpath-assembly decision (aggregator POM

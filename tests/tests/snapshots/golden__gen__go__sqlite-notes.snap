@@ -2832,6 +2832,35 @@ func (a *fakeAuth) verify(token string, nowMs int64) (any, error) {
 	return entry.claims, nil
 }
 
+// -- Call router: 28UpdatePlan.md M7c -- routes a `call <Service>.<Api>`
+// step to a registered handler instead of real HTTP, the Go
+// counterpart to ciac-sim's world.rs `register_api`/`call_checked`
+// (28's M2) and TypeScript's own M7a `registerApi`/`callChecked`. Go's
+// handler chain is naturally synchronous (unlike Rust, which needs a
+// `block_on_ready` bridge because a registered handler there must stay
+// callable from sync code while production handlers are async), so a
+// registered handler here is just a plain function -- no bridge of any
+// kind is needed. --
+
+// ApiHandler is one registered api's logic, at the same JSON boundary
+// every other fake (fakeHTTPClient.post, most directly) already
+// crosses: this package has no knowledge of any particular `.ciac`
+// program's typed request/response shapes, so a handler is exactly the
+// bridge a world-guarded call-client method builds around the real
+// (fake-world-routed) handler logic.
+type ApiHandler func(req any) (any, error)
+
+type apiKey struct {
+	service string
+	api     string
+}
+
+// maxCallDepth is the routed-call recursion depth CallChecked refuses
+// past -- generous relative to any real `.ciac` call chain (`ciac-sema`'s
+// own cycle detection already refuses a call cycle at compile time), tight
+// enough to fail long before it would risk a real stack overflow.
+const maxCallDepth = 64
+
 // getOrCreate is the shared per-instance lazy-construction pattern
 // every peripheral fake's map (caches/objectStores/emails/searches/
 // httpClients) below uses -- Go generics' counterpart to TypeScript's
@@ -2866,6 +2895,11 @@ type World struct {
 	searches     map[string]*fakeSearch
 	httpClients  map[string]*fakeHTTPClient
 	auth         *fakeAuth
+
+	// 28UpdatePlan.md M7c: the call-router's own bookkeeping -- see
+	// RegisterAPI/CallChecked below.
+	apis      map[apiKey]ApiHandler
+	callDepth int
 
 	// 27UpdatePlan.md M7: the `transaction {}` leaf's own atomicity
 	// seam, the same ambient-batch-mode design TypeScript's own M6
@@ -2903,6 +2937,7 @@ func New(failureRules []FailureRule, tables []WorldTable) *World {
 		searches:     make(map[string]*fakeSearch),
 		httpClients:  make(map[string]*fakeHTTPClient),
 		auth:         newFakeAuth(),
+		apis:         make(map[apiKey]ApiHandler),
 		// Start-at-zero clock: sim_runner.go's own main() immediately
 		// syncs this to `scenario.start_at` before any TTL-bearing
 		// seed reads NowMs() -- mirroring Rust's/TypeScript's own
@@ -3458,6 +3493,77 @@ func (w *World) AuthVerify(token string, dest any) error {
 // that never matched a real occurrence.
 func (w *World) UnmatchedFailureRules() []string {
 	return w.failures.unmatchedRules()
+}
+
+// RegisterAPI registers handler as service's api -- the target
+// CallChecked resolves a routed call against. A system-runner (M7c+)
+// calls this once per api, in service declaration order, before any
+// scenario runs; re-registering the same (service, api) replaces the
+// earlier handler rather than erroring, matching how a runner would
+// simply rebuild the world (and re-register everything) between
+// scenario runs rather than asking this registry to detect staleness
+// itself.
+func (w *World) RegisterAPI(service, api string, handler ApiHandler) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.apis[apiKey{service: service, api: api}] = handler
+}
+
+// CallChecked routes a `call <Service>.<Api>` step -- inline and
+// synchronous on the caller's own logical call chain, exactly as
+// production's typed call client behaves, just against the registered
+// handler instead of real HTTP. Counts against the `call.request`
+// failure vocabulary the same way `db.commit`/`broker.publish` do; an
+// injected failure fires before the handler ever runs, and an
+// unregistered (calleeService, api) is a clear error rather than a
+// silent no-op -- the same "fail closed on a missing seam" discipline
+// fakeHTTPClient already uses for an unmatched fixture. The handler's
+// own return value/error passes through verbatim, matching production's
+// own "the callee's real response or real error, not a synthesized
+// one."
+func (w *World) CallChecked(caller, calleeService, api string, req any) (any, error) {
+	if w.shouldFail("call.request", api) {
+		return nil, errors.New("simulated call.request failure (injected by FailureEngine)")
+	}
+	w.mu.Lock()
+	handler, ok := w.apis[apiKey{service: calleeService, api: api}]
+	if !ok {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("no handler registered for %s.%s (called from %s)", calleeService, api, caller)
+	}
+	if w.callDepth >= maxCallDepth {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("routed call depth exceeded %d calling %s.%s from %s", maxCallDepth, calleeService, api, caller)
+	}
+	w.callDepth++
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.callDepth--
+		w.mu.Unlock()
+	}()
+	// Deliberately invoked outside w.mu: the handler may itself call
+	// back into World (a routed call, or a plain db/queue verb), and
+	// this mutex is not reentrant -- holding it across the call would
+	// deadlock the very first recursive or nested invocation.
+	return handler(req)
+}
+
+// NamespacedTableKey composes the per-service namespaced database key
+// every multi-service world-guarded db verb addresses through -- the Go
+// counterpart to ciac-sim's `SimWorld::namespaced_table_key` (28's M2)/
+// TypeScript's own `namespacedTableKey` (M7a). service is "" in
+// single-service mode, degenerating to the bare table name. A system-
+// runner's own `given.db` seeding (service/table only known at runtime,
+// from the scenario JSON) is the only caller that needs this at
+// runtime -- codegen-time world-guarded call sites bake the equivalent
+// key in as a literal (GoSyntax::world_table_key), not through this
+// function.
+func NamespacedTableKey(service, table string) string {
+	if service == "" {
+		return table
+	}
+	return service + "::" + table
 }
 ============================================================
 openapi.json

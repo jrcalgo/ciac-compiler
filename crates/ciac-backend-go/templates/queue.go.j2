@@ -35,7 +35,11 @@ import (
 	"{{ c.package }}/internal/observability"
 {%- endif %}
 
+{%- if multi %}
+	"sim-shared/world"
+{%- else %}
 	"{{ c.package }}/internal/world"
+{%- endif %}
 )
 
 {%- if c.queue_engine == "kafka" %}

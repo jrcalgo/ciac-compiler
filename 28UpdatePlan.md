@@ -1533,6 +1533,131 @@ push, in-place Shipped notes).
    (Pillar 3's per-target analysis) — if either surprises, it
    splits out with the deviation recorded, the standing rule.
 
+   **Shipped (v0.28 M7a) — TS half of M7: system-runner npm
+   package, real `file:`-dependency resolution verified live, no
+   shared Fastify dispatch helper (a deliberate deviation from the
+   design sketched at M5/M6, corrected after a live repro), and the
+   dependency-skew assertion.** Go's half (M7c/M7d) is separate,
+   tracked work; this note covers TS only.
+
+   Before writing `system_sim_runner.ts.j2`, the two open questions
+   Pillar 3 flagged for this target — whether `system-runner`
+   needs `fastify`/`pg`/etc. as its own direct dependencies, and
+   whether a `file:` dependency's own transitive dependencies get
+   hoisted into the depending package's `node_modules` — were
+   answered empirically, not assumed: a minimal three-package repro
+   (`sim-shared` + a mock service with `pg` + a `system-runner`
+   depending on both via `file:`) was built in the scratchpad and
+   run through real `npm install --package-lock-only`, then real
+   `npm ci`/`npm run build`/`node`. Confirmed: npm does **not**
+   hoist a `file:` dependency's own transitive dependencies into
+   the depender's `node_modules` (only a `node_modules/<name>`
+   symlink is created); Node's module resolution, when it follows
+   that symlink to the real target directory, searches *that*
+   directory's own already-`npm ci`'d `node_modules` for bare
+   specifiers reached from within it. This means every service
+   still needs its own independent `npm ci && npm run build` before
+   `system-runner`'s own build can run (matching the design already
+   sketched), but — the one real finding — `system-runner` itself
+   needs **no** direct dependency on `fastify`, `pg`, or any other
+   provider package: it never imports them directly, and Node
+   resolves each service's own transitive imports through that
+   service's own installed tree, not through `system-runner`'s.
+   `system-runner`'s own `package.json` (built as a small helper
+   function in `lib.rs`, mirroring `system_runner_cargo_toml`'s own
+   shape, using real `serde_json::json!` construction rather than
+   hand-formatted strings) declares exactly three things: `sim-
+   shared` and every service by `file:../<dir>`, and `croner`
+   (needed directly for the runner's own `dueInstants` helper,
+   since `advance` steps compute due job instants without going
+   through any service's own code). The `package-lock.json` was
+   likewise built from the real lockfile the scratchpad repro
+   produced (`node_modules/*` link entries for every local package,
+   ordinary registry entries only for `croner`/`typescript`/`@types/
+   node`/its `undici-types` transitive) rather than hand-guessed.
+
+   A design point sketched before implementation — a shared,
+   structurally-typed `dispatch()` helper so every `(service, api)`
+   pair's `app.inject()` call site could funnel through one
+   function, mirroring Rust's own `Router`-erasure trick — was
+   dropped once actually attempted: unlike `axum::Router::with_
+   state`, which erases every service's distinct state type into
+   one uniform `Router`, each service's own `buildApp()` return type
+   carries its *own* inferred Fastify generic parameters (e.g. from
+   `@fastify/otel`'s plugin registration when `tracing` is
+   declared), so a shared helper risked exactly the generic-variance
+   friction Pillar 3's composition matrix names as this target's
+   sharp edge. The template instead inlines the `app.inject()` call
+   per `(service, api)` pair — both in `request()`'s big
+   `if`/`else if` chain and in the up-front `world.registerApi`
+   loop — the same shape the single-service `sim_runner.ts.j2`
+   already uses for its one app, just repeated per pair via Jinja
+   loops. This sidesteps the friction entirely rather than fighting
+   it, at the cost of some duplicated inject-call boilerplate per
+   pair — judged the right trade for a target Pillar 3 already
+   priced as "expected cheapest," not worth a second design pass to
+   avoid.
+
+   One more consequence of the cross-package boundary needed
+   fixing: `tsconfig.build.json.j2` had `"declaration": false`
+   unconditionally, but `system-runner` needs to import types
+   (`AppState`, etc.) from each service's own compiled `dist/*.js`
+   output, which requires a co-located `.d.ts`. Gated `"declaration":
+   true` on `multi` only (verified live: with it on, every service's
+   own `npm run build` in the corpus's three multi-service examples
+   emits correct `.d.ts` alongside `.js`, and `system-runner`'s own
+   `tsc` resolves `import type { AppState } from "billing/dist/
+   state.js"` cleanly, including the transitively-referenced `pg`/
+   `drizzle-orm` types inside that `.d.ts`, resolved through
+   `billing`'s own already-installed `node_modules` reached via the
+   symlink); single-service golden output is untouched by the gate
+   (confirmed: no single-service `tsconfig.build.json` snapshot
+   changed).
+
+   The dependency-skew assertion Pillar 3 named for this target
+   (`assert_no_dependency_skew` in `lib.rs`) checks, for real,
+   against the actually-rendered `<dir>/package.json` of every
+   service in the system — not just assumed from reading the
+   template — that every one of them declares an identical
+   dependency/devDependency map (the only per-service variables in
+   `package.json.j2` are the `name` field and, uniformly here, the
+   `sim-shared` line), returning a `BackendError` naming the first
+   divergent service if a future template edit ever broke that
+   invariant. Runs unconditionally whenever `system-runner` is
+   emitted, before any of its own files are written.
+
+   Live-proofed against all three system scenarios exactly as M6
+   was: `sim-three-service`, `multi-service-media`, `inventory-
+   system`, each built through the *real* toolchain (`sim-shared`'s
+   `npm ci && npm run build`, then every service's own, then `system-
+   runner`'s own `npm ci && npm run build`) and run via `node dist/
+   sim_runner.js <scenario.json>`. All three passed with `error:
+   null`, every field byte-identical to Rust's own M6c system-runner
+   output on the same scenarios (worker/job-outcome key ordering
+   differs cosmetically — Rust's `BTreeMap` sorts alphabetically,
+   TS's plain object keeps insertion order — the same non-finding
+   M6 already disclosed, now confirmed to hold at N=3/N=5 service
+   scope too, not just single-service). Golden churn: the same five
+   multi-service TS examples M6 touched on the Rust side (`audited-
+   crud`, `inventory-system`, `multi-service-media`, `sim-three-
+   service`, `traced-checkout`) picked up six new `system-runner/*`
+   files each (`package.json`, `package-lock.json`, `tsconfig.json`,
+   `tsconfig.build.json`, `.gitignore`, `src/sim_runner.ts`) plus the
+   per-service `"declaration": true` addition to `tsconfig.build.
+   json`; every single-service TS golden in the corpus stayed
+   byte-identical. `cargo fmt --check`, `cargo clippy --workspace
+   --all-targets` (zero warnings), and `cargo test --workspace
+   --no-fail-fast` all ran clean, the latter's only failure being
+   the same standing, pre-existing `backfill_cli` ruff-version-drift
+   case M6's own note disclosed (confirmed unrelated by reproducing
+   it identically against a clean stash of this milestone's changes).
+
+   The live-proof above was run by hand through the raw toolchain
+   (`npm ci`/`npm run build`/`node`), not through `ciac sim` itself
+   — `commands.rs`'s own `sim_drive_typescript` `_single`/`_multi`
+   split (mirroring `sim_drive_rust`/`sim_drive_python`) is the
+   remaining TS work this milestone still owes, tracked next.
+
 8. **M8 — Java composition.** N isolated
    `AnnotationConfigApplicationContext`s in one JVM sharing the
    world bean; the classpath-assembly decision (aggregator POM

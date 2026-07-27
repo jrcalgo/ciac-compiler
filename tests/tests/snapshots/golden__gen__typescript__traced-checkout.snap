@@ -6800,7 +6800,8 @@ checkout/tsconfig.build.json
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
-    "rootDir": "src"
+    "rootDir": "src",
+    "declaration": true
   },
   "include": ["src"]
 }
@@ -12883,7 +12884,8 @@ payments/tsconfig.build.json
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
-    "rootDir": "src"
+    "rootDir": "src",
+    "declaration": true
   },
   "include": ["src"]
 }
@@ -13955,6 +13957,849 @@ sim-shared/tsconfig.build.json
 }
 ============================================================
 sim-shared/tsconfig.json
+============================================================
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "sourceMap": false,
+    "noEmit": true
+  },
+  "include": ["src"]
+}
+============================================================
+system-runner/.gitignore
+============================================================
+/node_modules
+/dist
+============================================================
+system-runner/package-lock.json
+============================================================
+{
+  "lockfileVersion": 3,
+  "name": "system-runner",
+  "packages": {
+    "": {
+      "dependencies": {
+        "checkout": "file:../checkout",
+        "croner": "10.0.1",
+        "payments": "file:../payments",
+        "sim-shared": "file:../sim-shared"
+      },
+      "devDependencies": {
+        "@types/node": "22.20.1",
+        "typescript": "5.9.3"
+      },
+      "name": "system-runner",
+      "version": "0.1.0"
+    },
+    "../checkout": {
+      "dependencies": {
+        "@aws-sdk/client-s3": "3.1090.0",
+        "@fastify/otel": "0.20.1",
+        "@fastify/websocket": "11.3.0",
+        "@grpc/grpc-js": "1.14.4",
+        "@nats-io/transport-node": "3.4.0",
+        "@opensearch-project/opensearch": "3.6.0",
+        "@opentelemetry/api": "1.9.1",
+        "@opentelemetry/exporter-trace-otlp-grpc": "0.220.0",
+        "@opentelemetry/instrumentation": "0.220.0",
+        "@opentelemetry/instrumentation-http": "0.220.0",
+        "@opentelemetry/instrumentation-pg": "0.72.0",
+        "@opentelemetry/instrumentation-undici": "0.30.0",
+        "@opentelemetry/resources": "2.9.0",
+        "@opentelemetry/sdk-trace-base": "2.9.0",
+        "@opentelemetry/sdk-trace-node": "2.9.0",
+        "@opentelemetry/semantic-conventions": "1.43.0",
+        "better-sqlite3": "12.11.1",
+        "croner": "10.0.1",
+        "drizzle-orm": "0.45.2",
+        "fastify": "5.10.0",
+        "ioredis": "5.11.1",
+        "jose": "6.2.3",
+        "kafkajs": "2.2.4",
+        "mysql2": "3.23.0",
+        "nodemailer": "9.0.3",
+        "pg": "8.22.0",
+        "pino": "10.3.1",
+        "prom-client": "15.1.3",
+        "sim-shared": "file:../sim-shared",
+        "zod": "3.25.76"
+      },
+      "devDependencies": {
+        "@eslint/js": "10.0.1",
+        "@types/better-sqlite3": "7.6.13",
+        "@types/node": "22.20.1",
+        "@types/nodemailer": "8.0.1",
+        "@types/pg": "8.20.0",
+        "eslint": "10.7.0",
+        "typescript": "5.9.3",
+        "typescript-eslint": "8.64.0",
+        "vitest": "4.1.10"
+      },
+      "version": "0.1.0"
+    },
+    "../payments": {
+      "dependencies": {
+        "@aws-sdk/client-s3": "3.1090.0",
+        "@fastify/otel": "0.20.1",
+        "@fastify/websocket": "11.3.0",
+        "@grpc/grpc-js": "1.14.4",
+        "@nats-io/transport-node": "3.4.0",
+        "@opensearch-project/opensearch": "3.6.0",
+        "@opentelemetry/api": "1.9.1",
+        "@opentelemetry/exporter-trace-otlp-grpc": "0.220.0",
+        "@opentelemetry/instrumentation": "0.220.0",
+        "@opentelemetry/instrumentation-http": "0.220.0",
+        "@opentelemetry/instrumentation-pg": "0.72.0",
+        "@opentelemetry/instrumentation-undici": "0.30.0",
+        "@opentelemetry/resources": "2.9.0",
+        "@opentelemetry/sdk-trace-base": "2.9.0",
+        "@opentelemetry/sdk-trace-node": "2.9.0",
+        "@opentelemetry/semantic-conventions": "1.43.0",
+        "better-sqlite3": "12.11.1",
+        "croner": "10.0.1",
+        "drizzle-orm": "0.45.2",
+        "fastify": "5.10.0",
+        "ioredis": "5.11.1",
+        "jose": "6.2.3",
+        "kafkajs": "2.2.4",
+        "mysql2": "3.23.0",
+        "nodemailer": "9.0.3",
+        "pg": "8.22.0",
+        "pino": "10.3.1",
+        "prom-client": "15.1.3",
+        "sim-shared": "file:../sim-shared",
+        "zod": "3.25.76"
+      },
+      "devDependencies": {
+        "@eslint/js": "10.0.1",
+        "@types/better-sqlite3": "7.6.13",
+        "@types/node": "22.20.1",
+        "@types/nodemailer": "8.0.1",
+        "@types/pg": "8.20.0",
+        "eslint": "10.7.0",
+        "typescript": "5.9.3",
+        "typescript-eslint": "8.64.0",
+        "vitest": "4.1.10"
+      },
+      "version": "0.1.0"
+    },
+    "../sim-shared": {
+      "devDependencies": {
+        "@types/node": "22.20.1",
+        "typescript": "5.9.3"
+      },
+      "version": "0.1.0"
+    },
+    "node_modules/@types/node": {
+      "dependencies": {
+        "undici-types": "~6.21.0"
+      },
+      "dev": true,
+      "integrity": "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==",
+      "license": "MIT",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
+      "version": "22.20.1"
+    },
+    "node_modules/checkout": {
+      "link": true,
+      "resolved": "../checkout"
+    },
+    "node_modules/croner": {
+      "engines": {
+        "node": ">=18.0"
+      },
+      "funding": [
+        {
+          "type": "other",
+          "url": "https://paypal.me/hexagonpp"
+        },
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/hexagon"
+        }
+      ],
+      "integrity": "sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g==",
+      "license": "MIT",
+      "resolved": "https://registry.npmjs.org/croner/-/croner-10.0.1.tgz",
+      "version": "10.0.1"
+    },
+    "node_modules/payments": {
+      "link": true,
+      "resolved": "../payments"
+    },
+    "node_modules/sim-shared": {
+      "link": true,
+      "resolved": "../sim-shared"
+    },
+    "node_modules/typescript": {
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "dev": true,
+      "engines": {
+        "node": ">=14.17"
+      },
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "license": "Apache-2.0",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "version": "5.9.3"
+    },
+    "node_modules/undici-types": {
+      "dev": true,
+      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+      "license": "MIT",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "version": "6.21.0"
+    }
+  },
+  "requires": true,
+  "version": "0.1.0"
+}
+============================================================
+system-runner/package.json
+============================================================
+{
+  "dependencies": {
+    "checkout": "file:../checkout",
+    "croner": "10.0.1",
+    "payments": "file:../payments",
+    "sim-shared": "file:../sim-shared"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  },
+  "name": "system-runner",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/sim_runner.js"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}
+============================================================
+system-runner/src/sim_runner.ts
+============================================================
+// Multi-service scenario-driving simulation runner. Generated by CIaC
+// (28UpdatePlan.md M7a) -- the `system-runner` package's own
+// `src/sim_runner.ts`, one per multi-service system, generalizing
+// `sim_runner.ts.j2`'s single-service interpreter across every service
+// this system declares.
+//
+// Depends on `sim-shared` and every service's own npm package (all by
+// `file:../<dir>` path, resolved through symlinks in `node_modules` --
+// verified live: Node's module resolution follows a `file:` link to its
+// real target directory and searches *that* directory's own
+// `node_modules` for bare-specifier imports, so each service must be
+// built (`npm ci && npm run build`) on its own before this package's own
+// `npm ci && npm run build` can type-check or run) and imports each
+// service's own compiled `dist/*.js` via deep bare-specifier paths (no
+// `exports` map restricts this since none is declared in `package.json.
+// j2`). One shared `sim-shared`'s own `SimWorld` (the same nominal class
+// every service's own `state.ts` re-exports the type of, per M7a's
+// `sim-shared` npm package) is constructed once and threaded into every
+// service's own `createSimulationState`.
+//
+// Unlike Rust's system-runner (which needs `block_on_ready`, a
+// synchronous bridge, because `world.register_api`'s handler type there
+// must stay callable from a synchronous context), `SimWorld.registerApi`
+// here takes a plain `(req: unknown) => Promise<unknown>` -- JS's
+// single-threaded async model means a registered handler can simply be
+// `async` and `callChecked` can `await` it directly (`world.ts.j2`'s own
+// doc comment on `registerApi`/`callChecked`).
+//
+// Deliberately narrow, matching every other generated runner's own
+// disclosed scope: `publish` steps are not wired; `drain`/`expect.
+// quiescence` see one global undelivered-message buffer, not
+// independent per-`(subject, group)` cursors across services. Every
+// per-service Fastify app is built once (via that service's own
+// `buildApp`) and reused for both direct `request` steps and routed
+// `call <Service>.<Api>` steps -- there is no shared generic `dispatch`
+// helper (considered, then dropped: each service's `buildApp` return
+// type carries its own inferred Fastify generic parameters, e.g. from
+// `@fastify/otel` when `tracing` is declared, so unifying them behind
+// one structurally-typed helper risks exactly the kind of generic-
+// variance friction this milestone's own composition matrix flags as
+// TypeScript's "sharp edge" -- inlining the `inject` call per (service,
+// api) pair, exactly like the single-service runner's own shape,
+// sidesteps it entirely rather than fighting it). Any scenario step
+// this runner cannot honor is a hard error, never a silently-skipped
+// no-op.
+
+import { readFileSync } from "node:fs";
+import { SimWorld, namespacedTableKey, type FailureRule, type GivenHttpResponse, type WorldTable } from "sim-shared";
+import { buildApp as buildAppPayments } from "payments/dist/main.js";
+import { loadConfig as loadConfigPayments } from "payments/dist/config.js";
+import {
+  createState as createStatePayments,
+  type AppState as AppStatePayments,
+} from "payments/dist/state.js";
+import { buildApp as buildAppCheckout } from "checkout/dist/main.js";
+import { loadConfig as loadConfigCheckout } from "checkout/dist/config.js";
+import {
+  createState as createStateCheckout,
+  createSimulationState as createSimulationStateCheckout,
+  type AppState as AppStateCheckout,
+} from "checkout/dist/state.js";
+import * as CheckoutShipWorker from "checkout/dist/workers/ship.js";
+
+// 28UpdatePlan.md M7a: schema facts computed once at codegen time,
+// table names namespaced `"{service}::{table}"` exactly like `lower.rs`'s
+// own `world_table_key` (and `ciac-backend-rust`'s M6c system-runner), so
+// reference/unique/cascade checks can never drift or collide across two
+// same-named tables in different services.
+const WORLD_TABLES: WorldTable[] = [
+];
+
+// -- Scenario JSON shape (structural restatement of `ciac_sim::scenario`) --
+
+interface Principal {
+  sub: string;
+  scopes?: string[];
+}
+
+interface RequestStep {
+  service: string;
+  api: string;
+  json?: unknown;
+  as?: Principal;
+  save_as?: string;
+}
+
+interface AdvanceStep {
+  by: string;
+}
+
+type ExpectStep =
+  | { response: { of?: string; status?: number; json?: unknown } }
+  | { row: { service: string; table: string; where: Record<string, unknown>; present: boolean } }
+  | { worker_attempts: { worker: string; count: number } }
+  | { job_runs: { job: string; count: number } }
+  | { quiescence: Record<string, never> }
+  | { email: { to?: string; subject_contains?: string; count: number } }
+  | { cache: { instance: string; key: string; present: boolean; value?: unknown } }
+  | { object: { store: string; key: string; present: boolean } }
+  | { search_hits: { instance: string; query: string; count: number } }
+  | { http_calls: { instance: string; count: number } };
+
+type ScenarioStep =
+  | { request: RequestStep }
+  | { publish: { stream: string; json?: unknown } }
+  | { advance: AdvanceStep }
+  | { drain: Record<string, never> }
+  | { expect: ExpectStep };
+
+interface GivenTableRows {
+  service: string;
+  table: string;
+  rows: Record<string, unknown>[];
+}
+
+interface GivenCacheEntry {
+  instance: string;
+  key: string;
+  value: unknown;
+  ttl?: string;
+}
+
+interface GivenStoreObject {
+  instance: string;
+  key: string;
+  value_base64: string;
+}
+
+interface GivenSearchDoc {
+  instance: string;
+  id: string;
+  doc: unknown;
+}
+
+interface GivenHttpFixture {
+  instance: string;
+  responses: GivenHttpResponse[];
+}
+
+interface RawFailureRule {
+  at: { effect: string; subject: string | null; occurrence: number; phase: string };
+  action: { kind: string };
+}
+
+interface Given {
+  db?: GivenTableRows[];
+  cache?: GivenCacheEntry[];
+  store?: GivenStoreObject[];
+  search?: GivenSearchDoc[];
+  external_http?: GivenHttpFixture[];
+  failures?: RawFailureRule[];
+}
+
+interface Scenario {
+  simulation_version: number;
+  name: string;
+  start_at: string;
+  given: Given;
+  steps: ScenarioStep[];
+}
+
+interface SimScenarioOutcome {
+  scenario: string;
+  passed: boolean;
+  error: string | null;
+  worker_attempts: Record<string, number>;
+  job_runs: Record<string, number>;
+}
+
+function parseScenario(raw: unknown): Scenario {
+  const obj = raw as Record<string, unknown>;
+  if (obj.simulation_version !== 1) {
+    throw new Error(
+      `scenario simulation_version ${JSON.stringify(obj.simulation_version)} is not supported (expected 1)`,
+    );
+  }
+  const steps = obj.steps as ScenarioStep[] | undefined;
+  if (!steps || steps.length === 0) {
+    throw new Error("scenario has no steps");
+  }
+  return {
+    simulation_version: 1,
+    name: obj.name as string,
+    start_at: obj.start_at as string,
+    given: (obj.given as Given | undefined) ?? {},
+    steps,
+  };
+}
+
+/** Only the `error` action / `after` phase is implemented -- the same
+ * disclosed subset every other generated runner's own `FailureEngine`
+ * integration carries. Refused up front rather than silently ignored if
+ * a scenario asks for anything else. */
+function toFailureRules(raw: RawFailureRule[]): FailureRule[] {
+  return raw.map((r) => {
+    if (r.action.kind !== "error") {
+      throw new Error(
+        `failure rule for effect ${JSON.stringify(r.at.effect)} uses action ${JSON.stringify(r.action.kind)}, which this system-runner's FailureEngine integration does not support yet (only \`error\` is implemented)`,
+      );
+    }
+    if (r.at.phase !== "after") {
+      throw new Error(
+        `failure rule for effect ${JSON.stringify(r.at.effect)} uses phase ${JSON.stringify(r.at.phase)}, which this system-runner's FailureEngine integration does not support yet (only \`after\` is implemented)`,
+      );
+    }
+    return { effect: r.at.effect, subject: r.at.subject ?? null, occurrence: r.at.occurrence };
+  });
+}
+
+/** Parses `advance.by` strings (`"24h"`, `"7d"`, `"30m"`, ...) --
+ * matches `sim/pyrunner/cron.py`'s `parse_duration_ms` and every other
+ * generated runner's own `parseDurationMs`/`parse_duration_ms` exactly. */
+function parseDurationMs(text: string): number {
+  const match = /^(\d+)(ms|s|m|h|d)$/.exec(text);
+  if (!match) {
+    throw new Error(`unrecognized duration: ${JSON.stringify(text)}`);
+  }
+  const value = Number(match[1]);
+  const unitMs: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+  return value * unitMs[match[2]];
+}
+
+/** Canonical (key-sorted) JSON string, so `expect.response.json`
+ * compares by value, not by the saved response's own key order. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function main(): Promise<void> {
+  const scenarioPath = process.argv[2];
+  if (!scenarioPath) {
+    throw new Error("usage: sim_runner <scenario.json>");
+  }
+  const raw: unknown = JSON.parse(readFileSync(scenarioPath, "utf8"));
+  const scenario = parseScenario(raw);
+
+  const failureRules = toFailureRules(scenario.given.failures ?? []);
+  const world = new SimWorld(failureRules, WORLD_TABLES);
+
+  const startMs = new Date(scenario.start_at).getTime();
+  if (Number.isNaN(startMs)) {
+    throw new Error(`scenario start_at ${JSON.stringify(scenario.start_at)}: not a valid date`);
+  }
+  world.advanceClockTo(startMs);
+  let nowMs = startMs;
+
+  for (const seed of scenario.given.db ?? []) {
+    const key = namespacedTableKey(seed.service, seed.table);
+    for (const row of seed.rows) {
+      world.db.insert(key, row);
+    }
+  }
+  // Cache/store/search/external_http instances are not namespaced by
+  // service (matching `ciac-backend-rust`'s own M6c system-runner
+  // exactly): unlike a database table's physical name, which several
+  // services may legitimately share, an instance name is assumed
+  // distinct across the whole system already.
+  for (const entry of scenario.given.cache ?? []) {
+    const ttlMs = entry.ttl !== undefined ? parseDurationMs(entry.ttl) : null;
+    world.cacheSet(entry.instance, entry.key, JSON.stringify(entry.value), ttlMs);
+  }
+  for (const obj of scenario.given.store ?? []) {
+    world.objectPut(obj.instance, obj.key, Buffer.from(obj.value_base64, "base64"));
+  }
+  for (const doc of scenario.given.search ?? []) {
+    world.searchIndex(doc.instance, doc.id, doc.doc);
+  }
+  for (const fixture of scenario.given.external_http ?? []) {
+    world.seedHttpFixtures(fixture.instance, fixture.responses);
+  }
+
+  // Constructs every service's own state/app *before* any scenario step
+  // runs, and registers every api of every service on the shared
+  // world's call router, in declaration order -- an api reachable only
+  // via a routed `call <Service>.<Api>` from another service (never the
+  // target of a scenario `request` step in its own right) still needs
+  // an entry here or that call has no handler to route to (mirrors
+  // `multi_driver.py`'s and the Rust system-runner's own api-
+  // registration loop).
+  const configPayments = loadConfigPayments();
+  const statePayments: AppStatePayments = createStatePayments(configPayments);
+  // `{ logger: false }`: pino's request-completion logs share stdout
+  // with this runner's own one-line JSON protocol (see `main.ts`'s own
+  // doc comment on this, and the single-service runner's identical
+  // choice).
+  const appPayments = buildAppPayments(statePayments, { logger: false });
+  world.registerApi("Payments", "Charge", async (req: unknown) => {
+    const response = await appPayments.inject({
+      method: "POST",
+      url: "/charge",
+      headers: { "content-type": "application/json" },
+      payload: req as object,
+    });
+    let json: unknown = null;
+    if (response.body.length > 0) {
+      try {
+        json = response.json();
+      } catch {
+        json = response.body;
+      }
+    }
+    if (response.statusCode >= 400) {
+      throw new Error(
+        `routed call to Payments.Charge failed with status ${response.statusCode}: ${JSON.stringify(json)}`,
+      );
+    }
+    return json;
+  });
+  const configCheckout = loadConfigCheckout();
+  const stateCheckout: AppStateCheckout = createSimulationStateCheckout(configCheckout, world);
+  // `{ logger: false }`: pino's request-completion logs share stdout
+  // with this runner's own one-line JSON protocol (see `main.ts`'s own
+  // doc comment on this, and the single-service runner's identical
+  // choice).
+  const appCheckout = buildAppCheckout(stateCheckout, { logger: false });
+  world.registerApi("Checkout", "Submit", async (req: unknown) => {
+    const response = await appCheckout.inject({
+      method: "POST",
+      url: "/submit",
+      headers: { "content-type": "application/json" },
+      payload: req as object,
+    });
+    let json: unknown = null;
+    if (response.body.length > 0) {
+      try {
+        json = response.json();
+      } catch {
+        json = response.body;
+      }
+    }
+    if (response.statusCode >= 400) {
+      throw new Error(
+        `routed call to Checkout.Submit failed with status ${response.statusCode}: ${JSON.stringify(json)}`,
+      );
+    }
+    return json;
+  });
+
+  const saved = new Map<string, { status: number; json: unknown }>();
+  const workerAttempts: Record<string, number> = {};
+  const jobRuns: Record<string, number> = {};
+
+  /** A `request` step never carries a scenario-level `as` principal for
+   * a routed `call` (matching production: the real HTTP call a `call
+   * <Service>.<Api>` step issues carries no caller identity either) --
+   * but it does for a direct `request` step, synthesized here exactly
+   * like every other generated runner's own `sim:<sub>:<scopes>` bearer
+   * token. */
+  async function request(spec: RequestStep): Promise<void> {
+    let status: number;
+    let json: unknown;
+    const headers: Record<string, string> = {};
+    if (spec.as) {
+      const scopes = spec.as.scopes ?? [];
+      const token = `sim:${spec.as.sub}:${scopes.join(",")}`;
+      world.authIssue(token, { sub: spec.as.sub, scope: scopes.join(" ") }, null);
+      headers.authorization = `Bearer ${token}`;
+    }
+    if (spec.service === "Payments" && spec.api === "Charge") {
+      const response = await appPayments.inject({
+        method: "POST",
+        url: "/charge",
+        headers,
+        payload: spec.json === undefined ? undefined : (spec.json as object),
+      });
+      status = response.statusCode;
+      if (response.body.length > 0) {
+        try {
+          json = response.json();
+        } catch {
+          json = response.body;
+        }
+      } else {
+        json = null;
+      }
+    }
+    else if (spec.service === "Checkout" && spec.api === "Submit") {
+      const response = await appCheckout.inject({
+        method: "POST",
+        url: "/submit",
+        headers,
+        payload: spec.json === undefined ? undefined : (spec.json as object),
+      });
+      status = response.statusCode;
+      if (response.body.length > 0) {
+        try {
+          json = response.json();
+        } catch {
+          json = response.body;
+        }
+      } else {
+        json = null;
+      }
+    }
+    else {
+      throw new Error(`sim_runner: no api registered for ${spec.service}.${spec.api}`);
+    }
+    if (spec.save_as) {
+      saved.set(spec.save_as, { status, json });
+    }
+  }
+
+  /**
+   * One pass across every service's own workers, same per-`(subject,
+   * group)` cursor semantics as the single-service runner's own `drain`
+   * (see its doc comment) -- a subject no registered worker (in *any*
+   * service) drains is refused, not left to sit undelivered forever.
+   */
+  async function drain(): Promise<void> {
+    for (const raw of world.broker.drain(CheckoutShipWorker.SUBJECT, CheckoutShipWorker.QUEUE_GROUP)) {
+      const payload: unknown = JSON.parse(raw.toString("utf8"));
+      let attempts = 0;
+      for (let attempt = 0; attempt <= CheckoutShipWorker.MAX_RETRIES; attempt++) {
+        attempts++;
+        try {
+          await CheckoutShipWorker.handleMessageOnce(stateCheckout, payload);
+          break;
+        } catch (err) {
+          if (attempt >= CheckoutShipWorker.MAX_RETRIES) {
+            console.error(`sim_runner: Checkout.Ship exhausted retries: ${String(err)}`);
+          }
+        }
+      }
+      workerAttempts["Ship"] = (workerAttempts["Ship"] ?? 0) + attempts;
+    }
+    for (const [subject] of world.queue.takeAll()) {
+      if (subject === CheckoutShipWorker.SUBJECT) {
+        // Already drained via `world.broker` above.
+      }
+      else {
+        throw new Error(
+          `sim_runner: no worker registered to consume subject ${JSON.stringify(subject)} (disclosed scope)`,
+        );
+      }
+    }
+  }
+
+  async function advance(fromMs: number, toMs: number): Promise<void> {
+    world.advanceClockTo(toMs);
+    void fromMs;
+  }
+
+  function expect(spec: ExpectStep): void {
+    if ("response" in spec) {
+      const { of, status, json } = spec.response;
+      if (!of) {
+        throw new Error('expect.response requires "of"');
+      }
+      const got = saved.get(of);
+      if (!got) {
+        throw new Error(`expect.response.of references unknown save_as ${JSON.stringify(of)}`);
+      }
+      if (status !== undefined && got.status !== status) {
+        throw new Error(
+          `expect.response.of=${JSON.stringify(of)}: expected status ${status}, got ${got.status}`,
+        );
+      }
+      if (json !== undefined && canonicalJson(got.json) !== canonicalJson(json)) {
+        throw new Error(
+          `expect.response.of=${JSON.stringify(of)}: expected json ${JSON.stringify(json)}, got ${JSON.stringify(got.json)}`,
+        );
+      }
+    } else if ("row" in spec) {
+      const { service, table, where, present } = spec.row;
+      const key = namespacedTableKey(service, table);
+      const found = world.db.findWhere(key, where).length > 0;
+      if (found !== present) {
+        throw new Error(
+          `expect.row: service=${JSON.stringify(service)} table=${JSON.stringify(table)} where=${JSON.stringify(where)} present=${present}, found=${found}`,
+        );
+      }
+    } else if ("worker_attempts" in spec) {
+      const { worker, count } = spec.worker_attempts;
+      const actual = workerAttempts[worker] ?? 0;
+      if (actual !== count) {
+        throw new Error(`expect.worker_attempts: worker=${JSON.stringify(worker)} expected ${count}, got ${actual}`);
+      }
+    } else if ("job_runs" in spec) {
+      const { job, count } = spec.job_runs;
+      const actual = jobRuns[job] ?? 0;
+      if (actual !== count) {
+        throw new Error(`expect.job_runs: job=${JSON.stringify(job)} expected ${count}, got ${actual}`);
+      }
+    } else if ("quiescence" in spec) {
+      if (!world.queue.isEmpty()) {
+        throw new Error("expect.quiescence: undelivered message(s) remain in the simulated broker");
+      }
+    } else if ("email" in spec) {
+      const { to, subject_contains, count } = spec.email;
+      const actual = world.emailSentCountAll(to ?? null, subject_contains ?? null);
+      if (actual !== count) {
+        throw new Error(
+          `expect.email: to=${JSON.stringify(to)} subject_contains=${JSON.stringify(subject_contains)} expected ${count}, got ${actual}`,
+        );
+      }
+    } else if ("cache" in spec) {
+      const { instance, key, present, value } = spec.cache;
+      const cached = world.cacheGet(instance, key);
+      const found = cached !== null;
+      if (found !== present) {
+        throw new Error(
+          `expect.cache: instance=${JSON.stringify(instance)} key=${JSON.stringify(key)} expected present=${present}, found present=${found}`,
+        );
+      }
+      if (value !== undefined) {
+        const actual = cached === null ? null : JSON.parse(cached);
+        if (canonicalJson(actual) !== canonicalJson(value)) {
+          throw new Error(
+            `expect.cache: instance=${JSON.stringify(instance)} key=${JSON.stringify(key)} expected value=${JSON.stringify(value)}, got ${JSON.stringify(actual)}`,
+          );
+        }
+      }
+    } else if ("object" in spec) {
+      const { store, key, present } = spec.object;
+      const found = world.objectExists(store, key);
+      if (found !== present) {
+        throw new Error(
+          `expect.object: store=${JSON.stringify(store)} key=${JSON.stringify(key)} expected present=${present}, found present=${found}`,
+        );
+      }
+    } else if ("search_hits" in spec) {
+      const { instance, query, count } = spec.search_hits;
+      const actual = world.searchQuery(instance, query).length;
+      if (actual !== count) {
+        throw new Error(
+          `expect.search_hits: instance=${JSON.stringify(instance)} query=${JSON.stringify(query)} expected ${count}, got ${actual}`,
+        );
+      }
+    } else if ("http_calls" in spec) {
+      const { instance, count } = spec.http_calls;
+      const actual = world.httpRequestCount(instance);
+      if (actual !== count) {
+        throw new Error(
+          `expect.http_calls: instance=${JSON.stringify(instance)} expected ${count}, got ${actual}`,
+        );
+      }
+    } else {
+      throw new Error(`sim_runner: unrecognized expect step ${JSON.stringify(spec)}`);
+    }
+  }
+
+  let passed = true;
+  let error: string | null = null;
+  try {
+    for (const step of scenario.steps) {
+      if ("request" in step) {
+        await request(step.request);
+      } else if ("publish" in step) {
+        throw new Error("sim_runner does not support `publish` steps (disclosed scope)");
+      } else if ("advance" in step) {
+        const deltaMs = parseDurationMs(step.advance.by);
+        const toMs = nowMs + deltaMs;
+        await advance(nowMs, toMs);
+        nowMs = toMs;
+      } else if ("drain" in step) {
+        await drain();
+      } else if ("expect" in step) {
+        expect(step.expect);
+      } else {
+        throw new Error(`sim_runner: unrecognized step ${JSON.stringify(step)}`);
+      }
+    }
+    const unmatched = world.unmatchedFailureRules();
+    if (unmatched.length > 0) {
+      throw new Error(
+        `${unmatched.length} failure rule(s) declared in \`given.failures\` never matched a real occurrence: ${JSON.stringify(unmatched)}`,
+      );
+    }
+  } catch (err) {
+    passed = false;
+    error = err instanceof Error ? err.message : String(err);
+  }
+
+  const outcome: SimScenarioOutcome = {
+    scenario: scenario.name,
+    passed,
+    error,
+    worker_attempts: workerAttempts,
+    job_runs: jobRuns,
+  };
+  console.log(JSON.stringify(outcome));
+}
+
+main().catch((err: unknown) => {
+  console.error(err);
+  process.exit(1);
+});
+============================================================
+system-runner/tsconfig.build.json
+============================================================
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}
+============================================================
+system-runner/tsconfig.json
 ============================================================
 {
   "compilerOptions": {

@@ -357,6 +357,298 @@ const SIM_SHARED_TSCONFIG_BUILD_JSON: &str = r#"{
 
 const SIM_SHARED_GITIGNORE: &str = "/node_modules\n/dist\n";
 
+/// The `system-runner` npm package's own fixed `tsconfig.json`/
+/// `tsconfig.build.json`/`.gitignore` (28UpdatePlan.md M7a) -- identical
+/// in shape to `sim-shared`'s own (see that const's doc comment); no
+/// `declaration` output is needed here since nothing depends on
+/// `system-runner`'s own types.
+const SYSTEM_RUNNER_TSCONFIG_JSON: &str = SIM_SHARED_TSCONFIG_JSON;
+const SYSTEM_RUNNER_TSCONFIG_BUILD_JSON: &str = SIM_SHARED_TSCONFIG_BUILD_JSON;
+const SYSTEM_RUNNER_GITIGNORE: &str = SIM_SHARED_GITIGNORE;
+
+/// The `system-runner` package's own `package.json` (28UpdatePlan.md
+/// M7a): a plain dependency list on `sim-shared` and every service
+/// package by name, plus `croner` (the system-runner's own `dueInstants`
+/// helper needs it directly, same as every generated service). Verified
+/// live (real `npm install`/`npm run build`/`node` run across a
+/// sim-shared + service + system-runner trio in the scratchpad) that
+/// `system-runner` needs no direct dependency on `fastify`/`pg`/etc: a
+/// `file:` dependency's own transitive dependencies are never hoisted
+/// into the depending package's `node_modules` (confirmed against real
+/// `npm install --package-lock-only` output) -- Node resolves a bare
+/// specifier reached through a `file:` symlink from *that* target's own
+/// real directory (and its own already-`npm ci`'d `node_modules`), not
+/// from the depender's. `system_sim_runner.ts.j2`'s own doc comment
+/// records the same finding for why no shared Fastify-typed `dispatch`
+/// helper is used either.
+fn system_runner_package_json(model: &context::SystemModel) -> Result<String, BackendError> {
+    let mut dependencies = serde_json::Map::new();
+    dependencies.insert(
+        "sim-shared".to_owned(),
+        serde_json::Value::String("file:../sim-shared".to_owned()),
+    );
+    dependencies.insert(
+        "croner".to_owned(),
+        serde_json::Value::String("10.0.1".to_owned()),
+    );
+    for ctx in &model.services {
+        dependencies.insert(
+            ctx.package.clone(),
+            serde_json::Value::String(format!("file:../{}", ctx.dir)),
+        );
+    }
+    let value = serde_json::json!({
+        "name": "system-runner",
+        "version": "0.1.0",
+        "private": true,
+        "type": "module",
+        "scripts": {
+            "build": "tsc -p tsconfig.build.json",
+            "start": "node dist/sim_runner.js"
+        },
+        "dependencies": dependencies,
+        "devDependencies": {
+            "@types/node": "22.20.1",
+            "typescript": "5.9.3"
+        }
+    });
+    serde_json::to_string_pretty(&value)
+        .map(|s| s + "\n")
+        .map_err(|e| BackendError::Other(e.to_string()))
+}
+
+/// Every service's own `package.json` (`package.json.j2`) renders this
+/// exact fixed dependency/devDependency map, unconditionally, for every
+/// service -- the only per-service variable is the `name` field and the
+/// `sim-shared` line (always present here since every entry point is a
+/// multi-service system). Reused both to build the `system-runner`
+/// lockfile's own `"../<dir>"` informational entries and as the
+/// canonical value [`assert_no_dependency_skew`] compares every real
+/// rendered service `package.json` against.
+fn canonical_service_dependencies() -> serde_json::Value {
+    serde_json::json!({
+        "sim-shared": "file:../sim-shared",
+        "@aws-sdk/client-s3": "3.1090.0",
+        "@fastify/otel": "0.20.1",
+        "@fastify/websocket": "11.3.0",
+        "@grpc/grpc-js": "1.14.4",
+        "@nats-io/transport-node": "3.4.0",
+        "@opensearch-project/opensearch": "3.6.0",
+        "@opentelemetry/api": "1.9.1",
+        "@opentelemetry/exporter-trace-otlp-grpc": "0.220.0",
+        "@opentelemetry/instrumentation": "0.220.0",
+        "@opentelemetry/instrumentation-http": "0.220.0",
+        "@opentelemetry/instrumentation-pg": "0.72.0",
+        "@opentelemetry/instrumentation-undici": "0.30.0",
+        "@opentelemetry/resources": "2.9.0",
+        "@opentelemetry/sdk-trace-base": "2.9.0",
+        "@opentelemetry/sdk-trace-node": "2.9.0",
+        "@opentelemetry/semantic-conventions": "1.43.0",
+        "better-sqlite3": "12.11.1",
+        "croner": "10.0.1",
+        "drizzle-orm": "0.45.2",
+        "fastify": "5.10.0",
+        "ioredis": "5.11.1",
+        "jose": "6.2.3",
+        "kafkajs": "2.2.4",
+        "mysql2": "3.23.0",
+        "nodemailer": "9.0.3",
+        "pg": "8.22.0",
+        "pino": "10.3.1",
+        "prom-client": "15.1.3",
+        "zod": "3.25.76"
+    })
+}
+
+fn canonical_service_dev_dependencies() -> serde_json::Value {
+    serde_json::json!({
+        "@eslint/js": "10.0.1",
+        "@types/better-sqlite3": "7.6.13",
+        "@types/node": "22.20.1",
+        "@types/nodemailer": "8.0.1",
+        "@types/pg": "8.20.0",
+        "eslint": "10.7.0",
+        "typescript": "5.9.3",
+        "typescript-eslint": "8.64.0",
+        "vitest": "4.1.10"
+    })
+}
+
+/// The `system-runner` package's own `package-lock.json` -- shaped
+/// exactly like the real `npm install`-produced lockfile verified live
+/// in the scratchpad for a sim-shared + service + system-runner trio:
+/// the root `""` entry lists this package's own manifest, one `"../
+/// <dir>"` informational entry per linked package (mirroring what that
+/// package's own real `package.json` declares -- confirmed live that
+/// `npm ci` does not actually validate this field against the target's
+/// real manifest, but it is kept accurate here rather than relying on
+/// that leniency), and `node_modules/*` entries: one `link: true` entry
+/// per linked package (`sim-shared` + every service), plus the three
+/// ordinary registry packages `system-runner` itself directly depends
+/// on (`croner`, `typescript`, `@types/node` and its own `undici-types`
+/// dependency) -- integrity hashes copied from the already-live-verified
+/// `package-lock.json.j2`/`SIM_SHARED_PACKAGE_LOCK_JSON` entries for the
+/// same pinned versions.
+fn system_runner_package_lock_json(model: &context::SystemModel) -> Result<String, BackendError> {
+    let mut root_dependencies = serde_json::Map::new();
+    root_dependencies.insert(
+        "sim-shared".to_owned(),
+        serde_json::Value::String("file:../sim-shared".to_owned()),
+    );
+    root_dependencies.insert(
+        "croner".to_owned(),
+        serde_json::Value::String("10.0.1".to_owned()),
+    );
+    let mut packages = serde_json::Map::new();
+    for ctx in &model.services {
+        root_dependencies.insert(
+            ctx.package.clone(),
+            serde_json::Value::String(format!("file:../{}", ctx.dir)),
+        );
+        packages.insert(
+            format!("../{}", ctx.dir),
+            serde_json::json!({
+                "version": "0.1.0",
+                "dependencies": canonical_service_dependencies(),
+                "devDependencies": canonical_service_dev_dependencies(),
+            }),
+        );
+        packages.insert(
+            format!("node_modules/{}", ctx.package),
+            serde_json::json!({ "resolved": format!("../{}", ctx.dir), "link": true }),
+        );
+    }
+    packages.insert(
+        "".to_owned(),
+        serde_json::json!({
+            "name": "system-runner",
+            "version": "0.1.0",
+            "dependencies": root_dependencies,
+            "devDependencies": {
+                "@types/node": "22.20.1",
+                "typescript": "5.9.3"
+            }
+        }),
+    );
+    packages.insert(
+        "../sim-shared".to_owned(),
+        serde_json::json!({
+            "version": "0.1.0",
+            "devDependencies": {
+                "@types/node": "22.20.1",
+                "typescript": "5.9.3"
+            }
+        }),
+    );
+    packages.insert(
+        "node_modules/sim-shared".to_owned(),
+        serde_json::json!({ "resolved": "../sim-shared", "link": true }),
+    );
+    packages.insert(
+        "node_modules/@types/node".to_owned(),
+        serde_json::json!({
+            "version": "22.20.1",
+            "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.1.tgz",
+            "integrity": "sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==",
+            "dev": true,
+            "license": "MIT",
+            "dependencies": { "undici-types": "~6.21.0" }
+        }),
+    );
+    packages.insert(
+        "node_modules/undici-types".to_owned(),
+        serde_json::json!({
+            "version": "6.21.0",
+            "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+            "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+            "dev": true,
+            "license": "MIT"
+        }),
+    );
+    packages.insert(
+        "node_modules/typescript".to_owned(),
+        serde_json::json!({
+            "version": "5.9.3",
+            "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+            "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+            "dev": true,
+            "license": "Apache-2.0",
+            "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" },
+            "engines": { "node": ">=14.17" }
+        }),
+    );
+    packages.insert(
+        "node_modules/croner".to_owned(),
+        serde_json::json!({
+            "version": "10.0.1",
+            "resolved": "https://registry.npmjs.org/croner/-/croner-10.0.1.tgz",
+            "integrity": "sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g==",
+            "funding": [
+                { "type": "other", "url": "https://paypal.me/hexagonpp" },
+                { "type": "github", "url": "https://github.com/sponsors/hexagon" }
+            ],
+            "license": "MIT",
+            "engines": { "node": ">=18.0" }
+        }),
+    );
+
+    let value = serde_json::json!({
+        "name": "system-runner",
+        "version": "0.1.0",
+        "lockfileVersion": 3,
+        "requires": true,
+        "packages": packages,
+    });
+    serde_json::to_string_pretty(&value)
+        .map(|s| s + "\n")
+        .map_err(|e| BackendError::Other(e.to_string()))
+}
+
+/// 28UpdatePlan.md M7a's own composition matrix names this target's one
+/// sharp edge as "dependency-version skew across the N generated
+/// `package.json`s (identical by construction today -- asserted)" --
+/// this is that assertion, checked for real against the actually
+/// rendered files rather than only assumed: every service's own
+/// `package.json.j2` renders the exact same fixed dependency/
+/// devDependency map regardless of what that service declares (the only
+/// per-service variables are the `name` field and, uniformly here, the
+/// `sim-shared` line), so this should always hold -- it exists to catch
+/// a future edit to that template that made a dependency version
+/// conditional on something service-specific, not because any skew is
+/// expected today.
+fn assert_no_dependency_skew(
+    project: &GeneratedProject,
+    model: &context::SystemModel,
+) -> Result<(), BackendError> {
+    let mut canonical: Option<(&str, serde_json::Value, serde_json::Value)> = None;
+    for ctx in &model.services {
+        let path = format!("{}/package.json", ctx.dir);
+        let content = project
+            .get(&path)
+            .ok_or_else(|| BackendError::Other(format!("expected {path} to already be emitted")))?;
+        let parsed: serde_json::Value = serde_json::from_str(content)
+            .map_err(|e| BackendError::Other(format!("parsing {path}: {e}")))?;
+        let deps = parsed.get("dependencies").cloned().unwrap_or_default();
+        let dev_deps = parsed.get("devDependencies").cloned().unwrap_or_default();
+        match &canonical {
+            None => canonical = Some((ctx.service_name.as_str(), deps, dev_deps)),
+            Some((first_service, canonical_deps, canonical_dev_deps)) => {
+                if &deps != canonical_deps || &dev_deps != canonical_dev_deps {
+                    return Err(BackendError::Other(format!(
+                        "dependency-version skew detected: service {:?}'s package.json \
+                         dependencies diverge from service {first_service:?}'s -- \
+                         28UpdatePlan.md M7a's system-runner assumes every service's \
+                         dependency set is identical (see `assert_no_dependency_skew`'s own \
+                         doc comment)",
+                        ctx.service_name
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct TsBackend;
 
@@ -450,6 +742,37 @@ impl Backend for TsBackend {
                 project.add_file(
                     "sim-shared/src/world.ts",
                     env.get_template("world.ts.j2")?.render(context! {})?,
+                );
+
+                // 28UpdatePlan.md M7a: the `system-runner` package --
+                // `sim_drive_typescript`'s eventual multi-service
+                // counterpart to driving a single service's own `src/
+                // sim_runner.ts` (see `system_sim_runner.ts.j2`'s own doc
+                // comment for the full architecture). Gated on the same
+                // condition as `sim-shared` itself since it depends on
+                // that package unconditionally and has nothing to drive
+                // without it.
+                assert_no_dependency_skew(&project, &model)?;
+                project.add_file(
+                    "system-runner/package.json",
+                    system_runner_package_json(&model)?,
+                );
+                project.add_file(
+                    "system-runner/package-lock.json",
+                    system_runner_package_lock_json(&model)?,
+                );
+                project.add_file("system-runner/tsconfig.json", SYSTEM_RUNNER_TSCONFIG_JSON);
+                project.add_file(
+                    "system-runner/tsconfig.build.json",
+                    SYSTEM_RUNNER_TSCONFIG_BUILD_JSON,
+                );
+                project.add_file("system-runner/.gitignore", SYSTEM_RUNNER_GITIGNORE);
+                let services = minijinja::Value::from_serialize(&model.services);
+                let sim_world_tables = sim_world_tables_multi(ir);
+                project.add_file(
+                    "system-runner/src/sim_runner.ts",
+                    env.get_template("system_sim_runner.ts.j2")?
+                        .render(context! { services, sim_world_tables })?,
                 );
             }
             let m = minijinja::Value::from_serialize(&model);

@@ -3295,7 +3295,7 @@ func HandleMessageOnceTranscoder(ctx context.Context, st *state.AppState, payloa
 		result = v
 	}
 
-	switch v, _ := result.(map[string]any)["status"].(string); v {
+	switch v := result.(schemas.Video); v.Status {
 	case "Ready":
 
 		if v, err := services.NewNotify(st).Handle(ctx, result); err != nil {

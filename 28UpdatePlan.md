@@ -1867,6 +1867,103 @@ push, in-place Shipped notes).
    wiring, `ciac sim`-CLI-driven live proof against all three system
    scenarios, and M7 close-out remain, tracked next as M7d.
 
+   **Shipped (v0.28 M7d) — the driver split, a live-proof-caught
+   `_steps.go.j2` correctness bug, and M7 close-out.** `sim_drive_go`
+   gained the identical `_single`/`_multi` split `sim_drive_rust`/
+   `sim_drive_typescript` already carry:
+   `find_project_dirs(out, "go.mod")` dispatches to
+   `sim_drive_go_single` for exactly one project (unchanged body,
+   `cmd/sim_runner` sub-package) or `sim_drive_go_multi` for more
+   than one (`system-runner/main.go`, a plain package-root `main` —
+   no sub-package split needed there since a module with only one
+   `main` package never collides with anything). Unlike TypeScript's
+   `_multi` (three-phase build required, since npm doesn't hoist a
+   `file:` dependency's own transitive dependencies — M7a's own
+   finding), Go's `_multi` needs no build-ordering logic at all:
+   `go build`/`go run` inside `system-runner/` resolves the whole
+   `replace`-directive dependency graph unaided, the same as Rust's
+   own Cargo path-dependency resolution in `sim_drive_rust_multi`.
+   Both paths funnel through one new shared helper,
+   `run_go_sim_runner(project_dir, args, scenarios, wall_timeout)`,
+   parameterized only on the caller's own `go run` package selector
+   (`["run", "./cmd/sim_runner"]` vs `["run", "."]`) — the drive loop
+   itself (one-line-JSON-on-stdout parsing) is otherwise byte-
+   identical between single- and multi-service, mirroring exactly why
+   TS's own `run_node_sim_runner` was factored out the same way.
+
+   Live-proofed through the real CLI against all three system
+   scenarios (`sim-three-service.ciac`, `multi-service-media.ciac`,
+   `inventory-system.ciac`), each from a clean `--out` directory:
+   `multi-service-media` failed immediately, not with a driver bug
+   but a genuine template-correctness bug this milestone's own proof
+   was the first thing ever to reach. Root cause, found via the
+   panic trace: `_steps.go.j2`'s `match` step (`pipeline Transcode:
+   TranscodeVideo -> match status { Ready -> publish Transcoded;
+   Failed -> publish DeadLetters; }`) had always type-asserted
+   `result` to `map[string]any` and read the matched field out of it
+   as a generic JSON value — a speculative shape the template's own
+   doc comment already flagged as untested ("`call`/`match` steps
+   render plausible code ... but are unreachable by every
+   24UpdatePlan.md M3 example"), written before Go's `call`
+   infrastructure existed and never revisited once it did. But
+   `result` at that point in a worker pipeline is never
+   `map[string]any` — `worker.go.j2`'s drain loop always JSON-decodes
+   into the worker's own known typed payload struct
+   (`schemas.Video`), and the preceding untyped `handler` step's
+   `services.NewTranscodeVideo(st).Handle(ctx, result)` call passes
+   that typed value straight through unchanged when (as here) the
+   seed stub is left as its default `return payload, nil`. The
+   type assertion panicked: `interface conversion: interface {} is
+   schemas.Video, not map[string]interface {}`. Fixed by switching on
+   `result.(payload_type).<Field>` instead — `payload_type` was
+   already threaded through `emit_step` for typed-handler steps, so
+   `worker.go.j2` and `route_api.go.j2` (both of which already
+   compute a real `payload_type`) needed no changes; only
+   `_steps.go.j2`'s own `match` branch changed, gated on whether
+   `payload_type` is non-empty, falling back to the old
+   `map[string]any` shape only for `job.go.j2`'s still-`payload_type
+   = ""` context (no example reaches a job-pipeline `match`, so that
+   branch stays exactly as speculative as before). This is the same
+   typed-field-access shape Rust's own `match result.status { ... }`
+   already uses — Rust never had this bug because its pipeline
+   threads the real `Video` type throughout rather than `any`.
+
+   Golden churn from the fix: exactly two snapshots, one line each
+   (`golden__gen__go__multi-service-media.snap`,
+   `golden__gen__go__routed-media.snap` — the only two corpus
+   examples whose `match` step is ever actually reached) —
+   `switch v, _ := result.(map[string]any)["status"].(string); v {`
+   became `switch v := result.(schemas.Video); v.Status {`; every
+   other Go golden file, single- or multi-service, stayed byte-
+   identical.
+
+   With the fix in, all three system scenarios passed clean through
+   the real CLI: `sim-three-service` 1.5s, `multi-service-media`
+   1.3s, `inventory-system` 1.7s (each `[PASS]`, `--json` confirming
+   `error: null`) — an order of magnitude faster than TS's own
+   cold-`npm-ci` timings (M7b: 31–72s), since `go build`/`go run`
+   never needs a package-manager round-trip once the module cache is
+   warm, the same shape Rust's own M6d timings already showed. Ran a
+   four-way identity comparison (Python/Rust/TypeScript/Go) against
+   the same three scenarios: all twelve runs printed `passed: true,
+   error: null`, with matching `worker_attempts`/`job_runs` — Python's
+   own `multi-service-media` outcome carries one extra
+   `DeadLetterSink: 0` zero-attempt key the other three targets'
+   maps omit, the same cosmetic non-finding M6d/M7b's own notes
+   already disclosed (an unreached worker some targets omit from the
+   attempts map entirely, Python includes at zero), confirmed to
+   still hold at this scope. `cargo fmt --check`, `cargo clippy
+   --workspace --all-targets` (zero warnings), and a full `cargo test
+   --workspace --no-fail-fast` (skipping the same standing,
+   pre-existing, already-disclosed `backfill_cli` ruff-drift case
+   every prior milestone's own note excludes) all ran clean —
+   `EXIT_CODE:0`, zero `FAILED` lines. This closes M7 in full: both
+   TS's half (M7a/M7b) and Go's half (M7c/M7d) now have implementation,
+   build verification, driver wiring, and CLI-driven live proof done,
+   with the one real correctness finding (the `match`-step bug) fixed
+   rather than merely disclosed, since it was caught before this
+   milestone's own exit rather than after.
+
 8. **M8 — Java composition.** N isolated
    `AnnotationConfigApplicationContext`s in one JVM sharing the
    world bean; the classpath-assembly decision (aggregator POM

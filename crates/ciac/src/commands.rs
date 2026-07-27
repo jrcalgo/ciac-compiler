@@ -1933,22 +1933,32 @@ fn run_node_sim_runner(
 /// way Cargo auto-discovers `src/bin/sim_runner.rs`), so unlike Rust's
 /// `--bin sim_runner` flag, no special package selector is needed
 /// beyond the package path itself.
+///
+/// 28UpdatePlan.md M7d: dispatches to [`sim_drive_go_multi`] for a
+/// multi-service system, mirroring [`sim_drive_rust`]/
+/// [`sim_drive_typescript`]'s own `_single`/`_multi` split exactly.
 fn sim_drive_go(
     out: &Path,
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let projects = find_project_dirs(out, "go.mod")?;
-    let project_dir = match projects.as_slice() {
-        [] => bail!("no generated go project found under {}", out.display()),
-        [one] => one.clone(),
-        many => bail!(
-            "`ciac sim` only supports a single-service Go project in v0.24 (found {} under {}); \
-             see docs/simulation.md",
-            many.len(),
-            out.display()
-        ),
-    };
+    if projects.is_empty() {
+        bail!("no generated go project found under {}", out.display());
+    }
+    if let [project_dir] = projects.as_slice() {
+        return sim_drive_go_single(project_dir, scenarios, wall_timeout);
+    }
+    sim_drive_go_multi(out, &projects, scenarios, wall_timeout)
+}
+
+/// The single-service path, unchanged in shape from before 28's M7d
+/// (`sim_drive_go` used to be this function's own body directly).
+fn sim_drive_go_single(
+    project_dir: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     if !project_dir.join("cmd/sim_runner/main.go").exists() {
         bail!(
             "no `cmd/sim_runner/main.go` in {} -- this program declares nothing v0.24 M9's \
@@ -1957,19 +1967,71 @@ fn sim_drive_go(
         );
     }
     run_in(
-        &project_dir,
+        project_dir,
         "go",
         &["build", "-o", "/dev/null", "./cmd/sim_runner"],
     )?;
+    run_go_sim_runner(
+        project_dir,
+        &["run", "./cmd/sim_runner"],
+        scenarios,
+        wall_timeout,
+    )
+}
 
+/// 28UpdatePlan.md M7c/M7d: N services, one shared world, one process --
+/// `system-runner/` (see `system_sim_runner.go.j2`'s own doc comment) is
+/// a normal Go module `GoBackend::generate` already wrote with `replace`
+/// directives pointing at `../sim-shared` and every service directory.
+/// Unlike single-service Go's `cmd/sim_runner` sub-package, `system-
+/// runner`'s own runner is a plain package-root `main.go` (there is only
+/// ever one `main` package in this module, so no sub-package split was
+/// needed the way single-service Go's `cmd/api` vs `cmd/sim_runner`
+/// split avoids two `main` packages colliding). Unlike TypeScript's
+/// `file:` dependencies (which are not transitively built by npm --
+/// M7b's own finding), `go build`/`go run` inside `system-runner/`
+/// resolves the whole `replace`-directive dependency graph unaided, the
+/// same as Rust's own Cargo path-dependency resolution in
+/// [`sim_drive_rust_multi`] -- so there is nothing to build ahead of
+/// time in any other project directory first.
+fn sim_drive_go_multi(
+    out: &Path,
+    projects: &[PathBuf],
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let runner_dir = out.join("system-runner");
+    if !runner_dir.join("main.go").exists() {
+        bail!(
+            "no `system-runner/main.go` under {} -- this system declares nothing \
+             28UpdatePlan.md M7's simulation world can fake in any service (no `db`/`queue`/... \
+             use anywhere); see docs/simulation.md (found {} generated project(s) under this \
+             system's --out)",
+            out.display(),
+            projects.len()
+        );
+    }
+    run_in(&runner_dir, "go", &["build", "-o", "/dev/null", "."])?;
+    run_go_sim_runner(&runner_dir, &["run", "."], scenarios, wall_timeout)
+}
+
+/// Shared `go run <args> -- <scenario>` drive loop both
+/// [`sim_drive_go_single`] and [`sim_drive_go_multi`] funnel through
+/// once their respective builds are done -- the same one-line-JSON-on-
+/// stdout protocol every generated runner speaks. `args` carries the
+/// caller's own `go run` package selector (`./cmd/sim_runner` for
+/// single-service, `.` for `system-runner`).
+fn run_go_sim_runner(
+    project_dir: &Path,
+    args: &[&str],
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let mut scenario_outcomes = Vec::new();
     for scenario_path in scenarios {
         let scenario_abs = resolve_path(scenario_path)?;
         let mut cmd = Command::new("go");
-        cmd.arg("run")
-            .arg("./cmd/sim_runner")
-            .arg(&scenario_abs)
-            .current_dir(&project_dir);
+        cmd.args(args).arg(&scenario_abs).current_dir(project_dir);
 
         let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
             format!(

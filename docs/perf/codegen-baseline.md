@@ -142,7 +142,7 @@ it is a measuring instrument, not a pass/fail gate (the gate is
 | Reading | When | Combined slow-binary time | Java mean generation | Ratio to fastest |
 |---|---|---|---|---|
 | M1 (this document) | pre-optimization | 2497.85s | 15.837s | 1186.04x |
-| M5 (checkpoint) | pending | — | — | — |
+| M5 (checkpoint) | post M2 (Java batch fmt) + M3 (Go seam) + M4 (template memo) | 253.23s | 1.277s | 90.00x |
 | M9 (arc close) | pending | — | — | — |
 
 This table is the arc's headline metric, filled in as each milestone's

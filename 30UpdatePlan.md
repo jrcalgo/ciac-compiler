@@ -1581,6 +1581,51 @@ Relationship to the immediately preceding arcs:
    half of the arc; this one does the same, with the difference that
    here the checkpoint may well cancel work rather than authorize it.
 
+   **Shipped (v0.30 M5) — CHECKPOINT: stop.** The full M1 instrument
+   re-run (`scripts/bench-codegen.sh`, all 29 examples × 5 targets) and
+   the four slow binaries timed individually, post-M2/M3/M4:
+
+   | Reading | Combined slow-binary time | Java mean generation | Java max | Ratio to fastest |
+   |---|---|---|---|---|
+   | M1 (baseline, pre-optimization) | 2497.85s | 15.837s | 48.351s | 1186.04x |
+   | M5 (this checkpoint) | **253.23s** | **1.277s** | 2.105s | **90.00x** |
+   | **Change** | **9.87x faster** | **12.40x faster** | 22.97x faster | **13.18x smaller** |
+
+   Per-binary breakdown behind the combined figure: `determinism.rs`
+   922.27s → 81.20s (11.36x); `conformance.rs` 656.79s → 94.17s
+   (6.97x); `golden.rs` 478.99s → 39.06s (12.26x); `openapi.rs`
+   439.80s → 38.80s (11.34x). Every one of the four moved by an order
+   of magnitude; none regressed.
+
+   **The decision: stop.** The arc's own stated target for this pillar
+   — "the four slow binaries combined from 2,245s to under ~5 minutes"
+   — is not just met but beaten by a wide margin: 253.23s is under 4.3
+   minutes, achieved with three milestones (M2's formatter batching,
+   M3's seam generalization, M4's template memoization) rather than
+   the full seven the plan budgeted. The remaining waste M6 would
+   target is real and identifiable — `conformance.rs`'s three tests
+   still regenerate the identical 145-project corpus independently,
+   and `openapi.rs` still builds a full project to read one file from
+   each — but it is now waste inside an already-fast suite, not waste
+   defining a slow one. Cutting it further would trade a real
+   regression risk (the no-weakened-proofs constraint is easy to state
+   and easy to violate by accident — `determinism.rs`'s own double-
+   generate is exactly the kind of thing a corpus-cache refactor could
+   silently break if the cache boundary is drawn one function too
+   wide) against a return measured in tens of seconds off a suite that
+   already comfortably fits inside a coffee break. That is precisely
+   the trade the plan's own preamble described as "restructuring four
+   test files to save another 40 seconds" — not a hypothetical this
+   time, but the actual number: `conformance.rs` at 94.17s is now the
+   single largest binary, and even a full elimination of its 3x
+   redundancy would save at most ~60s off a 253s total, for a real
+   risk of the exact kind of silent-cache-masks-a-proof failure
+   Pillar 5 named by name as the trap to avoid. M6 and M7 are cut,
+   named here rather than silently dropped (see "Explicit cuts" below,
+   updated at M9). Proceeding directly to **M8** (the ratchet — a
+   budget guard so this arc's own gains cannot silently regress back)
+   and then **M9** (version bump, full verification, retrospective).
+
 6. **M6 — Test-harness redundancy (conditional on M5).** Behind the
    constraint stated in Pillar 5 — no test deleted, no assertion
    weakened, no `#[ignore]` added, the proven set a superset of before.

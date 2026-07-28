@@ -420,6 +420,22 @@ jobs:
           cargo run -q -p ciac -- verify examples/order-system.ciac \
             --target python --out /tmp/gen-sim-order-system --sim \
             --scenario sim/order-system.ciac-sim.json
+          # 28UpdatePlan.md M9: the three multi-service corpus
+          # scenarios, exercising the shared-world call router and
+          # per-service table namespacing this arc's own M2 built --
+          # Python-only for now, same as every other row in this job;
+          # `scripts/sim-corpus-x5.sh` (not CI-invoked, run on demand)
+          # is the arc's actual cross-target conformance oracle, same
+          # split every earlier milestone's own row already follows.
+          cargo run -q -p ciac -- verify examples/sim-three-service.ciac \
+            --target python --out /tmp/gen-sim-three-service --sim \
+            --scenario sim/sim-three-service.ciac-sim.json
+          cargo run -q -p ciac -- verify examples/multi-service-media.ciac \
+            --target python --out /tmp/gen-sim-multi-service-media --sim \
+            --scenario sim/multi-service-media.ciac-sim.json
+          cargo run -q -p ciac -- verify examples/inventory-system.ciac \
+            --target python --out /tmp/gen-sim-inventory-system --sim \
+            --scenario sim/inventory-system.ciac-sim.json
       - name: assert no Docker container was started
         run: |
           set -euo pipefail

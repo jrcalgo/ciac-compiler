@@ -2214,6 +2214,259 @@ push, in-place Shipped notes).
    target vs M1/M5 estimates, the sharp edges that materialized
    vs the ones that didn't, and the handoff to 29UpdatePlan.md.
 
+   **Shipped (v0.28 M9) — the five-way corpus closed as a
+   standing oracle, docs/ledger reconciled, version bumped.**
+   `scripts/sim-corpus-x5.sh`'s `PROGRAM_SCENARIOS` map gained the
+   three multi-service scenarios (`sim-three-service.ciac`,
+   `multi-service-media.ciac`, `inventory-system.ciac`) alongside
+   the nine single-service ones, widening the script's own scope
+   from "single-service depth ×5" to "every corpus program, single-
+   or multi-service, ×5" for the first time — full run: **45
+   program×target combinations, all green**, joining `order-
+   system.ciac`'s M9-of-27 acceptance sentence with this arc's own
+   ("any topology, one command, zero infrastructure"). `.github/
+   workflows/ci.yml`'s `generated-sim` job gained the same three
+   scenarios as Python-only rows, matching the existing job's own
+   established split (`scripts/sim-corpus-x5.sh`, not CI, is the
+   arc's real cross-target oracle — recorded in that job's own doc
+   comment rather than re-litigated). `docs/simulation.md`: the
+   stale "Single-service projects only, every target" paragraph
+   (unedited since v0.17) was rewritten to point at the composition
+   architecture instead of asserting a refusal that no longer
+   exists; the M1-era "Composition (M2+, not this milestone)"
+   section was rewritten past tense, naming each target's own
+   closure milestone (Python M3, Rust M6, TypeScript/Go M7, Java
+   M8) and summarizing the four genuinely different composition
+   shapes Pillar 4 produced (N in-process factories for Python/TS,
+   a generated `system-runner` crate/module for Rust/Go, N
+   independently-built Maven projects for Java); the checked-in
+   scenario reference table and the top "Status" section both
+   gained the three multi-service rows. `docs/backends.md`'s Open
+   (tracked) ledger row for "Multi-service programs refused by
+   `ciac sim`" was closed the same way `27UpdatePlan.md`'s own
+   simulation-depth row was — `Affected` set to "none (all five
+   closed)", per-target closure milestones and a one-line
+   architecture summary recorded in the `Closes in` column rather
+   than the row being deleted or moved to Permanent by design
+   (reserved for gaps that will never close, which this
+   demonstrably was not). Version **0.25.0 → 0.26.0**: workspace
+   `Cargo.toml` (the crate's own version plus all 11 internal
+   `ciac-*` path-dependency pins), `Cargo.lock` (regenerated via
+   `cargo build --workspace`), `editors/vscode/package.json`,
+   `docs/language.md`'s illustrative `CARGO_PKG_VERSION` example,
+   and `docs/targets.json` (regenerated through the real CLI,
+   `cargo run -p ciac -- targets --json > docs/targets.json` —
+   confirmed only the `ciac_version` field changed, the same one-
+   line diff every prior arc's own version bump produced). Language
+   version stays `1.0.0`, unchanged — the fourth consecutive arc
+   (`26`, `27`, and now `28`) to prove the two-version discipline
+   `26UpdatePlan.md` M8 established: a compiler release with no
+   language-surface change bumps only its own number.
+
+   A resource-exhaustion finding during this milestone's own
+   verification, disclosed rather than silently retried: running
+   the newly-widened `sim-corpus-x5.sh` (which now generates and
+   builds nine single-service *and* three multi-service projects
+   across five targets in one pass) concurrently with the full
+   `cargo test --workspace` run exhausted this sandbox's writable-
+   disk allowance mid-run, producing two failures that looked like
+   real regressions at first glance — a wave of `rust`/`typescript`/
+   `go`/`python` "build/refusal" errors in the corpus script's own
+   output, and an unrelated `mcp_round_trip_initialize_tools_list_
+   and_tool_calls` failure in the `cargo test` run (`success: false`
+   with an empty diagnostics array — the signature of a subprocess
+   failing to write, not a logic error). Both were confirmed
+   transient, not caused by any M9 change: freeing ~2.4GB of stale
+   `/tmp` cruft from earlier debugging sessions let a clean, solo
+   re-run of each pass green on the first try, and the specific
+   `mcp_round_trip` test was independently re-run in isolation and
+   confirmed passing before that conclusion was trusted rather than
+   assumed. The corrective discipline this confirms for any future
+   milestone budgeting a corpus-wide run alongside a full test
+   suite: run them sequentially, not concurrently, on a fixed-quota
+   sandbox — the same "don't run two disk-heavy things at once"
+   lesson M7d's own Shipped note already recorded for a five-way
+   identity check, now reconfirmed at a larger scale (45 combinations
+   vs. that milestone's 12).
+
+   `cargo fmt --check`, `cargo clippy --workspace --all-targets`
+   (zero warnings), and a full `cargo test --workspace --no-fail-
+   fast` — run solo, after the disk-space finding above — all ran
+   clean: `EXIT_CODE:0`, zero `FAILED` lines beyond the one standing,
+   pre-existing, already-disclosed `backfill_cli` ruff-drift case
+   every milestone since `26UpdatePlan.md` M6 has carried and
+   excluded. This closes M9, and with it the arc: `ciac sim` has no
+   structural refusal left on any of the five targets, for any
+   topology the compiler accepts.
+
+   ---
+
+   ### Arc retrospective
+
+   **Composition cost per target, measured against M1's and M5's
+   own calibration.** M1's forecast text left the compiled-target
+   packaging question open by design ("aggregator POM vs
+   generalized exec arrangement" for Java, an unnamed but implied
+   "cheap" cost for TS/Go per Pillar 3's own per-target table); M5
+   priced only Rust concretely, finding its named risk (the lib+bin
+   reshaping) already retired by earlier work and a different,
+   unpriced one in its place (N nominally-distinct vendored
+   `SimWorld` types). Measured in the one unit comparable across
+   all five targets — the generated system-runner's own line count
+   — the four compiled targets landed within a narrow band of each
+   other despite writing to four different host languages and four
+   different composition shapes: Rust `system_sim_runner.rs.j2`
+   **643** lines, TypeScript `system_sim_runner.ts.j2` **637**,
+   Java `SystemSimRunner.java.j2` **627**, Go `system_sim_runner.go.j2`
+   **872** (the outlier — Go's own `switch`-arm-uniqueness rule
+   forces an if/else-if chain instead of a `switch` anywhere two
+   workers might share a subject, and its drain loop is unrolled
+   per-worker rather than iterated, both discussed live in M7c/M7d's
+   own Shipped notes). Python's own combined driver (`multi_driver.
+   py` 331 + `multi_service.py` 153 = **484** lines, M3/M4, restated
+   here rather than re-measured) stayed the cheapest by a real
+   margin, the same shape `27UpdatePlan.md`'s own retrospective
+   found for Python's M9 verb closure: never a restatement, a
+   narrower change inside one already-complete implementation
+   (`AppState.simulation(world)` swapping the whole session/app-
+   factory object rather than four separate from-scratch ports).
+   Unlike the world-restatement line-count multiples `27UpdatePlan.
+   md`'s retrospective reported (4.1×-5.2× per target against a
+   single Rust baseline), this arc has no single naive baseline to
+   multiply against — every target's system-runner is new code, not
+   an extension of something narrower that already existed — so the
+   fairer reading is the absolute spread itself: **627-872 lines**,
+   a 1.4× band across four otherwise-unrelated host languages and
+   composition strategies, tighter than 27's own restatement spread
+   despite this arc's problem (N-service orchestration) being
+   structurally harder than 27's (widening one already-existing
+   single-service world).
+
+   **The packaging decision Pillar 3 and M1 left open resolved
+   cleanly, and cheaply, for every target.** Rust and Go each
+   answered "how does a system-runner share one type across N
+   independently-built projects" with the mechanism their own
+   toolchain already provides for exactly this problem — a Cargo
+   path dependency and a `go.mod` `replace` directive, respectively
+   — needing no new abstraction invented for this arc. TypeScript
+   answered it with an npm `file:` dependency plus a discovered
+   wrinkle (`file:` doesn't hoist a linked package's own transitive
+   dependencies the way a registry install does, M7a/M7b's own
+   three-phase-build finding) — a real but small correction, not a
+   design reversal. Java had no toolchain-native answer at all (no
+   reactor, no path-dependency equivalent in default Maven) and so
+   needed this arc's own genuine design decision, M8c's "Option B":
+   no aggregator POM, no `mvn install` side effects on `~/.m2`, a
+   driver-assembled classpath via `mvn dependency:build-classpath`
+   plus direct `javac`/`java` invocations for the run phase, and a
+   physically-duplicated (byte-identical) `World` class standing in
+   for the shared nominal type every other target's toolchain gave
+   for free. This was the one packaging question this arc's own M1
+   forecast named as genuinely open going in, and it is also the
+   one that cost the most deliberate design time — proportionate,
+   not a surprise.
+
+   **The bug-count trend, continued honestly from `27UpdatePlan.md`'s
+   own scorecard.** That arc's retrospective found the bug count
+   trended *up*, not down, across TS (2) → Go (4) → Java (4+1),
+   naming the likely cause as "the find-space per target is
+   dominated by that ecosystem's own quirks... not shared learning
+   that transfers." This arc's own numbers read differently: Python
+   (M3/M4) found and fixed its sharp edges live but never needed a
+   design reversal (the aliasing shim fallback was pre-registered
+   and never taken); Rust (M6) found **1** real bug (a threading gap
+   — `lower.rs`'s typed-handler lowering never called the namespaced
+   `_for`-suffixed methods `world.rs` had carried since M2, so every
+   db verb silently addressed the bare table name regardless of
+   service until this milestone caught it); TypeScript (M7a/M7b)
+   found **0** — the one named risk (dependency skew) materialized
+   only as a needed assertion, never as an actual bug; Go (M7c/M7d)
+   found **1** (the `_steps.go.j2` `match`-step type-assumption bug,
+   the arc's one finding that was a genuine, previously-undetected
+   production-path defect rather than composition-specific); Java
+   (M8a-d) found **1** (`SystemSimRunner.java.j2`'s duplicate
+   `registeredMvc` local, caught during M8c's own hand-verification
+   before any driver code existed to hide it behind). Total: **3**
+   real composition-specific bugs across four from-scratch system-
+   runners, all caught by the same three-scenario corpus regardless
+   of which target's own toolchain produced them — lower than 27's
+   own per-target average despite writing more new code per target,
+   plausibly because this arc's own architecture (one shared world,
+   one call router, one scenario vocabulary, restated four times)
+   is more mechanically uniform across targets than 27's four
+   independent from-scratch *world* restatements were, leaving less
+   room for the kind of ecosystem-specific surprise 27's retrospective
+   named as the dominant source. Not proof the pattern reverses for
+   good — one arc's worth of evidence — but a real, measured
+   contrast worth recording rather than assuming the prior trend
+   would simply repeat.
+
+   **The sharp edges named going in, checked against what actually
+   happened.** Pillar 3's own per-target table and M1's forecast
+   named: Rust's vendored-`SimWorld`-type-identity risk (materialized
+   almost exactly as guessed, resolved by M5's own path-(a)
+   decision — a shared `sim-shared` crate — taken without
+   revision); TypeScript's dependency-skew risk (materialized as a
+   real toolchain gap requiring a three-phase build, not merely a
+   defensive assertion that never fired — worse than the minimal
+   framing but still resolved within M7a/M7b, no spillover); Go's
+   `replace`-directive resolution (materialized as expected, no
+   surprise — the one target whose actual bug was unrelated to its
+   own named risk entirely); Java's packaging question (materialized
+   as the single largest genuine design decision in the arc, exactly
+   as flagged "open" rather than "cheap" the way Pillar 3's own table
+   implicitly suggested for TS/Go). What was **not** named going in
+   and materialized anyway: the Go `_steps.go.j2` match-step bug (a
+   latent, pre-existing template gap the plan's own risk table had
+   no way to predict, since it required a worker payload actually
+   reaching a typed `match` step for the first time — a corpus-
+   coverage gap, not a composition-design gap) and Java's duplicate-
+   local compile error (an ecosystem-specific Java scoping rule, the
+   same category of "genuinely orthogonal discovery" 27's own
+   retrospective named for its own per-target quirks). The pattern
+   holds across both arcs: named structural risks resolve close to
+   plan; the real bugs tend to be unnamed, ecosystem-specific, and
+   caught only by actually running generated code against a real
+   scenario — the corpus-identity harness doing exactly the job
+   both arcs' own risk sections bet it would do.
+
+   **One item carried forward, not closed here.** A Docker build-
+   context gap for path-shared crates/packages in multi-service
+   systems was flagged during this arc's own implementation work
+   (tracked separately, outside this file) and was never picked up
+   as an in-scope fix — `docker compose build` for a multi-service
+   system whose services share a path-dependency crate/module/
+   package (Rust's `sim-shared`, Go's analogous shared module, a
+   TypeScript `file:`-linked package) needs each service's own
+   Dockerfile build context to actually include that shared source
+   tree, which the generated `docker-compose.yml`/`Dockerfile` pair
+   does not yet arrange for. This is a **production deploy-path**
+   gap, not a simulation gap — `ciac sim`'s own multi-service
+   composition never touches Docker at all (the claim boundary
+   `docs/simulation.md` states explicitly), so nothing in this arc's
+   own acceptance sentence depended on it, and no scenario in the
+   corpus exercises `docker compose build` for a multi-service
+   system with a shared dependency. Recorded here rather than
+   silently dropped: a real, disclosed gap for a future arc to close
+   with its own ledger row, not folded into this arc's own "closed"
+   claim.
+
+   **Handoff to `29UpdatePlan.md`.** The "Confidence and handoff"
+   section below (written before this arc's own execution) predicted
+   the sentence this arc would get to hand forward — "five targets,
+   full depth, any topology, one command, zero infrastructure" — and
+   that is what M9's own ×5 corpus run (45/45 green) and the docs/
+   ledger closure above confirm actually held. `29UpdatePlan.md`
+   inherits a compiler with nothing left to disclose as "narrow" or
+   "single-service only" in either simulation depth (27) or
+   simulation topology (28) — the honest remaining gaps are the ones
+   already named as permanent-by-design (Redis/NATS compose-
+   delegated fidelity, `--record`/`--replay` staying Python-only) or
+   explicitly carried forward (the Docker build-context item above).
+   That is the system 29's own README rewrite, guide series,
+   positioning doc, and dogfooding-readiness work get to describe
+   truthfully rather than aspirationally.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** validation + SIM0011/0012 implemented and

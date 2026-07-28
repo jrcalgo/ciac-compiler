@@ -36,14 +36,23 @@ TypeScript at M6, Go at M7, Java at M8, and Python's own residual gap
 arc's own acceptance sentence: `order-system.ciac`, the flagship every
 M4-M8 Shipped note named as refused, now simulates green on all five
 targets with identical outcomes (`sim/order-system.ciac-sim.json`, run
-via `scripts/sim-corpus-x5.sh`).
+via `scripts/sim-corpus-x5.sh`). `28UpdatePlan.md` then closed the
+remaining depth axis, **multi-service composition**: single-service
+depth (this section) and N-service composition (see "Multi-service
+topology" below) are independent axes — a target could in principle
+have one without the other — but both now hold on all five targets as
+of `28UpdatePlan.md` M9.
 
 See [backends.md](backends.md)'s Divergence ledger — Open (tracked)
-table for this gap's classification and address ("Simulation depth:
-only `db.insert` + publish faked", closed in `27UpdatePlan.md`) and
-"Multi-service programs refused by `ciac sim`" (closing in
-`28UpdatePlan.md`). The table below is this page's own per-surface
-detail, not a restatement of the ledger's entry.
+table for both closed rows ("Simulation depth: only `db.insert` +
+publish faked", closed in `27UpdatePlan.md`; "Multi-service programs
+refused by `ciac sim`", closed in `28UpdatePlan.md` — both rows stay
+in the Open table with their own `Affected` column reading "none (all
+five closed)", the same disclosure discipline every closed row in that
+table follows, rather than moving to Permanent by design, which is
+reserved for gaps that will never close). The table below is this
+page's own per-surface detail, not a restatement of the ledger's
+entry.
 
 | Surface | Python | Rust | TypeScript | Go | Java |
 | --- | --- | --- | --- | --- | --- |
@@ -361,15 +370,17 @@ not a simulation-only issue), fixed with a `hasattr(result,
 `Record`-returning pipeline from a scalar/list-returning one without a
 larger IR change out of this milestone's own scope.
 
-Single-service projects only, every target: `ciac sim` refuses cleanly
-(not a crash, not a silent partial run) when it finds more than one
+Multi-service programs simulate on every target as of `28UpdatePlan.md`
+M9 — `ciac sim` no longer refuses a generated output with more than one
 project descriptor (`pyproject.toml`/`Cargo.toml`/`package.json`/
-`go.mod`/`pom.xml`) under `--out`. Multi-service simulation — one
-driver process per service, coordinated through one shared virtual
-clock — is real future work, not attempted here for any target.
-`--record`/`--replay` remain Python-only: no generated-runner target
-(Rust's, TypeScript's, Go's, Java's) has plan/replay-tape support (a
-plain scenario interpreter, not the bounded child protocol below).
+`go.mod`/`pom.xml`) under `--out`; see "Multi-service topology" below
+for the composition architecture (one shared world, N per-service
+drivers/contexts, a routed call router) and its own per-target closure
+milestones. `--record`/`--replay` remain Python-only: no generated-
+runner target (Rust's, TypeScript's, Go's, Java's) has plan/replay-tape
+support (a plain scenario interpreter, not the bounded child protocol
+below) — this stays a disclosed, permanent-by-design gap, not one this
+arc closed.
 
 ## The bounded child protocol
 
@@ -612,6 +623,9 @@ against all five targets and asserts identical outcomes:
 | `peripherals.ciac-sim.json` | `sim-peripherals.ciac` | object store put/get/delete/list, email send, search index/query |
 | `query-verbs.ciac-sim.json` | `query-verbs.ciac` | predicate-filtered `db.query`/`db.count`/`db.delete_where`, `db.update`, plain `db.delete` — closed at `27UpdatePlan.md` M9 |
 | `order-system.ciac-sim.json` | `order-system.ciac` | the arc's flagship: auth-scoped routes, `db.count` with a two-term conjunction (enum + float comparison), `db.update` paired with `cache.delete` invalidation — refused by every target through M8, green on all five as of M9 |
+| `sim-three-service.ciac-sim.json` | `sim-three-service.ciac` | multi-service (`28UpdatePlan.md`): N=3 global ordering across services, a routed `call` failing under injected failure |
+| `multi-service-media.ciac-sim.json` | `multi-service-media.ciac` | multi-service: upload -> routed `call` charge -> publish -> transcode worker -> notify worker, a full cross-service pipeline |
+| `inventory-system.ciac-sim.json` | `inventory-system.ciac` | multi-service: a routed call round-trip with scoped auth propagated across the call boundary |
 
 ### Multi-service topology (28UpdatePlan.md M1)
 
@@ -651,15 +665,44 @@ future change ever lets an unvalidated `NormalizedIr` reach
 `SimPlan::from_ir` without going through `ciac-sema` first, that would
 be the moment to reconsider, not before.
 
-**Composition (M2+, not this milestone).** M1 only derives topology
-facts and validates addressing; it does not yet run more than one
-service in one simulation. Every `sim_drive_*` driver in
-`crates/ciac/src/commands.rs` still refuses a multi-service generated
-output (`find_project_dirs` returning more than one project directory)
-with the same plain refusal it always has — that refusal is M3
-(Python)/M6 (Rust)/M7 (TS, Go)/M8 (Java)'s job to lift, one target at a
-time, once the shared-world call router (M2) exists to route across
-the services a lifted refusal would actually let through.
+**Composition (M2–M8, done).** M1 only derived topology facts and
+validated addressing; the actual multi-service refusal every
+`sim_drive_*` driver in `crates/ciac/src/commands.rs` carried
+(`find_project_dirs` returning more than one project directory) was
+lifted one target at a time once M2's shared-world call router existed
+to route across the services a lifted refusal would actually let
+through: Python at M3, Rust at M6, TypeScript and Go at M7, Java at M8.
+Every driver now splits into a `_single` path (its own pre-existing,
+unchanged single-project body) and a `_multi` path, dispatched on
+`find_project_dirs`'s own result count. One shared world (one broker,
+one virtual clock, one `FailureEngine`) is constructed once per
+`ciac sim` invocation and threaded into every service's own driver
+process/context; each service's own apis are registered on the
+world's call router in declaration order, so a `call <Service>.<Api>`
+pipeline step reaches its target through the fake world instead of
+real HTTP, and every database table is namespaced `"{service}::
+{table}"` (`SimWorld::namespaced_table_key`/its five per-target
+restatements) so two services may legitimately declare a same-named
+table without colliding. Composition architecture is genuinely
+target-specific (Pillar 4: "structure may diverge; answers may not")
+— Python and TypeScript compose N services in one process via N
+app-factory instances; Rust and Go each generate one additional
+`system-runner` crate/module holding the shared world and driving
+every service's own compiled code through a workspace path
+dependency / `go.mod` `replace` directive; Java has no reactor/
+module-graph mechanism to share one physical type across N
+independently-built Maven projects, so its shared `World` class is
+instead physically duplicated (byte-identical) into every service's
+own source tree under `com.ciac.simshared`, and its own
+`SystemSimRunner` is compiled directly with `javac` against a
+classpath the driver assembles by hand across every service's own
+`mvn dependency:build-classpath` output (no aggregator POM) — see
+each target's own M6a–M8c/d Shipped notes in `28UpdatePlan.md` for
+the full per-target design record. `scripts/sim-corpus-x5.sh` and the
+scenario reference table above both include the three multi-service
+scenarios (`sim-three-service`, `multi-service-media`,
+`inventory-system`) alongside the single-service corpus, asserting
+identical outcomes across all five targets.
 
 ## MCP `verify_sim`
 

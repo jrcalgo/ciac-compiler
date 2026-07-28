@@ -717,6 +717,54 @@ push; in-place Shipped notes).
    milestone — measurement first, so the arc's deltas mean
    something.
 
+   **Shipped (v0.29 M1) — six findings, zero fixes, as designed.**
+   `docs/dogfooding/transcripts/01-baseline.md` records the script
+   run for real against the live binary in this session's sandbox
+   (with an honest caveat: a warm `cargo`/`uv` cache, not a bare
+   machine — called out per-step where it matters). Six findings,
+   F1-F6. The two fix-now items (M2's queue): **F4**, the highest-
+   priority finding in the transcript — the scaffolded README's own
+   documented third step, `ciac verify`, fails immediately on a
+   freshly generated, untouched project with 18 ruff lint errors
+   (`B008`/`I001`/`UP037`) inside generated code the reader never
+   touched. Root cause confirmed by inspection, not guessed:
+   `crates/ciac-backend-python/templates/pyproject.toml.j2` pins
+   `"ruff>=0.6"` with no upper bound, no lockfile, and a
+   `[tool.ruff]` block that sets only `target-version` — no explicit
+   `select`. `uv run ruff --version` resolves 0.16.0 today; ruff's
+   own default/implied rule set picked up findings between whenever
+   the templates were last hand-verified and now. Confirmed not
+   scaffold-specific: the same 18 errors at the same lines reproduce
+   against the checked-in `examples/crud-notes.ciac` directly (the
+   exact program `ciac new --template crud` embeds verbatim, per
+   `docs/authoring.md`), meaning this breaks `ciac verify` on every
+   fresh Python project today, not a scaffold edge case — and no
+   existing test catches it, since `crates/ciac/tests/scaffold_cli.rs`
+   asserts scaffolds pass `ciac check` only, never `ciac verify`,
+   and CI's example sweep verifies `examples/*.ciac` without pinning
+   ruff any tighter than the template does. **F5**: `ciac dev`, run
+   exactly as the top-level README documents (no flags), produces
+   zero output for 8-20s when Docker's daemon is unreachable — a
+   realistic "clean container" state this very sandbox is in (the
+   `docker` CLI exists, no daemon) — before its own clear failure
+   message finally surfaces; `--no-docker` reports instantly but
+   isn't mentioned in the quick start. Three fix-via-rewrite items,
+   each already homed in a later milestone rather than reopened
+   here: **F1** (the `curl \| sh` 404 — expected, already disclosed
+   in 26 M8/M9, the real fix is M9's actual release cut), **F2**
+   (the `cargo install` fallback is a silent >100s wait with no
+   framing that it needs a Rust toolchain or how long it takes —
+   Pillar 2's job), **F6** (`docs/authoring.md`, read cold as
+   today's nearest guide-01 substitute, is stale — still titled
+   `v0.13` and still claims rename/code-actions are "deliberately
+   out of scope" for `ciac lsp`, false since v0.15 M7 and v0.18 —
+   Pillar 3's guide-01 supersedes it and Pillar 7's coherence pass
+   catches the staleness generally). Zero defer-with-reason items —
+   every finding had a home already. F3 is recorded as a positive
+   baseline (scaffold/check/build messaging is already good,
+   sub-10ms) so M5/M9 have something to *not* regress, not just
+   things to fix. No code changed this milestone, per M1's own rule.
+
 2. **M2 — Friction fixes, round one.** The fix-now queue
    executed: the predictable candidates (scaffold next-steps
    output, beginner error messages, dev-loop messaging,

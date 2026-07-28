@@ -1,0 +1,9 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(transaction
+    (db-insert! ArchiveEvents (record-cons ArchiveEvent (id (uuid-new)) (note_id (field-access note id))))
+    (discard (record-cons ArchiveEvent (id (uuid-new)) (note_id (field-access note id))))
+)
+(return note)

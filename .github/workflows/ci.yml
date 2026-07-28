@@ -436,6 +436,13 @@ jobs:
           cargo run -q -p ciac -- verify examples/inventory-system.ciac \
             --target python --out /tmp/gen-sim-inventory-system --sim \
             --scenario sim/inventory-system.ciac-sim.json
+          # 29UpdatePlan.md M3: the README's own walkthrough example --
+          # verified here on the same footing as every other checked-in
+          # scenario, so the README's `ciac sim` block can never drift
+          # from a scenario that actually passes.
+          cargo run -q -p ciac -- verify examples/quickstart.ciac \
+            --target python --out /tmp/gen-sim-quickstart --sim \
+            --scenario sim/quickstart.ciac-sim.json
       - name: assert no Docker container was started
         run: |
           set -euo pipefail

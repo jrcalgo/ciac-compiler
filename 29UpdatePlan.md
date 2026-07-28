@@ -833,6 +833,74 @@ push; in-place Shipped notes).
    knows what CIaC is, saw it work, and knows where the
    boundaries live.
 
+   **Shipped (v0.29 M3) — the rewrite, a real demonstration
+   example, and one incidental fix.** `README.md` went from 366
+   lines (194 of them a version-by-version history) to 203 —
+   well inside the <250 budget — following Pillar 2's own shape:
+   claim + anti-claim paragraph, a fifteen-minute walkthrough,
+   the map (five-target table plus one paragraph each for
+   simulation/deployment/evolution/the agent front door), and a
+   "where to go next" pointer section. The demonstration is a
+   new checked-in example, `examples/quickstart.ciac` — one
+   record, free `crud`, one custom handler wrapped in a
+   `transaction`, one stream, one worker — plus
+   `sim/quickstart.ciac-sim.json`, a failure-injection scenario
+   (fail the archive's own `db.commit` once, assert the audit row
+   absent, retry, assert present). Both verified live, not just
+   golden-snapshotted: `ciac check`, `ciac build`, and `ciac sim`
+   with the checked-in scenario all pass on **all five targets**
+   (python, rust, typescript, go, java) — the README's own "swap
+   `--target` and everything below still holds" claim is
+   demonstrable, not asserted, because this session ran it on
+   each target and got `[PASS] 29-m3-quickstart` every time.
+   Wired into the standing regression surface the same way every
+   prior flagship example was: added to `scripts/sim-corpus-x5.sh`
+   and to `.github/workflows/ci.yml`'s `generated-sim` job. One
+   genuinely surprising design snag, resolved and worth recording:
+   the sketch in this plan's own Pillar 2 combined an unbound
+   `crud Note;` with a hand-written `api CreateNote`, which the
+   real grammar can't do — `crud <Name>: <Record>;` owns its
+   bound record's table privately (confirmed by building
+   `examples/sqlite-notes.ciac` and inspecting the generated
+   model), so a second declaration of the same table collides.
+   The shipped example resolves this the way a real author would:
+   `crud Note: Note;` for the free CRUD surface, and a separate
+   `ArchiveEvent`/`ArchiveEvents` table for the one piece of
+   custom logic — arguably a better demonstration than the
+   sketch's own version, since it shows generated CRUD and custom
+   business logic coexisting rather than colliding. `docs/
+   history.md` now carries the old narrative essentially
+   verbatim (retitled, the version list's tail extended through
+   v0.26 to close the gap the old README's own last entry left).
+   The runnable-block annotation format is designed here (not
+   built — M4's job): an `<!-- ciac-verify:start id=NAME -->` /
+   `<!-- ciac-verify:end -->` HTML-comment pair around each
+   fenced command block, invisible in rendered Markdown and
+   trivially greppable by id — used on all four command blocks
+   in the walkthrough. Deliberately **not** linked from the new
+   README: `docs/positioning.md` (Pillar 4, lands M6) and a guide
+   series (Pillar 3, lands M4/M6) — both would be dead links
+   today, so the "where to go next" section links only what
+   exists, and the coherence pass (M6) is where those references
+   get added as the files land. One incidental fix, found while
+   writing the simulation paragraph and cross-checked against
+   `ciac sim --help`: `crates/ciac/src/main.rs`'s `Sim` subcommand
+   doc comment still claimed only `python`/`rust` fake simulation
+   capabilities (stale since 27UpdatePlan.md brought TypeScript,
+   Go, and Java to full parity) — corrected to name all five.
+   Evaluator reader-model review, stated explicitly per this
+   milestone's own bar: a reader of README.md alone now gets what
+   CIaC is (paragraph one's claim), sees it work (the walkthrough
+   ends in real, checked `[PASS]` output, not a promise), and
+   knows the boundary (the anti-claim paragraph, stated before
+   any install command). Full verification green: `cargo fmt
+   --check`, `cargo clippy --workspace --all-targets -- -D
+   warnings` (zero warnings), `cargo test --workspace` (14/14
+   test binaries `ok`, zero failures) — including 12 new golden
+   snapshots for `quickstart` (ir/dot/five gen/four host-syntax-
+   identity/one ts-client) with zero existing snapshots
+   perturbed, confirmed by diff before accepting.
+
 4. **M4 — Guides 01–03 + the veracity harness.** The first
    three guides (install/anatomy, records/CRUD, handlers/
    logic), building the continuous example; the harness

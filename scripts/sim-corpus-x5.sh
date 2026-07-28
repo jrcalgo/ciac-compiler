@@ -55,6 +55,7 @@ declare -A PROGRAM_SCENARIOS=(
     [examples/sim-three-service.ciac]="sim/sim-three-service.ciac-sim.json"
     [examples/multi-service-media.ciac]="sim/multi-service-media.ciac-sim.json"
     [examples/inventory-system.ciac]="sim/inventory-system.ciac-sim.json"
+    [examples/quickstart.ciac]="sim/quickstart.ciac-sim.json"
 )
 
 FAILED=0

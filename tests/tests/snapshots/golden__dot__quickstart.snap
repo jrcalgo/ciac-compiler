@@ -1,0 +1,24 @@
+---
+source: tests/tests/golden.rs
+expression: ir.to_dot()
+---
+digraph Notes {
+    rankdir=LR;
+    n0 [label="database default Postgres", shape=cylinder];
+    n1 [label="queue default Nats", shape=cds];
+    n2 [label="stream NoteArchived", shape=parallelogram];
+    n3 [label="api Note", shape=rarrow];
+    n4 [label="service NoteStore", shape=box];
+    n5 [label="api ArchiveNoteRoute", shape=rarrow];
+    n6 [label="worker LogArchive", shape=component];
+    n7 [label="service ArchiveNote", shape=box];
+    n8 [label="service RecordArchiveEvent", shape=box];
+    n2 -> n1 [label="DependsOn", style=dotted];
+    n3 -> n4 [label="RequestFlow", style=solid];
+    n4 -> n0 [label="DataFlow", style=bold];
+    n2 -> n6 [label="AsyncMessage", style=dashed];
+    n7 -> n0 [label="DataFlow", style=bold];
+    n5 -> n7 [label="RequestFlow", style=solid];
+    n7 -> n2 [label="AsyncMessage", style=dashed];
+    n6 -> n8 [label="RequestFlow", style=solid];
+}

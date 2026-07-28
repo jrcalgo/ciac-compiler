@@ -20,7 +20,11 @@
 // `Delete`/`List` key their own per-instance store by.
 package com.ciac.{{ java_package }}.state;
 
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import java.net.URI;
 import java.util.List;
 import java.util.stream.Collectors;

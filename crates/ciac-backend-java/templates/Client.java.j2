@@ -9,9 +9,23 @@
 // auto-instrumented by Micrometer Observation the moment the tracing
 // starter is on the classpath -- no explicit header propagation code
 // needed here.
+//
+// 28UpdatePlan.md M8b: under simulation, routes through
+// `World.callChecked` instead of a real HTTP call -- the same
+// `{"status": ..., "data": ...}` envelope every route's own response
+// body already carries, so this unwraps `["data"]` from it exactly the
+// way the real-HTTP branch unwraps `envelope.get("data")` -- same
+// post-processing, different transport (mirrors Go's own
+// `client.go.j2` M7c precedent).
 package com.ciac.{{ java_package }}.clients;
 
 import com.fasterxml.jackson.databind.JsonNode;
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
+import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -19,12 +33,26 @@ import org.springframework.web.client.RestClient;
 @Component
 public class {{ t.class_name }} {
     private final RestClient client;
+    // `null` in production; a simulation-run `World` when SimRunner
+    // manually registers one -- see `callChecked`'s own
+    // `if (world != null)` branch below.
+    private final World world;
 
-    public {{ t.class_name }}(@Value("${{ '{' }}{{ t.env_var }}:{{ t.default_url }}{{ '}' }}") String baseUrl) {
+    public {{ t.class_name }}(
+            @Value("${{ '{' }}{{ t.env_var }}:{{ t.default_url }}{{ '}' }}") String baseUrl,
+            ObjectProvider<World> worldProvider) {
         this.client = RestClient.create(baseUrl);
+        this.world = worldProvider.getIfAvailable();
     }
 {% for a in t.apis %}
     public Object {{ a.method | java_camel }}(Object payload) {
+        if (world != null) {
+            Object result = world.callChecked("{{ caller }}", "{{ t.service }}", "{{ a.name }}", payload);
+            if (result instanceof java.util.Map<?, ?> envelope) {
+                return envelope.get("data");
+            }
+            return result;
+        }
         JsonNode envelope =
                 client
                         .method(org.springframework.http.HttpMethod.{{ a.http_method_lower | upper }})

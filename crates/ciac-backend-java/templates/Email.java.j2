@@ -21,7 +21,11 @@
 // keys its own per-instance send log by.
 package com.ciac.{{ java_package }}.state;
 
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSenderImpl;

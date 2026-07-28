@@ -1971,6 +1971,233 @@ push, in-place Shipped notes).
    precedents and recorded; driver + guard; corpus green,
    identity ×5 complete; timings recorded.
 
+   **Shipped (v0.28 M8a) — `World.java`'s call router and table
+   namespacing.** `World.java.j2` gained the identical call-router
+   section TypeScript's M7a/Go's M7c already carry:
+   `ApiHandler` (a `@FunctionalInterface Object handle(Object req)`
+   — no `throws` clause, since Java signals failure by throwing
+   unchecked, matching the `RuntimeException` convention every
+   other World-internal failure already uses, unlike Go's
+   `(any, error)` return), `ApiKey` record, `MAX_CALL_DEPTH = 64`,
+   a `Map<ApiKey, ApiHandler> apis` registry, `registerApi`
+   (`synchronized`), and `callChecked(caller, calleeService, api,
+   req)` — the failure-vocabulary check and depth check happen
+   inside the monitor, but the handler itself is invoked *outside*
+   it (released before dispatch): Java's own `synchronized` is
+   reentrant on the same thread (unlike Go's `sync.Mutex`), so this
+   isn't needed to avoid self-deadlock the way Go's release is, but
+   holding it across the call would still serialize a genuinely
+   concurrent servlet thread against every other request for the
+   call's full duration — mirrored anyway for the same reason.
+   `JavaSyntax` (`lower.rs`) gained a `service_name: Option<String>`
+   field and a `world_table_key(&self, table_sql: &str) -> String`
+   method (`"{service}::{table_sql}"` when `Some`, bare otherwise),
+   applied at all 8 world-guard call sites (`db_insert_tail`,
+   `db_update_tail`, `db_delete_tail`, the `DbQuery`/`DbCount`/
+   `DbDeleteWhere` arms, `db_get_tail`) — only the
+   `world.db*Checked(...)` calls switch to the namespaced key; the
+   SQL branch beside each keeps the bare `table_sql` unconditionally,
+   same split Go's/TS's own M7c/M7a made. `sim_world_tables_multi`
+   (mirroring Go's/TS's own, modulo Java's pre-existing uppercase
+   `CASCADE`/`RESTRICT` `on_delete` spelling) was added to `lib.rs`
+   but deliberately left unwired (a disclosed, temporary `dead_code`
+   risk) until M8c's `SystemSimRunner` could consume it — the plan
+   was to commit M8a–d together as one commit to avoid ever actually
+   shipping that gap, which is what happened.
+
+   **Shipped (v0.28 M8b) — the call-client world-guard, and a
+   `_steps.java.j2` bug fixed proactively.** `Client.java.j2` gained
+   an `ObjectProvider<World> worldProvider` constructor parameter and
+   a `private final World world` field (the `Queue.java`/`Search.
+   java` precedent exactly), and each generated api method now
+   branches `if (world != null) { ... world.callChecked(caller,
+   service, api, payload) ...  unwrap "data" if the result is a
+   `Map` ... } else { ... the existing real `RestClient` call ... }`
+   — mirroring Go's own `client.go.j2` M7c guard down to the
+   envelope-unwrap shape. This branch is **not** gated on `multi`:
+   a single-service program with a `call <Service>.<Api>` target
+   gets the identical guard (harmless — `world` is always `null`
+   under single-service `SimRunner`, which never registers any api
+   against it), the same unconditional choice Go's own `client.go.j2`
+   already made. Ten templates that already imported
+   `com.ciac.<pkg>.sim.World` (`ApiController`, `AppState`, `Auth`,
+   `Email`, `ExternalHttp`, `ObjectStore`, `Queue`,
+   `ResourceController`, `Search`, `logic.java.j2`) had that import
+   gated on `multi`, switching to `com.ciac.simshared.World` in
+   multi mode; `Client.java.j2` and `SimRunner.java.j2` needed the
+   same gated import added fresh, since neither had one before. A
+   `multi: bool` parameter was threaded into `emit_service`'s shared
+   `render` closure so every template could gate on `{% if multi %}`
+   without per-call-site wiring, mirroring Go's own M7c pattern
+   exactly. Separately — found by pattern-matching against Go's own
+   M7d live-proof finding, not by hitting it live — `_steps.java.
+   j2`'s `match` step carried the identical latent bug Go's `match`
+   step had: a `((java.util.Map<?, ?>) result).get(field)` cast the
+   template's own doc comment already flagged as untested. Fixed
+   proactively, before any Java example ever reached the
+   `ClassCastException`, by switching to `(({{ payload_type }})
+   result).{{ field | java_camel }}()` when `payload_type` is
+   non-empty (the old `Map`-cast branch stays only for `Job.java.j2`'s
+   still-`payload_type = ""` context, exactly as inert as before).
+
+   **Shipped (v0.28 M8c) — `com.ciac.simshared.World`,
+   `SystemSimRunner.java`, and the packaging decision.** The
+   packaging question this milestone's own forecast flagged
+   (aggregator POM vs generalized exec arrangement) resolved in
+   favor of the latter — "Option B" — after a research pass found
+   the aggregator-POM alternative would need `mvn install` to
+   populate `~/.m2` or a `<modules>` reactor, either of which would
+   cause golden churn on every existing single-service Java example
+   just to add multi-service support. Option B needs no new `pom.xml`
+   at all: each service's own Maven build stays completely
+   untouched; a driver assembles one joined classpath by hand across
+   every service (`target/classes` + `target/test-classes`, plus
+   `mvn dependency:build-classpath`'s own jar list), compiles the one
+   new `SystemSimRunner.java` directly with `javac` against it, and
+   runs it with a plain `java -cp` — no Maven at all for the run
+   phase, the closest of any of the five targets' own system-runners
+   to Python's own `PYTHONPATH`-union approach.
+
+   Since Java has no `go.mod` `replace` directive or npm `file:`
+   dependency to make one physical `World` type resolvable across N
+   independently-built projects, `World.java` (which takes no
+   per-service template variable) is instead **physically
+   duplicated, byte-identical**, into every service's own
+   `src/main/java/com/ciac/simshared/World.java` at generation time
+   — package `com.ciac.simshared`, never `com.ciac.<service>.sim`,
+   so every service and the driver-compiled `SystemSimRunner` agree
+   on one nominal type. This works because every copy compiles to
+   the byte-identical `.class` file; whichever copy a classpath
+   resolves first is interchangeable with any other — confirmed live
+   (`md5sum` across all N copies in a real multi-service build).
+   `World.java`'s own emission gate gained
+   `|| !ctx.call_targets.is_empty()`, closing the same gap Rust's/
+   TS's/Go's own M6a/M7a checkpoints already found: a service
+   reachable only via a routed call from another service (no local
+   db/queue/etc. of its own) still needs a world instance to
+   register its handlers against. `SimRunner.java` is still emitted
+   per service even in multi mode (harmless, unused by
+   `SystemSimRunner`, kept for single-service-within-a-system build
+   symmetry, mirroring Go's own M7c precedent) and now imports the
+   shared `World` type explicitly, since it no longer shares a
+   package with it.
+
+   `SystemSimRunner.java.j2` (new template, ~600 lines) generalizes
+   `SimRunner.java.j2`'s single-service interpreter across every
+   service: one shared `World`; N independent
+   `AnnotationConfigApplicationContext`s (one per service, each
+   scanning only that service's own packages and registering the
+   same `world` bean, mirroring `SimRunner`'s own scan-and-register
+   exactly); N `MockMvc` instances built from each context's own
+   `@RestController`s; every api of every service registered on the
+   shared world's call router in declaration order, each handler a
+   lambda invoking that service's own `MockMvc` and converting the
+   JSON response body to a raw `Map` (so `Client.java.j2`'s own
+   `instanceof java.util.Map<?, ?>` unwrap succeeds identically to
+   the routed-Go/TS case). Every per-service class (workers, jobs,
+   payload schema types) is referenced by fully-qualified name,
+   never imported — two services may legitimately declare a worker
+   or job with the same simple class name, and Java's `import` has
+   no `as`-rename escape hatch the way TypeScript's `import { X as
+   Y }` gives `system_sim_runner.ts.j2` for the identical problem;
+   qualifying by FQN sidesteps the collision entirely. Emitted at
+   the system root (`system-runner/SystemSimRunner.java`, no package
+   of its own), not inside any one service's own Maven tree, since
+   it needs to import every service at once.
+
+   Hand-verified end to end before any driver wiring existed: for
+   each of the three system scenarios, ran `./mvnw test-compile` +
+   `./mvnw dependency:build-classpath` per service, joined the
+   classpaths by hand, `javac`-compiled `SystemSimRunner.java`
+   against the join, and ran it with `java -cp`. Found and fixed one
+   real bug this way — a `MockMvc registeredMvc = mvc;` local
+   variable declared once per registered api inside the same
+   enclosing per-service block collided (`variable registeredMvc is
+   already defined`) the moment a service declared more than one
+   api (surfaced first on `inventory-system`, which has two);
+   `mvc` itself is effectively final and already in scope, so the
+   fix was simply to drop the redundant local and capture `mvc`
+   directly in the lambda. With the fix in, all three scenarios
+   compiled and passed on the very first re-run — cross-service
+   routing, failure injection (`sim-three-service`'s own injected
+   `call.request` failure), and group-aware worker fan-out
+   (`multi-service-media`'s `Transcode`/`Notify` chain) all correct
+   with zero further debugging.
+
+   **Shipped (v0.28 M8d) — driver wiring, live CLI proof, five-way
+   identity, and M8 close-out.** `sim_drive_java` gained the
+   identical `_single`/`_multi` split every other target's driver
+   already carries: `find_project_dirs(out, "pom.xml")` dispatches
+   to `sim_drive_java_single` (unchanged body) for exactly one
+   project or `sim_drive_java_multi` for more than one.
+   `sim_drive_java_multi` is this target's own version of the M8c
+   hand-verification, made real: per service, `./mvnw test-compile`
+   then `./mvnw dependency:build-classpath` (to a per-service temp
+   file under that service's own `target/`), building one joined
+   classpath string; `javac -cp <joined> -d system-runner/target/
+   classes SystemSimRunner.java`; then, per `--scenario`, a plain
+   `java -cp <compiled>:<joined> SystemSimRunner <scenario>` —
+   exactly the sequence M8c had already proven by hand, now driven
+   by the real CLI.
+
+   Live-proofed through the real `ciac sim --target java` CLI
+   against all three system scenarios, each from a clean `--out`
+   directory: `multi-service-media` `[PASS]` (~83s), `inventory-
+   system` `[PASS]` (~44s), `sim-three-service` `[PASS]` (~55s) —
+   noticeably slower than Go's/Rust's own sub-2s timings, since each
+   service needs two separate `./mvnw` invocations (`test-compile`
+   and `dependency:build-classpath`) before `javac`/`java` ever run;
+   disclosed as a known, accepted cost of Option B's no-reactor
+   design, not a regression to chase down — the same cold-toolchain
+   tradeoff TS's own M7b timings (31–72s under `npm ci`) already
+   established as acceptable for this milestone's scope. Ran a
+   five-way identity comparison (Python/Rust/TypeScript/Go/Java)
+   across all three scenarios via `ciac sim --json`, canonicalized
+   and hashed: Java's own output is **byte-identical** to Rust's/
+   TypeScript's/Go's on all three scenarios; Python's own `multi-
+   service-media` outcome still carries the one extra `DeadLetterSink:
+   0` zero-attempt key the other four targets' maps omit, the same
+   pre-existing, already-disclosed cosmetic non-finding M6d/M7b/M7d's
+   own notes already recorded, confirmed to still hold with a fifth
+   target added.
+
+   The one piece of churn this milestone's own final verification
+   pass surfaced, not caught earlier because M8a–c were built and
+   compiled but never run through the full golden-snapshot suite
+   until this step: 25 of the corpus's Java example snapshots
+   changed. Every example with a `World.java` at all (db/queue/
+   cache/object_store/email/search/external_http/auth, or now a
+   call target) picked up M8a's call-router addition — unconditional,
+   not gated on `multi`, the same "the router lands everywhere, not
+   just multi-service" shape TypeScript's/Go's own M7a/M7c call-
+   router landings already established; single-service examples with
+   a `call <Service>.<Api>` target (`traced-checkout`'s
+   `PaymentsClient`, calling `Payments.Charge`) additionally picked
+   up M8b's `ObjectProvider<World>`/`callChecked` branch. The four
+   already-multi-service examples in the corpus (`audited-crud`,
+   `multi-service-media`, `inventory-system`, `sim-three-service`)
+   carry the largest diffs, from `com.ciac.simshared.World`'s package
+   relocation plus the new `SystemSimRunner.java` file set. Every
+   diff was reviewed by hand against the M8a/M8b/M8c changes that
+   produced it before regenerating (`cargo insta`, `INSTA_UPDATE=
+   always`); none was unexplained. `cargo fmt --check`, `cargo
+   clippy --workspace --all-targets` (zero warnings), and a full
+   `cargo test --workspace --no-fail-fast` (skipping the same
+   standing, pre-existing, already-disclosed `backfill_cli`
+   ruff-drift case every prior milestone's own note excludes) all
+   ran clean afterward — `EXIT_CODE:0`, zero other `FAILED` lines.
+
+   This closes M8 in full: Java composition now has implementation
+   (M8a/M8b), the `SystemSimRunner`/packaging design (M8c), and
+   driver wiring plus live CLI/identity proof (M8d) all done, the
+   same four-part shape Go's own M7 closed with — no correctness bug
+   was ever caught live this time (the one real Java-specific bug,
+   the duplicate `registeredMvc` local, was caught during M8c's own
+   hand-verification, before any driver code existed to hide it
+   behind), and the one proactive fix (`_steps.java.j2`'s `match`
+   step) was applied from Go's own M7d finding rather than
+   rediscovered the hard way.
+
 9. **M9 — Close-out: ×5 identity, docs, ledger, version,
    retrospective.** The full system corpus asserted identical
    ×5 in the harness (now a standing CI surface via the

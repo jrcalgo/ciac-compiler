@@ -28,7 +28,11 @@ import com.ciac.{{ java_package }}.schemas.RowMappers;
 import org.springframework.jdbc.core.simple.JdbcClient;
 {%- endif %}
 {%- if needs_world %}
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import org.springframework.beans.factory.ObjectProvider;
 {%- endif %}
 {%- if handler.needs_db or handler.needs_cache %}

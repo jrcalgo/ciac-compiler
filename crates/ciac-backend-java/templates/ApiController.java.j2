@@ -18,7 +18,11 @@ import com.ciac.{{ java_package }}.{{ handler.handler_package }}.{{ handler.clas
 import com.ciac.{{ java_package }}.clients.{{ call.class_name }};
 {%- endfor %}
 {%- if api.has_auth_step %}
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.oauth2.jwt.Jwt;

@@ -2101,30 +2101,41 @@ fn java_sim_runner_exists(project_dir: &Path) -> bool {
 /// exec:java` (the pom's own `exec-maven-plugin`, preconfigured with
 /// `SimRunner`'s main class and the `test` classpath scope) once per
 /// scenario.
+///
+/// 28UpdatePlan.md M8d: dispatches to [`sim_drive_java_multi`] for a
+/// multi-service system, mirroring [`sim_drive_rust`]/
+/// [`sim_drive_typescript`]/[`sim_drive_go`]'s own `_single`/`_multi`
+/// split exactly.
 fn sim_drive_java(
     out: &Path,
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
     let projects = find_project_dirs(out, "pom.xml")?;
-    let project_dir = match projects.as_slice() {
-        [] => bail!("no generated java project found under {}", out.display()),
-        [one] => one.clone(),
-        many => bail!(
-            "`ciac sim` only supports a single-service Java project in v0.25 (found {} under {}); \
-             see docs/simulation.md",
-            many.len(),
-            out.display()
-        ),
-    };
-    if !java_sim_runner_exists(&project_dir) {
+    if projects.is_empty() {
+        bail!("no generated java project found under {}", out.display());
+    }
+    if let [project_dir] = projects.as_slice() {
+        return sim_drive_java_single(project_dir, scenarios, wall_timeout);
+    }
+    sim_drive_java_multi(out, &projects, scenarios, wall_timeout)
+}
+
+/// The single-service path, unchanged in shape from before 28's M8d
+/// (`sim_drive_java` used to be this function's own body directly).
+fn sim_drive_java_single(
+    project_dir: &Path,
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    if !java_sim_runner_exists(project_dir) {
         bail!(
             "no `SimRunner.java` under {} -- this program declares nothing v0.25 M9's simulation \
              world can fake (no `db`/`queue` use); see docs/simulation.md",
             project_dir.display()
         );
     }
-    run_in(&project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
+    run_in(project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
 
     let mut scenario_outcomes = Vec::new();
     for scenario_path in scenarios {
@@ -2135,7 +2146,7 @@ fn sim_drive_java(
             .arg("-B")
             .arg("exec:java")
             .arg(&scenario_arg)
-            .current_dir(&project_dir);
+            .current_dir(project_dir);
 
         let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
             format!(
@@ -2160,6 +2171,141 @@ fn sim_drive_java(
             .with_context(|| {
                 format!(
                     "cannot parse SimRunner's result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// 28UpdatePlan.md M8c/M8d: N services, one shared world, one process --
+/// `system-runner/SystemSimRunner.java` (see the template's own doc
+/// comment) is a single source file `JavaBackend::generate` already
+/// wrote at the system root. Unlike Go's `sim-shared` module (resolved
+/// via a `go.mod` `replace` directive) or TypeScript's `sim-shared` npm
+/// package (resolved via a `file:` dependency), Java has no reactor/
+/// aggregator pom joining N independently-built Maven services here
+/// (28UpdatePlan.md M8c's own packaging decision, "Option B" --
+/// surveyed against a reactor-pom alternative and rejected because it
+/// would need `mvn install` to populate `~/.m2` or a `<modules>`
+/// reactor, either of which would cause golden churn on every existing
+/// single-service Java example): each service's own Maven build stays
+/// completely untouched, and this driver instead assembles one joined
+/// classpath by hand across every service -- `target/classes` +
+/// `target/test-classes` (populated by that service's own `./mvnw
+/// test-compile`) plus that service's own dependency jars (`./mvnw
+/// dependency:build-classpath`) -- then compiles `SystemSimRunner.java`
+/// directly with `javac` against it and runs it with a plain `java -cp`,
+/// no Maven at all for the run phase. This is the most faithful analogue
+/// of Python's own `PYTHONPATH`-union approach in
+/// [`sim_drive_python_multi`] of any of the five targets' own
+/// multi-service drivers.
+fn sim_drive_java_multi(
+    out: &Path,
+    projects: &[PathBuf],
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let runner_dir = out.join("system-runner");
+    let runner_src = runner_dir.join("SystemSimRunner.java");
+    if !runner_src.is_file() {
+        bail!(
+            "no `system-runner/SystemSimRunner.java` under {} -- this system declares nothing \
+             28UpdatePlan.md M8's simulation world can fake in any service (no `db`/`queue`/... \
+             use anywhere); see docs/simulation.md (found {} generated project(s) under this \
+             system's --out)",
+            out.display(),
+            projects.len()
+        );
+    }
+
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let mut classpath_entries: Vec<String> = Vec::new();
+    for project_dir in projects {
+        run_in(project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
+        let cp_file = project_dir.join("target").join("ciac-sim-classpath.txt");
+        let cp_arg = format!("-Dmdep.outputFile={}", cp_file.display());
+        let status = run_streamed(
+            Command::new("./mvnw")
+                .args(["-q", "-B", "dependency:build-classpath", &cp_arg])
+                .current_dir(project_dir),
+        )
+        .with_context(|| {
+            format!(
+                "failed to run `./mvnw dependency:build-classpath` in {}",
+                project_dir.display()
+            )
+        })?;
+        if !status.success() {
+            bail!(
+                "`./mvnw dependency:build-classpath` failed in {}",
+                project_dir.display()
+            );
+        }
+        let deps = std::fs::read_to_string(&cp_file)
+            .with_context(|| format!("reading Maven classpath output {}", cp_file.display()))?;
+        classpath_entries.push(project_dir.join("target/classes").display().to_string());
+        classpath_entries.push(
+            project_dir
+                .join("target/test-classes")
+                .display()
+                .to_string(),
+        );
+        classpath_entries.push(deps.trim().to_owned());
+    }
+    let joined_classpath = classpath_entries.join(sep);
+
+    let compiled_dir = runner_dir.join("target/classes");
+    std::fs::create_dir_all(&compiled_dir)
+        .with_context(|| format!("creating {}", compiled_dir.display()))?;
+    let compiled_dir_str = compiled_dir
+        .to_str()
+        .context("system-runner output directory is not valid UTF-8")?;
+    run_in(
+        &runner_dir,
+        "javac",
+        &[
+            "-cp",
+            &joined_classpath,
+            "-d",
+            compiled_dir_str,
+            "SystemSimRunner.java",
+        ],
+    )?;
+
+    let full_classpath = format!("{}{sep}{joined_classpath}", compiled_dir.display());
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = Command::new("java");
+        cmd.args(["-cp", &full_classpath, "SystemSimRunner"])
+            .arg(&scenario_abs)
+            .current_dir(&runner_dir);
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run SystemSimRunner for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "SystemSimRunner for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse SystemSimRunner's result for scenario {}: {last_line:?}",
                     scenario_path.display()
                 )
             })?;

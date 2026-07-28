@@ -29,7 +29,11 @@
 package com.ciac.{{ java_package }}.state;
 
 import com.ciac.{{ java_package }}.schemas.Schemas;
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import com.fasterxml.jackson.databind.JsonNode;
 import java.net.URI;
 import java.net.http.HttpClient;

@@ -14,7 +14,11 @@
 // infrastructure-free regardless of engine.
 package com.ciac.{{ java_package }}.state;
 
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import java.util.Map;
 import org.springframework.beans.factory.ObjectProvider;
 

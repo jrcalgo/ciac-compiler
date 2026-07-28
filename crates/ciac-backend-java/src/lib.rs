@@ -194,6 +194,64 @@ fn sim_world_tables(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
         .collect()
 }
 
+/// Multi-service counterpart of [`sim_world_tables`]: the SystemSimRunner's
+/// one shared `World` (28UpdatePlan.md M8) needs every table name -- and
+/// every foreign key's `target_table` -- spelled the same namespaced way
+/// `lower.rs`'s own `world_table_key` composes them at typed-handler
+/// lowering time (`"{service}::{table}"`, via `World.namespacedTableKey`),
+/// or a reference/uniqueness check would silently look up a table the world
+/// never registered. Builds a `physical table name -> owning service` map
+/// from `ir.tables()` directly (mirrors `ciac-backend-rust`'s/
+/// `ciac-backend-go`'s own `sim_world_tables_multi` exactly, modulo the
+/// uppercase `on_delete` spelling this backend's own `sim_world_tables`
+/// already established). A compiler-owned link table (`orders__line_items`)
+/// carries no `Table` node of its own; its prefix (`orders`) is always its
+/// source table's physical name, so the same map resolves it too.
+fn sim_world_tables_multi(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    use heck::ToSnakeCase;
+
+    let mut owner_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (_, table) in ir.tables() {
+        if let Some(sid) = table.service {
+            owner_of.insert(table.name.to_snake_case(), ir.service(sid).name.clone());
+        }
+    }
+    let namespace = |physical: &str| -> String {
+        let key = physical
+            .split_once("__")
+            .map_or(physical, |(prefix, _)| prefix);
+        match owner_of.get(key) {
+            Some(service) => format!("{service}::{physical}"),
+            None => physical.to_owned(),
+        }
+    };
+
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(namespace(&fk.target_table)),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "CASCADE"
+                    } else {
+                        "RESTRICT"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx {
+                name: namespace(&name),
+                references,
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Default)]
 pub struct JavaBackend;
 
@@ -322,7 +380,7 @@ impl Backend for JavaBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ir, ctx, &prefix, &mut project)?;
+            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
         if model.multi {
             // No system-level README template -- matching Go's/TS's
@@ -342,6 +400,36 @@ impl Backend for JavaBackend {
                 "openapi.json",
                 serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
                     .map_err(|e| BackendError::Other(e.to_string()))?,
+            );
+            // 28UpdatePlan.md M8c: `system-runner/SystemSimRunner.java`
+            // -- one shared driver for every `--scenario` run across
+            // the whole system, compiled directly by `commands.rs`'s
+            // own `sim_drive_java_multi` against a driver-assembled
+            // classpath (Option B, no aggregator pom -- see the
+            // template's own doc comment). Each service's own `Ctx`
+            // gains a `java_package` field here (the same
+            // underscore-stripped name `emit_service` computes for
+            // itself) since the template needs it to spell every
+            // service's own fully-qualified class references.
+            let system_services: Vec<minijinja::Value> = model
+                .services
+                .iter()
+                .map(|ctx| {
+                    let java_package = ctx.module.replace('_', "");
+                    context! { java_package => java_package, ..minijinja::Value::from_serialize(ctx) }
+                })
+                .collect();
+            project.add_file(
+                "system-runner/SystemSimRunner.java",
+                google_java_format(
+                    &env.get_template("SystemSimRunner.java.j2")
+                        .map_err(BackendError::Template)?
+                        .render(context! {
+                            services => system_services,
+                            sim_world_tables => sim_world_tables_multi(ir),
+                        })
+                        .map_err(BackendError::Template)?,
+                )?,
             );
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
@@ -376,6 +464,7 @@ fn emit_service(
     env: &minijinja::Environment<'_>,
     ir: &NormalizedIr,
     ctx: &context::Ctx,
+    multi: bool,
     prefix: &str,
     project: &mut GeneratedProject,
 ) -> Result<(), BackendError> {
@@ -391,7 +480,7 @@ fn emit_service(
     let render = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
         env.get_template(name)
             .map_err(BackendError::Template)?
-            .render(context! { c => ctx, java_package => java_package, ..extra })
+            .render(context! { c => ctx, java_package => java_package, multi, ..extra })
             .map_err(BackendError::Template)
     };
     // No hand-written Jinja template can reproduce
@@ -659,6 +748,20 @@ fn emit_service(
     // `has_db or has_queue` to the full 8-condition check, matching
     // TypeScript's/Go's own M6/M7 fix, now that `World.java` fakes
     // every capability, not just db.insert/publish.
+    //
+    // 28UpdatePlan.md M8c: `|| !ctx.call_targets.is_empty()` closes the
+    // same gap Rust's/TypeScript's/Go's own M6a/M7a checkpoints already
+    // found -- a service reachable only via a routed `call` from
+    // another service (no local db/queue/etc. of its own) still needs a
+    // world instance to register its handlers against. `World.java`
+    // itself is emitted at `com.ciac.simshared.World` (physically
+    // duplicated per service -- see the template's own doc comment) in
+    // multi mode instead of `com.ciac.<pkg>.sim.World`; `SimRunner.java`
+    // is still emitted per service even in multi mode (mirroring Go's
+    // own M7c precedent: harmless, unused by `SystemSimRunner`, kept
+    // for single-service-within-a-system build/test symmetry) and
+    // imports the shared `World` type explicitly since it no longer
+    // shares a package with it.
     if ctx.has_db
         || ctx.has_queue
         || ctx.has_cache
@@ -667,11 +770,14 @@ fn emit_service(
         || ctx.has_search
         || ctx.has_external_http
         || ctx.has_auth
+        || !ctx.call_targets.is_empty()
     {
-        project.add_file(
-            at(&format!("{java_root}/sim/World.java")),
-            render_java("World.java.j2", empty())?,
-        );
+        let world_path = if multi {
+            format!("{prefix}src/main/java/com/ciac/simshared/World.java")
+        } else {
+            at(&format!("{java_root}/sim/World.java"))
+        };
+        project.add_file(world_path, render_java("World.java.j2", empty())?);
         project.add_file(
             at(&format!("{test_root}/sim/SimRunner.java")),
             render_java(
@@ -720,7 +826,10 @@ fn emit_service(
                 "{java_root}/clients/{}.java",
                 target.class_name.clone()
             )),
-            render_java("Client.java.j2", context! { t => target })?,
+            render_java(
+                "Client.java.j2",
+                context! { t => target, caller => ctx.service_name },
+            )?,
         );
     }
 
@@ -754,8 +863,9 @@ fn emit_service(
             _ => None,
         })
         .collect();
+    let service_for_sim = multi.then_some(ctx.service_name.as_str());
     for (name, hir) in &typed_handlers {
-        let handler = lower::render(ir, name, hir);
+        let handler = lower::render(ir, name, hir, service_for_sim);
         let content = render_java(
             "logic.java.j2",
             context! { handler => minijinja::Value::from_serialize(&handler) },

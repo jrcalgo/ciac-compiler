@@ -12,7 +12,11 @@ import com.ciac.{{ java_package }}.schemas.{{ resource.name }}In;
 import com.ciac.{{ java_package }}.services.{{ resource.store_class }};
 import com.fasterxml.jackson.databind.JsonNode;
 {%- if resource.has_auth %}
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import jakarta.servlet.http.HttpServletRequest;
 {%- endif %}
 import org.springframework.http.HttpStatus;

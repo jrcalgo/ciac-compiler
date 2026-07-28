@@ -237,6 +237,14 @@ struct JavaSyntax<'a> {
     record_by_name: HashMap<String, RecordId>,
     tmp: Cell<u32>,
     branching_locals: HashMap<String, HirType>,
+    /// 28UpdatePlan.md M8a: this handler's own service name in a
+    /// multi-service system (`None` for a single-service program) —
+    /// mirrors `ciac-backend-rust`'s `RustSyntax::service_name`/
+    /// `ciac-backend-ts`'s `TsSyntax.service_name`/`ciac-backend-go`'s
+    /// `GoSyntax::service_name` exactly. Feeds
+    /// [`Self::world_table_key`], the same namespacing composition
+    /// those three backends' own lowering already applies.
+    service_name: Option<String>,
 }
 
 impl JavaSyntax<'_> {
@@ -248,6 +256,21 @@ impl JavaSyntax<'_> {
 
     fn jdbc(&self) -> &str {
         "jdbc"
+    }
+
+    /// Composes the namespaced key every world-guard db-verb branch
+    /// addresses through — `"{service}::{table_sql}"`, degenerating to
+    /// the bare `table_sql` when `service_name` is `None` (single-
+    /// service mode; the real-SQL branch beside each of these call
+    /// sites keeps using the bare `table_sql` unconditionally
+    /// regardless, since the physical table itself is never
+    /// namespaced). Mirrors `RustSyntax::world_table_key`/
+    /// `TsSyntax::world_table_key`/`GoSyntax::world_table_key` exactly.
+    fn world_table_key(&self, table_sql: &str) -> String {
+        match &self.service_name {
+            Some(service) => format!("{service}::{table_sql}"),
+            None => table_sql.to_owned(),
+        }
     }
 
     /// A field's write-side bind expression: the Java record accessor
@@ -522,6 +545,7 @@ impl HostSyntax for JavaSyntax<'_> {
     ) -> Vec<String> {
         let row = self.fresh("__row");
         let table_sql = table_sql_name(self.ir, table);
+        let world_key = self.world_table_key(&table_sql);
         let record = context::build_record(self.ir, self.ir.table(table).record);
         let engine = table_db_engine(self.ir, table);
         let placeholders: Vec<&str> = record
@@ -548,7 +572,7 @@ impl HostSyntax for JavaSyntax<'_> {
         let mut out = vec![format!("{indent}var {row} = {value};")];
         out.push(format!("{indent}if (world != null) {{"));
         out.push(format!(
-            "{inner_indent}world.dbInsertChecked({table_sql:?}, {row});"
+            "{inner_indent}world.dbInsertChecked({world_key:?}, {row});"
         ));
         out.push(format!("{indent}}} else {{"));
         out.push(format!(
@@ -597,6 +621,7 @@ impl HostSyntax for JavaSyntax<'_> {
     ) -> Vec<String> {
         let row = self.fresh("__row");
         let table_sql = table_sql_name(self.ir, table);
+        let world_key = self.world_table_key(&table_sql);
         let record = context::build_record(self.ir, self.ir.table(table).record);
         let record_name = self.ir.record(self.ir.table(table).record).name.clone();
         let engine = table_db_engine(self.ir, table);
@@ -619,7 +644,7 @@ impl HostSyntax for JavaSyntax<'_> {
         ];
         let updated = self.fresh("__updated");
         out.push(format!(
-            "{indent}    var {updated} = world.dbUpdateChecked({table_sql:?}, {key}, Schemas.MAPPER.convertValue({row}, java.util.Map.class));"
+            "{indent}    var {updated} = world.dbUpdateChecked({world_key:?}, {key}, Schemas.MAPPER.convertValue({row}, java.util.Map.class));"
         ));
         out.push(format!(
             "{indent}    {result} = Schemas.MAPPER.convertValue({updated}, {record_name}.class);"
@@ -650,12 +675,13 @@ impl HostSyntax for JavaSyntax<'_> {
         _in_tx: bool,
     ) -> Vec<String> {
         let table_sql = table_sql_name(self.ir, table);
+        let world_key = self.world_table_key(&table_sql);
         let sql = jdbcph(&format!("DELETE FROM {table_sql} WHERE id = ?"));
         let result = self.fresh("__deleted");
         let mut out = vec![
             format!("{indent}boolean {result};"),
             format!("{indent}if (world != null) {{"),
-            format!("{indent}    {result} = world.dbDeleteChecked({table_sql:?}, {key});"),
+            format!("{indent}    {result} = world.dbDeleteChecked({world_key:?}, {key});"),
             format!("{indent}}} else {{"),
         ];
         let n = self.fresh("__n");
@@ -692,6 +718,7 @@ impl HostSyntax for JavaSyntax<'_> {
         match verb {
             Verb::DbQuery(table) => {
                 let table_sql = table_sql_name(self.ir, table);
+                let world_key = self.world_table_key(&table_sql);
                 let record = context::build_record(self.ir, self.ir.table(table).record);
                 let record_name = self.ir.record(self.ir.table(table).record).name.clone();
                 let (where_sql, binds) = self.where_clause(predicate);
@@ -709,7 +736,7 @@ impl HostSyntax for JavaSyntax<'_> {
                 ];
                 let rows = self.fresh("__rawRows");
                 out.push(format!(
-                    "{indent}    for (java.util.Map<String, Object> {rows} : world.dbQuery({table_sql:?}, row -> {world_pred})) {{"
+                    "{indent}    for (java.util.Map<String, Object> {rows} : world.dbQuery({world_key:?}, row -> {world_pred})) {{"
                 ));
                 out.push(format!(
                     "{indent}        {out_var}.add(Schemas.MAPPER.convertValue({rows}, {record_name}.class));"
@@ -730,6 +757,7 @@ impl HostSyntax for JavaSyntax<'_> {
             }
             Verb::DbCount(table) => {
                 let table_sql = table_sql_name(self.ir, table);
+                let world_key = self.world_table_key(&table_sql);
                 let (where_sql, binds) = self.where_clause(predicate);
                 let sql = jdbcph(&format!("SELECT COUNT(*) FROM {table_sql}{where_sql}"));
                 let world_pred = world_predicate_expr(predicate);
@@ -738,7 +766,7 @@ impl HostSyntax for JavaSyntax<'_> {
                     format!("{indent}long {count};"),
                     format!("{indent}if (world != null) {{"),
                     format!(
-                        "{indent}    {count} = world.dbCount({table_sql:?}, row -> {world_pred});"
+                        "{indent}    {count} = world.dbCount({world_key:?}, row -> {world_pred});"
                     ),
                     format!("{indent}}} else {{"),
                 ];
@@ -755,6 +783,7 @@ impl HostSyntax for JavaSyntax<'_> {
             }
             Verb::DbDeleteWhere(table) => {
                 let table_sql = table_sql_name(self.ir, table);
+                let world_key = self.world_table_key(&table_sql);
                 let (where_sql, binds) = self.where_clause(predicate);
                 let sql = jdbcph(&format!("DELETE FROM {table_sql}{where_sql}"));
                 let world_pred = world_predicate_expr(predicate);
@@ -765,10 +794,10 @@ impl HostSyntax for JavaSyntax<'_> {
                 ];
                 let ids = self.fresh("__ids");
                 out.push(format!(
-                    "{indent}    var {ids} = world.dbMatchingIds({table_sql:?}, row -> {world_pred});"
+                    "{indent}    var {ids} = world.dbMatchingIds({world_key:?}, row -> {world_pred});"
                 ));
                 out.push(format!(
-                    "{indent}    for (String __id : {ids}) {{ world.dbDeleteChecked({table_sql:?}, __id); }}"
+                    "{indent}    for (String __id : {ids}) {{ world.dbDeleteChecked({world_key:?}, __id); }}"
                 ));
                 out.push(format!("{indent}    {n} = {ids}.size();"));
                 out.push(format!("{indent}}} else {{"));
@@ -915,13 +944,14 @@ impl HostSyntax for JavaSyntax<'_> {
     /// `Schemas.MAPPER.convertValue`, which is null-safe.
     fn db_get_tail(&self, table: TableId, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
         let table_sql = table_sql_name(self.ir, table);
+        let world_key = self.world_table_key(&table_sql);
         let record_name = self.ir.record(self.ir.table(table).record).name.clone();
         let result = self.fresh("__result");
         let mut out = vec![
             format!("{indent}{record_name} {result};"),
             format!("{indent}if (world != null) {{"),
             format!(
-                "{indent}    {result} = Schemas.MAPPER.convertValue(world.dbGet({table_sql:?}, {key}), {record_name}.class);"
+                "{indent}    {result} = Schemas.MAPPER.convertValue(world.dbGet({world_key:?}, {key}), {record_name}.class);"
             ),
             format!("{indent}}} else {{"),
             format!("{indent}    {result} = {};", self.db_get(table, key)),
@@ -1228,7 +1258,12 @@ pub struct LogicFileCtx {
 
 /// Builds the render context for one typed handler node. `name` is the
 /// handler's declared name (`node.component.name()`).
-pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx {
+pub fn render(
+    ir: &NormalizedIr,
+    name: &str,
+    hir: &HandlerBody,
+    service_name: Option<&str>,
+) -> LogicFileCtx {
     let needs = scan(ir, hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
@@ -1280,6 +1315,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
                 record_by_name,
                 tmp: Cell::new(0),
                 branching_locals: branching.iter().cloned().collect(),
+                service_name: service_name.map(str::to_owned),
             };
             lower::lower_body_stmt(&syntax, ir, hir, "        ")
         }

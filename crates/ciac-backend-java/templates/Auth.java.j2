@@ -21,7 +21,11 @@
 // `getClaimAsStringList` calls work identically regardless of path.
 package com.ciac.{{ java_package }}.routes;
 
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;

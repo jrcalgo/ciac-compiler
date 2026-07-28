@@ -17,7 +17,11 @@
 // `httpRequestCount` key their own per-instance fixture queues by.
 package com.ciac.{{ java_package }}.state;
 
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.client.RestClient;

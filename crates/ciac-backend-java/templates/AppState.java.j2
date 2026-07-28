@@ -25,7 +25,11 @@ import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactor
 import org.springframework.data.redis.core.StringRedisTemplate;
 {%- endif %}
 {%- if c.has_object_store or c.has_email or c.has_search or c.has_external_http %}
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
 import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import org.springframework.beans.factory.ObjectProvider;
 {%- endif %}
 import org.springframework.beans.factory.annotation.Qualifier;

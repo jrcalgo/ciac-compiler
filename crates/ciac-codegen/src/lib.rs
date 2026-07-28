@@ -19,6 +19,7 @@ pub mod compose;
 pub mod emit;
 pub mod evolution;
 pub mod external;
+pub mod format_batch;
 pub mod k8s;
 pub mod lower;
 pub mod manifest;

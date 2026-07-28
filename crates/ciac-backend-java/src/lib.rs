@@ -991,116 +991,49 @@ fn vendored_jar_path() -> Result<std::path::PathBuf, BackendError> {
     Ok(path)
 }
 
-/// A scratch directory unique to this call, safe under concurrent
-/// `generate()` calls from multiple threads in the same process (the
-/// test suite does exactly that) and across processes (the pid
-/// component).
-fn scratch_dir() -> std::path::PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("ciac-java-fmt-{}-{n}", std::process::id()))
-}
-
 /// Batch-formats every `.java` file this backend just generated through
 /// one `google-java-format -i @argfile` invocation instead of one JVM
 /// spawn per file (`30UpdatePlan.md` M2, the dominant fix in the arc:
 /// per-file stdin formatting cost ~0.51s/file regardless of size —
 /// mostly JVM startup and javac-internals classload — so a 40-file
 /// `order-system.ciac` Java build paid ~20s in formatter spawns alone).
-/// Verified live before this landed: `-i @argfile` tolerates files
-/// whose real relative path doesn't match their `package` declaration
-/// (formatting is purely syntactic, not a compile), so files are
-/// written into the scratch directory at their real project-relative
-/// path rather than flattened by index — simpler, and it sidesteps the
-/// question entirely. Output was also verified byte-identical to the
-/// old per-file-stdin path against 12 real generated files before this
-/// replaced it; the golden suite is the ongoing proof of that.
+/// The batching machinery itself lives in `ciac_codegen::format_batch`
+/// (M3 generalized it so Go's `gofmt` could share it); this function is
+/// only the Java-specific configuration: which files to match, and how
+/// to invoke `google-java-format` given the scratch directory and file
+/// list `format_batch` already wrote out. `@argfile` is used
+/// unconditionally (not just past `ARG_MAX`) since it costs nothing on
+/// small batches and removes a size-dependent code path entirely.
 fn format_all_java(project: &mut GeneratedProject) -> Result<(), BackendError> {
-    let java_files: Vec<(String, String)> = project
-        .files()
-        .filter(|(path, _)| path.ends_with(".java"))
-        .map(|(path, content)| (path.to_owned(), content.to_owned()))
-        .collect();
-    if java_files.is_empty() {
-        return Ok(());
-    }
-
-    let scratch = scratch_dir();
-    let result = format_all_java_in(&scratch, &java_files, project);
-    std::fs::remove_dir_all(&scratch).ok();
-    result
-}
-
-fn format_all_java_in(
-    scratch: &std::path::Path,
-    java_files: &[(String, String)],
-    project: &mut GeneratedProject,
-) -> Result<(), BackendError> {
-    let mut path_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut argfile_lines = String::new();
-    for (rel, content) in java_files {
-        let scratch_path = scratch.join(rel);
-        if let Some(parent) = scratch_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                BackendError::Other(format!("creating java-format scratch dir: {e}"))
-            })?;
-        }
-        std::fs::write(&scratch_path, content)
-            .map_err(|e| BackendError::Other(format!("writing java-format scratch file: {e}")))?;
-        path_map.insert(scratch_path.to_string_lossy().into_owned(), rel.clone());
-        argfile_lines.push_str(&scratch_path.to_string_lossy());
-        argfile_lines.push('\n');
-    }
-    let argfile_path = scratch.join("argfile");
-    std::fs::write(&argfile_path, &argfile_lines)
-        .map_err(|e| BackendError::Other(format!("writing java-format argfile: {e}")))?;
-
-    let jar_path = vendored_jar_path()?;
-    let output = std::process::Command::new("java")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
-        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
-        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED")
-        .arg("-jar")
-        .arg(&jar_path)
-        .arg("-i")
-        .arg(format!("@{}", argfile_path.display()))
-        .output()
-        .map_err(|e| {
-            BackendError::Other(format!(
-                "`java` not found on PATH ({e}) — a JDK 21 must be installed \
-                 to generate `--target java` output, not only to validate it"
-            ))
-        })?;
-
-    if !output.status.success() {
-        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        for (scratch_path, real_path) in &path_map {
-            stderr = stderr.replace(scratch_path.as_str(), real_path.as_str());
-        }
-        if std::env::var("CIAC_DEBUG_JAVA_SRC").is_ok() {
-            for (rel, content) in java_files {
-                eprintln!("=== {rel} ===\n{content}\n=== end ===");
+    ciac_codegen::format_batch::format_batch(
+        project,
+        |path| path.ends_with(".java"),
+        |scratch, paths| {
+            let argfile_path = scratch.join("argfile");
+            let mut argfile_lines = String::new();
+            for path in paths {
+                argfile_lines.push_str(&path.to_string_lossy());
+                argfile_lines.push('\n');
             }
-        }
-        return Err(BackendError::Other(format!(
-            "google-java-format rejected generated source (this is a codegen \
-             bug, not a user error): {stderr}"
-        )));
-    }
+            std::fs::write(&argfile_path, &argfile_lines)
+                .map_err(|e| BackendError::Other(format!("writing java-format argfile: {e}")))?;
 
-    for (rel, _) in java_files {
-        let scratch_path = scratch.join(rel);
-        let formatted = std::fs::read_to_string(&scratch_path).map_err(|e| {
-            BackendError::Other(format!("reading formatted java-format output: {e}"))
-        })?;
-        project.set_content(rel, formatted);
-    }
-    Ok(())
+            let jar_path = vendored_jar_path()?;
+            let mut cmd = std::process::Command::new("java");
+            cmd.arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
+                .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
+                .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED")
+                .arg("-jar")
+                .arg(&jar_path)
+                .arg("-i")
+                .arg(format!("@{}", argfile_path.display()));
+            Ok(cmd)
+        },
+    )
 }
 
 #[cfg(test)]

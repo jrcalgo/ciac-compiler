@@ -1438,6 +1438,58 @@ Relationship to the immediately preceding arcs:
    home, and the Shipped note should say that plainly rather than
    inflating the Go number.
 
+   **Shipped (v0.30 M3) — the seam generalized exactly as scoped, no
+   surprises this time.** `crates/ciac-codegen/src/format_batch.rs` is
+   the new home: `format_batch(project, matches, command_for)` collects
+   every file matching a predicate, writes each to a scratch directory
+   at its real relative path, calls `command_for(scratch, &paths) ->
+   Result<Command, BackendError>` to build the invocation (the
+   `Result` — a small departure from the plan's own sketch — lets a
+   caller's own fallible setup, like Java's `@argfile` write or its
+   vendored-jar materialization, fail cleanly instead of needing an
+   `.expect()` inside a closure that can't otherwise propagate an
+   error), runs it once, reads results back via `set_content`, and
+   remaps scratch paths to real ones in any error — with its own two
+   unit tests (`no_matching_files_is_a_no_op`, and
+   `remaps_scratch_paths_in_errors`, which echoes a scratch path to
+   stderr from a deliberately-failing `sh -c` command and asserts the
+   real path survives while the scratch directory's name does not).
+   Both backends now hold only configuration: Java's `format_all_java`
+   builds the `@argfile` and the `java --add-exports=... -i @argfile`
+   invocation (unchanged from M2 in substance, just relocated); Go's
+   new `format_all_go` is `gofmt -w <paths...>` directly — no argfile,
+   since `gofmt` takes plain positional file arguments and generated
+   Go projects stay well under `ARG_MAX`. `render_go` collapsed to
+   `render` the same way `render_java` did at M2 (`let render_go =
+   render;`), and the two direct `gofmt(...)` call sites
+   (`sim-shared/world/world.go`, `system-runner/main.go`) dropped their
+   wrappers — `format_all_go` is called once, at the very end of
+   `generate()`, after both the per-service loop and the multi-service
+   block, learning M2's own placement lesson rather than repeating it.
+
+   All 145 goldens unchanged (`cargo insta test`, zero pending
+   snapshots) — Go's 29 and Java's 29 both re-verified after the
+   refactor, not just Go's. `c3_openapi_is_byte_identical_across_
+   targets`/`c4a_migration_sql_is_byte_identical_across_targets`/
+   `c4b_declared_topology_appears_in_every_target` (`conformance.rs`)
+   all still pass, confirming the cross-target byte-identity checks
+   the arc's parity contract depends on survived the refactor too.
+   Live-verified both `emit_service` shapes still build correctly:
+   `order-system.ciac --target go` (single-service, 38 files) and
+   `sim-three-service.ciac --target go` (multi-service, 78 files) both
+   generate cleanly post-refactor. `docs/external-backends.md` gained
+   "Formatter-shelling backends must batch," naming the measured Java
+   number as the cautionary example and stating explicitly that
+   out-of-tree backends cannot import `ciac_codegen::format_batch`
+   (it's a Rust API, not part of the wire protocol) and must implement
+   the same discipline themselves. As predicted, Go's own timing did
+   not move measurably (`gofmt`'s per-invocation cost was never the
+   bottleneck) — this milestone's product is the shared home and the
+   documented discipline, not a Go-side number, and this note says so
+   plainly rather than inflating one. `cargo fmt --check` and `cargo
+   clippy -p ciac-backend-go -p ciac-backend-java -p ciac-codegen
+   --all-targets -- -D warnings` both clean.
+
 4. **M4 — Template environment memoization.** Introduce the
    repository's first memoization. Try shape (a) — a per-backend
    `OnceLock<Environment<'static>>` — and fall back to shape (b) —

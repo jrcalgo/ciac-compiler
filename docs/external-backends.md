@@ -103,6 +103,41 @@ directly, so integration tests never mutate process-wide env vars.
 bad-version) exercising every failure path `ciac` handles:
 spawn-failure, non-zero exit, malformed JSON, version mismatch.
 
+## Formatter-shelling backends must batch
+
+If your backend shells out to a real formatter (rather than hand-
+tuning its own templates to already be canonical, as the in-tree
+Rust/Python backends do), **invoke it once per `generate()` call, not
+once per file.** `ciac-backend-java` didn't, for its first five
+milestones (`25UpdatePlan.md` through `29UpdatePlan.md`): every
+generated `.java` file spawned its own `google-java-format` process, a
+fresh JVM cold-started and paid `javac`-internals classload cost each
+time — measured at ~0.51s per file regardless of size. A 40-file
+`order-system.ciac` Java build cost ~20s in formatter spawns alone,
+against low hundreds of *milliseconds* for every other target.
+`30UpdatePlan.md` M2 fixed it: collect every file of the relevant
+extension, write them to one scratch directory (at their real
+relative path — verified live that `google-java-format` does not care
+whether a file's on-disk location matches its own package
+declaration), and run the formatter **once**, over the whole batch,
+via whatever list-of-files mode it supports
+(`google-java-format -i @argfile`; `gofmt -w <paths...>` for Go, ported
+onto the same seam at M3 since the pattern matters even where the
+absolute cost — ~2ms per `gofmt` spawn — does not).
+
+**In-tree backends** share this via `ciac_codegen::format_batch::
+format_batch` — see `ciac-backend-java` and `ciac-backend-go`'s own
+`format_all_java`/`format_all_go` for the two worked examples (jar
+`-i @argfile` vs. plain positional file args). **Out-of-tree backends
+cannot import this crate-private helper** (the wire protocol is
+process-boundary, not a Rust API — see "The wire contract" above) and
+must implement the same one-invocation-per-batch discipline
+themselves if their language's canonical formatter is a real,
+separate program. The lesson generalizes past formatters: any
+external tool your backend shells out to per file pays its own
+startup cost that many times, and that cost is invisible until
+someone measures the whole test suite's wall time and asks why.
+
 ## Scope notes (disclosed)
 
 - **No timeout**: a hung backend hangs the build.

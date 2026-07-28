@@ -417,7 +417,7 @@ impl Backend for GoBackend {
             project.add_file("sim-shared/go.mod", SIM_SHARED_GO_MOD);
             project.add_file(
                 "sim-shared/world/world.go",
-                gofmt(&env.get_template("world.go.j2")?.render(context! {})?)?,
+                env.get_template("world.go.j2")?.render(context! {})?,
             );
             // The system-runner module: drives `ciac sim` scenarios
             // across every service in this system through the one
@@ -430,14 +430,12 @@ impl Backend for GoBackend {
                 .any(|ctx| !ctx.jobs.is_empty() || ctx.workers.iter().any(|w| !w.steps.is_empty()));
             project.add_file(
                 "system-runner/main.go",
-                gofmt(
-                    &env.get_template("system_sim_runner.go.j2")?
-                        .render(context! {
-                            services => model.services,
-                            sim_world_tables => sim_world_tables_multi(ir),
-                            sim_needs_context => sim_needs_context,
-                        })?,
-                )?,
+                env.get_template("system_sim_runner.go.j2")?
+                    .render(context! {
+                        services => model.services,
+                        sim_world_tables => sim_world_tables_multi(ir),
+                        sim_needs_context => sim_needs_context,
+                    })?,
             );
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
@@ -450,6 +448,7 @@ impl Backend for GoBackend {
                     .to_owned(),
             );
         }
+        format_all_go(&mut project)?;
         Ok(project)
     }
 }
@@ -490,9 +489,12 @@ fn emit_service(
     // own formatter to render into it — a disclosed, narrow
     // dependency: `gofmt` must be on `PATH` to run `--target go`
     // generation at all, not only to *validate* its output.
-    let render_go = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
-        gofmt(&render(name, extra)?)
-    };
+    // `30UpdatePlan.md` M3: formatting itself is no longer done here,
+    // per file — it's one batched pass (`format_all_go`) over every
+    // `.go` file `generate()` produced, called once at the very end.
+    // This alias exists only so every call site below keeps reading as
+    // "produces formatted Go source" without a 33-site rename.
+    let render_go = render;
     let empty = || context! {};
     let at = |path: &str| format!("{prefix}{path}");
 
@@ -909,41 +911,29 @@ fn emit_service(
     Ok(())
 }
 
-/// Formats Go source through the real `gofmt` binary — see
-/// `emit_service`'s `render_go` for why this is a deliberate,
-/// disclosed dependency rather than a template-layer approximation.
-fn gofmt(src: &str) -> Result<String, BackendError> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("gofmt")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            BackendError::Other(format!(
-                "`gofmt` not found on PATH ({e}) — the Go toolchain must be \
-                 installed to generate `--target go` output, not only to validate it"
-            ))
-        })?;
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(src.as_bytes())
-        .map_err(|e| BackendError::Other(format!("writing to gofmt: {e}")))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|e| BackendError::Other(format!("running gofmt: {e}")))?;
-    if !output.status.success() {
-        return Err(BackendError::Other(format!(
-            "gofmt rejected generated source (this is a codegen bug, not a \
-             user error): {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    String::from_utf8(output.stdout).map_err(|e| BackendError::Other(format!("gofmt output: {e}")))
+/// Batch-formats every `.go` file this backend just generated through
+/// one `gofmt -w <files...>` invocation instead of one process per file
+/// (`30UpdatePlan.md` M3 — the same seam Java's M2 built for
+/// `google-java-format`, now shared via `ciac_codegen::format_batch`).
+/// `gofmt`'s own startup cost is only ~2ms, so this milestone's value
+/// is consistency and future-proofing rather than a measurable
+/// speedup — but it's the same batching contract every
+/// formatter-shelling backend must follow, in one place, so a future
+/// backend can't reintroduce the JVM-per-file-shaped tax by copying
+/// the wrong example. No `@argfile` here: unlike `google-java-format`,
+/// `gofmt` takes file paths as plain positional arguments with no
+/// alternate list-file syntax, and generated Go projects stay well
+/// under `ARG_MAX` for path-list length.
+fn format_all_go(project: &mut GeneratedProject) -> Result<(), BackendError> {
+    ciac_codegen::format_batch::format_batch(
+        project,
+        |path| path.ends_with(".go"),
+        |_scratch, paths| {
+            let mut cmd = std::process::Command::new("gofmt");
+            cmd.arg("-w").args(paths);
+            Ok(cmd)
+        },
+    )
 }
 
 /// The shared `sim-shared` module's own `go.mod` (28UpdatePlan.md

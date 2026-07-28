@@ -421,15 +421,13 @@ impl Backend for JavaBackend {
                 .collect();
             project.add_file(
                 "system-runner/SystemSimRunner.java",
-                google_java_format(
-                    &env.get_template("SystemSimRunner.java.j2")
-                        .map_err(BackendError::Template)?
-                        .render(context! {
-                            services => system_services,
-                            sim_world_tables => sim_world_tables_multi(ir),
-                        })
-                        .map_err(BackendError::Template)?,
-                )?,
+                env.get_template("SystemSimRunner.java.j2")
+                    .map_err(BackendError::Template)?
+                    .render(context! {
+                        services => system_services,
+                        sim_world_tables => sim_world_tables_multi(ir),
+                    })
+                    .map_err(BackendError::Template)?,
             );
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
@@ -437,6 +435,7 @@ impl Backend for JavaBackend {
                     .to_owned(),
             );
         }
+        format_all_java(&mut project)?;
         Ok(project)
     }
 }
@@ -485,13 +484,18 @@ fn emit_service(
     };
     // No hand-written Jinja template can reproduce
     // `google-java-format`'s own line-wrapping/column-width decisions
-    // (mirrors Go's own `render_go`/`gofmt` reasoning exactly) — every
-    // `.java` file routes through the real formatter at generation
-    // time so Spotless's `check` goal (bound to `verify`, Pillar 8)
-    // agrees with what CIaC just emitted instead of drifting from it.
-    let render_java = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
-        google_java_format(&render(name, extra)?)
-    };
+    // (mirrors Go's own `render_go`/`gofmt` reasoning exactly), so
+    // every `.java` file still needs the real formatter's pass before
+    // Spotless's `check` goal (bound to `verify`, Pillar 8) will agree
+    // with what CIaC emitted. `30UpdatePlan.md` M2: that pass no longer
+    // happens here, per file — a JVM cold start plus javac-internals
+    // classload costs ~0.51s regardless of file size, so one process
+    // per file scaled the whole build to tens of seconds. Formatting is
+    // now a single batched `format_all_java` post-pass over every
+    // `.java` file `generate()` produced; this alias exists only so
+    // every call site below keeps reading as "produces formatted Java
+    // source" without a 39-site rename.
+    let render_java = render;
 
     project.add_file(at("pom.xml"), render("pom.xml.j2", empty())?);
     project.add_file(
@@ -970,69 +974,6 @@ const MVNW_CMD: &str = include_str!("../vendor/mvnw.cmd");
 const GOOGLE_JAVA_FORMAT_JAR: &[u8] =
     include_bytes!("../vendor/google-java-format-1.19.2-all-deps.jar");
 
-/// Formats Java source through the real `google-java-format` tool —
-/// see `emit_service`'s `render_java` for why this is a deliberate,
-/// disclosed dependency rather than a template-layer approximation
-/// (mirrors Go's own `gofmt` reasoning exactly: no Jinja template can
-/// reproduce a real formatter's column-width-sensitive line-wrapping
-/// decisions).
-///
-/// The JVM's module system hides `com.sun.tools.javac.*` behind
-/// `--add-exports`/`--add-opens` by default (JDK 16+ strong
-/// encapsulation) — `google-java-format` reaches into javac's own
-/// parser/AST internals to do its formatting, so every invocation
-/// needs these flags; verified live against the vendored jar (piping
-/// a test file through stdin/stdout) before wiring this in.
-fn google_java_format(src: &str) -> Result<String, BackendError> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let jar_path = vendored_jar_path()?;
-
-    let mut child = Command::new("java")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
-        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
-        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED")
-        .arg("-jar")
-        .arg(&jar_path)
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            BackendError::Other(format!(
-                "`java` not found on PATH ({e}) — a JDK 21 must be installed \
-                 to generate `--target java` output, not only to validate it"
-            ))
-        })?;
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(src.as_bytes())
-        .map_err(|e| BackendError::Other(format!("writing to google-java-format: {e}")))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|e| BackendError::Other(format!("running google-java-format: {e}")))?;
-    if !output.status.success() {
-        if std::env::var("CIAC_DEBUG_JAVA_SRC").is_ok() {
-            eprintln!("=== rejected source ===\n{src}\n=== end ===");
-        }
-        return Err(BackendError::Other(format!(
-            "google-java-format rejected generated source (this is a codegen \
-             bug, not a user error): {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    String::from_utf8(output.stdout)
-        .map_err(|e| BackendError::Other(format!("google-java-format output: {e}")))
-}
-
 /// Materializes the embedded jar to a stable path on disk once (`java
 /// -jar` needs a real file, not stdin-supplied bytes) — reused across
 /// calls within a process (and across processes, since the path is
@@ -1048,6 +989,118 @@ fn vendored_jar_path() -> Result<std::path::PathBuf, BackendError> {
             .map_err(|e| BackendError::Other(format!("writing vendored jar to {path:?}: {e}")))?;
     }
     Ok(path)
+}
+
+/// A scratch directory unique to this call, safe under concurrent
+/// `generate()` calls from multiple threads in the same process (the
+/// test suite does exactly that) and across processes (the pid
+/// component).
+fn scratch_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("ciac-java-fmt-{}-{n}", std::process::id()))
+}
+
+/// Batch-formats every `.java` file this backend just generated through
+/// one `google-java-format -i @argfile` invocation instead of one JVM
+/// spawn per file (`30UpdatePlan.md` M2, the dominant fix in the arc:
+/// per-file stdin formatting cost ~0.51s/file regardless of size —
+/// mostly JVM startup and javac-internals classload — so a 40-file
+/// `order-system.ciac` Java build paid ~20s in formatter spawns alone).
+/// Verified live before this landed: `-i @argfile` tolerates files
+/// whose real relative path doesn't match their `package` declaration
+/// (formatting is purely syntactic, not a compile), so files are
+/// written into the scratch directory at their real project-relative
+/// path rather than flattened by index — simpler, and it sidesteps the
+/// question entirely. Output was also verified byte-identical to the
+/// old per-file-stdin path against 12 real generated files before this
+/// replaced it; the golden suite is the ongoing proof of that.
+fn format_all_java(project: &mut GeneratedProject) -> Result<(), BackendError> {
+    let java_files: Vec<(String, String)> = project
+        .files()
+        .filter(|(path, _)| path.ends_with(".java"))
+        .map(|(path, content)| (path.to_owned(), content.to_owned()))
+        .collect();
+    if java_files.is_empty() {
+        return Ok(());
+    }
+
+    let scratch = scratch_dir();
+    let result = format_all_java_in(&scratch, &java_files, project);
+    std::fs::remove_dir_all(&scratch).ok();
+    result
+}
+
+fn format_all_java_in(
+    scratch: &std::path::Path,
+    java_files: &[(String, String)],
+    project: &mut GeneratedProject,
+) -> Result<(), BackendError> {
+    let mut path_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut argfile_lines = String::new();
+    for (rel, content) in java_files {
+        let scratch_path = scratch.join(rel);
+        if let Some(parent) = scratch_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                BackendError::Other(format!("creating java-format scratch dir: {e}"))
+            })?;
+        }
+        std::fs::write(&scratch_path, content)
+            .map_err(|e| BackendError::Other(format!("writing java-format scratch file: {e}")))?;
+        path_map.insert(scratch_path.to_string_lossy().into_owned(), rel.clone());
+        argfile_lines.push_str(&scratch_path.to_string_lossy());
+        argfile_lines.push('\n');
+    }
+    let argfile_path = scratch.join("argfile");
+    std::fs::write(&argfile_path, &argfile_lines)
+        .map_err(|e| BackendError::Other(format!("writing java-format argfile: {e}")))?;
+
+    let jar_path = vendored_jar_path()?;
+    let output = std::process::Command::new("java")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
+        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
+        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED")
+        .arg("-jar")
+        .arg(&jar_path)
+        .arg("-i")
+        .arg(format!("@{}", argfile_path.display()))
+        .output()
+        .map_err(|e| {
+            BackendError::Other(format!(
+                "`java` not found on PATH ({e}) — a JDK 21 must be installed \
+                 to generate `--target java` output, not only to validate it"
+            ))
+        })?;
+
+    if !output.status.success() {
+        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        for (scratch_path, real_path) in &path_map {
+            stderr = stderr.replace(scratch_path.as_str(), real_path.as_str());
+        }
+        if std::env::var("CIAC_DEBUG_JAVA_SRC").is_ok() {
+            for (rel, content) in java_files {
+                eprintln!("=== {rel} ===\n{content}\n=== end ===");
+            }
+        }
+        return Err(BackendError::Other(format!(
+            "google-java-format rejected generated source (this is a codegen \
+             bug, not a user error): {stderr}"
+        )));
+    }
+
+    for (rel, _) in java_files {
+        let scratch_path = scratch.join(rel);
+        let formatted = std::fs::read_to_string(&scratch_path).map_err(|e| {
+            BackendError::Other(format!("reading formatted java-format output: {e}"))
+        })?;
+        project.set_content(rel, formatted);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1152,5 +1205,28 @@ mod tests {
         ] {
             assert!(paths.contains(&expect), "missing {expect} in {paths:?}");
         }
+    }
+
+    /// `30UpdatePlan.md` M2's own exit condition: a rejected file's
+    /// error must name the real generated path the user can go look
+    /// at, not the batch pass's own scratch-directory path (which is
+    /// removed by the time the error reaches anyone).
+    #[test]
+    fn format_all_java_remaps_scratch_paths_in_errors() {
+        let mut project = GeneratedProject::new();
+        project.add_file(
+            "src/main/java/com/ciac/broken/Broken.java",
+            "this is not valid java {{{",
+        );
+        let err = format_all_java(&mut project).expect_err("invalid source is rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("src/main/java/com/ciac/broken/Broken.java"),
+            "error should name the real path: {message}"
+        );
+        assert!(
+            !message.contains("ciac-java-fmt"),
+            "error should not leak the scratch directory: {message}"
+        );
     }
 }

@@ -1347,6 +1347,84 @@ Relationship to the immediately preceding arcs:
    Re-run the M1 instrument for the Java column and report the delta in
    the Shipped note.
 
+   **Shipped (v0.30 M2) — the batch, byte-identical, and a
+   placement bug caught by the gate before it shipped.**
+   `GeneratedProject::set_content` landed exactly as scoped: takes
+   `&mut self`, panics if the path was never written (preserving
+   "written exactly once" for every other path), documented as
+   existing only for formatter post-passes. `render_java` is now a
+   plain alias for `render` (`let render_java = render;` — the
+   closure captures only shared references, so it's `Copy` and both
+   names stay usable without touching the 39 call sites' own text),
+   and the `:424` direct `SystemSimRunner.java` render dropped its
+   inline `google_java_format(...)` wrapper. `format_all_java`
+   collects every `.java` file the backend produced, writes each to
+   a scratch directory *at its real project-relative path* (no
+   index-flattening — verified live before committing to the design:
+   two files with mismatched `package`/directory pairs, formatted
+   together via `-i @argfile`, both came back correctly formatted;
+   `google-java-format` does not care), writes one `@argfile`, runs
+   one `java --add-exports=... -jar ... -i @argfile`, reads every
+   file back via `set_content`, and remaps any formatter error's
+   scratch paths back to real ones before returning — proven by a
+   dedicated test (`format_all_java_remaps_scratch_paths_in_errors`)
+   that feeds it deliberately invalid Java and asserts the error
+   names the real path and never leaks the scratch directory. One
+   JVM per `generate()` call confirmed by direct observation, not
+   inference: `strace -f -e trace=execve` on a real `ciac build
+   --target java` shows exactly one `java -jar ... -i @argfile`
+   invocation for a 53-file project (the other twelve `execve`
+   attempts in the trace are the shell's own `PATH` search for the
+   `java` binary, not additional formatter spawns).
+
+   **The gate caught a real bug before any snapshot was accepted.**
+   The first wiring placed `format_all_java(&mut project)?` right
+   after the per-service loop — before the `if model.multi` block
+   that adds `system-runner/SystemSimRunner.java` to the project.
+   `cargo insta test` on `golden.rs` failed immediately:
+   `gen__java__audited-crud`'s snapshot showed `SystemSimRunner.java`
+   completely unformatted (raw template indentation, not
+   `google-java-format`'s output) because it was written to the
+   project *after* the one formatting pass had already run and
+   returned. Moved the call to after the multi-service block,
+   immediately before `Ok(project)`; re-ran — zero pending snapshots
+   across `golden.rs`, `conformance.rs`, `determinism.rs`, and
+   `openapi.rs`. This is exactly the kind of defect Pillar 1's
+   discipline exists to catch: a byte-identity gate that's actually
+   run, not assumed, found a real ordering bug the design review
+   missed, and the fix was one line moved, not a redesign.
+
+   Also confirmed the arc's own named trap did not spring:
+   `determinism.rs`'s deliberate double-`generate()` call still
+   passed post-fix (85.23s, formatter invoked twice, independently,
+   with no output-level caching introduced anywhere in the pass) —
+   the batching is a formatting optimization, not a memoization
+   layer, so it cannot mask non-determinism the way a naive
+   rendered-output cache would have.
+
+   The delta, re-running M1's own instrument
+   (`scripts/bench-codegen.sh --targets java`) and the four slow
+   binaries individually:
+
+   | Measurement | M1 (before) | M2 (after) | Ratio |
+   |---|---|---|---|
+   | Java mean generation (29-example sweep) | 15.837s | 2.570s | **6.16x faster** |
+   | Java max (`multi-service-media.ciac`, 140 files) | 48.351s | 4.620s | 10.46x faster |
+   | `determinism.rs` | 922.27s | 85.23s | 10.82x faster |
+   | `conformance.rs` | 656.79s | 98.88s | 6.64x faster |
+   | `golden.rs` | 478.99s | 46.04s | 10.40x faster |
+   | `openapi.rs` | 439.80s | 41.52s | 10.59x faster |
+   | **Combined slow-binary time** | **2497.85s** | **271.67s** | **9.19x faster** |
+
+   `cargo fmt --check` and `cargo clippy -p ciac-backend-java -p
+   ciac-codegen --all-targets -- -D warnings` both clean. This
+   single milestone already exceeds the arc's own stated target
+   (the four slow binaries combined under ~5 minutes) by a wide
+   margin — 271.67s is under 4.6 minutes on its own, before M3's
+   Go generalization or M4's template memoization contribute
+   anything. That result is exactly what M5's own pre-registered
+   checkpoint exists to weigh.
+
 3. **M3 — Generalize the seam.** Lift the batching machinery out of the
    Java backend into `crates/ciac-codegen/src/format_batch.rs`, leaving
    the Java backend with configuration plus one call. Port Go onto it:

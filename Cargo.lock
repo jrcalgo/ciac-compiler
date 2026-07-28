@@ -201,6 +201,7 @@ dependencies = [
  "ciac-sim",
  "ciac-syntax",
  "clap",
+ "crossbeam-channel",
  "ctrlc",
  "heck",
  "lsp-server",

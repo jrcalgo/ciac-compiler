@@ -25,6 +25,7 @@ ciac-sema.workspace = true
 ciac-sim.workspace = true
 ciac-syntax.workspace = true
 clap.workspace = true
+crossbeam-channel.workspace = true
 ctrlc.workspace = true
 heck.workspace = true
 lsp-server.workspace = true

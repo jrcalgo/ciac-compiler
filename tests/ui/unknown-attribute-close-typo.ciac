@@ -1,0 +1,6 @@
+// expect: CIAC0018
+service X;
+use { auth JWT; }
+record Msg { id: Uuid; }
+api A: Msg { methd: POST; path: "/a"; }
+pipeline A: Auth -> Return;

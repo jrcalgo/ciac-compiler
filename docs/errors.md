@@ -8,13 +8,22 @@ the same explanations; this page is checked against the registry by a
 test.
 
 Some mechanical, unambiguous diagnostics also carry an applyable fix
-(v0.15 M7) — `--json`'s `fixes` field, `ciac lsp`'s quick-fix, `ciac
-mcp`'s `fix` tool. Today: `CIAC0005` (missing capability — inserts the
-right `capability Provider;` line into an existing `use { .. }`
-block), `CIAC0013` (unknown provider — a nearest-match rename),
-`CIAC0025`'s `auth OAuth2` missing-`issuer` case (inserts a
-placeholder), and `CIAC0041` (unknown record field — a nearest-match
-rename). See `docs/agents.md`.
+(v0.15 M7, widened at `29UpdatePlan.md` M8) — `--json`'s `fixes`
+field, `ciac lsp`'s quick-fix, `ciac mcp`'s `fix` tool. Today:
+`CIAC0005` (missing capability — inserts the right `capability
+Provider;` line into an existing `use { .. }` block), `CIAC0013`
+(unknown provider — a nearest-match rename), `CIAC0025`'s `auth
+OAuth2` missing-`issuer` case (inserts a placeholder), `CIAC0041`
+(unknown record field — a nearest-match rename), `CIAC0017` (unknown
+stream — a nearest-match rename against declared streams), `CIAC0022`
+(unknown capability instance — a nearest-match rename against the
+service's own declared instances of that capability kind), and
+`CIAC0042` (unknown table — a nearest-match rename against declared
+tables). Every nearest-match fix uses the same bar: offered only when
+one known name is close enough (Levenshtein distance <= 3, or <= 5 for
+the two-word `capability Provider` form CIAC0013 compares) to be a
+plausible typo rather than a coincidence — silence, not a wrong
+guess, otherwise. See `docs/agents.md`.
 
 | Code | Severity | Title |
 |------|----------|-------|

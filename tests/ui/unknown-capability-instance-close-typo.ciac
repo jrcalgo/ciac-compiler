@@ -1,0 +1,6 @@
+// expect: CIAC0022
+service X;
+use { db main Postgres; }
+handler Store { db: mains; }
+api A;
+pipeline A: Store -> Return;

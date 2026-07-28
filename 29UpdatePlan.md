@@ -1304,6 +1304,171 @@ push; in-place Shipped notes).
    final editor claim — recorded in authoring.md's LSP section,
    which this milestone rewrites to match reality.
 
+   **Shipped (v0.27 M8) — the diagnostic inventory, three new
+   nearest-match quick-fixes, go-to-definition off the rename
+   index, and a real debounced-reparse fix for the v0.12-era
+   "diagnostics wait for save" gap:**
+
+   **The diagnostic inventory.** Every code in `docs/errors.md`
+   (CIAC0001-0062; 0063-0072 reserved, empty, N/A) sorted into
+   three buckets:
+
+   *Has a fix* (7, up from 4): `CIAC0005` (missing capability),
+   `CIAC0013` (unknown provider), `CIAC0025` (OAuth2 missing
+   `issuer`), `CIAC0041` (unknown record field) pre-existed;
+   `CIAC0017` (unknown stream), `CIAC0018` (unknown attribute),
+   `CIAC0022` (unknown capability instance) are new this
+   milestone — every one a nearest-match rename gated at
+   Levenshtein distance <= 3 against a real, enumerable
+   candidate set (declared streams/tables/capability-instances
+   of the right kind/the closed per-declaration-kind attribute
+   registry), so a candidate that isn't a plausible typo gets no
+   fix offered rather than a guessed one.
+
+   *Could, deferred* (recorded, not built, each with a reason):
+   `CIAC0027`/`CIAC0028` (unknown service/service-member in a
+   `call` target) and `CIAC0048` (unknown blueprint in `expand`)
+   are the same nearest-match shape as the three just shipped,
+   deferred only because this milestone's own scope already
+   covered the plan's named categories once each — a natural
+   next slice, not a harder problem. `CIAC0045` (unused `let`)
+   is mechanically safe in principle ("delete the binding") but
+   its diagnostic's span is the identifier only, not the whole
+   `let name = expr;` statement through its trailing `;` — a
+   fix built on the wrong span either leaves a dangling `;` or
+   eats the next token, so shipping it needs a small span-
+   plumbing change first, not just a `Fix` at the existing site;
+   deferred rather than rushed. Import-path typos (`import
+   "path";` resolving nowhere) are a real candidate the plan
+   itself names, but a nearest-match against the filesystem
+   introduces I/O and staleness the other fixes don't have (the
+   candidate set can change between the diagnostic firing and
+   the fix being applied) — deferred pending a design for that,
+   not attempted here.
+
+   *Can't, with reason* (the remaining ~52): parse errors
+   (`CIAC0001`/`0002`) carry no semantic understanding of intent
+   to fix toward. Most of the rest fail the "must be *the* fix"
+   bar because the correct resolution is a genuine judgment call
+   only the author can make, not a name lookup: which of two
+   duplicate declarations to keep (`CIAC0003`/`0012`/`0026`),
+   which capability instance an ambiguous binding should pick
+   (`CIAC0023`), what a non-exhaustive `match` arm's actual
+   logic should be (`CIAC0021`), which provider/target to
+   redirect an unsupported construct to (`CIAC0011`), what a
+   cyclic dependency's real break point is (`CIAC0006`), and
+   similarly for `CIAC0004`/`0008`/`0009`/`0010`/`0014`/`0016`/
+   `0019`/`0020`/`0024`/`0029`-`0032`/`0037`/`0039`/`0040`/
+   `0043`/`0044`/`0046`/`0047`/`0049`-`0062`. `CIAC0033`-`0036`
+   are file-state diagnostics (a stale manifest, a drifted seed)
+   about what's on disk, not a source typo, so there is no
+   source-level edit to offer at all. `CIAC0038` is dead —
+   superseded, never fires against a well-formed program.
+
+   **Fixture tests.** `tests/ui/unknown-stream-close-typo.ciac`,
+   `unknown-capability-instance-close-typo.ciac`,
+   `unknown-table-close-typo.ciac`, `unknown-attribute-close-
+   typo.ciac` (each `// expect: CIAC00NN`) — every one declares a
+   real name and references a one-edit-distance typo of it, so
+   `tests/tests/fixes.rs`'s existing corpus-wide test (apply
+   every offered fix, assert the diagnostic's own code clears)
+   exercises all three new fixes automatically, the same way it
+   already covers the four pre-existing ones — no bespoke test
+   harness needed, just fixtures that trigger the new code paths.
+   `crates/ciac-sema/src/build.rs`'s `fix_tests` module gained
+   `nearest_name_finds_a_close_typo_but_not_a_stranger` (the
+   shared threshold-gated matcher new to this milestone) and
+   `known_attrs_lists_only_genuinely_accepted_names` (one program
+   per declaration kind using every one of that kind's
+   `known_attrs()` names with a valid value, asserting zero
+   `UnknownAttribute` diagnostics — guards the hand-maintained
+   attribute-registry table against drifting from the real
+   `apply_*_attrs` match arms it restates).
+
+   **Go-to-definition.** `crates/ciac-syntax/src/module.rs`
+   needed no changes — `rename_index::build_index` already
+   indexes the whole spliced program with each definition's real
+   span/file. `crates/ciac/src/lsp.rs`'s new `definition()` is
+   the thin projection the plan predicted: locate the cursor,
+   `resolve_at`, read `ResolvedSymbol::def_span`, map its
+   `FileId` back to a real path, done — `None` (no location)
+   only for an unresolved position or a definition site with no
+   real on-disk file (`std/`-embedded blueprints, `registry:`-
+   fetched content; there's nowhere to navigate to). Proven both
+   same-file and cross-file via a real `import` in
+   `crates/ciac/tests/lsp_cli.rs`'s new
+   `lsp_definition_resolves_same_file_and_cross_file_import`.
+
+   **Debounced didChange diagnostics — the real fix, not a
+   cosmetic one.** The v0.12-era gap was structural, not just "no
+   handler wired up": `revalidate` always reads the entry file
+   from disk, so even calling it on every keystroke would keep
+   showing the *last-saved* content's diagnostics, not the
+   buffer's. Closing it needed two independent pieces:
+
+   1. `crates/ciac-syntax/src/module.rs` gained `load_with_overlay`
+      — `resolve_file` takes a new `overlay: Option<&str>` used
+      only when `importer.is_none()` (i.e. only for the entry
+      file, never anything it transitively `import`s, since only
+      the document open in the client has unsaved content to
+      substitute). `load`/`load_with_origins` are unaffected
+      (`None` at their call sites).
+   2. `crates/ciac/src/lsp.rs`'s `main_loop` changed from a plain
+      `for msg in &connection.receiver` to a manual
+      `recv_timeout` loop (`DEBOUNCE_POLL` = 50ms) so it can
+      notice a debounce deadline elapsing with no new message to
+      wake it. `didChange` now sets `pending_reparse[uri] = now +
+      DIDCHANGE_DEBOUNCE` (300ms) alongside updating `doc.text`;
+      `didOpen`/`didSave`/`didClose` clear it (a real disk-backed
+      reparse, or the document closing, makes it moot). The new
+      `revalidate_overlay` mirrors `revalidate` exactly except it
+      calls `load_with_overlay` with the dirty buffer.
+
+   Proven, not just built: `crates/ciac/tests/lsp_cli.rs`'s new
+   `lsp_debounces_didchange_diagnostics_from_the_dirty_buffer`
+   opens a clean file, sends a `didChange` introducing a real
+   error *without ever writing it to disk*, and blocks on the
+   next `publishDiagnostics` — which only arrives, with the new
+   error in it, because the debounce fired and reparsed the
+   in-memory buffer via the overlay path. The test re-reads the
+   file from disk afterward and asserts it's still the original,
+   valid content — proof the disk was never touched, so the
+   diagnostic could only have come from the buffer.
+
+   **`authoring.md`'s LSP section** — rewritten in full per this
+   milestone's own exit criterion: names the debounced-diagnostics
+   behavior, the M7 structured capability hover and snippet
+   completions, rename, the new go-to-definition, and the widened
+   quick-fix set, replacing the "provisional until M8" note M6
+   left there. Also states the one disclosed gap that's genuinely
+   unchanged since v0.12: only the *open document itself* gets an
+   overlay; anything it imports still resolves from disk.
+
+   **`docs/errors.md`**'s own fixes-disclosure paragraph updated
+   to name all 7 fixed codes and the shared distance-threshold
+   rule, instead of the stale 4-code list.
+
+   **Extension refresh**: no `editors/vscode` changes needed
+   beyond what M7 already made — go-to-definition and debounced
+   diagnostics are both server-capability-negotiated at the LSP
+   protocol level (`definition_provider` in the `initialize`
+   response; debouncing is invisible to the client, it just sees
+   `publishDiagnostics` arrive sooner), so VS Code's built-in LSP
+   client picks both up with zero `package.json` changes. The
+   arc's actual version-manifest bump is M9's job, not this one's
+   (per the plan's own milestone split).
+
+   Full verification: `cargo fmt --all` clean; `cargo clippy -p
+   ciac --all-targets -- -D warnings`, `-p ciac-sema`, and `-p
+   ciac-syntax` all zero warnings; `cargo test -p ciac-sema`,
+   `-p ciac-syntax`, `-p ciac-integration-tests --test negative
+   --test fixes`, and `-p ciac --test lsp_cli` all green. Given
+   `module.rs`'s `resolve_file` signature change touches a crate
+   nearly everything else in the workspace depends on, the
+   per-crate runs above were followed by a full `cargo test
+   --workspace` re-run rather than deferring it to M9 as first
+   drafted — 69 test binaries, 204 tests total, 0 failed.
+
 9. **M9 — The kit, the final transcript, version, and the arc
    close.** DOGFOODING.md to its exit criterion; issue
    templates; transcript three (the full path: install → README

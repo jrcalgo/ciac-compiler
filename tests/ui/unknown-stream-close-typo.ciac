@@ -1,0 +1,7 @@
+// expect: CIAC0017
+service X;
+use { queue NATS; }
+record Video { id: Uuid; }
+stream Uploaded: Video;
+api In;
+pipeline In: publish Uploadd -> Return;

@@ -1,0 +1,10 @@
+// expect: CIAC0042
+service X;
+use { db Postgres; }
+record Video { id: Uuid; }
+table Videos: Video;
+handler F(v: Video) -> Video {
+    return db.insert(Video, v);
+}
+api A: Video;
+pipeline A: F -> Return;

@@ -43,6 +43,7 @@ anyhow = "1"
 ariadne = "0.5"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
 heck = "0.5"
 include_dir = "0.7"
 insta = { version = "1", features = ["json"] }

@@ -209,34 +209,398 @@ pub const FIELD_TYPES: &[&str] = &[
     "enum { .. }",
 ];
 
-/// Hover text for any static vocabulary word.
-pub fn doc_for(word: &str) -> Option<String> {
-    if let Some((_, doc)) = KEYWORDS.iter().find(|(w, _)| *w == word) {
-        return Some((*doc).to_owned());
+/// A tab-stopped snippet body (VS Code snippet syntax: `${N:default}`
+/// tabstops, `${N|a,b,c|}` choices, `$0` final cursor) for one
+/// declaration form, keyed by `prefix` — the two surfaces in Pillar 5
+/// (LSP completion's `insert_text` and `editors/vscode`'s
+/// `contributes.snippets`) both render from this table, never from a
+/// second hand-written copy.
+///
+/// `parses_with` is minimal companion source the parse-test suite
+/// prepends before running the snippet's own default expansion (every
+/// `${N:default}`/`${N|first,..|}` resolved to its first alternative)
+/// through `ciac check` — most declaration forms aren't a complete
+/// program standing alone (a `worker` needs a `queue` capability and a
+/// stream to consume; a `table` needs `db` and a record). Empty for
+/// the two forms that are ("project", "service").
+pub struct Snippet {
+    pub prefix: &'static str,
+    pub description: &'static str,
+    pub body: &'static [&'static str],
+    pub parses_with: &'static [&'static str],
+}
+
+/// One snippet per [`DECLARATION_KINDS`] entry (v0.27 Pillar 5). Not
+/// one per capability too, despite the plan text's "and capability"
+/// phrasing (scoped down at implementation, recorded in the M7 Shipped
+/// note): a `use { .. }` block's provider choice is demonstrated once,
+/// on the `use`/`service` entries themselves, via `${N|a,b,c|}` — a
+/// dedicated snippet per single-provider capability (nine of fourteen
+/// have exactly one provider) would just retype that provider's only
+/// name, adding table rows without adding a real choice.
+pub const SNIPPETS: &[Snippet] = &[
+    Snippet {
+        prefix: "project",
+        description: "A multi-service project",
+        body: &["project ${1:Name};", "$0"],
+        parses_with: &[],
+    },
+    Snippet {
+        prefix: "service",
+        description: "A service block with a capability",
+        body: &[
+            "service ${1:Name} {",
+            "  use { ${2|db Postgres,db MySQL,db SQLite|}; }",
+            "  $0",
+            "}",
+        ],
+        parses_with: &[],
+    },
+    Snippet {
+        prefix: "import",
+        description: "Splice another file's declarations in",
+        body: &["import \"${1:std/crud.ciac}\";", "$0"],
+        parses_with: &["service SnippetTest;"],
+    },
+    Snippet {
+        prefix: "use",
+        description: "Declare a capability requirement",
+        body: &[
+            "use { ${1|db Postgres,db MySQL,db SQLite,queue NATS,queue Kafka,cache Redis,auth JWT,auth OAuth2|}; }",
+            "$0",
+        ],
+        parses_with: &["service SnippetTest;"],
+    },
+    Snippet {
+        prefix: "record",
+        description: "A typed data schema",
+        body: &["record ${1:Name} {", "    id: Uuid;", "    $0", "}"],
+        parses_with: &["service SnippetTest;"],
+    },
+    Snippet {
+        prefix: "error",
+        description: "An error record, for `fail`",
+        body: &["error ${1:Name} {", "    ${2:message}: String;", "    $0", "}"],
+        parses_with: &["service SnippetTest;"],
+    },
+    Snippet {
+        prefix: "stream",
+        description: "A named message channel",
+        body: &["stream ${1:Name}: ${2:Record};", "$0"],
+        parses_with: &[
+            "service SnippetTest;",
+            "use { queue NATS; }",
+            "record Record { id: Uuid; }",
+        ],
+    },
+    Snippet {
+        prefix: "table",
+        description: "A persistent table",
+        body: &["table ${1:Name}: ${2:Record};", "$0"],
+        parses_with: &[
+            "service SnippetTest;",
+            "use { db Postgres; }",
+            "record Record { id: Uuid; }",
+        ],
+    },
+    Snippet {
+        prefix: "api",
+        description: "An HTTP endpoint",
+        body: &[
+            "api ${1:Name}: ${2:Record} {",
+            "    method: ${3|POST,GET,PUT,DELETE,PATCH|};",
+            "    path: \"${4:/path}\";",
+            "}",
+            "pipeline ${1:Name}: Return;",
+            "$0",
+        ],
+        parses_with: &["service SnippetTest;", "record Record { id: Uuid; }"],
+    },
+    Snippet {
+        prefix: "worker",
+        description: "A broker consumer",
+        body: &[
+            "worker ${1:Name} on ${2:Stream};",
+            "pipeline ${1:Name}: ${3:Handler};",
+            "$0",
+        ],
+        parses_with: &[
+            "service SnippetTest;",
+            "use { queue NATS; }",
+            "record Record { id: Uuid; }",
+            "stream Stream: Record;",
+            "handler Handler(v: Record) -> Record { return v; }",
+        ],
+    },
+    Snippet {
+        prefix: "job",
+        description: "A scheduled cron job",
+        body: &[
+            "job ${1:Name} {",
+            "    schedule: \"${2:0 * * * *}\";",
+            "}",
+            "pipeline ${1:Name}: ${3:Handler};",
+            "$0",
+        ],
+        parses_with: &[
+            "service SnippetTest;",
+            "use { scheduler Cron; }",
+            "handler Handler(v: Json) -> Json { return v; }",
+        ],
+    },
+    Snippet {
+        prefix: "channel",
+        description: "Fan a stream out to realtime clients",
+        body: &["channel ${1:Name} on ${2:Stream};", "$0"],
+        parses_with: &[
+            "service SnippetTest;",
+            "use { queue NATS; realtime WebSocket; }",
+            "record Record { id: Uuid; }",
+            "stream Stream: Record;",
+        ],
+    },
+    Snippet {
+        prefix: "crud",
+        description: "Free REST CRUD for a record",
+        body: &["crud ${1:Name}: ${2:Record};", "$0"],
+        parses_with: &[
+            "service SnippetTest;",
+            "use { db Postgres; }",
+            "record Record { id: Uuid; }",
+        ],
+    },
+    Snippet {
+        prefix: "events",
+        description: "Stream + worker shorthand",
+        body: &["events ${1:Name};", "$0"],
+        parses_with: &["service SnippetTest;", "use { queue NATS; }"],
+    },
+    Snippet {
+        prefix: "handler",
+        description: "A typed inline handler",
+        body: &[
+            "handler ${1:Name}(${2:v}: ${3:Record}) -> ${3:Record} {",
+            "    return ${2:v};",
+            "}",
+            "$0",
+        ],
+        parses_with: &["service SnippetTest;", "record Record { id: Uuid; }"],
+    },
+    Snippet {
+        prefix: "extern",
+        description: "A typed handler stub you implement yourself",
+        body: &["extern handler ${1:Name}(${2:v}: ${3:Record}) -> ${3:Record};", "$0"],
+        parses_with: &["service SnippetTest;", "record Record { id: Uuid; }"],
+    },
+    Snippet {
+        prefix: "pipeline",
+        description: "Attach behavior to an api/worker/job",
+        body: &["pipeline ${1:Name}: ${2:Return};", "$0"],
+        parses_with: &["service SnippetTest;", "record Record { id: Uuid; }", "api Name: Record { method: POST; path: \"/name\"; }"],
+    },
+    Snippet {
+        prefix: "blueprint",
+        description: "A parameterized declaration template",
+        body: &[
+            "blueprint ${1:Name}<${2:R}: record> {",
+            "    params { }",
+            "    crud ${2:R}: ${2:R};",
+            "}",
+            "$0",
+        ],
+        parses_with: &["service SnippetTest;", "use { db Postgres; }"],
+    },
+    Snippet {
+        prefix: "expand",
+        description: "Instantiate a blueprint",
+        body: &["expand ${1:Blueprint}<${2:Record}> {", "    $0", "}"],
+        parses_with: &[
+            "service SnippetTest;",
+            "use { db Postgres; }",
+            "record Record { id: Uuid; }",
+            "blueprint Blueprint<R: record> {",
+            "    params { }",
+            "    crud R: R;",
+            "}",
+        ],
+    },
+];
+
+/// A capability's handler-body verbs, exactly as `docs/expressions.md`'s
+/// "The closed verb set" table names them — absent for capabilities
+/// with no body-callable verb (`auth`, `queue`, `logging`, `metrics`,
+/// `tracing`, `scheduler`, `realtime`, `users` are declarative-only:
+/// `queue`/`realtime` are driven by `publish`/`on`/`channel` grammar,
+/// not a verb call, and the rest have no in-handler surface at all).
+/// Hand-maintained rather than derived from `ciac-sema::typeck`'s own
+/// match arms (that checker is organized by `(capability, verb)` pairs
+/// scattered across a few hundred lines, not one iterable table — see
+/// its `check_verb_call`), so kept honest by the doc-inclusion test
+/// below instead, the same discipline `PROVIDERS` already uses against
+/// `docs/language.md`.
+const VERBS: &[(&str, &str)] = &[
+    (
+        "db",
+        "db.insert, db.get, db.update, db.delete, db.query [where], db.count [where], db.delete_where [where]",
+    ),
+    ("cache", "cache.get, cache.set, cache.delete"),
+    (
+        "object_store",
+        "object_store.put, object_store.get, object_store.delete, object_store.list",
+    ),
+    ("email", "email.send"),
+    ("search", "search.index, search.query"),
+    ("external_http", "external_http.request"),
+];
+
+/// One line per capability naming what `ciac sim` does with it — the
+/// 27UpdatePlan.md world contract, made visible in the editor instead
+/// of only in `docs/simulation.md`'s prose. "Faked" means a scenario
+/// controls the outcome with no real infrastructure; "not simulated"
+/// means the generated code for that capability runs for real even
+/// inside `ciac sim` (nothing about it is worth faking); "not
+/// exercised" means the simulation runner has no code path that would
+/// ever reach it today.
+const SIM_NOTES: &[(&str, &str)] = &[
+    ("db", "fully faked — schema-aware relational fake (unique/reference/cascade enforced, `where` clauses really evaluated)"),
+    ("cache", "fully faked (TTL against the virtual clock, not wall-clock time)"),
+    ("queue", "fully faked (per-(subject, group) cursor fan-out — every worker on a subject sees every message)"),
+    ("object_store", "fully faked (in-memory put/get/delete/list)"),
+    ("email", "fully faked (sent messages captured, never delivered)"),
+    ("search", "fully faked (in-memory index/query)"),
+    ("external_http", "fully faked (fixture-driven: a scenario's `given.http` supplies the response)"),
+    ("scheduler", "fully faked (jobs fire against the virtual clock)"),
+    ("auth", "fully faked (claims looked up against the scenario's `given.auth`, not real JWT/JWKS cryptography)"),
+    ("realtime", "not exercised (no scenario step addresses a channel)"),
+    ("logging", "not simulated (the real generated logging call runs, same as outside simulation)"),
+    ("metrics", "not simulated (the real generated metrics call runs, same as outside simulation)"),
+    ("tracing", "not simulated (the real generated tracing call runs, same as outside simulation)"),
+    ("users", "not applicable (dev-only identity provider; `auth`'s own fake is what a scenario configures)"),
+];
+
+/// Expands a snippet body's placeholders to their default value — the
+/// same rendering [`tests::every_snippet_default_expansion_parses`]
+/// checks compiles, reused here so a hover's skeleton preview is
+/// always literally what that test already proved parses, never a
+/// second hand-typed copy that could drift from it.
+fn expand_snippet_default(body: &[&str]) -> String {
+    fn expand_line(line: &str) -> String {
+        let bytes = line.as_bytes();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+                if let Some(close) = line[i..].find('}').map(|p| i + p) {
+                    let inner = &line[i + 2..close];
+                    let after_num = inner
+                        .find(|c: char| !c.is_ascii_digit())
+                        .unwrap_or(inner.len());
+                    let rest = &inner[after_num..];
+                    if let Some(choices) = rest.strip_prefix('|') {
+                        let choices = choices.strip_suffix('|').unwrap_or(choices);
+                        out.push_str(choices.split(',').next().unwrap_or(""));
+                    } else if let Some(default) = rest.strip_prefix(':') {
+                        out.push_str(default);
+                    }
+                    i = close + 1;
+                    continue;
+                }
+            }
+            if bytes[i] == b'$' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+                let mut j = i + 1;
+                while bytes.get(j).is_some_and(u8::is_ascii_digit) {
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        out
     }
+    body.iter()
+        .map(|l| expand_line(l))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The per-target support line every capability hover carries — the
+/// union of every one of the capability's own providers' `targets`, so
+/// a provider graduating on a target updates every hover that mentions
+/// its capability without a second edit.
+fn target_support_line(capability: &str) -> String {
+    ALL_TARGETS
+        .iter()
+        .map(|target| {
+            let supported = PROVIDERS
+                .iter()
+                .filter(|p| p.capability == capability)
+                .any(|p| p.targets.contains(target));
+            format!(
+                "{target} {}",
+                if supported { "\u{2713}" } else { "\u{2717}" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+/// Hover text for any static vocabulary word. Capabilities and
+/// declaration keywords with a snippet get structured, multi-line
+/// markdown (v0.27 Pillar 5); everything else keeps the single-
+/// sentence form it always had.
+pub fn doc_for(word: &str) -> Option<String> {
     if let Some(cap) = CAPABILITIES.iter().find(|c| c.name == word) {
-        let providers: Vec<&str> = PROVIDERS
-            .iter()
-            .filter(|p| p.capability == word)
-            .map(|p| p.name)
-            .collect();
-        return Some(format!(
-            "Capability: {} Providers: {}.",
-            cap.doc,
+        let providers: Vec<&Provider> = PROVIDERS.iter().filter(|p| p.capability == word).collect();
+        let mut out = format!("**{}** — capability: {}\n\n", cap.name, cap.doc);
+        out.push_str(&format!(
+            "Providers: {}\n",
             if providers.is_empty() {
-                "(attribute-configured)".to_owned()
+                "(attribute-configured, no provider)".to_owned()
             } else {
-                providers.join(", ")
+                providers
+                    .iter()
+                    .map(|p| p.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             }
         ));
+        out.push_str(&format!("Targets:   {}\n", target_support_line(word)));
+        if let Some((_, verbs)) = VERBS.iter().find(|(c, _)| *c == word) {
+            out.push_str(&format!("Verbs:     {verbs}\n"));
+        }
+        if let Some((_, note)) = SIM_NOTES.iter().find(|(c, _)| *c == word) {
+            out.push_str(&format!("Simulation: {note}\n"));
+        }
+        if let Some(first) = providers.first() {
+            out.push_str(&format!("\n    use {{ {} {}; }}\n", cap.name, first.name));
+        }
+        out.push_str("\nSee docs/language.md (`use { .. }`)");
+        if VERBS.iter().any(|(c, _)| *c == word) {
+            out.push_str(" · docs/expressions.md (the closed verb set)");
+        }
+        return Some(out);
     }
     if let Some(p) = PROVIDERS.iter().find(|p| p.name == word) {
         return Some(format!(
-            "{} provider ({}): {}",
+            "**{}** — {} provider ({}): {}",
+            p.name,
             p.capability,
             p.targets.join(", "),
             p.doc
         ));
+    }
+    if let Some((_, doc)) = KEYWORDS.iter().find(|(w, _)| *w == word) {
+        let mut out = format!("**{word}** — {doc}");
+        if let Some(snip) = SNIPPETS.iter().find(|s| s.prefix == word) {
+            out.push_str(&format!(
+                "\n\n    {}\n",
+                expand_snippet_default(snip.body).replace('\n', "\n    ")
+            ));
+        }
+        out.push_str("\n\nSee docs/language.md");
+        return Some(out);
     }
     if let Some((_, doc)) = BUILTIN_STEPS.iter().find(|(w, _)| *w == word) {
         return Some((*doc).to_owned());
@@ -266,6 +630,197 @@ mod tests {
                 provider.name,
                 provider.capability,
             );
+        }
+    }
+
+    /// Pillar 5's own veracity bar: "each snippet's fully-expanded
+    /// default form must parse ... a unit test, not a manual promise."
+    /// Every snippet's `parses_with` companion plus its own rendered
+    /// default body is written to a scratch file and run through the
+    /// exact front end `ciac check` uses — the same
+    /// `ciac_syntax::load` + `ciac_sema::analyze` pair `revalidate` in
+    /// `lsp.rs` calls, so a snippet can never silently drift from
+    /// something that actually compiles.
+    #[test]
+    fn every_snippet_default_expansion_parses() {
+        for snip in SNIPPETS {
+            let mut source = String::new();
+            for line in snip.parses_with {
+                source.push_str(line);
+                source.push('\n');
+            }
+            source.push_str(&expand_snippet_default(snip.body));
+            source.push('\n');
+
+            let path = std::env::temp_dir().join(format!(
+                "ciac-snippet-test-{}-{}-{:?}.ciac",
+                snip.prefix,
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::write(&path, &source).expect("write scratch snippet file");
+
+            let mut sources = ciac_diagnostics::SourceMap::new();
+            let mut diags = ciac_diagnostics::Diagnostics::new();
+            let load_result = ciac_syntax::load(&path, &mut sources, &mut diags);
+            if let Ok(program) = &load_result {
+                ciac_sema::analyze(program, &mut diags);
+            }
+            let _ = std::fs::remove_file(&path);
+
+            assert!(
+                load_result.is_ok(),
+                "snippet `{}` default expansion failed to parse:\n{source}",
+                snip.prefix,
+            );
+            assert!(
+                !diags.has_errors(),
+                "snippet `{}` default expansion has semantic errors:\n{source}\n\n{:#?}",
+                snip.prefix,
+                diags.iter().collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// `VERBS`/`SIM_NOTES` are hand-maintained tables keyed by
+    /// capability name (documented as such above, for the same reason
+    /// `PROVIDERS.targets` is hand-maintained) — this guards the one
+    /// way that goes silently wrong: a typo'd or renamed capability
+    /// key that would make a real capability's hover quietly lose its
+    /// Verbs/Simulation line instead of erroring.
+    #[test]
+    fn verb_and_sim_note_keys_name_real_capabilities() {
+        for (cap, _) in VERBS {
+            assert!(
+                CAPABILITIES.iter().any(|c| c.name == *cap),
+                "VERBS names `{cap}`, which isn't in CAPABILITIES"
+            );
+        }
+        for (cap, _) in SIM_NOTES {
+            assert!(
+                CAPABILITIES.iter().any(|c| c.name == *cap),
+                "SIM_NOTES names `{cap}`, which isn't in CAPABILITIES"
+            );
+        }
+        for cap in CAPABILITIES {
+            assert!(
+                SIM_NOTES.iter().any(|(c, _)| *c == cap.name),
+                "capability `{}` has no SIM_NOTES entry -- every capability is either faked, \
+                 run for real, or explicitly not exercised under `ciac sim`; say which",
+                cap.name,
+            );
+        }
+    }
+
+    /// Every capability's hover is structured, multi-line markdown
+    /// carrying registry-derived data (Pillar 5: "hover content is
+    /// generated-at-compile-time data, tested like data") -- this
+    /// checks the shape every capability hover must have, not any one
+    /// capability's prose.
+    #[test]
+    fn capability_hover_has_the_structured_shape() {
+        for cap in CAPABILITIES {
+            let hover = doc_for(cap.name).unwrap_or_else(|| panic!("no hover for `{}`", cap.name));
+            assert!(
+                hover.starts_with(&format!("**{}**", cap.name)),
+                "`{}` hover doesn't lead with its own bolded name:\n{hover}",
+                cap.name
+            );
+            assert!(
+                hover.contains("Providers:"),
+                "`{}` hover is missing a Providers: line:\n{hover}",
+                cap.name
+            );
+            assert!(
+                hover.contains("Targets:"),
+                "`{}` hover is missing a Targets: line:\n{hover}",
+                cap.name
+            );
+            let has_verbs = VERBS.iter().any(|(c, _)| *c == cap.name);
+            assert_eq!(
+                hover.contains("Verbs:"),
+                has_verbs,
+                "`{}` hover's Verbs: line presence disagrees with VERBS:\n{hover}",
+                cap.name
+            );
+            assert!(
+                hover.contains("Simulation:"),
+                "`{}` hover is missing a Simulation: line (every capability has a SIM_NOTES entry):\n{hover}",
+                cap.name
+            );
+            assert!(
+                hover.contains("docs/language.md"),
+                "`{}` hover doesn't point back at the reference doc:\n{hover}",
+                cap.name
+            );
+        }
+    }
+
+    /// The Targets: line is registry-derived, not hardcoded prose --
+    /// asserted here against the same `PROVIDERS` table it's built
+    /// from, for every capability at once, so a provider narrowing to
+    /// fewer targets would move this line without anyone hand-editing
+    /// hover text.
+    #[test]
+    fn capability_target_line_matches_provider_registry() {
+        for cap in CAPABILITIES {
+            let expected_targets: std::collections::BTreeSet<&str> = PROVIDERS
+                .iter()
+                .filter(|p| p.capability == cap.name)
+                .flat_map(|p| p.targets.iter().copied())
+                .collect();
+            for target in ALL_TARGETS {
+                let line = target_support_line(cap.name);
+                let expects_tick = expected_targets.contains(target);
+                let tick = format!("{target} \u{2713}");
+                assert_eq!(
+                    line.contains(&tick),
+                    expects_tick,
+                    "`{}`'s Targets: line disagrees with PROVIDERS for `{target}`:\n{line}",
+                    cap.name
+                );
+            }
+        }
+    }
+
+    /// A declaration keyword with a snippet shows that snippet's own
+    /// default-expansion as its hover preview -- proven equal to what
+    /// [`every_snippet_default_expansion_parses`] already parse-tested,
+    /// not a second hand-typed rendering that could drift from it.
+    #[test]
+    fn keyword_hover_preview_matches_its_own_snippet() {
+        for snip in SNIPPETS {
+            let Some(hover) = doc_for(snip.prefix) else {
+                continue;
+            };
+            let expanded = expand_snippet_default(snip.body);
+            for line in expanded.lines() {
+                assert!(
+                    hover.contains(line),
+                    "`{}` hover doesn't contain its own snippet's line `{line}`:\n{hover}",
+                    snip.prefix
+                );
+            }
+        }
+    }
+
+    /// `ciac describe`'s enrichment must stay additive: every key
+    /// `describe::build()` already emits today keeps meaning the same
+    /// thing after M7's vocab changes -- a real regression here would
+    /// be a `DESCRIBE_VERSION` bump, not a silent reshape. Vocab has no
+    /// direct dependency on `describe`, so this re-checks the tables
+    /// `describe::build()` reads from are still shaped the way it
+    /// expects: `capabilities` keyed by name+doc+providers,
+    /// `providers` keyed by name+capability+targets+doc -- unchanged
+    /// field sets, only new tables (`SNIPPETS`, `VERBS`, `SIM_NOTES`)
+    /// added alongside.
+    #[test]
+    fn describe_facing_tables_kept_their_shape() {
+        for cap in CAPABILITIES {
+            assert!(!cap.name.is_empty() && !cap.doc.is_empty());
+        }
+        for p in PROVIDERS {
+            assert!(!p.name.is_empty() && !p.capability.is_empty() && !p.targets.is_empty());
         }
     }
 }

@@ -42,11 +42,12 @@ use lsp_types::{
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, Hover, HoverContents, HoverProviderCapability, MarkupContent,
-    MarkupKind, NumberOrString, OneOf, Position, PrepareRenameResponse, PublishDiagnosticsParams,
-    Range, RenameOptions, RenameParams, ServerCapabilities, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+    DidSaveTextDocumentParams, Documentation, Hover, HoverContents, HoverProviderCapability,
+    InsertTextFormat, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
+    PrepareRenameResponse, PublishDiagnosticsParams, Range, RenameOptions, RenameParams,
+    ServerCapabilities, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -514,7 +515,16 @@ fn hover(params: &TextDocumentPositionParams, docs: &HashMap<Url, DocState>) -> 
 fn completion(params: &CompletionParams, docs: &HashMap<Url, DocState>) -> CompletionResponse {
     let mut items: Vec<CompletionItem> = Vec::new();
     for (word, doc) in vocab::KEYWORDS {
-        items.push(item(word, CompletionItemKind::KEYWORD, doc));
+        match vocab::SNIPPETS.iter().find(|s| s.prefix == *word) {
+            // v0.27 Pillar 5: a declaration keyword with a tab-stopped
+            // skeleton offers it as a real snippet completion instead
+            // of just the bare keyword -- the same table
+            // `every_snippet_default_expansion_parses` already proved
+            // compiles, so what a user accepts here can never be a
+            // skeleton that doesn't actually parse.
+            Some(snip) => items.push(snippet_item(snip, doc)),
+            None => items.push(item(word, CompletionItemKind::KEYWORD, doc)),
+        }
     }
     for cap in vocab::CAPABILITIES {
         let doc = vocab::doc_for(cap.name).unwrap_or_default();
@@ -553,6 +563,23 @@ fn item(label: &str, kind: CompletionItemKind, detail: &str) -> CompletionItem {
         label: label.to_string(),
         kind: Some(kind),
         detail: Some(detail.to_string()),
+        ..Default::default()
+    }
+}
+
+/// A declaration keyword's [`vocab::Snippet`] rendered as a real
+/// tab-stopped completion — `insert_text` carries the raw VS Code
+/// snippet body (`${1:Name}`, `${2|a,b,c|}`, `$0`) verbatim, and
+/// `insert_text_format: Snippet` tells the client to interpret it
+/// rather than insert it literally.
+fn snippet_item(snip: &vocab::Snippet, keyword_doc: &str) -> CompletionItem {
+    CompletionItem {
+        label: snip.prefix.to_string(),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some(snip.description.to_string()),
+        documentation: Some(Documentation::String(keyword_doc.to_string())),
+        insert_text: Some(snip.body.join("\n")),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
 }

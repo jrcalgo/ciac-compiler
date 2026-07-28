@@ -1134,6 +1134,165 @@ push; in-place Shipped notes).
    in real VS Code recorded (screenshot-level sanity — the LSP
    tests prove protocol, a human proves rendering).
 
+   **Shipped (v0.29 M7) — the one-vocabulary-source shape the
+   pillar calls for, built with three scope decisions narrowed
+   at implementation and recorded honestly rather than
+   silently:**
+
+   *`vocab.rs`*: a `Snippet { prefix, description, body,
+   parses_with }` struct and a `SNIPPETS` table — one entry per
+   `DECLARATION_KINDS` member (19: project/service/import/use/
+   record/error/stream/table/api/worker/job/channel/crud/
+   events/handler/extern/pipeline/blueprint/expand), each with a
+   tab-stopped VS Code snippet body and a `parses_with` companion
+   (the minimal top-level source its default expansion assumes
+   already exists — e.g. `worker`'s companion declares the
+   `queue` capability and the stream it consumes). **Scope
+   narrowing #1**: the plan's own phrasing ("one per declaration
+   form *and capability*") was narrowed to declaration forms
+   only — a dedicated snippet per single-provider capability (9
+   of 14 capabilities have exactly one provider) would just
+   retype that provider's only name, so the `service`/`use`
+   snippets demonstrate the provider-choice technique once via
+   `${N|a,b,c|}` instead of multiplying near-duplicate entries.
+   Recorded in `vocab.rs`'s own doc comment on `SNIPPETS`, not
+   just here.
+
+   New `VERBS`/`SIM_NOTES` tables (hand-maintained, like
+   `PROVIDERS.targets` already is, for the same reason: no
+   single iterable source exists for either — `ciac-sema`'s verb
+   checker is organized as `(capability, verb)` match arms
+   scattered through `check_verb_call`, not a table, and the 27
+   world contract lives in prose across `docs/simulation.md`),
+   feeding a rewritten `doc_for`: a capability hover is now
+   structured markdown (bolded name, Providers/Targets/Verbs/
+   Simulation lines, a one-line `use { .. }` example, a
+   docs pointer), matching the plan's own worked `cache` example
+   in every line except the deep-anchor links.
+
+   **Scope narrowing #2**: the plan's illustrative hover showed
+   section-level deep links (`docs/language.md#cache`,
+   `docs/expressions.md#cache-verbs`) — neither anchor exists in
+   the real docs (`language.md` has one shared `use { capability
+   Provider; .. }` header for every capability, not a per-
+   capability one; there is no `#cache-verbs` heading anywhere).
+   Computing a GitHub-slug anchor from a header string carries
+   real risk of a silently-wrong link (verified one edge case —
+   a `(vX.Y)` version suffix in a header — where the correct
+   slug behavior was genuinely uncertain without fetching
+   GitHub's real renderer, which this session's dead-link
+   discipline treats as reason enough to not guess). Hovers
+   instead name the whole document (`docs/language.md`,
+   `docs/expressions.md`), which is always correct by
+   construction and still points a reader at the right place.
+
+   **Scope narrowing #3**: individual verb-level hovers (the
+   plan's fourth hover class, "for a builtin verb — signature,
+   behavior, simulation-fake note") were not added. The LSP's
+   `word_at`-based hover has no receiver context — hovering
+   `insert` in `db.insert(...)` can't distinguish it from
+   `cache`'s or `object_store`'s own same-named verb without a
+   larger refactor of how hover resolves position to meaning.
+   The information this class would have carried (verb
+   signatures, sim-fake notes) already surfaces on the
+   capability-level hover instead (hovering `cache` in `use {
+   cache Redis; }`, exactly the plan's own worked example).
+
+   `crates/ciac/src/lsp.rs`: `completion()`'s `KEYWORDS` loop
+   now emits a real snippet completion (`CompletionItemKind::
+   SNIPPET`, `insert_text` = the tab-stopped body,
+   `insert_text_format: InsertTextFormat::SNIPPET`) for any
+   keyword with a `SNIPPETS` entry, falling back to the old
+   plain-keyword item otherwise; `hover()` needed no changes at
+   all — it already called `vocab::doc_for`, so the richer
+   markdown flows through automatically.
+
+   `crates/ciac/src/describe.rs`: a new `snippets: Vec<
+   SnippetEntry>` field (prefix/description/body/parses_with),
+   purely additive — `DESCRIBE_VERSION` stays `1`, proven by
+   `m7_snippet_field_is_additive_not_a_breaking_reshape` (every
+   pre-existing key's shape re-checked field-by-field, not just
+   presence).
+
+   `editors/vscode/`: `package.json` gained a `contributes.
+   snippets` entry pointing at a new checked-in `snippets/
+   ciac.json` (VS Code's own snippet-file format, one entry per
+   prefix); `crates/ciac/tests/snippets_cli.rs` is the drift
+   test — it runs the real `ciac describe` subprocess, reshapes
+   its `snippets` field into the same `{prefix: {prefix,
+   description, body}}` map VS Code expects, and asserts it
+   equals the checked-in file (parsed as JSON, not byte-compared,
+   so key-order never causes a false failure). Chose "checked-in
+   file + drift test" over "generate at package time" per the
+   plan's own either-or, matching `docs/targets.json`'s
+   established precedent in this repo rather than inventing a
+   new pattern.
+
+   **Tests** (all in `crates/ciac/src/vocab.rs`'s own
+   `#[cfg(test)]` module unless noted): `every_snippet_default_
+   expansion_parses` — every one of the 19 snippets' default
+   expansion (`${N:default}`→`default`, `${N|a,..|}`→first
+   choice, `$N`→nothing, via a new `expand_snippet_default`
+   shared by both the test and the hover-preview renderer, so
+   they can never show different text) written to a scratch file
+   with its `parses_with` companion prepended and run through the
+   real `ciac_syntax::load` + `ciac_sema::analyze` pair `ciac
+   check`/`revalidate` both use — zero parse errors, zero
+   semantic errors (warnings like "capability declared but never
+   used" tolerated, matching `ciac check`'s own error/warning
+   split). `verb_and_sim_note_keys_name_real_capabilities` — every
+   `VERBS`/`SIM_NOTES` key is a real `CAPABILITIES` entry, and
+   every capability has a `SIM_NOTES` row (no silent gap).
+   `capability_hover_has_the_structured_shape` — every capability
+   hover leads with its bolded name and carries Providers/
+   Targets/Simulation lines, with Verbs present iff `VERBS` has
+   an entry. `capability_target_line_matches_provider_registry` —
+   the Targets line's ✓/✗ per target is checked against
+   `PROVIDERS` directly, capability by capability, target by
+   target (today all five targets tick for every capability,
+   but the test would catch a real narrowing the moment one
+   happened). `keyword_hover_preview_matches_its_own_snippet` —
+   every declaration keyword's hover preview is exactly its own
+   snippet's rendered default body, line for line.
+   `describe_facing_tables_kept_their_shape` +
+   `m7_snippet_field_is_additive_not_a_breaking_reshape` (in
+   `describe.rs`) — the `DESCRIBE_VERSION` compatibility check.
+   `crates/ciac/tests/snippets_cli.rs` — the vscode-file drift
+   test. `crates/ciac/tests/lsp_cli.rs`'s new
+   `lsp_offers_snippet_completions_and_structured_capability_
+   hover` — the same two features proven over the *real wire
+   protocol*, not just the library functions in isolation: a
+   completion response for `worker` carries
+   `insertTextFormat: 2` and the exact tab-stopped body; a hover
+   on `cache` in `use { cache Redis; }` is the structured
+   multi-line block with all four labeled lines present.
+
+   **Manual VS Code verification**: not performed as an actual
+   GUI session — this session runs headless with no VS Code GUI
+   available, disclosed here rather than claimed. In its place,
+   `lsp_offers_snippet_completions_and_structured_capability_
+   hover` drives the real `ciac lsp` binary over the identical
+   JSON-RPC wire protocol a real VS Code instance speaks (the
+   same harness `lsp_round_trip_diagnostics_hover_and_completion`
+   already used to prove hover/completion/diagnostics before this
+   milestone), asserting the exact wire-level fields
+   (`insertTextFormat`, `insertText`, hover markdown content) a
+   client would render from. This proves the protocol contract
+   completely; it does not prove VS Code's own snippet-expansion
+   UI or markdown-hover renderer look right on screen. The user
+   installing `editors/vscode` locally and typing `worker<Tab>`
+   in a real window is the one honest way to close that gap —
+   flagged explicitly rather than silently assumed.
+
+   Full verification: `cargo fmt --all` clean, `cargo clippy -p
+   ciac --all-targets -- -D warnings` and `cargo clippy
+   --workspace --all-targets -- -D warnings` both zero warnings,
+   `cargo test --workspace` — 69 test binaries, 467 tests total,
+   0 failed (includes the cross-target byte-identical/equivalence
+   suite and the golden snapshot suite, neither of which this
+   milestone's changes touched, run anyway as this session's
+   standing full-verification discipline requires).
+
 8. **M8 — Quick-fixes, go-to-definition, and LSP rounding.**
    The diagnostic inventory (which codes have/could/can't have
    fixes, recorded); structured-fix extension over the

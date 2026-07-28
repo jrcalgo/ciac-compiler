@@ -307,6 +307,97 @@ fn lsp_rename_round_trip() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// v0.27 M7: proves the two Pillar 5 features over the real wire
+/// protocol, exactly as an editor receives them — not just that
+/// `vocab::doc_for`/`SNIPPETS` look right in isolation. A snippet
+/// completion must carry `insertTextFormat: 2` (Snippet, per the LSP
+/// spec) with the tab-stopped body as `insertText`; a capability hover
+/// must be the structured, multi-line markdown block, not the old
+/// one-sentence form.
+#[test]
+fn lsp_offers_snippet_completions_and_structured_capability_hover() {
+    let dir =
+        std::env::temp_dir().join(format!("ciac-lsp-snippet-cli-test-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("main.ciac");
+    let src = "service Snip;\nuse { cache Redis; }\n";
+    std::fs::write(&path, src).expect("write fixture");
+    let uri = format!("file://{}", path.display());
+
+    let mut server = Server::start();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    server.response(1);
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "ciac", "version": 1, "text": src
+        }}
+    }));
+    server.notification("textDocument/publishDiagnostics");
+
+    // Completion offers `worker` as a real snippet, not a bare keyword.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 0 }
+        }
+    }));
+    let completion = server.response(2);
+    let items = completion["result"].as_array().expect("completion array");
+    let worker = items
+        .iter()
+        .find(|i| i["label"] == json!("worker"))
+        .unwrap_or_else(|| panic!("no `worker` completion item: {items:?}"));
+    assert_eq!(
+        worker["insertTextFormat"],
+        json!(2),
+        "Snippet format: {worker}"
+    );
+    let insert_text = worker["insertText"].as_str().expect("insertText string");
+    assert!(
+        insert_text.contains("worker ${1:Name} on ${2:Stream};"),
+        "{insert_text}"
+    );
+    assert!(insert_text.contains("$0"), "{insert_text}");
+
+    // Hover on `cache` (line 1, `use { cache Redis; }` -- "cache" at
+    // 0-based column 6) is the structured, multi-line capability block.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 6 }
+        }
+    }));
+    let hover = server.response(3);
+    let value = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("markdown hover");
+    assert!(value.starts_with("**cache**"), "{value}");
+    assert!(value.contains("Providers:"), "{value}");
+    assert!(value.contains("Targets:"), "{value}");
+    assert!(value.contains("Verbs:"), "{value}");
+    assert!(value.contains("Simulation:"), "{value}");
+    assert!(value.contains("cache Redis"), "{value}");
+
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": null
+    }));
+    server.response(5);
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
+    let status = server.child.wait().expect("server exits");
+    assert!(status.success(), "clean exit after shutdown");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// v0.15 M7: a diagnostic's fix rides the LSP `data` field from
 /// `publishDiagnostics` to `codeAction` -- the same edits `--json`/MCP
 /// expose, resolved into a `WorkspaceEdit` a client applies directly.

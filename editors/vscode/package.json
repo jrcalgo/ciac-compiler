@@ -31,6 +31,12 @@
         "path": "../ciac.tmLanguage.json"
       }
     ],
+    "snippets": [
+      {
+        "language": "ciac",
+        "path": "./snippets/ciac.json"
+      }
+    ],
     "configuration": {
       "title": "CIaC",
       "properties": {

@@ -357,21 +357,28 @@ impl Backend for JavaBackend {
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
-            (
-                f.path().to_str().expect("template names are utf-8"),
-                f.contents_utf8().expect("templates are utf-8"),
-            )
-        }))?;
-        env.add_filter("java_type", filters::java_type);
-        env.add_filter("java_db_type", filters::java_db_type);
-        env.add_filter("java_is_primitive", filters::java_is_primitive);
-        env.add_filter("java_camel", filters::java_camel);
-        env.add_filter("java_pascal", filters::java_pascal);
-        env.add_filter("java_is_uuid", filters::java_is_uuid);
-        env.add_filter("java_ddl_type", filters::java_ddl_type);
-        env.add_filter("spring_cron", filters::spring_cron);
-        env.add_filter("jdbcph", filters::jdbcph);
+        static ENV: std::sync::OnceLock<minijinja::Environment<'static>> =
+            std::sync::OnceLock::new();
+        let env = ciac_codegen::template::cached_environment(
+            &ENV,
+            TEMPLATES.files().map(|f| {
+                (
+                    f.path().to_str().expect("template names are utf-8"),
+                    f.contents_utf8().expect("templates are utf-8"),
+                )
+            }),
+            |env| {
+                env.add_filter("java_type", filters::java_type);
+                env.add_filter("java_db_type", filters::java_db_type);
+                env.add_filter("java_is_primitive", filters::java_is_primitive);
+                env.add_filter("java_camel", filters::java_camel);
+                env.add_filter("java_pascal", filters::java_pascal);
+                env.add_filter("java_is_uuid", filters::java_is_uuid);
+                env.add_filter("java_ddl_type", filters::java_ddl_type);
+                env.add_filter("spring_cron", filters::spring_cron);
+                env.add_filter("jdbcph", filters::jdbcph);
+            },
+        );
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -380,7 +387,7 @@ impl Backend for JavaBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
         if model.multi {
             // No system-level README template -- matching Go's/TS's

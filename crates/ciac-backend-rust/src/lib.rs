@@ -217,14 +217,21 @@ impl Backend for RustBackend {
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
-            (
-                f.path().to_str().expect("template names are utf-8"),
-                f.contents_utf8().expect("templates are utf-8"),
-            )
-        }))?;
-        env.add_filter("rust_type", filters::rust_type);
-        env.add_filter("db_rust_type", filters::db_rust_type);
+        static ENV: std::sync::OnceLock<minijinja::Environment<'static>> =
+            std::sync::OnceLock::new();
+        let env = ciac_codegen::template::cached_environment(
+            &ENV,
+            TEMPLATES.files().map(|f| {
+                (
+                    f.path().to_str().expect("template names are utf-8"),
+                    f.contents_utf8().expect("templates are utf-8"),
+                )
+            }),
+            |env| {
+                env.add_filter("rust_type", filters::rust_type);
+                env.add_filter("db_rust_type", filters::db_rust_type);
+            },
+        );
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -233,7 +240,7 @@ impl Backend for RustBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
 
         if model.multi {

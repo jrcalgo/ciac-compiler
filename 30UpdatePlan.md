@@ -1505,6 +1505,62 @@ Relationship to the immediately preceding arcs:
    the gain to be large — it requires it to be measured and honestly
    stated.
 
+   **Shipped (v0.30 M4) — shape (a) landed clean, and the instrument's
+   own limits turned out to be the milestone's most useful finding.**
+   Shape (a) worked directly: `ciac_codegen::template::
+   cached_environment(cache: &'static OnceLock<Environment<'static>>,
+   templates, add_filters)` builds an `Environment<'static>` once (its
+   templates already borrow from each backend's `'static`
+   `include_dir!` `Dir`, so no lifetime friction), registers that
+   backend's filters, and stores it — no fallback to shape (b) was
+   needed, and `Environment` compiled cleanly inside a `OnceLock`
+   without any `unsafe`. Each of the five backends
+   (python/rust/typescript/go/java) declares its own `static ENV:
+   OnceLock<Environment<'static>>` at its own `generate()` call site —
+   never a shared cache, so one backend's `add_filter` calls can never
+   leak into another's namespace. `OnceLock::get_or_init`'s own
+   documented guarantee — the initializer runs at most once, with
+   concurrent callers blocking on the one in progress rather than
+   racing — is what makes this safe under the test suite's own
+   concurrent `generate()` calls, with no manual locking written here.
+   All 145 goldens still unchanged.
+
+   **The instrument re-run surfaced a structural limit worth stating
+   plainly, not glossing over.** `scripts/bench-codegen.sh` times `ciac
+   build` as a *separate process per (example, target) pair*, and
+   `ciac build` calls `Backend::generate` exactly once per process
+   (confirmed by inspection: one `backend.generate(&ir, &opts)` call
+   site in the whole build path). A `static OnceLock` is empty at the
+   start of every fresh process, so this milestone's own caching
+   cannot pay for itself inside `bench-codegen.sh`'s own numbers at
+   all — there is only ever one `generate()` call to memoize against
+   per process, and building the environment is unavoidable overhead
+   on that first (and only) call regardless of whether it's cached.
+   The re-run sweep did show every target's mean drop somewhat (Java
+   1.277s vs. M2/M3's 2.570s; Python 0.014s vs. M1's 0.086s) — but
+   attributing that to M4 would be dishonest given the mechanism above;
+   it far more plausibly reflects less concurrent system load during
+   this particular run than during the M1/M2 sweeps (which ran
+   alongside other heavy background test invocations in this same
+   session). **Memoization's real, honest signal is only visible where
+   a single process makes many `generate()` calls** — exactly what
+   `determinism.rs` (290 calls), `conformance.rs` (435 calls), and
+   `openapi.rs`/`golden.rs` (145 each) do. There the effect is real but
+   modest, since Java's per-file formatter tax (M2's fix) was always
+   the dominant cost and template parsing was always the smaller
+   fraction: `determinism.rs` moved from 85.23s (post-M2/M3) to
+   81.20s post-M4 — about a 5% further reduction, not a second
+   headline number. `conformance.rs` stayed at 94.17s (within noise of
+   its post-M3 98.88s reading). Reported exactly this way, without
+   inflating the bench-codegen.sh numbers into a claim the mechanism
+   doesn't support — the milestone's real product is removing genuinely
+   wasted repeated parsing work in the four heaviest test binaries, a
+   real if modest saving, plus the shared caching pattern now living in
+   one place (`ciac_codegen::template::cached_environment`) any future
+   sixth backend can reuse without re-deriving the `OnceLock` shape.
+   `cargo fmt --check`/`cargo clippy --workspace --all-targets -- -D
+   warnings` both clean; `template.rs`'s own 3 unit tests still pass.
+
 5. **M5 — CHECKPOINT: re-measure, and decide what is still worth
    doing.** Run the full M1 instrument and time the four slow binaries
    again. Publish the M1→M5 delta table. Then make an explicit,

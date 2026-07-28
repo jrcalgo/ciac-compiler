@@ -98,6 +98,48 @@ fn untouched_owned_orphan_is_deleted() {
 }
 
 #[test]
+fn orphaned_seeded_scaffold_still_warns() {
+    let dir = temp_dir("orphaned-seeded-scaffold-still-warns");
+    let old = project(
+        [],
+        [("app/services/removed.py", "async def run():\n    pass\n")],
+    );
+    old.write_to(&dir).unwrap();
+    let manifest = build_manifest(&old, "0.6.0", "1.0.0", "source", "python");
+
+    let new = project([], []);
+    let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();
+    assert!(plan.has_warnings());
+    assert_eq!(statuses(&plan), [RegenStatus::OrphanLeft]);
+    assert!(plan.entries[0].is_warning());
+    cleanup(&dir);
+}
+
+#[test]
+fn orphaned_migration_file_does_not_warn() {
+    // 29UpdatePlan.md M9: a migration that stops being re-emitted once
+    // the schema stops changing is the expected, permanent steady
+    // state -- unlike a stale `Seeded` scaffold, it must not warn on
+    // every subsequent unchanged rebuild (found live: the README's own
+    // `build` then `sim` sequence warned about the same migration on
+    // every single run).
+    let dir = temp_dir("orphaned-migration-file-does-not-warn");
+    let mut old = GeneratedProject::new();
+    old.add_migration_file("app/migrations/0001_migration.sql", "CREATE TABLE t();\n");
+    old.write_to(&dir).unwrap();
+    let manifest = build_manifest(&old, "0.6.0", "1.0.0", "source", "python");
+
+    let new = project([], []);
+    let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();
+    assert_eq!(statuses(&plan), [RegenStatus::OrphanLeft]);
+    assert!(!plan.has_warnings());
+    assert!(!plan.entries[0].is_warning());
+    apply_regeneration(&plan, &dir, ApplyMode::Full).unwrap();
+    assert!(dir.join("app/migrations/0001_migration.sql").exists());
+    cleanup(&dir);
+}
+
+#[test]
 fn adopt_preserves_existing_files_and_writes_sidecars() {
     let dir = temp_dir("adopt-preserves-existing-files-and-writes-sidecars");
     std::fs::create_dir_all(dir.join("app")).unwrap();

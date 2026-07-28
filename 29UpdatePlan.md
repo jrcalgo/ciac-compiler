@@ -1489,6 +1489,142 @@ push; in-place Shipped notes).
    sentence is the arc's, and the sequence's, deliberate last
    word.
 
+   **Shipped (v0.27 M9).** `DOGFOODING.md` written at repo root
+   to its stated exit criterion (runnable tomorrow, zero
+   additional prep): recruitment note, setup, the three-phase
+   session script (cold start / guided build / the hook),
+   the five debrief questions, the observer's-silence rule, a
+   `docs/dogfooding/feedback-log-template.md` (copy-per-session,
+   tagged `{friction|concept|bug|want}`), and a filing table
+   pointing each tag at one of three new
+   `.github/ISSUE_TEMPLATE/` files (bug report, docs friction,
+   feature request — the repo had none before this milestone),
+   each cross-linking back to `DOGFOODING.md` and the
+   `dogfooding` label.
+
+   Transcript three
+   (`docs/dogfooding/transcripts/03-final.md`) ran the full
+   scripted path — `cargo install --path crates/ciac --force`
+   (1m33.6s, comparable to M1/M2's readings, cache-state
+   variance not a trend), the README's `new`/`check`/`build`/
+   `sim`/`verify` sequence against `examples/quickstart.ciac`,
+   and `scripts/check-guides.sh README.md docs/guide/
+   01-first-service.md docs/guide/05-simulation.md` (10 blocks
+   run, 3 skipped and disclosed, 0 failed, 8.3s) — against the
+   actual M9 release-candidate binary, not a stand-in. The delta
+   table across all three transcripts (01→02→03) shows every
+   finding from M1 onward closed: F1 (install 404, real release
+   not cut — unchanged, explicitly out of this arc's scope) is
+   the only open row, by design.
+
+   The transcript surfaced one new, genuine finding (F8), and it
+   was fixed live rather than merely logged, matching the same
+   "fix on the spot" discipline transcript 02 set at F7. Running
+   the README's own documented two-step sequence — `ciac build`
+   immediately followed by `ciac sim`, both `--out ./build` —
+   printed two `warning[CIAC0035]` lines about the just-written
+   migration file being "no longer produced and left in place."
+   Reproduced against a from-scratch directory with nothing but
+   two consecutive `ciac build` calls and zero source changes:
+   the warning fires on every build after the one that created a
+   migration, forever, for the life of any project that has one
+   — worse than a one-time surprise, since a new user would see
+   it repeatedly with no way to make it stop short of deleting a
+   file they were explicitly told to leave alone. Root cause: a
+   migration file is deliberately never re-emitted once written
+   (that's how migrations are supposed to accumulate), but the
+   regeneration-orphan check had no way to distinguish that
+   permanent, correct steady state from a genuinely stale
+   `Seeded` scaffold the user should investigate, so both hit the
+   same `OrphanLeft` warning path.
+
+   Fixed by giving `FileRole` (`crates/ciac-codegen/src/
+   project.rs`) a third variant, `Migration`, distinct from
+   `Seeded` — write-once like `Seeded` (threaded through every
+   `regen.rs` classification arm, `emit.rs`'s and `external.rs`'s
+   role-dispatch matches, and `rename.rs`'s seeded-reference scan,
+   which still needs to grep migration SQL for renamed names) but
+   exempted from `RegenEntry::is_warning()`'s `OrphanLeft` case
+   and from `commands.rs`'s CLI-facing warning print. `add_migration_files`
+   now calls the new `GeneratedProject::add_migration_file`
+   instead of `add_seeded_file`. Two new tests in
+   `tests/tests/regen.rs` cover both directions:
+   `orphaned_migration_file_does_not_warn` (the fix) and
+   `orphaned_seeded_scaffold_still_warns` (the regression guard —
+   a genuinely stale scaffold must keep warning). `docs/errors.md`'s
+   CIAC0035 entry states the exemption. Re-verified after the fix:
+   the README's exact two-step sequence, and a bare second
+   `ciac build` with zero changes, both produce zero warnings.
+
+   Version bumped **0.26.0 → 0.27.0**: root `Cargo.toml`
+   `[workspace.package]` plus the 11 internal crate pins,
+   `editors/vscode/package.json`, `docs/language.md`'s compiler-
+   version parenthetical, and `docs/positioning.md`'s maturity
+   statement (language stays `1.0.0`, untouched). Two checked-in
+   artifacts embed the compiler version and were caught stale by
+   the workspace test suite itself, not missed silently:
+   `docs/targets.json` (`ciac_version` field) and
+   `docs/protocol-schema.json` (which also gained the new
+   `FileRole::Migration` schema variant) — both regenerated via
+   their own documented commands
+   (`cargo run -p ciac -- targets --json` /
+   `codegen-schema`) and re-verified green.
+
+   Full verification: `cargo fmt --all` clean; `cargo clippy
+   --workspace --all-targets -- -D warnings` zero warnings;
+   `cargo test --workspace` — **69 test binaries, 473 tests
+   total, 0 failed** (after the two stale-artifact regenerations
+   above); `scripts/sim-corpus-x5.sh` — **50 program×target
+   combinations, all green**, confirming the `FileRole::Migration`
+   change and version bump left cross-target simulation
+   equivalence untouched.
+
+   **Arc retrospective.**
+
+   | Transcript | Findings closed this round | Open at exit |
+   | --- | --- | --- |
+   | 01 (M1, baseline) | — (measurement only) | F1–F6 |
+   | 02 (M5, checkpoint) | F2, F4, F5 fixed; F7 found+fixed live | F1 (real release), F6 (deferred to M6) |
+   | 03 (M9, final) | F6 closed at M6/M8; F8 found+fixed live | F1 only — by design, gated on user sign-off |
+
+   Docs surface, before this arc vs. after: the README went from
+   a 366-line version-by-version history to a <250-line narrative
+   demonstration (the history moved to `docs/history/history.md`);
+   `docs/guide/` grew from nothing to a seven-file series (01–07,
+   each ending at a harness-verified checkpoint); `docs/
+   positioning.md` and a docs index (`docs/README.md`) are new;
+   `scripts/check-guides.sh` plus a CI docs job means every
+   runnable block in the README and every guide is executed for
+   real on every CI run, not just read; the LSP gained snippets,
+   richer hovers, go-to-definition, and debounced didChange
+   diagnostics; the structured-fix inventory widened from 4 codes
+   to 7. What the transcripts could measure: every mechanical
+   friction point an author re-reading with fresh eyes can catch
+   — broken commands, missing prerequisites, misleading or absent
+   output, slow steps, dead cross-references, and (F8) a
+   diagnostic that's technically correct-shaped but wrong in
+   substance. What they structurally cannot measure, no matter
+   how many times they're re-run: whether the *concepts* land for
+   someone who has never seen a capability, a pipeline, or a
+   simulation scenario before — whether the README's narrative
+   arc actually persuades, whether the guide series' pacing is
+   right, whether "the hook" (simulation) actually hooks anyone.
+   That gap is categorical, not a matter of running the script a
+   fourth time.
+
+   `29UpdatePlan.md` is complete. Tagging or releasing v0.27.0 is
+   a separate, explicitly-gated decision this session surfaces to
+   the user rather than acting on unprompted, per this session's
+   standing instruction — carried forward from a point in the
+   sequence when the current release was still numbered 0.26.0;
+   the workspace is now at 0.27.0, so that check-in should confirm
+   which version is actually meant before anything is tagged.
+   The next plan file should not be written until a real outside
+   human has run the `DOGFOODING.md` session, because every
+   armchair-derivable improvement now has either shipped or been
+   explicitly cut, and the marginal value of planning without new
+   evidence is negative.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** transcript 01 committed with wall-clocks

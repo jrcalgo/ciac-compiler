@@ -155,6 +155,10 @@ block rather than improvised at the point of need.
 - **CIAC0034** means a user-owned seeded file exists but the generated
   seed changed; reconcile the `.ciac-new` sidecar manually.
 - **CIAC0035** means a previously generated file is no longer produced.
+  Migration files never trigger this (v0.27 M9): a migration's own
+  file staying on disk without being re-emitted on every later build
+  is the expected, permanent steady state once its schema stops
+  changing, not a stale scaffold to investigate.
 - **CIAC0036** means a non-empty output directory has no regeneration
   manifest; use a clean directory, `--force`, or `--adopt`.
 - **CIAC0037** means a job schedule is not a valid five-field cron

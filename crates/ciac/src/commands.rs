@@ -3340,15 +3340,20 @@ same commands as a Model Context Protocol server over stdio (including\n\
 /// project's migration directory (there may be more than one in a
 /// multi-service system; every service context already carries the
 /// program's full table set, so each gets the same migration file).
-/// Migration files are seeded: once written, later builds that stop
-/// re-emitting a given sequence number leave the on-disk file alone
-/// (`RegenStatus::OrphanLeft`) rather than deleting it.
+/// Migration files use `FileRole::Migration` (v0.27 M9; write-once
+/// like `Seeded`): once written, later builds that stop re-emitting a
+/// given sequence number leave the on-disk file alone
+/// (`RegenStatus::OrphanLeft`) rather than deleting it, and — unlike
+/// a stale `Seeded` scaffold — that state is the permanent, expected
+/// steady state once the schema stops changing, so it does not warn
+/// (found live: a plain, unchanged `ciac build`/`ciac sim` was
+/// warning about every prior migration on every single run).
 fn add_migration_files(project: &mut GeneratedProject, backend: &dyn Backend, seq: u32, sql: &str) {
     let target_info = backend.target_info();
     let filename = (target_info.migration_filename)(seq, "migration");
     let rel = format!("{}/{filename}", target_info.migrations_dir);
     for prefix in service_roots(project, target_info) {
-        project.add_seeded_file(format!("{prefix}{rel}"), sql.to_owned());
+        project.add_migration_file(format!("{prefix}{rel}"), sql.to_owned());
     }
 }
 
@@ -3440,6 +3445,10 @@ fn report_regen_plan(plan: &RegenPlan, adopt: bool, sidecars_written: bool) {
                     sidecar
                 );
             }
+            // A migration's `OrphanLeft` state is permanent and
+            // expected (see `FileRole::Migration`), not a stale
+            // scaffold to flag -- silent, same as `Unchanged`.
+            RegenStatus::OrphanLeft if entry.role == ciac_codegen::FileRole::Migration => {}
             RegenStatus::OrphanLeft => {
                 eprintln!(
                     "warning[{}]: generated file {} is no longer produced and was left in place",

@@ -51,10 +51,15 @@ impl RegenEntry {
     }
 
     pub fn is_warning(&self) -> bool {
-        matches!(
-            self.status,
-            RegenStatus::SeededDrift | RegenStatus::OrphanLeft
-        )
+        match self.status {
+            RegenStatus::SeededDrift => true,
+            // A migration's `OrphanLeft` state is the expected,
+            // permanent steady state once its schema stops changing
+            // (see `FileRole::Migration`) -- not a stale scaffold to
+            // flag, so it never warns.
+            RegenStatus::OrphanLeft => self.role != FileRole::Migration,
+            _ => false,
+        }
     }
 }
 
@@ -135,7 +140,7 @@ pub fn plan_regeneration(
                     )
                 }
             }
-            (RegenMode::Adopt, FileRole::Seeded, Some(disk_hash), _) => {
+            (RegenMode::Adopt, FileRole::Seeded | FileRole::Migration, Some(disk_hash), _) => {
                 if disk_hash == new_hash {
                     RegenEntry {
                         path: rel.to_owned(),
@@ -194,7 +199,12 @@ pub fn plan_regeneration(
                     )
                 }
             }
-            (RegenMode::Normal, FileRole::Seeded, Some(disk_hash), Some(base_hash)) => {
+            (
+                RegenMode::Normal,
+                FileRole::Seeded | FileRole::Migration,
+                Some(disk_hash),
+                Some(base_hash),
+            ) => {
                 if base_hash != new_hash && disk_hash != new_hash {
                     sidecar_entry(
                         rel,
@@ -207,7 +217,7 @@ pub fn plan_regeneration(
                     unchanged_entry(rel, role, disk_content, generated_content)
                 }
             }
-            (RegenMode::Normal, FileRole::Seeded, Some(disk_hash), None) => {
+            (RegenMode::Normal, FileRole::Seeded | FileRole::Migration, Some(disk_hash), None) => {
                 if disk_hash == new_hash {
                     unchanged_entry(rel, role, disk_content, generated_content)
                 } else {

@@ -467,7 +467,10 @@ fn scan_seeded_references(out: &Path, old_name: &str) -> Result<Vec<(String, u32
         .with_context(|| format!("cannot read manifest at {}", out.display()))?;
     let mut hits = Vec::new();
     for (path, file) in &manifest.files {
-        if !matches!(file.role, ciac_codegen::FileRole::Seeded) {
+        if !matches!(
+            file.role,
+            ciac_codegen::FileRole::Seeded | ciac_codegen::FileRole::Migration
+        ) {
             continue;
         }
         let full = out.join(path);

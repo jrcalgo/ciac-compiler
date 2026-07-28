@@ -65,8 +65,13 @@ check_one_doc() {
     # A checked-out repo's own `examples/`/`sim/` directories, so a
     # command block that says `examples/quickstart.ciac` resolves
     # exactly as it would for a reader who cloned this repository.
-    ln -s "$REPO_ROOT/examples" "$workdir/examples"
-    ln -s "$REPO_ROOT/sim" "$workdir/sim"
+    # Copied, not symlinked: a guide's own `file` block can write a
+    # scenario under `sim/` (guide 05 does), and a symlink would let
+    # that write follow through into this actual repository's own
+    # `sim/` directory instead of staying inside the workspace --
+    # found live, the hard way, at 29UpdatePlan.md M6.
+    cp -r "$REPO_ROOT/examples" "$workdir/examples"
+    cp -r "$REPO_ROOT/sim" "$workdir/sim"
 
     local kind="" id="" path="" reason=""
     local -a content=()

@@ -1,5 +1,7 @@
 # The inner loop: `ciac dev`
 
+*Reader: a builder iterating on a running system locally.*
+
 `ciac build` + `ciac verify` is a fine loop by hand, but iterating on
 a running system means re-running both and restarting the stack every
 time. `ciac dev` (v0.13 M4) automates that cycle: watch the program's

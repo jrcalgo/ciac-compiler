@@ -1,5 +1,7 @@
 # Evolution: semantic diff, rename, and the backfill ladder
 
+*Reader: a builder changing a system that's already shipped.*
+
 v0.18 answers a question the compiler couldn't answer before: *did this
 change break anything?* Every earlier version diffed **generated
 files** (`ciac diff`, since v0.6) — useful for regeneration hygiene, but

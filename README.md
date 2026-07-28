@@ -161,13 +161,18 @@ project. See [docs/agents.md](docs/agents.md).
 
 ## Where to go next
 
-- **Evaluating CIaC?** The map above plus
-  [docs/backends.md](docs/backends.md)'s divergence ledger is the
-  fastest honest read.
-- **Building something?** [docs/authoring.md](docs/authoring.md)
-  (editor setup, `ciac lsp`, blueprints) and
-  [docs/dev-loop.md](docs/dev-loop.md) (the watch loop) cover the
-  minutes before and during `ciac build`.
+- **Evaluating CIaC?** [docs/positioning.md](docs/positioning.md) is
+  the honest comparison against frameworks, generators, and BaaS
+  platforms — including when *not* to use this — and
+  [docs/backends.md](docs/backends.md)'s divergence ledger backs
+  every comparative claim in it.
+- **Building something?** [docs/guide/](docs/guide/01-first-service.md)
+  is a seven-guide series that builds one continuous example from a
+  first service through multi-service simulation and deployment, each
+  guide ending at a real, checked checkpoint.
+  [docs/authoring.md](docs/authoring.md) (editor setup, `ciac lsp`,
+  blueprints) and [docs/dev-loop.md](docs/dev-loop.md) (the watch
+  loop) cover the minutes before and during `ciac build`.
 - **Full reference:** [docs/language.md](docs/language.md) (the
   language spec) · [docs/expressions.md](docs/expressions.md)
   (handler bodies, verbs, transactions) ·
@@ -177,7 +182,7 @@ project. See [docs/agents.md](docs/agents.md).
   [docs/regeneration.md](docs/regeneration.md) ·
   [docs/operations.md](docs/operations.md) ·
   [docs/errors.md](docs/errors.md).
-- **How CIaC got here:** [docs/history.md](docs/history.md) — the
+- **How CIaC got here:** [docs/history/history.md](docs/history/history.md) — the
   version-by-version story this README used to open with.
 
 ## Building from source
@@ -200,7 +205,7 @@ cargo run -p ciac -- check examples/video-platform.ciac
 | `examples/` | valid example programs, `sim/` their scenarios |
 | `editors/` | TextMate grammar + VS Code extension for `.ciac` |
 | `tests/` | golden snapshots, negative suite, determinism tests |
-| `docs/` | reference documentation — index above |
+| `docs/` | reference documentation and the guide series — see [docs/README.md](docs/README.md) for the full index |
 
 ## License
 

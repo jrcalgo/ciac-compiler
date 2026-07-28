@@ -1,5 +1,7 @@
 # Error Code Index
 
+*Reader: anyone who hit a `CIAC####` code and wants its meaning.*
+
 Stable diagnostics emitted by the compiler. Codes are append-only: once
 published, a code's meaning never changes. `ciac explain <code>` prints
 the same explanations; this page is checked against the registry by a

@@ -1,5 +1,9 @@
 # Simulation (v0.17)
 
+*Reader: a builder writing or running simulation scenarios. [Guide
+5](guide/05-simulation.md) is the narrative walkthrough; this page is
+the full scenario-schema reference.*
+
 `ciac sim` runs a portable, versioned scenario against a generated
 project's **real code** — real routes, real handlers, real worker/job
 entry points — with in-memory fakes standing in for the database,

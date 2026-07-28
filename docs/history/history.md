@@ -2,7 +2,7 @@
 
 CIaC's version-by-version story — how the language and its five
 targets grew, told in the order it happened. This is not the
-introduction (see the [README](../README.md) for that); it's the
+introduction (see the [README](../../README.md) for that); it's the
 narrative every early version of the README carried at the top,
 moved here at v0.27 (`29UpdatePlan.md` M3) once the README itself
 became a fifteen-minute pitch rather than a changelog.
@@ -160,7 +160,7 @@ v0.13. A construct no target can implement yet still passes `ciac
 check` and is refused by `ciac build` with `CIAC0011` rather than
 silently miscompiling — if it builds, the generated system actually
 does it. The per-provider support table lives in
-[docs/language.md](language.md).
+[docs/language.md](../language.md).
 
 v0.15 turns a generated system into one a team can operate and point
 other software at: every `ciac build` emits an `openapi.json`, and
@@ -176,8 +176,8 @@ mechanical, unambiguous ones (a missing capability, a typo'd
 provider/field name, a missing required attribute) carry an applyable
 edit, the same data an editor's quick-fix and an agent's
 check → apply → re-check loop both consume. Details in
-[docs/operations.md](operations.md) and
-[docs/deployment.md](deployment.md).
+[docs/operations.md](../operations.md) and
+[docs/deployment.md](../deployment.md).
 
 v0.16 adds relations and explicit database transactions: a
 `Reference<T>` field on a `table`-backed record gets a real, named
@@ -186,12 +186,12 @@ engine) and an optional `unique` constraint, on both targets; a
 `transaction { .. }` block groups a handler body's `db.*` writes so
 they succeed or fail together — real end to end on every target as of
 v0.24 (`26UpdatePlan.md` M1–M2 closed the Rust backend's own interim
-non-atomic gap; see [docs/expressions.md](expressions.md)). The wire
+non-atomic gap; see [docs/expressions.md](../expressions.md)). The wire
 contract stays deliberately narrow: a relation is a flat foreign-key id
 everywhere (`customer_id: string`), never a nested embedded object, and
 `cardinality: many` has real sema/migration support but no wire
-exposure yet. Details in [docs/language.md](language.md)'s
-`Reference<T>` section and [docs/expressions.md](expressions.md)'s
+exposure yet. Details in [docs/language.md](../language.md)'s
+`Reference<T>` section and [docs/expressions.md](../expressions.md)'s
 `transaction` section.
 
 v0.18–v0.19 add TypeScript and Go as full targets alongside Python and

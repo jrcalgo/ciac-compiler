@@ -1,5 +1,8 @@
 # The Intermediate Representation
 
+*Reader: a contributor working on the compiler's own sema/codegen
+passes.*
+
 A CIaC program compiles to a `SystemGraph` (crate `ciac-ir`): a typed
 directed graph plus a deployable-service table, a record (type) table,
 resolved pipelines, and the records of expanded higher-level constructs. Inspect it with

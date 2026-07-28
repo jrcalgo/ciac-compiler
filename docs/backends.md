@@ -1,5 +1,10 @@
 # Writing a Code-Generation Backend
 
+*Reader: a contributor adding a new code-generation target. The
+[divergence ledger](#divergence-ledger) further down this same page
+is also the evaluator's reference for what differs, and doesn't
+differ, across the five bundled targets.*
+
 Backends turn the validated IR into a project. The language, IR, and
 validation never change when a target is added.
 

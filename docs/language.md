@@ -1,5 +1,10 @@
 # The CIaC Language (v1.0.0)
 
+*Reader: anyone wanting the full language reference — every
+declaration kind, every provider, per-target support. The
+[guide series](guide/01-first-service.md) teaches the same language
+narratively; this page is what you come back to for the exact rule.*
+
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
 declarations. Declaration order is free; the compiler resolves

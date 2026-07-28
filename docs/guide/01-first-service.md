@@ -136,7 +136,29 @@ All checks passed!
 ```
 
 A green `ciac verify` on a service with one record and one API. From
-here: [guide 2](02-records-and-crud.md) adds real persistence. A later
-guide in this series (simulation, landing alongside the rest of the
-series) puts a real failure through code like this and proves what
-happens — if that's what hooked you, it's coming.
+here: [guide 2](02-records-and-crud.md) adds real persistence, or —
+if failure-injected simulation is what hooked you — jump straight to
+[guide 5](05-simulation.md); this series is meant to be entered from
+wherever your curiosity actually is.
+
+## A short glossary
+
+A few pairs of words that sound interchangeable across this
+project's docs but aren't — recorded once here so the rest of the
+series (and the reference docs) can use them without re-explaining:
+
+- **target** vs **backend** — *target* is what you ask for
+  (`--target python`); *backend* is the crate that implements
+  code-generation for that target ([docs/backends.md](../backends.md)
+  is about writing one). A reader picks a target; a contributor
+  writes a backend.
+- **capability** vs **component** — *capability* is the specific,
+  named ontology this language models (`db`, `queue`, `auth`, `cache`,
+  ...; see [docs/language.md](../language.md)). *Component* is the
+  broader, architecture-graph sense used in a few error messages
+  (e.g. CIAC0007, "unreachable component") — any node in the graph,
+  not only a capability.
+- **example** vs **program** — *example* names a specific checked-in
+  `.ciac` file in this repository (`examples/quickstart.ciac`);
+  *program* is the general term for whatever a `.ciac` file
+  describes, whether or not it's checked in anywhere.

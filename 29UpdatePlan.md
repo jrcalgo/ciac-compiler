@@ -1050,6 +1050,80 @@ push; in-place Shipped notes).
    complete at this milestone's exit; what follows is editor
    and kit.
 
+   **Shipped (v0.29 M6) — the full docs surface, coherent, with one
+   deliberate scope break disclosed in the guide it's in.** Four
+   guides landed, continuing `Ping`/`Message` through guide 05: 04
+   adds a `channel` (a third, independent consumer of `MessageRead`
+   alongside the worker) and a `job` (work with no request behind
+   it); 05 injects a real failure into guide 03's own `transaction`
+   and proves the rollback/retry, verified live (not asserted) with
+   a checked-in scenario embedded via the harness's `file` block
+   convention; 07 generates real k8s/Terraform/CI artifacts and
+   previews a real whole-program rename against the series' own
+   final `main.ciac`, disclosing `--system` as the one Docker-
+   required step in the entire seven-guide series. Guide 06 is the
+   deliberate break: rather than inventing a redundant multi-service
+   extension of `Ping`, it reuses the already-checked-in, already-
+   CI-verified `examples/sim-three-service.ciac` (28UpdatePlan.md's
+   own N=3 proof), stated as such in the guide's own opening
+   paragraph rather than silently switching examples — the
+   milestone's version of the "honesty culture" this whole arc
+   keeps naming. `docs/positioning.md` written per Pillar 4 exactly:
+   one-paragraph thesis, three named comparisons (frameworks,
+   generators, BaaS) each with an honest "what they have that CIaC
+   doesn't" clause, an explicit "when not to use CIaC" section, and
+   a maturity statement — every comparative claim cross-checked
+   against the actual mechanism during writing (the dependency-
+   scanner names were verified against `.github/workflows/ci.yml`
+   directly, not recalled from memory, and one was corrected in the
+   process). The coherence pass: `docs/README.md`, a new index
+   table (start-here / guide series / reference / contributor /
+   history) — chosen over a README section because a `docs/`
+   directory's own `README.md` is what GitHub renders when browsing
+   there, the "where GitHub renders best" criterion Pillar 7 itself
+   named; a one-line reader statement added to all 17 pre-existing
+   reference docs; `docs/authoring.md`'s stale "rename/code-actions
+   out of scope" claim (found and disclosed at M1 as F6) finally
+   fixed, with an honest note that its LSP section is provisional
+   until M8 rewrites it for real; `backend-spike-report.md` and
+   `history.md` moved into a new `docs/history/` grouping (their
+   own internal relative links re-pointed for the new depth; the two
+   live cross-references to them, in README.md and
+   `backends/go/README.md`, updated); terminology check for the
+   three drift candidates the plan named (`backend`/`target`,
+   `capability`/`component`, `example`/`program`) — each pair turned
+   out to be a real, deliberate distinction rather than accidental
+   drift, so guide 01 gained a short glossary section recording the
+   distinction instead of a rewrite forcing an artificial "winner";
+   README's own "Where to go next" and repository-layout table
+   updated to link the guide series, `positioning.md`, and the new
+   docs index now that all three exist (M3 had deliberately left
+   them unlinked to avoid dead links — exactly the F7 mistake this
+   arc's own M5 caught and fixed once already, not repeated here).
+   A link-integrity check (a small script walking every `[text]
+   (path)` in README.md and all of `docs/`, resolving relative
+   paths against each file's own directory) found zero broken
+   internal links after the moves. One harness bug found and fixed
+   in the process, unrelated to any guide's own content: `scripts/
+   check-guides.sh` symlinked `examples/`/`sim/` into each
+   document's workspace rather than copying them, so guide 05's own
+   `file` block (writing a scenario to `sim/mark-read.ciac-sim.json`)
+   wrote *through* the symlink into this actual repository's real
+   `sim/` directory instead of staying inside the disposable
+   workspace — caught by `git status` showing an unexpected
+   untracked file, not by the harness itself. Fixed by copying
+   instead of symlinking; re-ran the full harness clean afterward
+   with no stray file left behind. Verification:
+   `scripts/check-guides.sh` run against all eight documents (README
+   + guides 01–07) — 26 blocks run, 5 disclosed skips (the install
+   step twice, `ciac dev`'s watch loop, and the two Docker-required
+   `--system` steps in guides 06/07), 0 failed. No code changed this
+   milestone — docs only; `cargo fmt`/`clippy`/`cargo test
+   --workspace` untouched by this milestone's own changes, so not
+   re-run. The docs surface is complete at this exit, as the
+   milestone's own text promised: what follows is editor polish
+   (M7–M8) and the dogfooding kit (M9).
+
 7. **M7 — Snippets and rich hovers.** The vocab.rs snippet
    table + structured hover data (per-target support derived
    from the registry — the machine-truth rule); LSP snippet

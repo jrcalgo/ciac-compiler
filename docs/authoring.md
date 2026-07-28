@@ -1,4 +1,10 @@
-# Authoring CIaC (v0.13)
+# Authoring CIaC
+
+*Reader: a builder setting up editor support, or reusing blueprints
+across projects. [docs/guide/01-first-service.md](guide/01-first-service.md)
+is the narrative walkthrough this page assumes as background;
+this page is the reference for the editing/reuse tooling that
+walkthrough only touches briefly.*
 
 Everything in this page is about the minutes *before* and *during*
 `ciac build`: starting a project, editing `.ciac` with live feedback,
@@ -43,8 +49,14 @@ same spans, resolved through the same line/column pipeline as
 Diagnostics refresh on *save*, not on every keystroke: imports
 resolve against the filesystem exactly as the CLI resolves them, and
 resolving unsaved buffers would need a VFS layer that remains
-deliberately out of scope (as are rename, references, and code
-actions). `ciac lsp` and `ciac describe` (v0.13, see
+deliberately out of scope. Rename (v0.18) and structured quick-fixes
+on mechanically-fixable diagnostics (v0.15 M7) are *not* out of
+scope, despite an earlier version of this page saying otherwise —
+`ciac lsp` surfaces both; 29UpdatePlan.md's own M8 milestone is
+rewriting this section to name the LSP's complete, current
+capability set (adding go-to-definition alongside them), so treat
+the exact feature list here as provisional until that milestone
+lands. `ciac lsp` and `ciac describe` (v0.13, see
 [docs/agents.md](agents.md)) render their vocabulary from the same
 table in `crates/ciac/src/vocab.rs`, so hover text and the
 machine-readable registry can't drift apart.

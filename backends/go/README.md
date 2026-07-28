@@ -27,7 +27,7 @@ go build -o ciac-backend-go-external-demo .
 ## Scope
 
 Deliberately narrow, matching the v0.8 M6 Go backend spike
-(`docs/backend-spike-report.md` in the ciac repo): one service, one
+(`docs/history/backend-spike-report.md` in the ciac repo): one service, one
 record, one api, no capabilities. A request for anything wider (auth,
 db, cache, queue, object store, email, search, external HTTP, or typed
 handlers) is refused on stderr with a non-zero exit rather than

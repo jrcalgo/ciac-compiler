@@ -1,5 +1,7 @@
 # Deployment (compose, Kubernetes, and system verification)
 
+*Reader: a builder taking a generated system to a real deploy.*
+
 Every `ciac build` already emits a `docker-compose.yml` at the output
 root (per-service `docker-compose.yml.j2` for a single deployable,
 `system-compose.yml.j2` at the system root for a multi-service one) —

@@ -1,5 +1,8 @@
 # External backends (v0.10)
 
+*Reader: someone implementing a code-generation target outside the
+compiler itself, in any language, against a versioned wire protocol.*
+
 A CIaC backend doesn't have to be a Rust crate linked into the
 compiler. `ciac build --target <name>` falls back to running an
 executable called **`ciac-backend-<name>`** found on `$PATH` when

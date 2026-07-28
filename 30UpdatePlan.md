@@ -1741,6 +1741,118 @@ Relationship to the immediately preceding arcs:
    and does not catch, and the forecast-method blind spot named in the
    forecast-relationship section above.
 
+   **Shipped (v0.30 M9) — 0.28.0, full verification green, arc
+   closed.** Version bumped everywhere the plan named: root
+   `Cargo.toml` `[workspace.package]` plus all 11 internal crate pins
+   (`sed`-verified, every occurrence 0.27.0→0.28.0, nothing missed),
+   `editors/vscode/package.json`, `docs/language.md`'s compiler
+   parenthetical, `docs/positioning.md`'s maturity statement. Language
+   version untouched at `1.0.0` — correct, since nothing in this arc
+   touched the language surface, only the compiler's own internals.
+   `docs/targets.json` regenerated via `ciac targets --json` (one
+   line changed: the version string, confirming the arc's own claim
+   that no target's capabilities moved); `docs/protocol-schema.json`
+   regenerated via `ciac codegen-schema` and came back byte-identical
+   (the schema itself carries no version field to update) — both
+   handled cleanly on the first attempt this time, exactly because M9's
+   own milestone text pre-named them rather than leaving them to be
+   rediscovered the way 29 M9 first found them the hard way.
+
+   Full verification, all green: `cargo fmt --check`; `cargo clippy
+   --workspace --all-targets -- -D warnings` (zero warnings); `cargo
+   test --workspace` (every test binary `ok`, zero failures, zero
+   pending `.snap.new` files — confirmed directly, not inferred);
+   `scripts/sim-corpus-x5.sh` (50 program×target combinations, 75
+   individual scenario checks, all `[PASS]`, zero `[FAIL]`) — the
+   cross-target equivalence proof this arc's whole claim depends on:
+   simulation *executes* generated code, so a pass here is a stronger
+   statement than a byte-identical snapshot that nothing this arc did
+   changed what the generated code actually *does*, only how fast it
+   gets produced. `Cargo.lock`'s only diff is the version bump
+   (verified line-by-line via `git diff`), confirming no dependency
+   moved as a side effect of nine milestones of work.
+
+   **The M1→M9 delta table** — identical to M1→M5's, because M9
+   inherits M5's own explicit stop decision: M6 and M7 were cut, so no
+   further optimization landed between the checkpoint and this close.
+   That is not an oversight to apologize for; it is the checkpoint
+   working as designed:
+
+   | Reading | Combined slow-binary time | Java mean generation | Java max | Ratio to fastest |
+   |---|---|---|---|---|
+   | M1 (baseline) | 2497.85s | 15.837s | 48.351s | 1186.04x |
+   | M9 (arc close) | **253.23s** | **1.277s** | 2.105s | **90.00x** |
+   | **Change** | **9.87x faster** | **12.40x faster** | 22.97x faster | **13.18x smaller** |
+
+   Delivered in three implementation milestones (M2, M3, M4) plus one
+   verification/checkpoint milestone (M5) and one ratchet milestone
+   (M8) — six total, against the nine the plan budgeted, because M5's
+   own numbers made M6-M7 the plan's own pre-registered "stop" outcome
+   real rather than hypothetical.
+
+   **Retrospective.**
+
+   *What the measurement gap cost.* Four prior arcs (26-29) built
+   real capability — atomicity, audit gates, simulation depth,
+   multi-service coordination, a front door — on top of a compiler
+   whose Java backend spent ~24 seconds generating a 40-file project
+   where every other target spent a quarter of a second, and nobody
+   measured it long enough to notice. The cost was not correctness
+   (every one of those arcs' own golden/conformance/equivalence gates
+   passed throughout) — it was attention and interactivity: a `ciac
+   dev` Java save-loop nobody could use, and 2,498 seconds of `cargo
+   test --workspace`'s own tail that every contributor since v0.25
+   paid on every run without asking why. The fix, once found, was
+   three lines moved in one function.
+
+   *Why four arcs missed it.* Named plainly in "Relationship to the
+   forecast documents" above: capability-driven roadmaps ask "what
+   can't it do yet," and a slow correct answer scores identically to
+   a fast one on that question. 26-29 each ran `cargo test
+   --workspace` at the end of their own verification passes,
+   presumably watched it take 30-40 minutes, and moved on — the number
+   was visible every time, and invisible precisely because it was
+   *always* visible, the same way a constant background noise stops
+   registering. This arc exists because 29UpdatePlan.md's own
+   veracity-harness discipline made the wait annoying enough, for
+   unrelated reasons, that someone finally asked "why."
+
+   *What the ratchet does and does not catch.* `tests/tests/
+   perf_budget.rs` catches a return to the *shape* of this defect —
+   any backend's generation cost drifting back toward
+   hundreds-or-thousands-of-times the median, which is what one JVM
+   spawn per generated file, or its equivalent in some future backend,
+   would look like. It does **not** catch: a slow new capability added
+   correctly to every backend uniformly (the median moves with it, so
+   the ratio stays flat — by design, since a uniformly slower compiler
+   is a different, real problem the relative budget cannot distinguish
+   from "no problem"); a one-time regression small enough to stay under
+   1000x (the multiplier is deliberately loose — see M8's own Shipped
+   note for why); or anything about `ciac verify`'s downstream
+   toolchain costs, Docker-dependent paths, or simulation runtime,
+   none of which this instrument measures at all (named explicitly in
+   `docs/perf/codegen-baseline.md`'s "What this does not measure").
+   The ratchet is a smoke detector for one specific, previously-real
+   fire, not a general performance monitor.
+
+   *The forecast-method blind spot.* Stated above and repeated here
+   because it is the arc's most durable finding, more durable than any
+   single number in the delta table: a roadmap built entirely from
+   "what can't it do yet" has no vocabulary for "it does that, but
+   slowly, and nobody has measured how slowly in two years." Pillar 1
+   institutionalizes measurement (`scripts/bench-codegen.sh`,
+   `docs/perf/`) and M8 institutionalizes the ratchet, closing this
+   specific instance. The methodological gap — that the *next* arc's
+   own roadmap will again be capability-shaped, and will again have no
+   eyes for a second latent cost defect growing quietly somewhere else
+   in the compiler — is not closed by either of those, and is named
+   here rather than implied solved.
+
+   No git tag, no release trigger — per the standing constraint,
+   raised for the user to decide separately from this arc's own
+   completion. 30UpdatePlan.md is closed; there is no 31st document
+   yet, and this retrospective is the handoff for whoever writes one.
+
 ### Per-milestone exit checklists
 
 - **M1 exits when:** `scripts/bench-codegen.sh` runs clean on all 29×5

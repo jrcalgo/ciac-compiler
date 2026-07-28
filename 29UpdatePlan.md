@@ -775,6 +775,54 @@ push; in-place Shipped notes).
    golden-snapshotted already). Exit is the queue empty or
    explicitly deferred-with-reason, not vibes.
 
+   **Shipped (v0.29 M2) — F4 and F5 fixed, plus a third bug the
+   fix's own verification caught.** **F4** (the highest-priority
+   finding — `ciac verify` failing on every fresh Python project):
+   `crates/ciac-backend-python/templates/pyproject.toml.j2` gained
+   an explicit `[tool.ruff.lint] select = ["E4", "E7", "E9", "F"]`
+   — ruff's own long-documented default selection, pinned rather
+   than left to whatever ruff resolves at generation time. Verified
+   directly: `ruff==0.6.9` (near the old `>=0.6` floor) already
+   passed the generated `crud` project clean with no explicit
+   select, confirming the regression was ruff's own default
+   widening between 0.6 and today's 0.16.0, not a template defect;
+   adding the explicit select made 0.16.0 pass the same project
+   clean too, without touching a single line of generated code.
+   **F5** (the silent multi-second gap before `ciac dev` reports
+   anything when Docker's daemon is unreachable): `crates/ciac/src/
+   dev.rs` gained one `eprintln!("dev: starting the compose
+   stack...")` immediately before the `docker compose up`
+   invocation — the only signal a reader gets between "regenerated"
+   and whatever Docker reports next. Verifying F4 across the full
+   corpus (a sweep script run against all 28 `examples/*.ciac`
+   under `--target python`) caught a third, unpredicted bug:
+   `traced-checkout.ciac` failed with 7 `E402` (module-level import
+   not at top of file) errors — `observability.py.j2` interleaved
+   each capability's imports with that capability's function body
+   (`{% if has_logging %}` imports + `configure_logging()`, then
+   `{% if has_tracing %}` imports + `configure_tracing()`), so
+   whenever two of logging/metrics/tracing were both present, the
+   second capability's imports landed textually after the first
+   capability's function definition. Not caught by F4's own crud
+   template test (which has no tracing) or by the original M1
+   transcript (which never generated a tracing-enabled project).
+   Fixed by restructuring the template into two passes — all
+   capability-gated imports first, then all capability-gated
+   function/statement bodies — rather than one pass per capability.
+   The sweep before this third fix was 27/28 green (only
+   `traced-checkout` failing); after, 28/28. All three fixes are
+   golden-visible (28 `golden__gen__python__*.snap` files
+   regenerated via `cargo insta test`, reviewed diff-by-diff:
+   every diff was exactly the `[tool.ruff.lint]` block and, for the
+   tracing-bearing examples, the import/body reordering — nothing
+   unexpected). Full verification green: `cargo fmt --check`,
+   `cargo clippy --workspace --all-targets -- -D warnings` (zero
+   warnings), `cargo test --workspace` (14/14 test binaries `ok`,
+   zero failures). Fix-now queue is empty — F4 and F5 were the only
+   two items M1 triaged there, and both are closed, with F4's own
+   fix disclosing and closing a third bug along the way rather than
+   leaving it for a later milestone to rediscover.
+
 3. **M3 — The README rewrite.** Pillar 2 executed: narrative
    shape, demonstration program checked in as an example
    (verifying ×5 like any example), history extracted to

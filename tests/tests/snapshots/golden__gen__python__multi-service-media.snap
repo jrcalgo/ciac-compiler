@@ -508,6 +508,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 billing/tests/test_smoke.py
 ============================================================
@@ -1358,6 +1369,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 notifier/tests/test_smoke.py
 ============================================================
@@ -1853,6 +1875,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 progress-feed/tests/test_smoke.py
 ============================================================
@@ -2519,6 +2552,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 transcoder/tests/test_smoke.py
 ============================================================
@@ -3118,6 +3162,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 upload-api/tests/test_smoke.py
 ============================================================

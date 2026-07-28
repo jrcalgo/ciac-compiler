@@ -991,6 +991,55 @@ push; in-place Shipped notes).
    empathy-risk gate: it cannot prove a stranger succeeds, but
    it can prove the author's best stranger-simulation does.
 
+   **Shipped (v0.29 M5) — go, with one small re-fix caught and
+   closed on the spot.** `docs/dogfooding/transcripts/
+   02-checkpoint.md` re-ran the same script for real (install →
+   README walkthrough → guides 01–03, the last of which didn't
+   exist at M1) against a fresh `cargo install` of the current
+   tree. F1 (no release) and F6 (`authoring.md` staleness) are
+   unchanged, as expected — neither was scoped to close before M9/
+   M6. F2, F4, and F5 are confirmed fixed under fresh measurement,
+   not just a harness re-run: the README's install block now states
+   the toolchain requirement and a rough time inline (F2); `ciac
+   verify` on both the quickstart example and a fresh guide-01
+   service passes clean, no ruff errors (F4); `ciac dev`'s
+   previously-silent gap now shows `dev: starting the compose
+   stack...` immediately (F5). One real number worth recording
+   honestly rather than smoothing over: the `cargo install`
+   fallback measured 2m41s this run against 1m40s at M1 — both
+   warm-cache readings, the difference almost certainly this
+   session's own source churn forcing more recompilation, not a
+   regression, and well inside the README's own "~2 minutes"
+   framing.
+
+   One new finding, **F7**, caught by re-reading the guide series
+   with fresh eyes rather than by the harness (which checks command
+   blocks, not prose links): `docs/guide/01-first-service.md` and
+   `03-handlers-and-logic.md` linked forward to `05-simulation.md`
+   and `04-streams-and-workers.md` — files that don't exist until
+   M6. The exact mistake M3's own README rewrite had deliberately
+   avoided (no links to `docs/positioning.md` or the guide series
+   before they exist) hadn't been carried into the guides' own
+   cross-references to each other's future installments. Fixed live
+   during this milestone — replaced with plain, unlinked mentions
+   ("a later guide in this series...") — re-verified by grepping
+   `docs/guide/*.md` and `README.md` for `0[4-7]-`: zero matches.
+   Re-ran `scripts/check-guides.sh` after the fix: still 15 blocks
+   run, 3 skipped (disclosed), 0 failed — the text-only fix changed
+   no command behavior.
+
+   **Checkpoint decision: go.** Pillar 2/3's narrative shape and
+   voice hold up under a second, independent read; every M1 fix-now
+   item is closed and re-confirmed; the one new finding was minor,
+   caught by the checkpoint's own discipline, and closed without
+   needing to reopen an earlier milestone. Guides 04–07 proceed at
+   M6 on the validated shape. No code changed this milestone — docs
+   only (the two guide files' cross-reference text, and the new
+   transcript); `cargo fmt`/`clippy`/`cargo test --workspace` were
+   not re-run since nothing they check was touched, and
+   `scripts/check-guides.sh`'s own green run is the milestone's real
+   verification.
+
 6. **M6 — Guides 04–07, positioning, coherence.** The remaining
    guides (streams/workers, simulation at 27 depth,
    multi-service at 28 scope, deployment/day-two) under the

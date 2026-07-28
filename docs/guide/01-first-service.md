@@ -136,7 +136,7 @@ All checks passed!
 ```
 
 A green `ciac verify` on a service with one record and one API. From
-here: [guide 2](02-records-and-crud.md) adds real persistence, or — if
-failure-injected simulation is what hooked you — jump straight to
-[guide 5](05-simulation.md); this series is meant to be entered from
-wherever your curiosity actually is.
+here: [guide 2](02-records-and-crud.md) adds real persistence. A later
+guide in this series (simulation, landing alongside the rest of the
+series) puts a real failure through code like this and proves what
+happens — if that's what hooked you, it's coming.

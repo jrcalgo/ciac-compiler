@@ -80,9 +80,9 @@ Three new pieces, each doing exactly one job:
   fully happens or fully doesn't. A failure inside the block rolls
   back everything the block wrote, not just the last statement; see
   [docs/expressions.md](../expressions.md)'s `transaction` section
-  for the full rules, and [guide 5](05-simulation.md) for how to
-  *prove* the rollback with an injected failure instead of trusting
-  the description.
+  for the full rules. This series' own simulation guide (later in
+  the series) shows how to *prove* the rollback with an injected
+  failure instead of trusting the description.
 - **`stream MessageRead: Message;`** plus `publish MessageRead` in
   `MarkReadRoute`'s pipeline — `MarkRead` doesn't know or call
   anything downstream; it just returns, and the pipeline step after
@@ -117,8 +117,10 @@ together — `db` (both `crud`'s own table and the hand-declared
 the same shape as the compact example the top-level
 [README](../../README.md) walks through end to end, including the
 failure-injected simulation this guide's own checkpoint doesn't
-attempt: that's exactly what [guide 5](05-simulation.md) is for.
+attempt — that's a later guide's job, not this one's.
 
-From here: [guide 4](04-streams-and-workers.md) goes deeper on jobs
-and channels; [guide 5](05-simulation.md) puts a real failure through
-the `transaction` above and proves the rollback.
+From here: the rest of this series goes deeper on jobs and channels,
+puts a real failure through the `transaction` above and proves the
+rollback, and carries this same example into multi-service territory
+and deployment. Those guides land alongside the rest of the series;
+this one ends at its own real, working checkpoint either way.

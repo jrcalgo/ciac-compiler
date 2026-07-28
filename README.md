@@ -19,7 +19,7 @@ services/APIs/pipelines/streams, it's the wrong tool for you.
 
 Install:
 
-<!-- ciac-verify:start id=install -->
+<!-- ciac-verify:skip id=install reason="needs a cut GitHub release; the harness already has ciac on PATH from its own build step" -->
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jrcalgo/ciac/main/install.sh | sh
 # or: cargo install --path crates/ciac   (needs a Rust toolchain; ~2 minutes)
@@ -99,9 +99,14 @@ end-to-end atomicity proof against real generated code, deterministic,
 in milliseconds. Then confirm the generated project itself is sound
 and start it:
 
-<!-- ciac-verify:start id=verify-and-dev -->
+<!-- ciac-verify:start id=verify -->
 ```sh
 ciac verify examples/quickstart.ciac --target python --out ./build
+```
+<!-- ciac-verify:end -->
+
+<!-- ciac-verify:skip id=dev reason="a watch loop that never exits; not something an exit-code harness can check" -->
+```sh
 ciac dev examples/quickstart.ciac --target python --out ./build
 ```
 <!-- ciac-verify:end -->

@@ -452,6 +452,25 @@ jobs:
             exit 1
           fi
 
+  # 29UpdatePlan.md M4: the guide-veracity harness. Every runnable
+  # block in the README and docs/guide/*.md is extracted and executed
+  # for real against the real binary -- documentation that lies about
+  # a command is the one bug class this arc can introduce, so it gets
+  # an oracle, the same way generated code does.
+  check-guides:
+    name: Guide veracity (README + docs/guide/*.md)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: run the harness
+        run: scripts/check-guides.sh
+
   # v0.9 M5: `ciac verify --system` actually runs, automatically — a
   # real `docker compose up`, the generated tests/system/ suite (call
   # reachability, broker delivery, channels, capability round-trips)

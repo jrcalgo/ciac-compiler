@@ -1353,7 +1353,15 @@ fn sim_drive_python(
     plan_hash: &str,
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let projects = find_project_dirs(out, "pyproject.toml")?;
+    // v0.29 M4: `out` crosses a subprocess-cwd boundary below (the
+    // driver's own `PYTHONPATH`/`current_dir`), so a relative `out`
+    // (e.g. the README's own `--out ./build`) must be absolutized
+    // *before* it becomes `project_dir` -- otherwise a path string
+    // built from it gets re-resolved against the child's *own* cwd
+    // instead of the caller's, silently landing on the wrong
+    // directory (found live: `ciac sim ... --out ./build` failed with
+    // `ModuleNotFoundError: No module named 'app'`).
+    let projects = find_project_dirs(&resolve_path(out)?, "pyproject.toml")?;
     if projects.is_empty() {
         bail!("no generated python project found under {}", out.display());
     }
@@ -1641,7 +1649,9 @@ fn sim_drive_rust(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let projects = find_project_dirs(out, "Cargo.toml")?;
+    // v0.29 M4: absolutize before it crosses a subprocess-cwd boundary
+    // -- see the identical fix and comment on `sim_drive_python`.
+    let projects = find_project_dirs(&resolve_path(out)?, "Cargo.toml")?;
     if projects.is_empty() {
         bail!("no generated rust project found under {}", out.display());
     }
@@ -1802,7 +1812,9 @@ fn sim_drive_typescript(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let projects = find_project_dirs(out, "package.json")?;
+    // v0.29 M4: absolutize before it crosses a subprocess-cwd boundary
+    // -- see the identical fix and comment on `sim_drive_python`.
+    let projects = find_project_dirs(&resolve_path(out)?, "package.json")?;
     if projects.is_empty() {
         bail!(
             "no generated typescript project found under {}",
@@ -1942,7 +1954,9 @@ fn sim_drive_go(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let projects = find_project_dirs(out, "go.mod")?;
+    // v0.29 M4: absolutize before it crosses a subprocess-cwd boundary
+    // -- see the identical fix and comment on `sim_drive_python`.
+    let projects = find_project_dirs(&resolve_path(out)?, "go.mod")?;
     if projects.is_empty() {
         bail!("no generated go project found under {}", out.display());
     }
@@ -2111,7 +2125,9 @@ fn sim_drive_java(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let projects = find_project_dirs(out, "pom.xml")?;
+    // v0.29 M4: absolutize before it crosses a subprocess-cwd boundary
+    // -- see the identical fix and comment on `sim_drive_python`.
+    let projects = find_project_dirs(&resolve_path(out)?, "pom.xml")?;
     if projects.is_empty() {
         bail!("no generated java project found under {}", out.display());
     }

@@ -910,6 +910,75 @@ push; in-place Shipped notes).
    harness-can-fail proof (a deliberately broken block in a
    scratch branch) demonstrated, per the 26 M6 tradition.
 
+   **Shipped (v0.29 M4) — the harness landed, and its very first
+   real run against the README caught a bug real enough to have
+   broken the arc's own centerpiece.** Three guides —
+   `docs/guide/01-first-service.md` (install/anatomy/first field,
+   `--template minimal`'s `Ping`/`Message`), `02-records-and-crud.md`
+   (`crud Message: Message;` for free persistence, then a schema
+   change previewed with `ciac diff` before rebuilding), and
+   `03-handlers-and-logic.md` (a `transaction`-wrapped handler, a
+   `ReadReceipt` table, a stream, a worker) — one continuous
+   example, each guide independently self-contained (a full,
+   current `main.ciac` written fresh, not a diff from the previous
+   guide) per the plan's own "clean workspace per document" rule.
+   `scripts/check-guides.sh`: builds `ciac` once, then per document
+   creates a temp workspace with `examples/`/`sim/` symlinked in
+   from the real repo (so a block that says `examples/quickstart.
+   ciac` resolves exactly as it would for someone who cloned this
+   repository) and executes every annotated block in order. Final
+   annotation format, frozen here as M4's own text promised:
+   `<!-- ciac-verify:file id=NAME path=REL/PATH -->` (write the
+   fenced block's content to a file), `:start id=NAME` (run it as
+   shell, fail the harness on nonzero exit), `:skip id=NAME
+   reason="..."` (counted and reported by name, never silently
+   dropped — used for the install curl line, which needs a cut
+   release the harness doesn't have yet, and for `ciac dev`, a
+   watch loop with no exit code an exit-code-only harness can
+   check). Harness-can-fail proof: a `/tmp` scratch copy of guide
+   01 (not a git branch — same isolation, no git state touched)
+   with `ciac check main.ciac` swapped for a nonexistent
+   subcommand; the harness reported `[FAIL]` with the real
+   `unrecognized subcommand` text and exited 1, confirmed live in
+   this session.
+
+   The headline finding, though, wasn't a guide bug — it was in the
+   README the harness ran first. `ciac sim examples/quickstart.ciac
+   --target python --out ./build --scenario ...` (the README's own
+   walkthrough, relative `--out` matching its own `build`/`verify`
+   lines) failed with `ModuleNotFoundError: No module named 'app'`.
+   Root cause, traced in `crates/ciac/src/commands.rs`: all five
+   per-target sim drivers (`sim_drive_python`/`_rust`/`_typescript`/
+   `_go`/`_java`) call `find_project_dirs(out, marker)` with the
+   raw, possibly-relative `out` path; the returned `project_dir`
+   then crosses into a subprocess with its *own*, different cwd
+   (concretely, Python's driver builds its `PYTHONPATH` from that
+   relative string), so a relative `--out` silently re-resolved
+   against the wrong directory once inside the child process. Fixed
+   by wrapping all five `find_project_dirs` call sites in
+   `resolve_path(out)?` — a helper that already existed in this
+   same file for exactly this "crossing a subprocess-cwd boundary"
+   class of problem, just not yet applied here. Verified live for
+   all five targets this session with a relative `--out ./build`
+   (python/typescript/go fast; java clean past its own proxy
+   startup noise; rust needed a longer timeout for its own cargo
+   compile, not a retry — same command, same result once given
+   time). This bug would have broken the literal walkthrough this
+   arc's own M3 just finished writing, for any real reader who
+   cloned the repo and typed the commands as documented — the
+   single most consequential finding of the milestone, and one M1's
+   own transcript had no way to predict (its own sim step used an
+   absolute scratch path, the one difference between "measuring
+   friction" and "running the exact block a reader would run").
+   CI wiring: a new `check-guides` job in `.github/workflows/
+   ci.yml`, positioned right after `generated-sim`. Full
+   verification green: `cargo fmt --check`, `cargo clippy
+   --workspace --all-targets -- -D warnings` (zero warnings),
+   `cargo test --workspace` (14/14 test binaries `ok`, zero
+   failures), and `scripts/check-guides.sh` itself green against
+   all four documents (README + guides 01-03: 15 blocks run, 3
+   skipped and disclosed, 0 failed).
+
 5. **M5 — CHECKPOINT: transcript two.** The same scripted run,
    now against the new README + guides 01–03: measured friction
    delta against M1 (steps failed, confusions hit, wall-clock),

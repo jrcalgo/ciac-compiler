@@ -51,6 +51,16 @@ jobs:
         with:
           go-version: "1.24"
       - run: cargo test --workspace
+      # 30UpdatePlan.md M8: the codegen speed instrument, printed every
+      # run as information — not a gate. `tests/tests/perf_budget.rs`
+      # (part of `cargo test --workspace` above) is the actual gate;
+      # this step exists so a human glancing at CI can see the real
+      # per-target numbers without re-running the sweep locally.
+      # `continue-on-error` so a script hiccup never blocks a merge —
+      # the budget test above is what's allowed to fail the build.
+      - name: Codegen speed (informational)
+        continue-on-error: true
+        run: scripts/bench-codegen.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
   # 26UpdatePlan.md M6: the compiler's own dependency tree, scanned
   # against RustSec (advisories) and cargo-deny's broader policy

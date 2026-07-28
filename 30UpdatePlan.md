@@ -1668,6 +1668,58 @@ Relationship to the immediately preceding arcs:
    `docs/dev-loop.md`'s framing needs a sentence now that the Java watch
    loop is interactive.
 
+   **Shipped (v0.30 M8) — the ratchet landed, and the arc's own
+   numbers picked the multiplier.** `tests/tests/perf_budget.rs`
+   compares every backend's total generation cost across the full
+   example corpus against the *median* backend's total, on the same
+   run — relative, so a slower CI runner never trips it by itself.
+   The 1000x multiplier was not guessed: a live in-process measurement
+   (backends called directly, not through a fresh `ciac build` process
+   each time) showed today's steady state at Java ~200-230x the median
+   — a real, permanent floor (one JVM spawn per `generate()` call,
+   unavoidable), not a defect this arc leaves behind — while a
+   regression back to one JVM spawn *per file* would push that past
+   60,000x by the same extrapolation `docs/perf/codegen-baseline.md`
+   uses. 1000x sits with wide headroom on both sides: five times above
+   today's worst case, sixty times below the catastrophe floor. The
+   harness-can-fail proof is threefold: two permanent unit tests
+   (`passes_at_todays_steady_state`, `fails_when_a_backend_is_
+   artificially_slowed`) exercise the pure comparison function with
+   synthetic data so the logic is checked on every `cargo test` run,
+   not just once by hand; and a live demonstration — temporarily
+   setting `BUDGET_MULTIPLIER` to 10 and re-running the real,
+   full-corpus test — reproduced a genuine failure against live data
+   (`java 36.728982494s 203.8x median` against a `1.80254284s`
+   budget), reverted before committing. The real gate
+   (`no_backend_exceeds_the_budget`) passes today at 37.34s.
+
+   CI prints the full sweep on every `test` job run now
+   (`.github/workflows/ci.yml`'s "Codegen speed (informational)"
+   step, `continue-on-error: true` so a script hiccup can never block
+   a merge — `perf_budget.rs`, part of the same job's `cargo test
+   --workspace`, is what's actually allowed to fail the build).
+   `docs/perf/codegen-baseline.md` gained two before/after tables (M1
+   vs. M5, per-target and per-slow-binary) with an explicit, corrected
+   accounting of *which* numbers M3/M4 can and cannot claim credit for
+   — the per-target sweep's small non-Java moves are disclosed as
+   measurement noise, not attributed to mechanisms that structurally
+   cannot have caused them in a one-process-per-build harness (the
+   same finding M4's own Shipped note already made, carried through
+   here consistently rather than re-litigated optimistically).
+   `docs/perf/README.md` is new, indexed from `docs/README.md`'s "For
+   contributors to the compiler itself" table. `docs/external-
+   backends.md`'s formatter-batching section already landed at M3.
+   `docs/backends.md`'s divergence ledger gained a paragraph raising —
+   explicitly not deciding — whether it should grow a cost dimension,
+   with the arguments on both sides named rather than resolved on one
+   data point. `docs/dev-loop.md` was checked and needs no change: it
+   never singled out any backend's speed to begin with, so there was
+   no stale claim to correct. Full verification green: `cargo fmt
+   --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+   (zero warnings), `tests/tests/ledger_integrity.rs` and
+   `tests/tests/docs.rs` both pass against the `docs/backends.md`
+   edit, CI YAML re-parsed successfully.
+
 9. **M9 — Version 0.28.0, full verification, retrospective.** Bump
    0.27.0 → 0.28.0: root `Cargo.toml` `[workspace.package]` plus the 11
    internal crate pins, `editors/vscode/package.json`,

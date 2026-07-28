@@ -53,6 +53,7 @@ a real, harness-verified checkpoint:
 |---|---|
 | [architecture.md](architecture.md) | The compiler's own pipeline (syntax → sema → codegen) |
 | [ir.md](ir.md) | The `SystemGraph` intermediate representation |
+| [perf/README.md](perf/README.md) | Generation-speed baseline, the budget gate, how to benchmark a backend change |
 
 ## History
 

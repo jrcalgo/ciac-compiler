@@ -251,6 +251,26 @@ every "Closes in" reference (other than an explicit "no plan yet") must
 name a plan file that exists in the repo root, and no divergence string
 may appear in both tables.
 
+**Raised, not decided (`30UpdatePlan.md` M8):** both tables above
+answer "what differs" for *capability* — what a target can or can't
+do. Neither has a vocabulary for what `30UpdatePlan.md` found: that
+one target's generation *cost* was ~1186x another's, for no capability
+reason at all (a formatter-invocation pattern, not a language or
+ecosystem constraint) — the divergence ledger would have said nothing
+about it even though it was the most severe cross-target divergence in
+the repo's own history. Whether this ledger should grow a third
+dimension — a cost column, or a parallel "performance divergences"
+table alongside "Permanent by design"/"Open (tracked)" — is an open
+question this arc raises without answering. Arguments either way:
+a cost dimension would have made this defect discoverable by reading
+this page instead of by running a stopwatch; against it, cost is
+continuous and environment-dependent in a way capability isn't (a
+"Permanent by design" row states a fact, a cost number states a
+snapshot that ages), and `docs/perf/codegen-baseline.md` plus
+`tests/tests/perf_budget.rs` already own that vocabulary now. Left
+for whoever next finds a real cost divergence to decide with a second
+data point in hand, rather than speculatively designed here on one.
+
 ### Permanent by design
 
 | Divergence | Targets | Why this is a decision |

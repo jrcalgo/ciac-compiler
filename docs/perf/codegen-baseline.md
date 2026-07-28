@@ -4,7 +4,7 @@
 or checking whether 30UpdatePlan.md's fixes actually worked. Not a
 benchmark to quote — a regression detector.*
 
-> 30UpdatePlan.md M1. These are single-machine numbers gathered in one
+> 30UpdatePlan.md M1, updated at M5 and M8. These are single-machine numbers gathered in one
 > sandbox with a warm `cargo`/`rustc` cache and a cold JVM (no prior
 > `java` invocation in this session before the sweep). Absolute
 > seconds will differ on any other machine — different CPU, different
@@ -70,6 +70,40 @@ Full per-example, per-target breakdown is reproducible via
 duplicated here to keep this document a summary rather than a second
 copy of the script's own output.
 
+## Before/after: per-target generation cost (M1 vs. M5)
+
+The same sweep, re-run after M2 (Java batch formatting), M3 (the
+batching seam generalized to Go), and M4 (per-backend template
+memoization) — this is the arc's own headline result, in one table:
+
+| Target | M1 mean | M5 mean | Change | M1 ratio to fastest | M5 ratio to fastest |
+|---|---|---|---|---|---|
+| python | 0.086s | 0.014s | 6.14x faster | 6.45x | 1.00x |
+| rust | 0.013s | 0.015s | ~flat (noise) | **1.00x** | 1.05x |
+| typescript | 0.017s | 0.017s | ~flat | 1.24x | 1.17x |
+| go | 0.113s | 0.032s | 3.53x faster | 8.47x | 2.27x |
+| **java** | **15.837s** | **1.277s** | **12.40x faster** | **1186.04x** | **90.00x** |
+
+**Java's drop is the only one with a mechanistic explanation, and it
+is the arc's actual subject**: M2 converted ~24-140 JVM spawns per
+project (one per generated `.java` file) into exactly one, per
+`generate()` call. Python's, Rust's, TypeScript's, and Go's small
+moves are **not** attributable to M3 or M4 — `scripts/bench-
+codegen.sh` runs `ciac build` as a separate process per (example,
+target) pair, and `ciac build` calls `Backend::generate` exactly once
+per process, so neither M3's batching seam (Go's own formatter cost
+was always ~2ms, immaterial either way) nor M4's per-backend `OnceLock`
+template cache (empty at the start of every fresh process) has
+anything to amortize against within this sweep. Their small drops most
+plausibly reflect less concurrent system load during the M5 run than
+the M1 run (which shared the machine with other heavy test-suite
+invocations in the same working session) — disclosed here rather than
+credited to work that structurally cannot have caused it. **The
+targets whose readings actually demonstrate M3 and M4's own effect are
+`determinism.rs` and `conformance.rs`** (below), which make hundreds of
+`generate()` calls inside one long-lived process — exactly the shape
+those two milestones' caches need to pay for themselves.
+
 ## M1 — Baseline: the four slow test binaries
 
 Each timed alone (not as part of `cargo test --workspace`), debug
@@ -95,6 +129,21 @@ citations of these binaries' costs.
 confirmed here by direct observation — libtest has nothing to
 parallelize within either binary, so each is a single thread walking
 its whole share of the 145-combination corpus.
+
+## Before/after: the four slow test binaries (M1 vs. M5)
+
+Unlike the per-target sweep above, every one of these binaries makes
+many `generate()` calls inside one process — this is where M3's and
+M4's own mechanisms actually had something to amortize against, on
+top of M2's dominant fix:
+
+| Binary | M1 | M5 | Change |
+|---|---|---|---|
+| `determinism.rs` | 922.27s | 81.20s | 11.36x faster |
+| `conformance.rs` | 656.79s | 94.17s | 6.97x faster |
+| `golden.rs` | 478.99s | 39.06s | 12.26x faster |
+| `openapi.rs` | 439.80s | 38.80s | 11.34x faster |
+| **Combined** | **2497.85s** | **253.23s** | **9.87x faster** |
 
 ## What this does not measure
 
@@ -134,8 +183,14 @@ time cargo test -p ciac-integration-tests --test golden
 The script builds `ciac` in release mode once, then times a real
 `ciac build` per (example, target) pair into a scratch directory it
 cleans up itself. It exits non-zero only on an actual build failure —
-it is a measuring instrument, not a pass/fail gate (the gate is
-30UpdatePlan.md M8's `perf_budget.rs`).
+it is a measuring instrument, not a pass/fail gate. The actual gate is
+`tests/tests/perf_budget.rs` (`30UpdatePlan.md` M8, part of `cargo
+test --workspace`): a loose, relative budget that fails only if a
+backend's generation cost returns to hundreds-of-times worse than the
+median backend, not on ordinary variance — see that file's own doc
+comment for the exact multiplier and the measurement behind it. CI
+runs `scripts/bench-codegen.sh` on every push too, printed as
+information in the job summary rather than as a second gate.
 
 ## Readings so far
 

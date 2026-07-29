@@ -1873,6 +1873,11 @@
             "const": "seeded",
             "description": "Generated seed owned by the user after first write.",
             "type": "string"
+          },
+          {
+            "const": "migration",
+            "description": "A migration file (v0.27 M9): write-once like `Seeded`, but its\n`OrphanLeft` state on every later build is the expected,\npermanent steady state once the schema stops changing — not a\nstale scaffold the user should investigate — so regeneration\ndoes not warn about it (see `regen::RegenEntry::is_warning`).",
+            "type": "string"
           }
         ]
       },

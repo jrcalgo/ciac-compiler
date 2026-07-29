@@ -1,18 +1,29 @@
 # Error Code Index
 
+*Reader: anyone who hit a `CIAC####` code and wants its meaning.*
+
 Stable diagnostics emitted by the compiler. Codes are append-only: once
 published, a code's meaning never changes. `ciac explain <code>` prints
 the same explanations; this page is checked against the registry by a
 test.
 
 Some mechanical, unambiguous diagnostics also carry an applyable fix
-(v0.15 M7) — `--json`'s `fixes` field, `ciac lsp`'s quick-fix, `ciac
-mcp`'s `fix` tool. Today: `CIAC0005` (missing capability — inserts the
-right `capability Provider;` line into an existing `use { .. }`
-block), `CIAC0013` (unknown provider — a nearest-match rename),
-`CIAC0025`'s `auth OAuth2` missing-`issuer` case (inserts a
-placeholder), and `CIAC0041` (unknown record field — a nearest-match
-rename). See `docs/agents.md`.
+(v0.15 M7, widened at `29UpdatePlan.md` M8) — `--json`'s `fixes`
+field, `ciac lsp`'s quick-fix, `ciac mcp`'s `fix` tool. Today:
+`CIAC0005` (missing capability — inserts the right `capability
+Provider;` line into an existing `use { .. }` block), `CIAC0013`
+(unknown provider — a nearest-match rename), `CIAC0025`'s `auth
+OAuth2` missing-`issuer` case (inserts a placeholder), `CIAC0041`
+(unknown record field — a nearest-match rename), `CIAC0017` (unknown
+stream — a nearest-match rename against declared streams), `CIAC0022`
+(unknown capability instance — a nearest-match rename against the
+service's own declared instances of that capability kind), and
+`CIAC0042` (unknown table — a nearest-match rename against declared
+tables). Every nearest-match fix uses the same bar: offered only when
+one known name is close enough (Levenshtein distance <= 3, or <= 5 for
+the two-word `capability Provider` form CIAC0013 compares) to be a
+plausible typo rather than a coincidence — silence, not a wrong
+guess, otherwise. See `docs/agents.md`.
 
 | Code | Severity | Title |
 |------|----------|-------|
@@ -144,6 +155,10 @@ block rather than improvised at the point of need.
 - **CIAC0034** means a user-owned seeded file exists but the generated
   seed changed; reconcile the `.ciac-new` sidecar manually.
 - **CIAC0035** means a previously generated file is no longer produced.
+  Migration files never trigger this (v0.27 M9): a migration's own
+  file staying on disk without being re-emitted on every later build
+  is the expected, permanent steady state once its schema stops
+  changing, not a stale scaffold to investigate.
 - **CIAC0036** means a non-empty output directory has no regeneration
   manifest; use a clean directory, `--force`, or `--adopt`.
 - **CIAC0037** means a job schedule is not a valid five-field cron

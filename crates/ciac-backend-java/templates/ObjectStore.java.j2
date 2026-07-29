@@ -8,11 +8,27 @@
 // target a local MinIO from the generated docker-compose (path-style
 // addressing, so MinIO works with no extra configuration); point the
 // `S3_*` environment variables at real S3 in production.
+//
+// World-guarded (27UpdatePlan.md M8): `object_store`/`email`/`search`/
+// `external_http` each hold their own `ObjectProvider<World>`
+// (mirroring `Queue.java`'s own pre-existing `publishJson` pattern,
+// v0.25 M9) rather than getting a `lower.rs` world-guard leaf of their
+// own -- a Java-specific structural choice (Pillar 4: "structure may
+// diverge; answers may not"), not a narrower fake. `instanceName` is
+// this bean's own declared instance name (`AppState`'s own `inst.name`,
+// e.g. `default`/`uploads`), matching the key `World.objectPut`/`Get`/
+// `Delete`/`List` key their own per-instance store by.
 package com.ciac.{{ java_package }}.state;
 
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
+import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import java.net.URI;
 import java.util.List;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.ObjectProvider;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -25,19 +41,30 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 public final class ObjectStore {
+    private final String instanceName;
     private final String endpoint;
     private final String accessKey;
     private final String secretKey;
     private final String bucket;
     private final String region;
+    private final World world;
     private volatile S3Client client;
 
-    public ObjectStore(String endpoint, String accessKey, String secretKey, String bucket, String region) {
+    public ObjectStore(
+            String instanceName,
+            String endpoint,
+            String accessKey,
+            String secretKey,
+            String bucket,
+            String region,
+            ObjectProvider<World> worldProvider) {
+        this.instanceName = instanceName;
         this.endpoint = endpoint;
         this.accessKey = accessKey;
         this.secretKey = secretKey;
         this.bucket = bucket;
         this.region = region;
+        this.world = worldProvider.getIfAvailable();
     }
 
     private synchronized S3Client client() {
@@ -56,6 +83,10 @@ public final class ObjectStore {
     }
 
     public void put(String key, byte[] data) {
+        if (world != null) {
+            world.objectPut(instanceName, key, data);
+            return;
+        }
         client()
                 .putObject(
                         PutObjectRequest.builder().bucket(bucket).key(key).build(),
@@ -67,6 +98,9 @@ public final class ObjectStore {
      * `errors.Is(err, &types.NoSuchKey{})` miss-handling, folded into
      * this single call rather than a two-value return. */
     public byte[] get(String key) {
+        if (world != null) {
+            return world.objectGet(instanceName, key);
+        }
         try {
             return client()
                     .getObject(GetObjectRequest.builder().bucket(bucket).key(key).build())
@@ -79,10 +113,17 @@ public final class ObjectStore {
     }
 
     public void delete(String key) {
+        if (world != null) {
+            world.objectDelete(instanceName, key);
+            return;
+        }
         client().deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
     }
 
     public List<String> list(String prefix) {
+        if (world != null) {
+            return world.objectList(instanceName, prefix);
+        }
         return client()
                 .listObjectsV2(ListObjectsV2Request.builder().bucket(bucket).prefix(prefix).build())
                 .contents().stream()

@@ -1,0 +1,68 @@
+{
+  "simulation_version": 1,
+  "name": "27-m3-peripherals",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "store": [
+      {"instance": "default", "key": "docs/one.txt", "value_base64": "aGVsbG8="}
+    ],
+    "search": [
+      {"instance": "default", "id": "doc-1", "doc": {"value": "the quick brown fox"}},
+      {"instance": "default", "id": "doc-2", "doc": {"value": "a slow red hen"}}
+    ]
+  },
+  "steps": [
+    {"expect": {"object": {"store": "default", "key": "docs/one.txt", "present": true}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "RemoveDocApi",
+        "json": {"key": "docs/one.txt"},
+        "save_as": "remove_doc"
+      }
+    },
+    {"expect": {"response": {"of": "remove_doc", "status": 200}}},
+    {"expect": {"object": {"store": "default", "key": "docs/one.txt", "present": false}}},
+
+    {"expect": {"search_hits": {"instance": "default", "query": "quick", "count": 1}}},
+    {"expect": {"search_hits": {"instance": "default", "query": "hen", "count": 1}}},
+    {"expect": {"search_hits": {"instance": "default", "query": "nonexistent", "count": 0}}},
+    {"expect": {"search_hits": {"instance": "default", "query": "", "count": 2}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "IndexDocApi",
+        "json": {"id": "doc-3", "title": "a lazy dog sleeps"},
+        "save_as": "index_doc"
+      }
+    },
+    {"expect": {"response": {"of": "index_doc", "status": 200}}},
+    {"expect": {"search_hits": {"instance": "default", "query": "lazy", "count": 1}}},
+    {"expect": {"search_hits": {"instance": "default", "query": "", "count": 3}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "SearchDocsApi",
+        "json": {"query": "lazy"},
+        "save_as": "search_docs"
+      }
+    },
+    {"expect": {"response": {"of": "search_docs", "status": 200}}},
+
+    {"expect": {"email": {"count": 0}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "NotifyUserApi",
+        "json": {"to": "ada@example.com", "subject": "Welcome aboard", "body": "hi Ada"},
+        "save_as": "notify"
+      }
+    },
+    {"expect": {"response": {"of": "notify", "status": 200}}},
+    {"expect": {"email": {"count": 1}}},
+    {"expect": {"email": {"to": "ada@example.com", "count": 1}}},
+    {"expect": {"email": {"to": "someone-else@example.com", "count": 0}}},
+    {"expect": {"email": {"subject_contains": "Welcome", "count": 1}}},
+    {"expect": {"email": {"subject_contains": "Goodbye", "count": 0}}}
+  ]
+}

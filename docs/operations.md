@@ -1,5 +1,8 @@
 # Operations (v0.15 — tracing, generated CI, dev identity)
 
+*Reader: a builder running a generated system as a team, not just
+generating it once.*
+
 By v0.14 a generated system can be expressed, run, and verified in
 minutes. This page covers the three v0.15 pillars that make it
 something a team actually *operates*: following a request across

@@ -1,0 +1,65 @@
+// The README's own walkthrough example (v0.29 M3, Pillar 2). Scope is
+// deliberately small and fixed: one record, a free CRUD surface, one
+// custom handler wrapped in a `transaction`, one stream, one worker.
+// Every feature here appears in the README's demonstration section —
+// nothing else does. Verified ×5 like any checked-in example, and
+// executed for real by the guide-veracity harness (M4) once it lands.
+service Notes;
+
+use {
+    db Postgres;
+    queue NATS;
+}
+
+record Note {
+    id: Uuid;
+    title: String;
+    body: String;
+}
+
+// Free CRUD: create/read/update/delete at /notes, generated from the
+// record above — no handler code to write or maintain.
+crud Note: Note;
+
+// A note's archive history, written by the one piece of custom logic
+// below — a real table, separate from crud's own private storage.
+record ArchiveEvent {
+    id: Uuid;
+    note_id: Uuid;
+}
+table ArchiveEvents: ArchiveEvent;
+
+stream NoteArchived: Note;
+
+// The one piece of custom business logic: archiving a note records an
+// audit row inside a transaction (so a failure never leaves a
+// half-written trail) and then tells the rest of the system it
+// happened.
+handler ArchiveNote(note: Note) -> Note {
+    transaction {
+        db.insert(ArchiveEvents, ArchiveEvent { id: Uuid.new(), note_id: note.id });
+    }
+    return note;
+}
+
+api ArchiveNoteRoute: Note {
+    method: POST;
+    path: "/notes/archive";
+}
+pipeline ArchiveNoteRoute:
+    ArchiveNote
+    -> publish NoteArchived
+    -> Return;
+
+// A worker: something in the system reacts to every archive, without
+// the API handler knowing or caring who's listening.
+worker LogArchive on NoteArchived {
+    max_retries: 2;
+}
+
+handler RecordArchiveEvent(note: Note) -> Note {
+    return note;
+}
+
+pipeline LogArchive:
+    RecordArchiveEvent;

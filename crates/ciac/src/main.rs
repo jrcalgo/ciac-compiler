@@ -330,21 +330,20 @@ enum Command {
     /// see `docs/simulation.md`) against a generated project's real
     /// code, with in-memory fakes standing in for the database,
     /// broker, cache, object store, email, search, and external HTTP
-    /// -- no Docker, no wall-clock sleep. `--target python` fakes every
-    /// capability (v0.17 M6-M9); `--target rust` fakes only
-    /// `db.insert`/broker publish-consume/cron jobs (v0.17 M11) and is
-    /// refused with the specific reason for any program that calls a
-    /// verb or capability it doesn't cover, not silently no-op'd (see
-    /// `docs/simulation.md`'s status table). The claim boundary
-    /// matters: a green `ciac sim` run proves the exercised generated
-    /// code and its declared effects behave as scripted against these
-    /// fakes -- it is not a substitute for `ciac verify --system`
-    /// against real provider containers.
+    /// -- no Docker, no wall-clock sleep. All five targets (python,
+    /// rust, typescript, go, java) fake the full capability surface as
+    /// of v0.25/v0.26 (see `docs/simulation.md`'s status table); a
+    /// program that calls a verb or capability none of a target's
+    /// fakes cover is refused with the specific reason, not silently
+    /// no-op'd. The claim boundary matters: a green `ciac sim` run
+    /// proves the exercised generated code and its declared effects
+    /// behave as scripted against these fakes -- it is not a
+    /// substitute for `ciac verify --system` against real provider
+    /// containers.
     Sim {
         /// Path to the `.ciac` source file.
         file: PathBuf,
-        /// Code-generation target: `python` (full fakes) or `rust`
-        /// (narrower fakes; refused per-program when unsupported).
+        /// Code-generation target.
         #[arg(short, long)]
         target: String,
         /// Output directory for the generated project (reused if it

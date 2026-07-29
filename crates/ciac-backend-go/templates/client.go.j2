@@ -5,6 +5,16 @@
 // (see `_steps.go.j2`'s own `call` arm). The base URL comes from
 // `{{ t.env_var }}`; the system docker-compose points it at the
 // `{{ t.kebab }}` container.
+//
+// 28UpdatePlan.md M7c: under simulation, routes through
+// `World.CallChecked` instead of a real HTTP call -- the same
+// `{"status": ..., "data": ...}` envelope every route function's own
+// response body already carries (`route_api.go.j2`), so this unwraps
+// `["data"]` from it exactly the way the real-HTTP branch unwraps
+// `envelope.Data` -- same post-processing, different transport. No
+// synchronous bridge is needed here, unlike Rust's `block_on_ready`:
+// Go's handler chain is already synchronous, so a registered handler
+// can just be called directly.
 package clients
 
 import (
@@ -21,21 +31,43 @@ import (
 {%- endif %}
 
 	"{{ c.package }}/internal/state"
+{%- if multi %}
+	"sim-shared/world"
+{%- else %}
+	"{{ c.package }}/internal/world"
+{%- endif %}
 )
 
 // {{ t.class_name }} calls `{{ t.service }}` over HTTP and unwraps
 // its response envelope.
 type {{ t.class_name }} struct {
 	baseURL string
+	world   *world.World
 }
 
 func New{{ t.class_name }}(st *state.AppState) *{{ t.class_name }} {
-	return &{{ t.class_name }}{baseURL: st.Config.{{ t.url_field | go_pascal }}}
+	return &{{ t.class_name }}{baseURL: st.Config.{{ t.url_field | go_pascal }}, world: st.World}
 }
 {% for a in t.apis %}
 func (c *{{ t.class_name }}) {{ a.method | go_pascal }}(ctx context.Context, payload any) (any, error) {
 {%- if not a.has_body %}
 	_ = payload
+{%- endif %}
+	if c.world != nil {
+{%- if a.has_body %}
+		result, err := c.world.CallChecked("{{ caller }}", "{{ t.service }}", "{{ a.name }}", payload)
+{%- else %}
+		result, err := c.world.CallChecked("{{ caller }}", "{{ t.service }}", "{{ a.name }}", map[string]any{})
+{%- endif %}
+		if err != nil {
+			return nil, err
+		}
+		if envelope, ok := result.(map[string]any); ok {
+			return envelope["data"], nil
+		}
+		return result, nil
+	}
+{%- if not a.has_body %}
 	req, err := http.NewRequestWithContext(ctx, "{{ a.http_method_lower | upper }}", c.baseURL+"{{ a.path }}", nil)
 {%- else %}
 	encoded, err := json.Marshal(payload)

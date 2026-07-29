@@ -9,7 +9,7 @@
 {%- if c.has_tracing %}
 import { context, propagation } from "@opentelemetry/api";
 {%- endif %}
-import type { SimWorld } from "./world.js";
+import type { SimWorld } from "{% if multi %}sim-shared{% else %}./world.js{% endif %}";
 {%- if c.queue_engine == "kafka" %}
 import { Kafka, logLevel, type Consumer, type Producer } from "kafkajs";
 

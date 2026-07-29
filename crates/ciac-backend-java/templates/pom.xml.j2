@@ -33,10 +33,11 @@
          pinned explicitly here. -->
     <aws-sdk.version>2.29.52</aws-sdk.version>
 {%- endif %}
-{%- if c.has_db or c.has_queue %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
     <!-- Not managed by spring-boot-dependencies' own BOM, so pinned
          explicitly here (SimRunner's own `test-compile exec:java`
-         driver, 25UpdatePlan.md M9). -->
+         driver, 25UpdatePlan.md M9, gate broadened to the full
+         8-condition check at 27UpdatePlan.md M8). -->
     <exec-maven-plugin.version>3.4.1</exec-maven-plugin.version>
 {%- endif %}
 {%- if c.has_logging %}
@@ -214,8 +215,11 @@
           </execution>
         </executions>
       </plugin>
-{%- if c.has_db or c.has_queue %}
-      <!-- Drives `SimRunner` (25UpdatePlan.md M9): a test-scoped
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth %}
+      <!-- Drives `SimRunner` (25UpdatePlan.md M9, broadened to the
+           full 8-condition check at 27UpdatePlan.md M8, matching
+           `World.java`'s/`SimRunner.java`'s own emission gate in
+           `lib.rs`): a test-scoped
            `main`, not the packaged application, since `MockMvc`/
            `spring-test` only ever sit on the `test` classpath.
            Running it via `test-compile exec:java` (build once, then

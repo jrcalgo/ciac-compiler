@@ -1,5 +1,8 @@
 # Blueprints (v0.8, extended v0.14 M5)
 
+*Reader: a builder splitting a program across files or reusing a
+pattern across projects.*
+
 Modules (`import "path";`, v0.8 M1) let a system be split across
 files; blueprints are the other half of "compose programs from
 reusable, parameterized parts" — a way to write a pattern (an audited

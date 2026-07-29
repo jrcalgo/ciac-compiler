@@ -38,8 +38,8 @@ import { ExternalHttp } from "./http_clients.js";
 {%- if c.queue_engine %}
 import { Queue } from "./queue.js";
 {%- endif %}
-{%- if c.has_db or c.queue_engine %}
-import type { SimWorld } from "./world.js";
+{%- if c.has_db or c.queue_engine or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
+import type { SimWorld } from "{% if multi %}sim-shared{% else %}./world.js{% endif %}";
 {%- endif %}
 import type { Config } from "./config.js";
 
@@ -82,14 +82,14 @@ export interface AppState {
 {%- if c.queue_engine %}
   queue: Queue;
 {%- endif %}
-{%- if c.has_db or c.queue_engine %}
-  /** `undefined` in production; set only by [`createSimulationState`]
-   * (v0.23 M9) -- every world-guarded call site (`db.insert`, broker
-   * `publish`) checks this first, reading/writing the in-memory
-   * `SimWorld` instead of the real pool/broker client fields above,
-   * which still exist (so this interface's shape doesn't fork between
-   * production and simulation) but are never touched while `world` is
-   * set. */
+{%- if c.has_db or c.queue_engine or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
+  /** `undefined` in production; set only by [`createSimulationState`].
+   * Every world-guarded call site (every verb `world.ts` fakes as of
+   * 27UpdatePlan.md M6) checks this first, reading/writing the
+   * in-memory `SimWorld` instead of the real pool/broker/cache/store/
+   * email/search/http client fields above, which still exist (so this
+   * interface's shape doesn't fork between production and simulation)
+   * but are never touched while `world` is set. */
   world?: SimWorld;
 {%- endif %}
 }
@@ -144,12 +144,12 @@ export function createState(config: Config): AppState {
 {%- elif c.queue_engine == "nats" %}
     queue: new Queue(config.natsUrl),
 {%- endif %}
-{%- if c.has_db or c.queue_engine %}
+{%- if c.has_db or c.queue_engine or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
     world: undefined,
 {%- endif %}
   };
 }
-{%- if c.has_db or c.queue_engine %}
+{%- if c.has_db or c.queue_engine or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
 
 /**
  * Constructs `AppState` against an in-memory [`SimWorld`] instead of

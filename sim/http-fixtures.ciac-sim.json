@@ -1,0 +1,49 @@
+{
+  "simulation_version": 1,
+  "name": "27-m3-http-fixtures",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "external_http": [
+      {
+        "instance": "upstream",
+        "responses": [
+          {"status": 200, "json": {"ok": true}},
+          {"error": "upstream is down"}
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {"expect": {"http_calls": {"instance": "upstream", "count": 0}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "CallUpstreamApi",
+        "json": {"path": "/widgets", "payload": "first"},
+        "save_as": "call_1"
+      }
+    },
+    {"expect": {"response": {"of": "call_1", "status": 200}}},
+    {"expect": {"http_calls": {"instance": "upstream", "count": 1}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "CallUpstreamApi",
+        "json": {"path": "/widgets", "payload": "second"},
+        "save_as": "call_2"
+      }
+    },
+    {"expect": {"response": {"of": "call_2", "status": 500}}},
+    {"expect": {"http_calls": {"instance": "upstream", "count": 2}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "CallUpstreamApi",
+        "json": {"path": "/widgets", "payload": "third"},
+        "save_as": "call_3"
+      }
+    },
+    {"expect": {"response": {"of": "call_3", "status": 500}}},
+    {"expect": {"http_calls": {"instance": "upstream", "count": 3}}}
+  ]
+}

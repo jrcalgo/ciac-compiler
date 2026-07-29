@@ -1,5 +1,8 @@
 # Compiler Architecture
 
+*Reader: a contributor working on the compiler itself, not on a
+generated system.*
+
 ```text
 .ciac source
   │

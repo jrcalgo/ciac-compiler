@@ -1,6 +1,5 @@
 ---
 source: tests/tests/golden.rs
-assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -195,7 +194,12 @@ async def ingest_order_event(
     result = payload
 
     result = await ReceiveOrderEvent().handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/limited_order.py
 ============================================================
@@ -224,7 +228,12 @@ async def limited_order(
     result = payload
 
     result = await CheckLimitOrder(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/mark_shipped_api.py
 ============================================================
@@ -256,7 +265,12 @@ async def mark_shipped_api(
     result = payload
 
     result = await MarkShipped(session=session, cache=get_cache()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/shipped_summary_api.py
 ============================================================
@@ -288,7 +302,12 @@ async def shipped_summary_api(
     result = payload
 
     result = await ShippedSummary(session=session, cache=get_cache()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/auth.py
 ============================================================
@@ -450,6 +469,15 @@ class Base(DeclarativeBase):
     """Declarative base for all models."""
 
 
+# 28UpdatePlan.md M4: this project's own name, or `None` for a
+# single-service project -- threaded to `world.fake_sessionmaker`'s
+# `service` argument so a multi-service simulation namespaces this
+# project's table keys (`SimWorld.namespaced_table_key`, `world.py`);
+# `None` keeps the single-service degenerate case (bare table name)
+# unchanged.
+SERVICE_FOR_SIM: str | None = None
+
+
 def _urls() -> dict[str, str]:
     settings = get_settings()
     return {
@@ -473,8 +501,11 @@ def get_sessionmaker(instance: str = "default") -> async_sessionmaker[AsyncSessi
         # a fake session factory instead of a real engine-backed one; every
         # call site below (`session_dep`, worker/job `session_with`) is
         # unaware of the difference, since both shapes are used the same
-        # way: `async with sessionmaker() as session:`.
-        return state.world.fake_sessionmaker(instance)
+        # way: `async with sessionmaker() as session:`. 28UpdatePlan.md
+        # M4: `service` namespaces this project's own table keys in a
+        # multi-service simulation's shared `FakeDatabase` -- see
+        # `SERVICE_FOR_SIM`'s own doc comment above.
+        return state.world.fake_sessionmaker(instance, service=SERVICE_FOR_SIM)
     sessionmakers = state.sessionmakers
     if instance not in sessionmakers:
         sessionmakers[instance] = async_sessionmaker(
@@ -1864,6 +1895,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 tests/test_logic_check_limit_order.py
 ============================================================
@@ -1872,10 +1914,11 @@ tests/test_logic_check_limit_order.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.check_limit_order import CheckLimitOrder
 from app.schemas import Order
 
@@ -1904,13 +1947,13 @@ tests/test_logic_mark_shipped.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.mark_shipped import MarkShipped
-from app.schemas import Order
-from app.schemas import OrderUpdate
+from app.schemas import Order, OrderUpdate
 
 
 @pytest.mark.anyio
@@ -1931,10 +1974,11 @@ tests/test_logic_receive_order_event.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.receive_order_event import ReceiveOrderEvent
 from app.schemas import OrderEvent
 
@@ -1957,8 +2001,9 @@ tests/test_logic_shipped_summary.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.shipped_summary import ShippedSummary
 from app.schemas import SummaryFilter
@@ -1991,12 +2036,12 @@ transport below does not trigger the startup lifespan.
 
 import time
 
-import jwt
 import httpx
+import jwt
 import pytest
 
-from app.main import app
 from app.config import get_settings
+from app.main import app
 
 
 def _client(*, raise_app_exceptions: bool = True) -> httpx.AsyncClient:

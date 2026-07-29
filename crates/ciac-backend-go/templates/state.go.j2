@@ -25,8 +25,12 @@ import (
 {%- if c.has_queue %}
 	"{{ c.package }}/internal/queue"
 {%- endif %}
-{%- if c.has_db or c.has_queue %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
+{%- if multi %}
+	"sim-shared/world"
+{%- else %}
 	"{{ c.package }}/internal/world"
+{%- endif %}
 {%- endif %}
 {%- if c.has_cache %}
 
@@ -70,7 +74,7 @@ type AppState struct {
 {%- if c.has_queue %}
 	Queue *queue.Queue
 {%- endif %}
-{%- if c.has_db or c.has_queue %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
 	// World is `nil` in production; set only by [NewSimulation]
 	// (v0.24 M9) -- every world-guarded call site (`db.insert`,
 	// broker `publish`) checks it first and falls through to the
@@ -148,7 +152,7 @@ func New(cfg config.Config) (*AppState, error) {
 {%- endif %}
 	return st, nil
 }
-{%- if c.has_db or c.has_queue %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
 
 // NewSimulation builds an AppState against an in-memory [world.World]
 // instead of real infrastructure (v0.24 M9) -- every provider client

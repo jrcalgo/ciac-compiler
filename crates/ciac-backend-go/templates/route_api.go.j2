@@ -40,7 +40,7 @@ func {{ api.snake | go_pascal }}Handler(st *state.AppState) http.HandlerFunc {
 		ctx := r.Context()
 		_ = ctx
 {%- if api.has_auth_step %}
-		claims, err := auth.VerifyToken(r, st.Config)
+		claims, err := auth.VerifyToken(r, st)
 		if err != nil {
 			httpx.WriteError(w, err)
 			return

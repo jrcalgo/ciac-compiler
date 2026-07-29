@@ -11,6 +11,12 @@ pub enum FileRole {
     Owned,
     /// Generated seed owned by the user after first write.
     Seeded,
+    /// A migration file (v0.27 M9): write-once like `Seeded`, but its
+    /// `OrphanLeft` state on every later build is the expected,
+    /// permanent steady state once the schema stops changing — not a
+    /// stale scaffold the user should investigate — so regeneration
+    /// does not warn about it (see `regen::RegenEntry::is_warning`).
+    Migration,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +52,14 @@ impl GeneratedProject {
     /// copy and writes sidecars when the seed changes.
     pub fn add_seeded_file(&mut self, path: impl Into<String>, content: impl Into<String>) {
         self.add_file_with_role(path, content, FileRole::Seeded);
+    }
+
+    /// Adds a migration file. Same write-once semantics as
+    /// [`Self::add_seeded_file`], tagged separately so regeneration
+    /// knows the later "not regenerated this time" state is expected
+    /// and permanent rather than a stale scaffold to flag.
+    pub fn add_migration_file(&mut self, path: impl Into<String>, content: impl Into<String>) {
+        self.add_file_with_role(path, content, FileRole::Migration);
     }
 
     fn add_file_with_role(
@@ -95,6 +109,22 @@ impl GeneratedProject {
 
     pub fn role(&self, path: &str) -> Option<FileRole> {
         self.files.get(path).map(|f| f.role)
+    }
+
+    /// Overwrites the content of a file that already exists, preserving
+    /// its role. Exists only for formatter post-passes (30UpdatePlan.md
+    /// M2) that revise a file already written by `add_file`/
+    /// `add_seeded_file`/`add_migration_file` — panics if the path was
+    /// never written, since a post-pass revising a file that doesn't
+    /// exist is a compiler bug, not a user error. This is deliberately
+    /// not a general-purpose mutation API: the "written exactly once"
+    /// invariant enforced by `add_file_with_role` stays intact for
+    /// every other write path.
+    pub fn set_content(&mut self, path: &str, content: String) {
+        match self.files.get_mut(path) {
+            Some(file) => file.content = content,
+            None => panic!("set_content: no such file {path}"),
+        }
     }
 
     /// Writes the tree under `root`, creating directories as needed.

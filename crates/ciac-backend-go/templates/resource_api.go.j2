@@ -11,7 +11,6 @@ import (
 
 {%- if resource.has_auth %}
 	"{{ c.package }}/internal/auth"
-	"{{ c.package }}/internal/config"
 {%- endif %}
 	"{{ c.package }}/internal/httpx"
 	"{{ c.package }}/internal/models"
@@ -22,12 +21,11 @@ import (
 func Register{{ resource.name }}Routes(mux *http.ServeMux, st *state.AppState) {
 	store := services.New{{ resource.store_class }}(st)
 {%- if resource.has_auth %}
-	cfg := st.Config
-	mux.HandleFunc("POST /{{ resource.plural }}", create{{ resource.name }}(store, cfg))
-	mux.HandleFunc("GET /{{ resource.plural }}", list{{ resource.name }}(store, cfg))
-	mux.HandleFunc("GET /{{ resource.plural }}/{id}", get{{ resource.name }}(store, cfg))
-	mux.HandleFunc("PUT /{{ resource.plural }}/{id}", update{{ resource.name }}(store, cfg))
-	mux.HandleFunc("DELETE /{{ resource.plural }}/{id}", delete{{ resource.name }}(store, cfg))
+	mux.HandleFunc("POST /{{ resource.plural }}", create{{ resource.name }}(store, st))
+	mux.HandleFunc("GET /{{ resource.plural }}", list{{ resource.name }}(store, st))
+	mux.HandleFunc("GET /{{ resource.plural }}/{id}", get{{ resource.name }}(store, st))
+	mux.HandleFunc("PUT /{{ resource.plural }}/{id}", update{{ resource.name }}(store, st))
+	mux.HandleFunc("DELETE /{{ resource.plural }}/{id}", delete{{ resource.name }}(store, st))
 {%- else %}
 	mux.HandleFunc("POST /{{ resource.plural }}", create{{ resource.name }}(store))
 	mux.HandleFunc("GET /{{ resource.plural }}", list{{ resource.name }}(store))
@@ -37,10 +35,10 @@ func Register{{ resource.name }}Routes(mux *http.ServeMux, st *state.AppState) {
 {%- endif %}
 }
 
-func create{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, cfg config.Config{% endif %}) http.HandlerFunc {
+func create{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, st *state.AppState{% endif %}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 {%- if resource.has_auth %}
-		claims, err := auth.VerifyToken(r, cfg)
+		claims, err := auth.VerifyToken(r, st)
 		if err != nil {
 			httpx.WriteError(w, err)
 			return
@@ -76,10 +74,10 @@ func create{{ resource.name }}(store *services.{{ resource.store_class }}{% if r
 	}
 }
 
-func list{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, cfg config.Config{% endif %}) http.HandlerFunc {
+func list{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, st *state.AppState{% endif %}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 {%- if resource.has_auth %}
-		claims, err := auth.VerifyToken(r, cfg)
+		claims, err := auth.VerifyToken(r, st)
 		if err != nil {
 			httpx.WriteError(w, err)
 			return
@@ -114,10 +112,10 @@ func list{{ resource.name }}(store *services.{{ resource.store_class }}{% if res
 	}
 }
 
-func get{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, cfg config.Config{% endif %}) http.HandlerFunc {
+func get{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, st *state.AppState{% endif %}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 {%- if resource.has_auth %}
-		claims, err := auth.VerifyToken(r, cfg)
+		claims, err := auth.VerifyToken(r, st)
 		if err != nil {
 			httpx.WriteError(w, err)
 			return
@@ -144,10 +142,10 @@ func get{{ resource.name }}(store *services.{{ resource.store_class }}{% if reso
 	}
 }
 
-func update{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, cfg config.Config{% endif %}) http.HandlerFunc {
+func update{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, st *state.AppState{% endif %}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 {%- if resource.has_auth %}
-		claims, err := auth.VerifyToken(r, cfg)
+		claims, err := auth.VerifyToken(r, st)
 		if err != nil {
 			httpx.WriteError(w, err)
 			return
@@ -187,10 +185,10 @@ func update{{ resource.name }}(store *services.{{ resource.store_class }}{% if r
 	}
 }
 
-func delete{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, cfg config.Config{% endif %}) http.HandlerFunc {
+func delete{{ resource.name }}(store *services.{{ resource.store_class }}{% if resource.has_auth %}, st *state.AppState{% endif %}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 {%- if resource.has_auth %}
-		claims, err := auth.VerifyToken(r, cfg)
+		claims, err := auth.VerifyToken(r, st)
 		if err != nil {
 			httpx.WriteError(w, err)
 			return

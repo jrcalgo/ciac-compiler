@@ -98,6 +98,10 @@ pub(crate) struct Builder<'d> {
 struct BindingSpec {
     kind: NodeKind,
     instance: String,
+    /// The instance identifier's own span (not the whole `capability:
+    /// instance;` binding) -- v0.27 M8 needs this precise so an
+    /// unknown-capability-instance nearest-match fix replaces only the
+    /// instance name, not the whole binding line.
     span: Span,
 }
 
@@ -795,14 +799,26 @@ impl<'d> Builder<'d> {
         match self.tables.get(&name.text) {
             Some((id, _)) => Some(*id),
             None => {
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::UnknownTable,
-                        format!("unknown table `{}`", name.text),
-                    )
-                    .with_label(name.span, "no table with this name")
-                    .with_help(format!("declare it with `table {}: <Record>;`", name.text)),
-                );
+                let mut diag = Diagnostic::new(
+                    ErrorCode::UnknownTable,
+                    format!("unknown table `{}`", name.text),
+                )
+                .with_label(name.span, "no table with this name")
+                .with_help(format!("declare it with `table {}: <Record>;`", name.text));
+                // v0.27 M8: nearest-match rename, same bar as the stream
+                // fix above.
+                if let Some(nearest) =
+                    nearest_name(self.tables.keys().map(String::as_str), &name.text)
+                {
+                    diag = diag.with_fix(Fix {
+                        title: format!("Rename to `{nearest}`"),
+                        edits: vec![Edit {
+                            span: name.span,
+                            replacement: nearest,
+                        }],
+                    });
+                }
+                self.diags.push(diag);
                 None
             }
         }
@@ -1065,7 +1081,7 @@ impl<'d> Builder<'d> {
             bindings.push(BindingSpec {
                 kind,
                 instance: binding.instance.text.clone(),
-                span: binding.span,
+                span: binding.instance.span,
             });
         }
         self.handler_decl_spans.insert(key.clone(), decl.span);
@@ -1163,13 +1179,30 @@ impl<'d> Builder<'d> {
         match self.find_capability(kind, name) {
             Some(node) => Some(node.id),
             None => {
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::UnknownCapabilityInstance,
-                        format!("unknown {kind:?} capability instance `{name}`"),
-                    )
-                    .with_label(span, "no capability instance with this name"),
-                );
+                let mut diag = Diagnostic::new(
+                    ErrorCode::UnknownCapabilityInstance,
+                    format!("unknown {kind:?} capability instance `{name}`"),
+                )
+                .with_label(span, "no capability instance with this name");
+                // v0.27 M8: nearest-match rename against this service's
+                // own declared instances of the same capability kind --
+                // same bar as the stream/table fixes above.
+                let candidates: Vec<&str> = self
+                    .graph
+                    .nodes_of_kind(kind)
+                    .filter(|node| node.service == self.current_service)
+                    .filter_map(|node| node.component.name())
+                    .collect();
+                if let Some(nearest) = nearest_name(candidates, name) {
+                    diag = diag.with_fix(Fix {
+                        title: format!("Rename to `{nearest}`"),
+                        edits: vec![Edit {
+                            span,
+                            replacement: nearest,
+                        }],
+                    });
+                }
+                self.diags.push(diag);
                 None
             }
         }
@@ -1258,14 +1291,27 @@ impl<'d> Builder<'d> {
         match self.streams.get(&name.text) {
             Some(node) => Some(*node),
             None => {
-                self.diags.push(
-                    Diagnostic::new(
-                        ErrorCode::UnknownStream,
-                        format!("unknown stream `{}`", name.text),
-                    )
-                    .with_label(name.span, "no stream with this name")
-                    .with_help(format!("declare it with `stream {}: <Record>;`", name.text)),
-                );
+                let mut diag = Diagnostic::new(
+                    ErrorCode::UnknownStream,
+                    format!("unknown stream `{}`", name.text),
+                )
+                .with_label(name.span, "no stream with this name")
+                .with_help(format!("declare it with `stream {}: <Record>;`", name.text));
+                // v0.27 M8: a nearest-match rename, same bar as CIAC0013/
+                // CIAC0041 -- offered only when one declared stream name
+                // is close enough to be a plausible typo, not a guess.
+                if let Some(nearest) =
+                    nearest_name(self.streams.keys().map(String::as_str), &name.text)
+                {
+                    diag = diag.with_fix(Fix {
+                        title: format!("Rename to `{nearest}`"),
+                        edits: vec![Edit {
+                            span: name.span,
+                            replacement: nearest,
+                        }],
+                    });
+                }
+                self.diags.push(diag);
                 None
             }
         }
@@ -2178,6 +2224,22 @@ fn nearest_capability_provider(
         .and_then(|(c, p, dist)| (dist <= 5).then_some((c, p)))
 }
 
+/// The closest name in `known` to `name` by Levenshtein distance over
+/// the lowercased strings -- `None` when nothing is close enough to be
+/// a plausible typo rather than a coincidence (v0.27 M8; the same
+/// dist<=3 threshold `typeck.rs`'s `nearest_field` already uses for
+/// short identifier-ish names). Shared by the unknown-stream/-table/
+/// -capability-instance "did you mean" fixes below -- one name-typo
+/// algorithm, not three copies of it.
+fn nearest_name<'a, I: IntoIterator<Item = &'a str>>(known: I, name: &str) -> Option<String> {
+    let query = name.to_lowercase();
+    known
+        .into_iter()
+        .map(|candidate| (candidate, levenshtein(&candidate.to_lowercase(), &query)))
+        .min_by_key(|&(_, dist)| dist)
+        .and_then(|(candidate, dist)| (dist <= 3).then(|| candidate.to_owned()))
+}
+
 /// Classic O(n*m) edit-distance, one row at a time -- these strings
 /// are always short (capability/provider names, record field names),
 /// so no need for anything smarter. `pub(crate)` for reuse by
@@ -2670,13 +2732,53 @@ mod attrs {
     }
 
     fn unknown_attr(attr: &Attr, target: &str, diags: &mut Diagnostics) {
-        diags.push(
-            Diagnostic::new(
-                ErrorCode::UnknownAttribute,
-                format!("unknown {target} attribute `{}`", attr.name.text),
-            )
-            .with_label(attr.name.span, "not valid for this declaration"),
-        );
+        let mut diag = Diagnostic::new(
+            ErrorCode::UnknownAttribute,
+            format!("unknown {target} attribute `{}`", attr.name.text),
+        )
+        .with_label(attr.name.span, "not valid for this declaration");
+        // v0.27 M8: nearest-match rename against this declaration
+        // kind's own closed attribute registry -- literally the same
+        // match arms this function's seven call sites already
+        // exhaust, restated here as data so a typo'd attribute name
+        // gets the same "did you mean" treatment as an unknown stream/
+        // table/capability-instance name. Kept in sync with those
+        // match arms by `attribute_registry_matches_every_known_attr`
+        // below, not by hand-auditing.
+        if let Some(nearest) = nearest_name(known_attrs(target).iter().copied(), &attr.name.text) {
+            diag = diag.with_fix(Fix {
+                title: format!("Rename to `{nearest}`"),
+                edits: vec![Edit {
+                    span: attr.name.span,
+                    replacement: nearest,
+                }],
+            });
+        }
+        diags.push(diag);
+    }
+
+    /// The closed attribute registry for one declaration kind, as
+    /// named in `docs/language.md`'s Attributes table -- see
+    /// `unknown_attr`'s doc comment for why this exists as data
+    /// alongside the match arms above rather than only inside them.
+    fn known_attrs(target: &str) -> &'static [&'static str] {
+        match target {
+            "api" => &["method", "path", "scope"],
+            "worker" => &["concurrency", "max_retries"],
+            "job" => &["schedule", "catch_up"],
+            "stream" => &["subject"],
+            "channel" => &["path"],
+            "crud" => &["cache_ttl", "page_size", "read_scope", "write_scope"],
+            "reference" => &[
+                "references",
+                "cardinality",
+                "on_delete",
+                "on_update",
+                "unique",
+                "index",
+            ],
+            _ => &[],
+        }
     }
 
     fn invalid_value(attr: &Attr, message: &str, diags: &mut Diagnostics) {
@@ -2761,5 +2863,83 @@ mod fix_tests {
             Some(("queue", "NATS"))
         );
         assert_eq!(nearest_capability_provider("wat", "ThisIsNotReal"), None);
+    }
+
+    #[test]
+    fn nearest_name_finds_a_close_typo_but_not_a_stranger() {
+        let known = ["Uploaded", "Processed"];
+        assert_eq!(
+            nearest_name(known.iter().copied(), "Uploadd"),
+            Some("Uploaded".to_owned())
+        );
+        assert_eq!(nearest_name(known.iter().copied(), "SomethingElse"), None);
+        assert_eq!(nearest_name(std::iter::empty(), "anything"), None);
+    }
+
+    /// v0.27 M8: `known_attrs()` is hand-maintained data restating the
+    /// `attrs` module's own match arms (see `unknown_attr`'s doc
+    /// comment) -- this is the guard against it drifting from them.
+    /// One program per declaration kind, using every one of that
+    /// kind's `known_attrs()` names with a valid value; a stray or
+    /// misspelled entry in `known_attrs()` would make the real parser/
+    /// sema front end reject it as `UnknownAttribute`, exactly the
+    /// class of wrong-fix `unknown_attr`'s nearest-match must never
+    /// offer.
+    #[test]
+    fn known_attrs_lists_only_genuinely_accepted_names() {
+        let programs = [
+            (
+                "api",
+                "service X;\nuse { auth JWT; }\nrecord Msg { id: Uuid; }\n\
+                 api A: Msg { method: POST; path: \"/a\"; scope: \"s\"; }\n\
+                 pipeline A: Auth -> Return;\n",
+            ),
+            (
+                "worker/stream",
+                "service X;\nuse { queue NATS; }\nrecord Msg { id: Uuid; }\n\
+                 stream S: Msg { subject: \"custom.subject\"; }\n\
+                 worker OnS on S { concurrency: 2; max_retries: 3; }\n\
+                 handler H(v: Msg) -> Msg { return v; }\npipeline OnS: H;\n",
+            ),
+            (
+                "job",
+                "service X;\nuse { scheduler Cron; }\n\
+                 job J { schedule: \"0 3 * * *\"; catch_up: true; }\n\
+                 handler H(v: Json) -> Json { return v; }\npipeline J: H;\n",
+            ),
+            (
+                "channel",
+                "service X;\nuse { queue NATS; realtime WebSocket; }\n\
+                 record Msg { id: Uuid; }\nstream S: Msg;\n\
+                 channel C on S { path: \"/custom/channel\"; }\n",
+            ),
+            (
+                "crud",
+                "service X;\nuse { db Postgres; cache Redis; auth JWT; }\n\
+                 record Msg { id: Uuid; }\ncrud M: Msg { cache_ttl: 60; page_size: 20; \
+                 read_scope: \"r\"; write_scope: \"w\"; }\n",
+            ),
+            (
+                "reference",
+                "service X;\nuse { db Postgres; }\nrecord Customer { id: Uuid; }\n\
+                 table Customers: Customer;\nrecord Order {\n    id: Uuid;\n    \
+                 customer: Reference<Customer> {\n        references: Customers;\n        \
+                 cardinality: one;\n        on_delete: restrict;\n        on_update: cascade;\n        \
+                 unique: false;\n        index: true;\n    }\n}\ntable Orders: Order;\n",
+            ),
+        ];
+        for (target, src) in programs {
+            let mut sources = ciac_diagnostics::SourceMap::new();
+            let file = sources.add_file("test.ciac", src);
+            let mut diags = ciac_diagnostics::Diagnostics::new();
+            let program = ciac_syntax::parse(src, file, &mut diags);
+            let _ = crate::analyze(&program, &mut diags);
+            assert!(
+                !diags.codes().contains(&ErrorCode::UnknownAttribute),
+                "`{target}`'s known_attrs() names an attribute the real front end \
+                 rejects:\n{src}\n\n{:#?}",
+                diags.iter().collect::<Vec<_>>(),
+            );
+        }
     }
 }

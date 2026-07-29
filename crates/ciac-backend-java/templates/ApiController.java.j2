@@ -18,7 +18,13 @@ import com.ciac.{{ java_package }}.{{ handler.handler_package }}.{{ handler.clas
 import com.ciac.{{ java_package }}.clients.{{ call.class_name }};
 {%- endfor %}
 {%- if api.has_auth_step %}
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
+import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 {%- endif %}
@@ -36,7 +42,17 @@ public class {{ api.snake | java_pascal }}Controller {
     private final Queue queue;
 {%- endif %}
 {%- if api.has_auth_step %}
+    // Real in production; `null` under simulation (SimRunner never
+    // registers `SecurityConfig`'s own `JwtDecoder` bean at all --
+    // `Auth.verifyToken`'s own `world != null` branch never reaches
+    // it, so an `ObjectProvider` here, not a hard constructor
+    // dependency, is what keeps this controller constructible at all
+    // (27UpdatePlan.md M8).
     private final JwtDecoder jwtDecoder;
+    // `null` in production; a simulation-run `World` when SimRunner
+    // manually registers one -- see `Auth.verifyToken`'s own
+    // `if (world != null)` branch (27UpdatePlan.md M8).
+    private final World world;
 {%- endif %}
 {%- for handler in api.handlers %}
     private final {{ handler.class_name }} {{ handler.class_name | java_camel }};
@@ -48,7 +64,7 @@ public class {{ api.snake | java_pascal }}Controller {
     public {{ api.snake | java_pascal }}Controller(
             AppState state
             {%- if api.has_publish_step %}, Queue queue{% endif -%}
-            {%- if api.has_auth_step %}, JwtDecoder jwtDecoder{% endif -%}
+            {%- if api.has_auth_step %}, ObjectProvider<JwtDecoder> jwtDecoderProvider, ObjectProvider<World> worldProvider{% endif -%}
             {%- for handler in api.handlers %}, {{ handler.class_name }} {{ handler.class_name | java_camel }}{% endfor -%}
             {%- for call in api.call_imports %}, {{ call.class_name }} {{ call.class_name | java_camel }}{% endfor %}) {
         this.state = state;
@@ -56,7 +72,8 @@ public class {{ api.snake | java_pascal }}Controller {
         this.queue = queue;
 {%- endif %}
 {%- if api.has_auth_step %}
-        this.jwtDecoder = jwtDecoder;
+        this.jwtDecoder = jwtDecoderProvider.getIfAvailable();
+        this.world = worldProvider.getIfAvailable();
 {%- endif %}
 {%- for handler in api.handlers %}
         this.{{ handler.class_name | java_camel }} = {{ handler.class_name | java_camel }};
@@ -71,7 +88,7 @@ public class {{ api.snake | java_pascal }}Controller {
 {%- if api.has_auth_step %}HttpServletRequest request{% if api.has_body and api.payload %}, {% endif %}{% endif -%}
 {%- if api.has_body and api.payload %}@RequestBody JsonNode body{% endif %}) throws Exception {
 {%- if api.has_auth_step %}
-        Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+        Jwt jwt = Auth.verifyToken(request, jwtDecoder, world);
 {%- if api.scope %}
         Auth.requireScope(jwt, "{{ api.scope }}");
 {%- endif %}

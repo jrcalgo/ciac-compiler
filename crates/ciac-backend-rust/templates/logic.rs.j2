@@ -21,13 +21,18 @@ use crate::models::{ {{ handler.model_imports | join(", ") }} };
 {%- endif %}
 
 {%- set borrows = handler.needs_db or handler.needs_cache or handler.needs_queue or handler.extras %}
+{%- set needs_world = handler.needs_db or handler.needs_cache or handler.extras %}
 #[derive(Debug)]
 pub struct {{ handler.class_name }}{% if borrows %}<'a>{% endif %} {
 {%- if handler.needs_db %}
     pub db: &'a {% if handler.db_engine == "mysql" %}sqlx::MySqlPool{% elif handler.db_engine == "sqlite" %}sqlx::SqlitePool{% else %}sqlx::PgPool{% endif %},
-    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- `db.insert`
-    /// call sites in `handle`'s generated body check this first, writing to
-    /// the in-memory `SimWorld` instead of `db` above.
+{%- endif %}
+{%- if needs_world %}
+    /// `Some` only under [`AppState::simulation`] (v0.17 M11) -- every
+    /// world-guarded verb's call site in `handle`'s generated body
+    /// checks this first, writing to the in-memory `SimWorld` instead
+    /// of the real capability field(s) above/below (27UpdatePlan.md
+    /// M4 grew this from `db.insert`-only to every faked verb).
     pub world: Option<&'a std::sync::Arc<crate::world::SimWorld>>,
 {%- endif %}
 {%- if handler.needs_cache %}
@@ -47,6 +52,8 @@ impl{% if borrows %}<'a>{% endif %} {{ handler.class_name }}{% if borrows %}<'a>
         Self {
 {%- if handler.needs_db %}
             db: &state.{{ handler.rust_db_field }},
+{%- endif %}
+{%- if needs_world %}
             world: state.world.as_ref(),
 {%- endif %}
 {%- if handler.needs_cache %}

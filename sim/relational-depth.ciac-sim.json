@@ -1,0 +1,143 @@
+{
+  "simulation_version": 1,
+  "name": "27-m2-relational-depth",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {},
+  "steps": [
+    {
+      "request": {
+        "service": "DomainOrders",
+        "api": "CreateCustomerRoute",
+        "json": {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Ada",
+          "email": "ada@example.com"
+        },
+        "save_as": "create_customer"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "create_customer",
+          "status": 200
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "DomainOrders",
+        "api": "Checkout",
+        "json": {
+          "id": "22222222-2222-4222-8222-222222222222",
+          "customer_id": "11111111-1111-4111-8111-111111111111",
+          "total": 10.0
+        },
+        "save_as": "place_order"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "place_order",
+          "status": 200
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "orders",
+          "where": {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "total": 10.0
+          },
+          "present": true
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "DomainOrders",
+        "api": "Items",
+        "json": {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "order_id": "22222222-2222-4222-8222-222222222222",
+          "sku": "widget",
+          "quantity": 3
+        },
+        "save_as": "add_line_item"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "add_line_item",
+          "status": 200
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "line_items",
+          "where": {
+            "id": "33333333-3333-4333-8333-333333333333",
+            "order_id": "22222222-2222-4222-8222-222222222222"
+          },
+          "present": true
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "DomainOrders",
+        "api": "DeleteOrderRoute",
+        "json": {
+          "id": "22222222-2222-4222-8222-222222222222"
+        },
+        "save_as": "delete_order"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "delete_order",
+          "status": 200,
+          "json": {
+            "status": "accepted",
+            "data": {
+              "deleted": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "orders",
+          "where": {
+            "id": "22222222-2222-4222-8222-222222222222"
+          },
+          "present": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "line_items",
+          "where": {
+            "id": "33333333-3333-4333-8333-333333333333"
+          },
+          "present": false
+        }
+      }
+    }
+  ]
+}

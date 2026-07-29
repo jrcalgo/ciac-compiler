@@ -1,0 +1,134 @@
+{
+  "simulation_version": 1,
+  "name": "27-m9-query-verbs",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "db": [
+      {
+        "service": "QueryVerbs",
+        "table": "notes",
+        "rows": [
+          {"id": "11111111-1111-4111-8111-111111111111", "title": "hello world", "active": true},
+          {"id": "22222222-2222-4222-8222-222222222222", "title": "goodbye", "active": false},
+          {"id": "33333333-3333-4333-8333-333333333333", "title": "hello there", "active": true}
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "request": {
+        "service": "QueryVerbs",
+        "api": "ListActiveApi",
+        "json": {"active": true},
+        "save_as": "list_active"
+      }
+    },
+    {"expect": {"response": {"of": "list_active", "status": 200}}},
+    {
+      "request": {
+        "service": "QueryVerbs",
+        "api": "CountActiveApi",
+        "json": {"active": false},
+        "save_as": "count_inactive"
+      }
+    },
+    {
+      "expect": {
+        "response": {"of": "count_inactive", "status": 200, "json": {"status": "accepted", "data": 1}}
+      }
+    },
+    {
+      "request": {
+        "service": "QueryVerbs",
+        "api": "ReplaceApi",
+        "json": {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "title": "HELLO WORLD",
+          "active": false
+        },
+        "save_as": "replace"
+      }
+    },
+    {"expect": {"response": {"of": "replace", "status": 200}}},
+    {
+      "expect": {
+        "row": {
+          "service": "QueryVerbs",
+          "table": "notes",
+          "where": {"id": "11111111-1111-4111-8111-111111111111", "title": "HELLO WORLD", "active": false},
+          "present": true
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "QueryVerbs",
+        "api": "DeleteByActiveApi",
+        "json": {"active": true},
+        "save_as": "delete_where"
+      }
+    },
+    {
+      "expect": {
+        "response": {"of": "delete_where", "status": 200, "json": {"status": "accepted", "data": 1}}
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "QueryVerbs",
+          "table": "notes",
+          "where": {"id": "33333333-3333-4333-8333-333333333333"},
+          "present": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "QueryVerbs",
+          "table": "notes",
+          "where": {"id": "11111111-1111-4111-8111-111111111111"},
+          "present": true
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "QueryVerbs",
+        "api": "RemoveApi",
+        "json": {"id": "22222222-2222-4222-8222-222222222222"},
+        "save_as": "remove"
+      }
+    },
+    {
+      "expect": {
+        "response": {"of": "remove", "status": 200, "json": {"status": "accepted", "data": true}}
+      }
+    },
+    {
+      "request": {
+        "service": "QueryVerbs",
+        "api": "RemoveApi",
+        "json": {"id": "11111111-1111-4111-8111-111111111111"},
+        "save_as": "remove_last"
+      }
+    },
+    {
+      "expect": {
+        "response": {"of": "remove_last", "status": 200, "json": {"status": "accepted", "data": true}}
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "QueryVerbs",
+          "table": "notes",
+          "where": {},
+          "present": false
+        }
+      }
+    }
+  ]
+}

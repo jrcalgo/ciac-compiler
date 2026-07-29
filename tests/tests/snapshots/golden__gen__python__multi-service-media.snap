@@ -130,7 +130,12 @@ async def charge(
     result = payload
 
     result = await CapturePayment().handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 billing/app/config.py
 ============================================================
@@ -503,6 +508,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 billing/tests/test_smoke.py
 ============================================================
@@ -1353,6 +1369,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 notifier/tests/test_smoke.py
 ============================================================
@@ -1848,6 +1875,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 progress-feed/tests/test_smoke.py
 ============================================================
@@ -2514,6 +2552,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 transcoder/tests/test_smoke.py
 ============================================================
@@ -2643,7 +2692,12 @@ async def upload(
     result = await BillingClient().charge(result)
     result = await StoreVideo().handle(result)
     await publish("media_system.uploaded", result.model_dump(mode="json"))
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 upload-api/app/clients/__init__.py
 ============================================================
@@ -2661,22 +2715,42 @@ it at the `billing` container.
 import httpx
 
 from app.config import get_settings
+from app.state import current
 from app.schemas import Video
 
 
 class BillingClient:
-    """Calls `Billing` over HTTP and unwraps its response envelope."""
+    """Calls `Billing` over HTTP and unwraps its response envelope
+    -- or, under `ciac sim` (28UpdatePlan.md M3), routes through
+    `SimWorld.call_checked` against `Billing`'s own registered
+    handler instead of real HTTP, the same `state.world is not None`
+    guard `app/db.py`'s `get_sessionmaker` already uses for the database
+    seam. `call_checked` invokes the target api route function directly
+    (`world.register_api`'s own handler), so its return value carries
+    the *same* `{"status": ..., "data": ...}` envelope every route
+    function's own body already builds (see `api.py.j2`) -- this
+    unwraps `["data"]` from it exactly the way the real-HTTP branch
+    unwraps `response.json()["data"]`, same post-processing, different
+    transport."""
 
     def __init__(self) -> None:
         self._base_url = get_settings().billing_url
 
     async def charge(self, payload: Video) -> Video:
+        state = current()
+        if state.world is not None:
+            req = payload.model_dump(mode="json")
+            result = await state.world.call_checked(
+                "UploadApi", "Billing", "Charge", req
+            )
+            return Video.model_validate(result["data"])
         async with httpx.AsyncClient(base_url=self._base_url) as client:
             response = await client.post(
                 "/charge", json=payload.model_dump(mode="json")
             )
         response.raise_for_status()
         return Video.model_validate(response.json()["data"])
+
 ============================================================
 upload-api/app/config.py
 ============================================================
@@ -3088,6 +3162,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 upload-api/tests/test_smoke.py
 ============================================================

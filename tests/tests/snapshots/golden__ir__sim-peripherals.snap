@@ -1,0 +1,945 @@
+---
+source: tests/tests/golden.rs
+expression: json
+---
+{
+  "name": "SimPeripherals",
+  "multi_service": false,
+  "services": [
+    {
+      "id": 0,
+      "name": "SimPeripherals"
+    }
+  ],
+  "nodes": [
+    {
+      "id": 0,
+      "service": 0,
+      "kind": "Cache",
+      "name": "default",
+      "engine": "Redis"
+    },
+    {
+      "id": 1,
+      "service": 0,
+      "kind": "ObjectStore",
+      "name": "default",
+      "provider": "S3",
+      "bucket": null
+    },
+    {
+      "id": 2,
+      "service": 0,
+      "kind": "Email",
+      "name": "default",
+      "provider": "Smtp"
+    },
+    {
+      "id": 3,
+      "service": 0,
+      "kind": "Search",
+      "name": "default",
+      "provider": "OpenSearch"
+    },
+    {
+      "id": 4,
+      "service": 0,
+      "kind": "ExternalHttp",
+      "name": "upstream",
+      "base_url": "https://example.internal"
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "Jwt",
+      "issuer": null,
+      "audience": null
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Api",
+      "name": "EvictCacheApi",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 7,
+      "service": 0,
+      "kind": "Api",
+      "name": "RemoveDocApi",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 8,
+      "service": 0,
+      "kind": "Api",
+      "name": "NotifyUserApi",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 9,
+      "service": 0,
+      "kind": "Api",
+      "name": "IndexDocApi",
+      "request": 2,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 10,
+      "service": 0,
+      "kind": "Api",
+      "name": "SearchDocsApi",
+      "request": 3,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 11,
+      "service": 0,
+      "kind": "Api",
+      "name": "CallUpstreamApi",
+      "request": 4,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": null
+      }
+    },
+    {
+      "id": 12,
+      "service": 0,
+      "kind": "Api",
+      "name": "EchoApi",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": null,
+        "scope": "peripherals:admin"
+      }
+    },
+    {
+      "id": 13,
+      "service": 0,
+      "kind": "Service",
+      "name": "EvictCache",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 5
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": "CacheDelete",
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 0
+                          }
+                        }
+                      },
+                      "field": "key",
+                      "ty": "Str"
+                    }
+                  }
+                ],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 5,
+                "base_value": null,
+                "fields": [
+                  [
+                    "ok",
+                    {
+                      "BoolLit": true
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "service": 0,
+      "kind": "Service",
+      "name": "RemoveDoc",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 5
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 1,
+                "verb": "ObjectStoreDelete",
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 0
+                          }
+                        }
+                      },
+                      "field": "key",
+                      "ty": "Str"
+                    }
+                  }
+                ],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 5,
+                "base_value": null,
+                "fields": [
+                  [
+                    "ok",
+                    {
+                      "BoolLit": true
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "service": 0,
+      "kind": "Service",
+      "name": "NotifyUser",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 5
+        },
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 2,
+                "verb": "EmailSend",
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 1
+                          }
+                        }
+                      },
+                      "field": "to",
+                      "ty": "Str"
+                    }
+                  },
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 1
+                          }
+                        }
+                      },
+                      "field": "subject",
+                      "ty": "Str"
+                    }
+                  },
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 1
+                          }
+                        }
+                      },
+                      "field": "body",
+                      "ty": "Str"
+                    }
+                  }
+                ],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 5,
+                "base_value": null,
+                "fields": [
+                  [
+                    "ok",
+                    {
+                      "BoolLit": true
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 16,
+      "service": 0,
+      "kind": "Service",
+      "name": "IndexDoc",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 2
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 5
+        },
+        "locals": [
+          {
+            "Record": 2
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 3,
+                "verb": "SearchIndex",
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 2
+                          }
+                        }
+                      },
+                      "field": "id",
+                      "ty": "Str"
+                    }
+                  },
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 2
+                          }
+                        }
+                      },
+                      "field": "title",
+                      "ty": "Str"
+                    }
+                  }
+                ],
+                "ty": "Unit"
+              }
+            }
+          },
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 5,
+                "base_value": null,
+                "fields": [
+                  [
+                    "ok",
+                    {
+                      "BoolLit": true
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 17,
+      "service": 0,
+      "kind": "Service",
+      "name": "SearchDocs",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 3
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 5
+        },
+        "locals": [
+          {
+            "Record": 3
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 3,
+                "verb": "SearchQuery",
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 3
+                          }
+                        }
+                      },
+                      "field": "query",
+                      "ty": "Str"
+                    }
+                  }
+                ],
+                "ty": {
+                  "List": "Json"
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 5,
+                "base_value": null,
+                "fields": [
+                  [
+                    "ok",
+                    {
+                      "BoolLit": true
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 18,
+      "service": 0,
+      "kind": "Service",
+      "name": "CallUpstream",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 4
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 5
+        },
+        "locals": [
+          {
+            "Record": 4
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 4,
+                "verb": "HttpCall",
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 4
+                          }
+                        }
+                      },
+                      "field": "path",
+                      "ty": "Str"
+                    }
+                  },
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 4
+                          }
+                        }
+                      },
+                      "field": "payload",
+                      "ty": "Str"
+                    }
+                  }
+                ],
+                "ty": "Json"
+              }
+            }
+          },
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 5,
+                "base_value": null,
+                "fields": [
+                  [
+                    "ok",
+                    {
+                      "BoolLit": true
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 19,
+      "service": 0,
+      "kind": "Service",
+      "name": "Echo",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 0
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 5
+        },
+        "locals": [
+          {
+            "Record": 0
+          }
+        ],
+        "body": [
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 5,
+                "base_value": null,
+                "fields": [
+                  [
+                    "ok",
+                    {
+                      "BoolLit": true
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "from": 13,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 1,
+      "from": 6,
+      "to": 13,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 2,
+      "from": 14,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 3,
+      "from": 7,
+      "to": 14,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 4,
+      "from": 15,
+      "to": 2,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 5,
+      "from": 8,
+      "to": 15,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 6,
+      "from": 16,
+      "to": 3,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 7,
+      "from": 9,
+      "to": 16,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 8,
+      "from": 17,
+      "to": 3,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 10,
+      "to": 17,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 18,
+      "to": 4,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 11,
+      "to": 18,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 12,
+      "from": 12,
+      "to": 5,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 13,
+      "from": 5,
+      "to": 19,
+      "kind": "RequestFlow"
+    }
+  ],
+  "records": [
+    {
+      "name": "KeyOnly",
+      "fields": [
+        {
+          "name": "key",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "Notification",
+      "fields": [
+        {
+          "name": "to",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "subject",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "body",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "IndexRequest",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "title",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "SearchRequest",
+      "fields": [
+        {
+          "name": "query",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "HttpRequest",
+      "fields": [
+        {
+          "name": "path",
+          "ty": {
+            "type": "Str"
+          }
+        },
+        {
+          "name": "payload",
+          "ty": {
+            "type": "Str"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "Ack",
+      "fields": [
+        {
+          "name": "ok",
+          "ty": {
+            "type": "Bool"
+          }
+        }
+      ],
+      "kind": "Data"
+    }
+  ],
+  "tables": [],
+  "pipelines": [
+    {
+      "name": "EvictCacheApi",
+      "service": 0,
+      "owner": 6,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 13
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "RemoveDocApi",
+      "service": 0,
+      "owner": 7,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 14
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "NotifyUserApi",
+      "service": 0,
+      "owner": 8,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 15
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "IndexDocApi",
+      "service": 0,
+      "owner": 9,
+      "payload": 2,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 16
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "SearchDocsApi",
+      "service": 0,
+      "owner": 10,
+      "payload": 3,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 17
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "CallUpstreamApi",
+      "service": 0,
+      "owner": 11,
+      "payload": 4,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 18
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "EchoApi",
+      "service": 0,
+      "owner": 12,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Auth",
+          "node": 5
+        },
+        {
+          "step": "Handler",
+          "node": 19
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    }
+  ],
+  "resources": [],
+  "event_streams": []
+}

@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(transaction (sim (expr-stmt (db-insert ArchiveEvents (record-cons ArchiveEvent (id (uuid-new)) (note_id (field-access note id)))))) (real (expr-stmt (db-insert-tx ArchiveEvents (record-cons ArchiveEvent (id (uuid-new)) (note_id (field-access note id)))))))
+(return note)

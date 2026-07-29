@@ -1,0 +1,38 @@
+{
+  "simulation_version": 1,
+  "name": "27-m3-cache-ttl",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "cache": [
+      {
+        "instance": "default",
+        "key": "greeting",
+        "value": {"msg": "hi"},
+        "ttl": "30m"
+      },
+      {
+        "instance": "default",
+        "key": "permanent",
+        "value": {"msg": "forever"}
+      }
+    ]
+  },
+  "steps": [
+    {"expect": {"cache": {"instance": "default", "key": "greeting", "present": true, "value": {"msg": "hi"}}}},
+    {"advance": {"by": "29m"}},
+    {"expect": {"cache": {"instance": "default", "key": "greeting", "present": true, "value": {"msg": "hi"}}}},
+    {"advance": {"by": "2m"}},
+    {"expect": {"cache": {"instance": "default", "key": "greeting", "present": false}}},
+    {"expect": {"cache": {"instance": "default", "key": "permanent", "present": true, "value": {"msg": "forever"}}}},
+    {
+      "request": {
+        "service": "SimPeripherals",
+        "api": "EvictCacheApi",
+        "json": {"key": "permanent"},
+        "save_as": "evict_permanent"
+      }
+    },
+    {"expect": {"response": {"of": "evict_permanent", "status": 200}}},
+    {"expect": {"cache": {"instance": "default", "key": "permanent", "present": false}}}
+  ]
+}

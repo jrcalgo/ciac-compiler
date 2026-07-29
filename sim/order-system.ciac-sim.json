@@ -1,0 +1,163 @@
+{
+  "simulation_version": 1,
+  "name": "27-m9-order-system-flagship",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "db": [
+      {
+        "service": "OrderSystem",
+        "table": "orders",
+        "rows": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "customer_id": "22222222-2222-4222-8222-222222222222",
+            "status": "Pending",
+            "total": 5.0
+          },
+          {
+            "id": "33333333-3333-4333-8333-333333333333",
+            "customer_id": "22222222-2222-4222-8222-222222222222",
+            "status": "Pending",
+            "total": 50.0
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "request": {
+        "service": "OrderSystem",
+        "api": "ShippedSummaryApi",
+        "json": {"min_total": 0.0},
+        "as": {"sub": "ada", "scopes": ["orders:read"]},
+        "save_as": "summary_before"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "summary_before",
+          "status": 200,
+          "json": {"status": "accepted", "data": 0}
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "OrderSystem",
+        "api": "ShippedSummaryApi",
+        "json": {"min_total": 0.0},
+        "as": {"sub": "bob", "scopes": ["orders:write"]},
+        "save_as": "summary_wrong_scope"
+      }
+    },
+    {"expect": {"response": {"of": "summary_wrong_scope", "status": 403}}},
+    {
+      "request": {
+        "service": "OrderSystem",
+        "api": "MarkShippedApi",
+        "json": {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "customer_id": "22222222-2222-4222-8222-222222222222",
+          "total": 50.0
+        },
+        "as": {"sub": "ada", "scopes": ["orders:write"]},
+        "save_as": "mark_shipped"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "mark_shipped",
+          "status": 200
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "OrderSystem",
+          "table": "orders",
+          "where": {"id": "33333333-3333-4333-8333-333333333333", "status": "Shipped"},
+          "present": true
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "OrderSystem",
+          "table": "orders",
+          "where": {"id": "11111111-1111-4111-8111-111111111111", "status": "Pending"},
+          "present": true
+        }
+      }
+    },
+    {
+      "expect": {
+        "cache": {"instance": "default", "key": "orders:shipped-count", "present": false}
+      }
+    },
+    {
+      "request": {
+        "service": "OrderSystem",
+        "api": "ShippedSummaryApi",
+        "json": {"min_total": 10.0},
+        "as": {"sub": "ada", "scopes": ["orders:read"]},
+        "save_as": "summary_after"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "summary_after",
+          "status": 200,
+          "json": {"status": "accepted", "data": 1}
+        }
+      }
+    },
+    {
+      "expect": {
+        "cache": {"instance": "default", "key": "orders:shipped-count", "present": true, "value": 1}
+      }
+    },
+    {
+      "request": {
+        "service": "OrderSystem",
+        "api": "MarkShippedApi",
+        "json": {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "customer_id": "22222222-2222-4222-8222-222222222222",
+          "total": 5.0
+        },
+        "as": {"sub": "ada", "scopes": ["orders:write"]},
+        "save_as": "mark_shipped_2"
+      }
+    },
+    {"expect": {"response": {"of": "mark_shipped_2", "status": 200}}},
+    {
+      "expect": {
+        "cache": {"instance": "default", "key": "orders:shipped-count", "present": false}
+      }
+    },
+    {
+      "request": {
+        "service": "OrderSystem",
+        "api": "ShippedSummaryApi",
+        "json": {"min_total": 10.0},
+        "as": {"sub": "ada", "scopes": ["orders:read"]},
+        "save_as": "summary_final"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "summary_final",
+          "status": 200,
+          "json": {"status": "accepted", "data": 1}
+        }
+      }
+    }
+  ]
+}

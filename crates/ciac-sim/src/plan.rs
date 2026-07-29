@@ -43,6 +43,10 @@ pub struct SimPlan {
     pub streams: Vec<SimStream>,
     pub jobs: Vec<SimJob>,
     pub workers: Vec<SimWorker>,
+    /// 28UpdatePlan.md M1.
+    pub apis: Vec<SimApi>,
+    /// 28UpdatePlan.md M1.
+    pub call_edges: Vec<SimCallEdge>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +145,39 @@ pub struct SimWorker {
     pub queue_group: String,
     pub concurrency: u32,
     pub max_retries: u32,
+}
+
+/// 28UpdatePlan.md M1: an api node, the router-registration and
+/// call-target identity a routed cross-service call needs. Distinct
+/// from `ciac_codegen::model::CallApiCtx` (a target-rendering context
+/// carrying HTTP method/path/payload-class detail this plan-derivation
+/// layer has no reason to know) — `SimApi` is only what the simulator
+/// itself needs: which service owns the api, keyed the same way every
+/// other `Sim*` fact is.
+#[derive(Debug, Clone, Serialize)]
+pub struct SimApi {
+    /// `api/<name>`.
+    pub key: String,
+    pub name: String,
+    pub service_key: Option<String>,
+}
+
+/// 28UpdatePlan.md M1: one `call <Service>.<Api>` edge, resolved to the
+/// stable keys of its two endpoints. `caller_key` is the *owning*
+/// api/worker/job node's key (the pipeline the `Call` step lives in),
+/// not a second api key — a worker or job can issue a routed call
+/// without itself being callable. M2's call router consumes this list
+/// to resolve a `call.request` effect to its callee at simulation run
+/// time; cycle detection is *not* this crate's job — `ciac-sema`'s own
+/// `CycleDetection` pass already includes `EdgeKind::ServiceCall` in
+/// its combined flow-cycle check (`passes/cycles.rs`), so a program
+/// with a call cycle already fails `ciac check`/`ciac build` and can
+/// never reach `SimPlan::from_ir` in the first place — see the M1
+/// Shipped note for why `check_acyclic`/`SIM0012` were dropped.
+#[derive(Debug, Clone, Serialize)]
+pub struct SimCallEdge {
+    pub caller_key: String,
+    pub callee_key: String,
 }
 
 impl SimPlan {
@@ -252,6 +289,39 @@ impl SimPlan {
             .collect();
         workers.sort_by(|a, b| a.key.cmp(&b.key));
 
+        let mut apis: Vec<SimApi> = ir
+            .nodes_of_kind(NodeKind::Api)
+            .filter_map(|n| {
+                let name = n.component.name()?.to_owned();
+                Some(SimApi {
+                    key: format!("api/{name}"),
+                    name,
+                    service_key: service_key(n.service),
+                })
+            })
+            .collect();
+        apis.sort_by(|a, b| a.key.cmp(&b.key));
+
+        // Every `Call` step wires a `ServiceCall` edge from the
+        // pipeline's own owning node (an api, worker, or job -- see
+        // `Pipeline::owner`'s doc) to the callee api node
+        // (`ciac-sema::build::wire_steps`). Only apis are ever call
+        // *targets* (`ciac-codegen::model::call_targets`'s own filter on
+        // `Component::Api`), so `callee_key` is always resolvable
+        // through the `apis` list just derived above.
+        let mut call_edges: Vec<SimCallEdge> = ir
+            .edges()
+            .filter(|e| e.kind == EdgeKind::ServiceCall)
+            .filter_map(|e| {
+                Some(SimCallEdge {
+                    caller_key: node_key(ir, e.from)?,
+                    callee_key: node_key(ir, e.to)?,
+                })
+            })
+            .collect();
+        call_edges
+            .sort_by(|a, b| (&a.caller_key, &a.callee_key).cmp(&(&b.caller_key, &b.callee_key)));
+
         SimPlan {
             plan_version: PLAN_VERSION,
             source_hash: source_hash.into(),
@@ -262,6 +332,8 @@ impl SimPlan {
             streams,
             jobs,
             workers,
+            apis,
+            call_edges,
         }
     }
 
@@ -276,7 +348,85 @@ impl SimPlan {
         hasher.update(&json);
         format!("sha256:{:x}", hasher.finalize())
     }
+
+    /// 28UpdatePlan.md M1: the "every named service resolves" preflight
+    /// promised (and deferred) since v0.17 -- checks every
+    /// `request.service`, `given.db[].service`, and `expect.row.service`
+    /// value in `scenario` against this plan's own `services`, once,
+    /// before any scenario step runs. Deliberately narrower than a full
+    /// name-resolution pass (api/table/stream names are not checked
+    /// here -- each target's own runner still refuses those with its
+    /// own clear error at drive time, matching the pre-arc behavior);
+    /// service addressing is what Pillar 1 scoped SIM0011 to, and
+    /// widening it is real, disclosed future work, not silently done
+    /// here.
+    ///
+    /// Lives here rather than on `Scenario` itself because `SimPlan`
+    /// depends on `ciac_ir`, which is compiler-only -- `scenario.rs` is
+    /// vendored verbatim into every generated Rust project's own crate
+    /// (see `ciac-backend-rust`'s `VENDORED_SIM_*` constants), so a
+    /// `crate::plan` reference there would fail to compile in a
+    /// generated project that has no `ciac_ir` dependency at all.
+    pub fn validate_scenario(
+        &self,
+        scenario: &crate::scenario::Scenario,
+    ) -> Result<(), ScenarioPlanError> {
+        let known: Vec<String> = self.services.iter().map(|s| s.name.clone()).collect();
+        let check = |referenced: &str| -> Result<(), ScenarioPlanError> {
+            if known.iter().any(|k| k == referenced) {
+                Ok(())
+            } else {
+                Err(ScenarioPlanError::UnknownService {
+                    referenced: referenced.to_owned(),
+                    known: known.clone(),
+                })
+            }
+        };
+        for row in &scenario.given.db {
+            check(&row.service)?;
+        }
+        for step in &scenario.steps {
+            match step {
+                crate::scenario::ScenarioStep::Request(r) => check(&r.service)?,
+                crate::scenario::ScenarioStep::Expect(crate::scenario::ExpectStep::Row {
+                    service,
+                    ..
+                }) => check(service)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
+
+/// 28UpdatePlan.md M1: errors only knowable once a scenario is checked
+/// against a real `SimPlan` (unlike `ScenarioError`, which is
+/// structural/parse-level and needs no plan at all).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScenarioPlanError {
+    UnknownService {
+        referenced: String,
+        known: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for ScenarioPlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScenarioPlanError::UnknownService { referenced, known } => write!(
+                f,
+                "unknown service {referenced:?} (known services: {})",
+                if known.is_empty() {
+                    "none".to_owned()
+                } else {
+                    known.join(", ")
+                }
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ScenarioPlanError {}
 
 fn sim_field_type(ir: &NormalizedIr, ty: &FieldType) -> SimFieldType {
     match ty {
@@ -308,6 +458,25 @@ fn sim_field_type(ir: &NormalizedIr, ty: &FieldType) -> SimFieldType {
             unique: *unique,
         },
     }
+}
+
+/// 28UpdatePlan.md M1: the stable key for a `ServiceCall` edge endpoint
+/// — only ever an api, worker, or job node (a pipeline's own owner, or
+/// its call target; `wire_steps` in `ciac-sema::build` never wires a
+/// `ServiceCall` edge to or from anything else). `None` for any other
+/// `NodeKind` rather than panicking — a future edge source ciac-sema
+/// doesn't emit today is a plan that silently drops the edge, not a
+/// crash in an unrelated backend.
+fn node_key(ir: &NormalizedIr, id: ciac_ir::NodeId) -> Option<String> {
+    let node = ir.node(id);
+    let name = node.component.name()?;
+    let prefix = match node.component.kind() {
+        NodeKind::Api => "api",
+        NodeKind::Worker => "worker",
+        NodeKind::Job => "job",
+        _ => return None,
+    };
+    Some(format!("{prefix}/{name}"))
 }
 
 fn sim_ref_action(action: RefAction) -> SimRefAction {
@@ -403,6 +572,35 @@ table Items: Item;
         assert_eq!(table.columns.len(), 2);
     }
 
+    const CROSS_SERVICE_CALL: &str = r#"
+project X;
+record A { id: Uuid; }
+service Caller {
+    api In: A;
+    pipeline In: call Callee.Out -> Return;
+}
+service Callee {
+    api Out: A;
+    pipeline Out: Return;
+}
+"#;
+
+    #[test]
+    fn derives_apis_and_call_edges_across_services() {
+        let plan = SimPlan::from_ir(&compile(CROSS_SERVICE_CALL), "sha256:fixed");
+        let api_names: Vec<&str> = plan.apis.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(api_names, vec!["In", "Out"]);
+
+        let caller = plan.apis.iter().find(|a| a.name == "In").unwrap();
+        assert_eq!(caller.service_key.as_deref(), Some("service/Caller"));
+        let callee = plan.apis.iter().find(|a| a.name == "Out").unwrap();
+        assert_eq!(callee.service_key.as_deref(), Some("service/Callee"));
+
+        assert_eq!(plan.call_edges.len(), 1);
+        assert_eq!(plan.call_edges[0].caller_key, "api/In");
+        assert_eq!(plan.call_edges[0].callee_key, "api/Out");
+    }
+
     #[test]
     fn a_semantically_different_program_hashes_differently() {
         const CHANGED: &str = r#"
@@ -420,5 +618,70 @@ job Cleanup { schedule: "0 3 * * *"; catch_up: true; }
         let plan1 = SimPlan::from_ir(&compile(SRC), "sha256:fixed");
         let plan2 = SimPlan::from_ir(&compile(CHANGED), "sha256:fixed");
         assert_ne!(plan1.plan_hash(), plan2.plan_hash());
+    }
+
+    fn minimal_plan(service_names: &[&str]) -> SimPlan {
+        SimPlan {
+            plan_version: PLAN_VERSION,
+            source_hash: "sha256:fixed".into(),
+            project_name: "X".into(),
+            multi_service: service_names.len() > 1,
+            services: service_names
+                .iter()
+                .map(|n| SimService {
+                    key: format!("service/{n}"),
+                    name: (*n).to_owned(),
+                })
+                .collect(),
+            tables: vec![],
+            streams: vec![],
+            jobs: vec![],
+            workers: vec![],
+            apis: vec![],
+            call_edges: vec![],
+        }
+    }
+
+    const SCENARIO_REFERENCING_GATEWAY: &str = r#"
+    {
+      "simulation_version": 1,
+      "name": "checks-service-addressing",
+      "start_at": "2030-01-01T00:00:00Z",
+      "given": {
+        "db": [
+          { "service": "Orders", "table": "Orders", "rows": [] }
+        ]
+      },
+      "steps": [
+        {
+          "request": {
+            "service": "Gateway",
+            "api": "CreateOrder",
+            "json": {"total": 10}
+          }
+        }
+      ]
+    }
+    "#;
+
+    #[test]
+    fn validate_scenario_passes_when_every_referenced_service_is_known() {
+        let scenario = crate::scenario::Scenario::parse(SCENARIO_REFERENCING_GATEWAY).unwrap();
+        let plan = minimal_plan(&["Orders", "Gateway"]);
+        assert_eq!(plan.validate_scenario(&scenario), Ok(()));
+    }
+
+    #[test]
+    fn validate_scenario_rejects_an_unknown_service() {
+        let scenario = crate::scenario::Scenario::parse(SCENARIO_REFERENCING_GATEWAY).unwrap();
+        // "Gateway" (referenced by the `request` step) is missing.
+        let plan = minimal_plan(&["Orders"]);
+        assert_eq!(
+            plan.validate_scenario(&scenario),
+            Err(ScenarioPlanError::UnknownService {
+                referenced: "Gateway".to_owned(),
+                known: vec!["Orders".to_owned()],
+            })
+        );
     }
 }

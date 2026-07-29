@@ -1,0 +1,81 @@
+{
+  "simulation_version": 1,
+  "name": "27-m2-atomic-batch",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "failures": [
+      {
+        "at": {"effect": "db.commit", "subject": "orders", "occurrence": 1, "phase": "after"},
+        "action": {"kind": "error"}
+      }
+    ]
+  },
+  "steps": [
+    {
+      "request": {
+        "service": "DomainOrders",
+        "api": "CreateCustomerRoute",
+        "json": {"id": "11111111-1111-4111-8111-111111111111", "name": "Ada", "email": "ada@example.com"},
+        "save_as": "create_customer"
+      }
+    },
+    {"expect": {"response": {"of": "create_customer", "status": 200}}},
+    {
+      "request": {
+        "service": "DomainOrders",
+        "api": "Checkout",
+        "json": {"id": "22222222-2222-4222-8222-222222222222", "customer_id": "11111111-1111-4111-8111-111111111111", "total": 10.0},
+        "save_as": "place_order_failed"
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "orders",
+          "where": {"id": "22222222-2222-4222-8222-222222222222"},
+          "present": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "order_audits",
+          "where": {},
+          "present": false
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "DomainOrders",
+        "api": "Checkout",
+        "json": {"id": "22222222-2222-4222-8222-222222222222", "customer_id": "11111111-1111-4111-8111-111111111111", "total": 10.0},
+        "save_as": "place_order_retry"
+      }
+    },
+    {"expect": {"response": {"of": "place_order_retry", "status": 200}}},
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "orders",
+          "where": {"id": "22222222-2222-4222-8222-222222222222", "total": 10.0},
+          "present": true
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "DomainOrders",
+          "table": "order_audits",
+          "where": {"total": 10.0},
+          "present": true
+        }
+      }
+    }
+  ]
+}

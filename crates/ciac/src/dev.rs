@@ -162,6 +162,13 @@ fn rebuild(
     }
 
     let compose_file = out.join("docker-compose.yml");
+    // v0.29 M2 (transcript 01 finding F5): `docker compose up` can sit
+    // silent for several seconds before Docker itself reports anything
+    // -- image pulls, or (as in a daemon-less sandbox) the connection
+    // attempt timing out -- leaving a reader who just ran the
+    // documented quick start staring at nothing. This line is the only
+    // signal between "regenerated" and whatever Docker reports next.
+    eprintln!("dev: starting the compose stack...");
     let status = std::process::Command::new("docker")
         .arg("compose")
         .arg("-f")

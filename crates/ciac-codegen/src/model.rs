@@ -1219,8 +1219,16 @@ fn build_scoped(
         ontology_instances(ir, NodeKind::ExternalHttp, sid, &container_prefix);
 
     let records: Vec<RecordCtx> = ir.records().map(|(id, _)| build_record(ir, id)).collect();
+    // 28UpdatePlan.md M6a: `Table::service` exists precisely so this can
+    // be scoped the same way `resources` above already is -- found via a
+    // real `cargo check` on a generated multi-service Rust project
+    // (`sim-three-service.ciac`'s `Intake`, which owns no table of its
+    // own) failing with `sqlx::FromRow` unresolved, because every
+    // service's `models.rs` was pulling in every table in the *whole*
+    // system rather than just its own.
     let tables: Vec<TableCtx> = ir
         .tables()
+        .filter(|(_, table)| owned_by(table.service, sid))
         .map(|(_, table)| TableCtx {
             class_name: table.name.clone(),
             snake: table.name.to_snake_case(),

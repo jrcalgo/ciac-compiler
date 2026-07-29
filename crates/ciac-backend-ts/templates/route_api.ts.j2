@@ -31,7 +31,7 @@ export const {{ api.snake }}Route: FastifyPluginAsync<{ state: AppState }> = asy
   void state;
   app.{{ api.method_lower }}("{{ api.route }}", async (request) => {
 {%- if api.has_auth_step %}
-    const claims = await verifyToken(request, state.config);
+    const claims = await verifyToken(request, state);
 {%- if api.scope %}
     requireScope(claims, "{{ api.scope }}");
 {%- else %}

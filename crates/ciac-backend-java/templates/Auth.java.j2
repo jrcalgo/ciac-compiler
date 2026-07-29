@@ -9,10 +9,26 @@
 // (Spring's own resource-server starter) does the actual signature/
 // issuer/audience verification; this class only extracts the bearer
 // token and checks the verified claims' scope.
+//
+// World-guarded (27UpdatePlan.md M8): under simulation, the real
+// `JwtDecoder` is never called at all -- its own `@Lazy` construction
+// never dials the issuer/JWKS endpoint, but `decode(token)` itself
+// would, and a `SimRunner`-synthesized token (`World.authIssue`) is
+// never really signed anyway. `World.authVerify`'s claims-lookup
+// (Python's own FakeAuth: claims-lookup, not real JWT/JWKS crypto)
+// feeds a real Spring Security `Jwt` instance built directly via its
+// own builder, so `requireScope`'s own `getClaimAsString`/
+// `getClaimAsStringList` calls work identically regardless of path.
 package com.ciac.{{ java_package }}.routes;
 
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
+import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
+import java.util.Map;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
@@ -20,12 +36,20 @@ import org.springframework.security.oauth2.jwt.JwtException;
 public final class Auth {
     private Auth() {}
 
-    public static Jwt verifyToken(HttpServletRequest request, JwtDecoder decoder) {
+    public static Jwt verifyToken(HttpServletRequest request, JwtDecoder decoder, World world) {
         String header = request.getHeader("Authorization");
         if (header == null || !header.startsWith("Bearer ")) {
             throw new UnauthorizedException("missing bearer token");
         }
         String token = header.substring("Bearer ".length());
+        if (world != null) {
+            try {
+                Map<String, Object> claims = world.authVerify(token);
+                return Jwt.withTokenValue(token).header("alg", "none").claims(c -> c.putAll(claims)).build();
+            } catch (RuntimeException e) {
+                throw new UnauthorizedException("invalid or expired token");
+            }
+        }
         try {
             return decoder.decode(token);
         } catch (JwtException e) {

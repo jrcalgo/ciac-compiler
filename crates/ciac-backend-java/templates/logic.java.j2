@@ -22,12 +22,21 @@ package com.ciac.{{ java_package }}.logic;
 {%- elif kind == "external_http" -%}ExternalHttp
 {%- endif -%}
 {%- endmacro %}
+{%- set needs_world = handler.needs_db or handler.needs_cache %}
 {%- if handler.needs_db %}
 import com.ciac.{{ java_package }}.schemas.RowMappers;
-import com.ciac.{{ java_package }}.sim.World;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.simple.JdbcClient;
+{%- endif %}
+{%- if needs_world %}
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
+import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
+import org.springframework.beans.factory.ObjectProvider;
+{%- endif %}
+{%- if handler.needs_db or handler.needs_cache %}
+import org.springframework.beans.factory.annotation.Qualifier;
 {%- endif %}
 {%- if handler.needs_tx %}
 import org.springframework.transaction.support.TransactionTemplate;
@@ -36,7 +45,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.ciac.{{ java_package }}.state.Queue;
 {%- endif %}
 {%- if handler.needs_cache %}
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 {%- endif %}
 {%- if handler.extras %}
@@ -55,9 +63,13 @@ import org.springframework.stereotype.Component;
 public class {{ handler.class_name }} {
 {%- if handler.needs_db %}
     private final JdbcClient jdbc;
+{%- endif %}
+{%- if needs_world %}
     // `null` in production; a simulation-run `World` when SimRunner
-    // manually registers one (v0.25 M9) -- see `db_insert_tail`'s own
-    // generated `if (world != null)` branch in `lower.rs`.
+    // manually registers one -- see `db_insert_tail`'s/`cache_get_tail`'s
+    // own generated `if (world != null)` branches in `lower.rs`
+    // (27UpdatePlan.md M8 widened this field from `needs_db`-only to
+    // any handler that also needs a cache instance).
     private final World world;
 {%- endif %}
 {%- if handler.needs_tx %}
@@ -74,14 +86,16 @@ public class {{ handler.class_name }} {
 {%- endfor %}
 
     public {{ handler.class_name }}(
-{%- if handler.needs_db %}@Qualifier("{{ handler.rust_db_field | java_camel }}Jdbc") JdbcClient jdbc, ObjectProvider<World> worldProvider{% endif -%}
-{%- if handler.needs_tx %}{% if handler.needs_db %}, {% endif %}@Qualifier("{{ handler.java_tx_field }}") TransactionTemplate {{ handler.java_tx_field }}{% endif -%}
-{%- if handler.needs_queue %}{% if handler.needs_db or handler.needs_tx %}, {% endif %}Queue queue{% endif -%}
-{%- if handler.needs_cache %}{% if handler.needs_db or handler.needs_tx or handler.needs_queue %}, {% endif %}@Qualifier("{{ handler.rust_cache_field | java_camel }}") StringRedisTemplate {{ handler.rust_cache_field | java_camel }}{% endif -%}
-{%- for extra in handler.extras %}{% if not loop.first or handler.needs_db or handler.needs_tx or handler.needs_queue or handler.needs_cache %}, {% endif %}@Qualifier("{{ extra.rust_state_field | java_camel }}") {{ extra_type(extra.kind) }} {{ extra.rust_state_field | java_camel }}{% endfor -%}
+{%- if handler.needs_db %}@Qualifier("{{ handler.rust_db_field | java_camel }}Jdbc") JdbcClient jdbc, ObjectProvider<World> worldProvider{% elif handler.needs_cache %}ObjectProvider<World> worldProvider{% endif -%}
+{%- if handler.needs_tx %}{% if needs_world %}, {% endif %}@Qualifier("{{ handler.java_tx_field }}") TransactionTemplate {{ handler.java_tx_field }}{% endif -%}
+{%- if handler.needs_queue %}{% if needs_world or handler.needs_tx %}, {% endif %}Queue queue{% endif -%}
+{%- if handler.needs_cache %}{% if needs_world or handler.needs_tx or handler.needs_queue %}, {% endif %}@Qualifier("{{ handler.rust_cache_field | java_camel }}") StringRedisTemplate {{ handler.rust_cache_field | java_camel }}{% endif -%}
+{%- for extra in handler.extras %}{% if not loop.first or needs_world or handler.needs_tx or handler.needs_queue or handler.needs_cache %}, {% endif %}@Qualifier("{{ extra.rust_state_field | java_camel }}") {{ extra_type(extra.kind) }} {{ extra.rust_state_field | java_camel }}{% endfor -%}
     ) {
 {%- if handler.needs_db %}
         this.jdbc = jdbc;
+        this.world = worldProvider.getIfAvailable();
+{%- elif handler.needs_cache %}
         this.world = worldProvider.getIfAvailable();
 {%- endif %}
 {%- if handler.needs_tx %}

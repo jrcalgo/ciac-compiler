@@ -18,7 +18,7 @@
 pub(crate) use ciac_codegen::lower::scan;
 use ciac_codegen::lower::{
     self, fidelity_checked_float, indent_lines, strip_outer_parens, HostSyntax, IndexKey,
-    LoweredPredicate, MatchArm, Orientation, PredValue, Wrap,
+    LoweredPredTerm, LoweredPredicate, MatchArm, Orientation, PredValue, Wrap,
 };
 use ciac_codegen::model as context;
 use ciac_ir::{
@@ -87,6 +87,38 @@ fn record_class_name(ir: &NormalizedIr, record: ciac_ir::RecordId) -> String {
 struct RustSyntax<'a> {
     ir: &'a NormalizedIr,
     db_engine: &'static str,
+    /// 27UpdatePlan.md M4: this handler's own bound instance name for
+    /// each peripheral capability, resolved once at construction (the
+    /// same "handler-level, not per-verb-call" reasoning as
+    /// `db_engine` above) -- `None` when the handler never calls that
+    /// capability's verbs, in which case the corresponding leaf is
+    /// never actually invoked either. Threaded through so the
+    /// world-guard branch can call `SimWorld`'s instance-keyed
+    /// methods (`world.cache_get(instance, key)`, ...) with the same
+    /// instance name production code's own `get_cache(instance)`-
+    /// shaped constructor already resolved.
+    cache_instance: Option<String>,
+    object_store_instance: Option<String>,
+    email_instance: Option<String>,
+    search_instance: Option<String>,
+    http_instance: Option<String>,
+    /// 28UpdatePlan.md M6c: this project's own service name in a
+    /// multi-service system, `None` for single-service -- the same
+    /// distinction Python's codegen-time `SERVICE_FOR_SIM` constant
+    /// makes (`db.py.j2`), threaded here instead through the lowering
+    /// context so every world-guarded db leaf can compose the same
+    /// `"{service}::{table}"` key `SimWorld::namespaced_table_key`
+    /// (vendored into `sim-shared`) uses, rather than writing/reading
+    /// the bare table name two services could otherwise collide on.
+    service_name: Option<String>,
+    /// 27UpdatePlan.md M4: `Some(_)` while lowering a `transaction {}`
+    /// block's world branch (see `HostSyntax::begin_world_batch`) --
+    /// while set, `db_insert_expr`/`db_update_expr`/`db_delete_expr`
+    /// push onto the generated code's own `__batch_ops` `Vec` instead
+    /// of calling a `*_checked` method immediately, so the whole
+    /// transaction commits atomically via one `commit_batch_checked`
+    /// call assembled in `end_world_batch`.
+    batching: std::cell::Cell<bool>,
 }
 
 impl RustSyntax<'_> {
@@ -105,6 +137,22 @@ impl RustSyntax<'_> {
             "&mut *__tx"
         } else {
             "self.db"
+        }
+    }
+
+    /// The key a world-guarded db leaf writes/reads under -- bare
+    /// `table_snake` for a single-service project (unchanged), or
+    /// `"{service}::{table_snake}"` for multi-service, matching
+    /// `SimWorld::namespaced_table_key`'s own separator exactly (that
+    /// function lives in vendored/shared `world.rs`, not reachable from
+    /// this crate, so this inlines the identical format rather than
+    /// depending on `ciac-sim` for one string). Never used for the
+    /// real-SQL branch, which always addresses the actual bare table
+    /// name regardless of service.
+    fn world_table_key(&self, table_snake: &str) -> String {
+        match &self.service_name {
+            Some(service) => format!("{service}::{table_snake}"),
+            None => table_snake.to_owned(),
         }
     }
 
@@ -160,6 +208,62 @@ impl RustSyntax<'_> {
         (sql, binds)
     }
 
+    /// 27UpdatePlan.md M4: the world-guard branch's own predicate
+    /// evaluator for `db.query`/`db.count`/`db.delete_where`'s
+    /// `where` clause -- `SimWorld::db.find_where` only matches
+    /// equality (a `BTreeMap<String, Value>`), narrower than the
+    /// production SQL this mirrors, so every term (not just `Eq`) is
+    /// instead compiled into a generated Rust boolean expression
+    /// evaluated per-row against the JSON document `find_where`
+    /// returns -- `true` (matches everything) for no predicate at
+    /// all. Numeric comparisons go through `f64` uniformly (matching
+    /// JSON's own single numeric representation), a disclosed
+    /// simplification, not a precision guarantee the fake claims.
+    fn world_predicate_expr(&self, predicate: Option<&LoweredPredicate>, row_var: &str) -> String {
+        let Some(predicate) = predicate else {
+            return "true".to_owned();
+        };
+        predicate
+            .terms
+            .iter()
+            .map(|term| self.world_predicate_term_expr(term, row_var))
+            .collect::<Vec<_>>()
+            .join(" && ")
+    }
+    fn world_predicate_term_expr(&self, term: &LoweredPredTerm, row_var: &str) -> String {
+        let field = &term.field;
+        let value_json = match &term.value {
+            PredValue::EnumVariant(v) => format!("serde_json::json!({v:?})"),
+            PredValue::BoolLit(b) => format!("serde_json::json!({b})"),
+            PredValue::Rendered(s) => {
+                if term.field_ty == HirType::Uuid {
+                    format!("serde_json::json!({s}.to_string())")
+                } else {
+                    format!("serde_json::json!({s})")
+                }
+            }
+        };
+        match term.op {
+            PredOp::Eq => format!("{row_var}.get({field:?}) == Some(&{value_json})"),
+            PredOp::NotEq => format!("{row_var}.get({field:?}) != Some(&{value_json})"),
+            PredOp::Contains => format!(
+                "{row_var}.get({field:?}).and_then(|v| v.as_str()).map(|v| v.contains(({value_json}).as_str().unwrap_or(\"\"))).unwrap_or(false)"
+            ),
+            PredOp::Lt | PredOp::LtEq | PredOp::Gt | PredOp::GtEq => {
+                let op_str = match term.op {
+                    PredOp::Lt => "<",
+                    PredOp::LtEq => "<=",
+                    PredOp::Gt => ">",
+                    PredOp::GtEq => ">=",
+                    _ => unreachable!(),
+                };
+                format!(
+                    "{row_var}.get({field:?}).and_then(|v| v.as_f64()).zip(({value_json}).as_f64()).map(|(a, b)| a {op_str} b).unwrap_or(false)"
+                )
+            }
+        }
+    }
+
     /// Renders `value` as a `serde_json::Value`-typed argument for
     /// `search.index`/`external_http.request`'s untyped payload
     /// params — the 3-way (Record/Json/else) branch is a real,
@@ -171,6 +275,26 @@ impl RustSyntax<'_> {
             HirType::Json => value.to_owned(),
             _ => format!("serde_json::json!({{\"value\": {value}}})"),
         }
+    }
+    /// 27UpdatePlan.md M4: the instance name a `cache.*` verb call's
+    /// world-guard branch resolves against -- `.expect()`, not a
+    /// fallback, because sema already refuses a `cache.*` call with no
+    /// bound `cache` capability before codegen ever runs; reaching
+    /// here with `None` would be a compiler bug, not a user error.
+    fn cache_instance(&self) -> &str {
+        self.cache_instance
+            .as_deref()
+            .expect("a handler calling a cache verb has a bound cache instance, per sema")
+    }
+    fn object_store_instance(&self) -> &str {
+        self.object_store_instance
+            .as_deref()
+            .expect("a handler calling an object_store verb has a bound instance, per sema")
+    }
+    fn search_instance(&self) -> &str {
+        self.search_instance
+            .as_deref()
+            .expect("a handler calling a search verb has a bound instance, per sema")
     }
 }
 
@@ -347,8 +471,23 @@ impl HostSyntax for RustSyntax<'_> {
         // resolved" state through every leaf) is what keeps this
         // milestone's diff to "swap the executor", not "restructure
         // every verb's world-guard".
+        //
+        // 27UpdatePlan.md M4: while `self.batching` is set (rendering
+        // a `transaction {}` block's world branch, see
+        // `begin_world_batch`), this pushes onto the generated code's
+        // own `__batch_ops` `Vec` instead of calling
+        // `db_insert_checked` immediately, so the whole transaction
+        // commits atomically via one `commit_batch_checked` call
+        // (`end_world_batch`) rather than each insert applying (and
+        // being unable to roll back) on its own.
+        let world_key = self.world_table_key(&table_snake);
+        if self.batching.get() {
+            return format!(
+                "{{\n    let __row = {value}.clone();\n    __batch_ops.push(crate::world::BatchOp::Insert {{ table: {world_key:?}.into(), row: serde_json::to_value(&__row)? }});\n    __row\n}}"
+            );
+        }
         format!(
-            "{{\n    let __row = {value}.clone();\n    if let Some(world) = self.world {{\n        world.db_insert_checked(\"{table_snake}\", serde_json::to_value(&__row)?)?;\n    }} else {{\n        sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n            .execute({executor})\n            .await?;\n    }}\n    __row\n}}",
+            "{{\n    let __row = {value}.clone();\n    if let Some(world) = self.world {{\n        world.db_insert_checked({world_key:?}, serde_json::to_value(&__row)?)?;\n    }} else {{\n        sqlx::query(\"INSERT INTO {table_snake} ({cols}) VALUES ({phs})\"){binds}\n            .execute({executor})\n            .await?;\n    }}\n    __row\n}}",
             cols = record_ctx.select_cols,
             phs = ciac_codegen::template::sqlph(&record_ctx.insert_placeholders, self.db_engine),
             executor = Self::executor(in_tx),
@@ -371,8 +510,20 @@ impl HostSyntax for RustSyntax<'_> {
             .collect();
         // Same clone-into-`__row` reasoning as `db.insert` above: the
         // source value may still be referenced later in the body.
+        //
+        // 27UpdatePlan.md M4: world-guard added -- `db_update_checked`
+        // does the same full-record replace `SET` production SQL
+        // performs, `None` for a missing row exactly like
+        // `rows_affected() == 0`. Batching mode (see `db_insert_expr`
+        // above) pushes a `BatchOp::Update` instead.
+        let world_key = self.world_table_key(&table_snake);
+        if self.batching.get() {
+            return format!(
+                "{{\n    let __row = {value}.clone();\n    __batch_ops.push(crate::world::BatchOp::Update {{ table: {world_key:?}.into(), pk: {key}.to_string(), row: serde_json::to_value(&__row)? }});\n    Some(__row)\n}}"
+            );
+        }
         format!(
-            "{{\n    let __row = {value}.clone();\n    let __updated = sqlx::query(\"UPDATE {table_snake} SET {assignments} WHERE id = {where_ph}\"){binds}\n        .bind({key}.to_string())\n        .execute({executor})\n        .await?;\n    if __updated.rows_affected() == 0 {{ None }} else {{ Some(__row) }}\n}}",
+            "{{\n    let __row = {value}.clone();\n    if let Some(world) = self.world {{\n        match world.db_update_checked({world_key:?}, &{key}.to_string(), serde_json::to_value(&__row)?)? {{\n            Some(_) => Some(__row),\n            None => None,\n        }}\n    }} else {{\n        let __updated = sqlx::query(\"UPDATE {table_snake} SET {assignments} WHERE id = {where_ph}\"){binds}\n            .bind({key}.to_string())\n            .execute({executor})\n            .await?;\n        if __updated.rows_affected() == 0 {{ None }} else {{ Some(__row) }}\n    }}\n}}",
             assignments = ciac_codegen::template::sqlph(&record_ctx.update_assignments, self.db_engine),
             where_ph = ciac_codegen::template::sqlph(&record_ctx.update_where, self.db_engine),
             executor = Self::executor(in_tx),
@@ -380,8 +531,23 @@ impl HostSyntax for RustSyntax<'_> {
     }
     fn db_delete_expr(&self, table: TableId, key: &str, in_tx: bool) -> String {
         let table_snake = self.ir.table(table).name.to_snake_case();
+        // 27UpdatePlan.md M4: world-guard added -- `db_delete_checked`
+        // resolves cascade/restrict references the same way
+        // production's `ON DELETE` behavior would (enforced at the
+        // schema level, not per-statement). Batching mode pushes a
+        // `BatchOp::Delete`; the actual "was a row deleted" outcome
+        // isn't known until the transaction commits, so this
+        // optimistically returns `true` (matching the common case,
+        // same simplification `commit_batch_checked`'s own caller in
+        // `ciac-sim`'s test suite makes for a same-batch delete).
+        let world_key = self.world_table_key(&table_snake);
+        if self.batching.get() {
+            return format!(
+                "{{\n    __batch_ops.push(crate::world::BatchOp::Delete {{ table: {world_key:?}.into(), pk: {key}.to_string() }});\n    true\n}}"
+            );
+        }
         format!(
-            "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .execute({executor})\n        .await?;\n    __deleted.rows_affected() > 0\n}}",
+            "if let Some(world) = self.world {{\n    world.db_delete_checked({world_key:?}, &{key}.to_string())?\n}} else {{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .execute({executor})\n        .await?;\n    __deleted.rows_affected() > 0\n}}",
             ph = ciac_codegen::template::sqlph("$1", self.db_engine),
             executor = Self::executor(in_tx),
         )
@@ -399,8 +565,10 @@ impl HostSyntax for RustSyntax<'_> {
                     .iter()
                     .map(|b| format!("\n        .bind({b})"))
                     .collect();
+                let world_pred = self.world_predicate_expr(predicate, "__row");
+                let world_key = self.world_table_key(&table_snake);
                 format!(
-                    "{{\n    let __rows: Vec<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_all({executor})\n        .await?;\n    __rows.into_iter().map({record_name}::try_from).collect::<Result<Vec<_>, _>>()?\n}}",
+                    "if let Some(world) = self.world {{\n    world.db.find_where({world_key:?}, &Default::default())\n        .into_iter()\n        .filter(|__row| {world_pred})\n        .map(serde_json::from_value::<{record_name}>)\n        .collect::<Result<Vec<_>, _>>()?\n}} else {{\n    let __rows: Vec<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_all({executor})\n        .await?;\n    __rows.into_iter().map({record_name}::try_from).collect::<Result<Vec<_>, _>>()?\n}}",
                     cols = record_ctx.select_cols,
                 )
             }
@@ -411,8 +579,10 @@ impl HostSyntax for RustSyntax<'_> {
                     .iter()
                     .map(|b| format!("\n        .bind({b})"))
                     .collect();
+                let world_pred = self.world_predicate_expr(predicate, "__row");
+                let world_key = self.world_table_key(&table_snake);
                 format!(
-                    "{{\n    let __count: i64 = sqlx::query_scalar(\"SELECT COUNT(*) FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_one({executor})\n        .await?;\n    __count\n}}"
+                    "if let Some(world) = self.world {{\n    world.db.find_where({world_key:?}, &Default::default())\n        .into_iter()\n        .filter(|__row| {world_pred})\n        .count() as i64\n}} else {{\n    let __count: i64 = sqlx::query_scalar(\"SELECT COUNT(*) FROM {table_snake}{where_sql}\"){bind_lines}\n        .fetch_one({executor})\n        .await?;\n    __count\n}}"
                 )
             }
             Verb::DbDeleteWhere(table) => {
@@ -422,8 +592,23 @@ impl HostSyntax for RustSyntax<'_> {
                     .iter()
                     .map(|b| format!("\n        .bind({b})"))
                     .collect();
+                let world_pred = self.world_predicate_expr(predicate, "__row");
+                let world_key = self.world_table_key(&table_snake);
+                // 27UpdatePlan.md M4: `SimWorld` has no bulk
+                // delete-by-predicate method (`commit_batch_checked`
+                // takes explicit `(table, pk)` pairs, not a filter),
+                // so the world branch resolves matching ids first,
+                // then deletes each through `db_delete_checked` (real
+                // cascade/restrict handling, real failure-injection)
+                // -- a disclosed divergence from production's single
+                // bulk `DELETE`: a failure rule keyed on this table's
+                // `db.commit` can fire more than once for one
+                // `delete_where` call under simulation, where
+                // production's single statement would only ever fail
+                // (or succeed) once. No checked-in example combines
+                // `delete_where` with failure injection today.
                 format!(
-                    "{{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake}{where_sql}\"){bind_lines}\n        .execute({executor})\n        .await?;\n    __deleted.rows_affected() as i64\n}}"
+                    "if let Some(world) = self.world {{\n    let __matching: Vec<String> = world.db.find_where({world_key:?}, &Default::default())\n        .into_iter()\n        .filter(|__row| {world_pred})\n        .filter_map(|__row| __row.get(\"id\").and_then(|v| v.as_str()).map(str::to_owned))\n        .collect();\n    let mut __n = 0i64;\n    for __pk in &__matching {{\n        if world.db_delete_checked({world_key:?}, __pk)? {{\n            __n += 1;\n        }}\n    }}\n    __n\n}} else {{\n    let __deleted = sqlx::query(\"DELETE FROM {table_snake}{where_sql}\"){bind_lines}\n        .execute({executor})\n        .await?;\n    __deleted.rows_affected() as i64\n}}"
                 )
             }
             _ => unreachable!("HirExpr::Query only ever carries a db query verb"),
@@ -462,10 +647,34 @@ impl HostSyntax for RustSyntax<'_> {
     // `HostSyntax::transaction_expr`'s doc for why the body is
     // rendered twice.
     fn transaction_expr(&self, world_branch: &str, real_branch: &str) -> String {
+        // 27UpdatePlan.md M4: `world` is now bound (`if let Some(world)`,
+        // not just `.is_some()`) so `end_world_batch`'s appended
+        // `world.commit_batch_checked(..)` call (already folded into
+        // `world_branch` by the time this runs) has something to call
+        // on.
         format!(
-            "if self.world.is_some() {{\n{}\n}} else {{\n    let mut __tx = self.db.begin().await?;\n{}\n    __tx.commit().await?;\n}}",
+            "if let Some(world) = self.world {{\n{}\n}} else {{\n    let mut __tx = self.db.begin().await?;\n{}\n    __tx.commit().await?;\n}}",
             indent_lines(world_branch, "    "),
             indent_lines(real_branch, "    "),
+        )
+    }
+    fn begin_world_batch(&self) {
+        self.batching.set(true);
+    }
+    /// 27UpdatePlan.md M4: wraps the just-rendered world branch (whose
+    /// own `db.insert`/`update`/`delete` calls pushed onto
+    /// `__batch_ops` instead of writing immediately, per
+    /// `begin_world_batch`) with the accumulator's declaration and one
+    /// final atomic `world.commit_batch_checked(..)` call -- the
+    /// transaction's real atomicity under simulation, retiring the
+    /// "degraded per-verb shape" every prior milestone's own
+    /// disclosure named. `world` here resolves to the binding
+    /// `transaction_expr`'s `if let Some(world) = self.world` wrapper
+    /// introduces around this whole block.
+    fn end_world_batch(&self, world_branch: &str) -> String {
+        self.batching.set(false);
+        format!(
+            "let mut __batch_ops: Vec<crate::world::BatchOp> = Vec::new();\n{world_branch}\nworld.commit_batch_checked(__batch_ops)?;"
         )
     }
 
@@ -497,59 +706,97 @@ impl HostSyntax for RustSyntax<'_> {
         let record_name = record_class_name(self.ir, self.ir.table(table).record);
         let table_snake = self.ir.table(table).name.to_snake_case();
         let record_ctx = context::build_record(self.ir, self.ir.table(table).record);
+        let world_key = self.world_table_key(&table_snake);
         format!(
-            "{{\n    let row: Option<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .fetch_optional(self.db)\n        .await?;\n    row.map({record_name}::try_from).transpose()?\n}}",
+            "if let Some(world) = self.world {{\n    world.db.get({world_key:?}, &{key}.to_string()).map(serde_json::from_value::<{record_name}>).transpose()?\n}} else {{\n    let row: Option<{model}> = sqlx::query_as(\"SELECT {cols} FROM {table_snake} WHERE id = {ph}\")\n        .bind({key}.to_string())\n        .fetch_optional(self.db)\n        .await?;\n    row.map({record_name}::try_from).transpose()?\n}}",
             cols = record_ctx.select_cols,
             ph = ciac_codegen::template::sqlph("$1", self.db_engine),
         )
     }
     fn cache_get(&self, key: &str) -> String {
+        let instance = self.cache_instance();
         format!(
-            "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let raw: Option<String> = conn.get(&{key}).await?;\n    match raw {{\n        Some(s) => Some(serde_json::from_str(&s)?),\n        None => None,\n    }}\n}}"
+            "if let Some(world) = self.world {{\n    match world.cache_get({instance:?}, &{key}) {{\n        Some(s) => Some(serde_json::from_str(&s)?),\n        None => None,\n    }}\n}} else {{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let raw: Option<String> = conn.get(&{key}).await?;\n    match raw {{\n        Some(s) => Some(serde_json::from_str(&s)?),\n        None => None,\n    }}\n}}"
         )
     }
     fn cache_set(&self, key: &str, value: &str, _value_ty: &HirType) -> String {
+        let instance = self.cache_instance();
         format!(
-            "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.set(&{key}, serde_json::to_string(&{value})?).await?;\n}}"
+            "if let Some(world) = self.world {{\n    world.cache_set({instance:?}, &{key}, serde_json::to_string(&{value})?, None);\n}} else {{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.set(&{key}, serde_json::to_string(&{value})?).await?;\n}}"
         )
     }
     fn cache_delete(&self, key: &str) -> String {
+        let instance = self.cache_instance();
         format!(
-            "{{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.del(&{key}).await?;\n}}"
+            "if let Some(world) = self.world {{\n    world.cache_delete({instance:?}, &{key});\n}} else {{\n    let mut conn = self.cache.get_multiplexed_async_connection().await?;\n    let _: () = conn.del(&{key}).await?;\n}}"
         )
     }
     fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
-        let payload = if matches!(value_ty, HirType::Record(_)) {
-            format!("&serde_json::to_vec(&{value})?")
+        let instance = self.object_store_instance();
+        let (real_payload, world_payload) = if matches!(value_ty, HirType::Record(_)) {
+            (
+                format!("&serde_json::to_vec(&{value})?"),
+                format!("serde_json::to_vec(&{value})?"),
+            )
         } else {
-            format!("{value}.to_string().as_bytes()")
+            (
+                format!("{value}.to_string().as_bytes()"),
+                format!("{value}.to_string().into_bytes()"),
+            )
         };
-        format!("self.object_store.put(&{key}, {payload}).await?")
+        format!(
+            "if let Some(world) = self.world {{\n    world.object_put({instance:?}, &{key}, {world_payload});\n}} else {{\n    self.object_store.put(&{key}, {real_payload}).await?\n}}"
+        )
     }
     fn object_store_get(&self, key: &str) -> String {
-        format!("serde_json::from_slice(&self.object_store.get(&{key}).await?)?")
+        let instance = self.object_store_instance();
+        format!(
+            "if let Some(world) = self.world {{\n    serde_json::from_slice(&world.object_get({instance:?}, &{key})?)?\n}} else {{\n    serde_json::from_slice(&self.object_store.get(&{key}).await?)?\n}}"
+        )
     }
     fn object_store_delete(&self, key: &str) -> String {
-        format!("self.object_store.delete(&{key}).await?")
+        let instance = self.object_store_instance();
+        format!(
+            "if let Some(world) = self.world {{\n    world.object_delete({instance:?}, &{key});\n}} else {{\n    self.object_store.delete(&{key}).await?\n}}"
+        )
     }
     fn object_store_list(&self, prefix: &str) -> String {
-        format!("self.object_store.list(&{prefix}).await?")
+        let instance = self.object_store_instance();
+        format!(
+            "if let Some(world) = self.world {{\n    world.object_list({instance:?}, &{prefix})\n}} else {{\n    self.object_store.list(&{prefix}).await?\n}}"
+        )
     }
     fn email_send(&self, to: &str, subject: &str, body: &str) -> String {
-        format!("self.email.send(&{to}, &{subject}, &{body}).await?")
+        let instance = self
+            .email_instance
+            .as_deref()
+            .expect("a handler calling an email verb has a bound instance, per sema");
+        format!(
+            "if let Some(world) = self.world {{\n    world.email_send({instance:?}, &{to}, &{subject}, &{body});\n}} else {{\n    self.email.send(&{to}, &{subject}, &{body}).await?\n}}"
+        )
     }
     fn search_index(&self, doc_id: &str, document: &str, document_ty: &HirType) -> String {
+        let instance = self.search_instance();
         let document = self.json_value(document, document_ty);
-        format!("self.search.index({SEARCH_INDEX_NAME:?}, &{doc_id}, &{document}).await?")
+        format!(
+            "if let Some(world) = self.world {{\n    world.search_index({instance:?}, &{doc_id}, {document});\n}} else {{\n    self.search.index({SEARCH_INDEX_NAME:?}, &{doc_id}, &{document}).await?\n}}"
+        )
     }
     fn search_query(&self, query: &str) -> String {
+        let instance = self.search_instance();
         format!(
-            "self.search.search({SEARCH_INDEX_NAME:?}, &serde_json::json!({{\"query\": {{\"query_string\": {{\"query\": {query}}}}}}})).await?"
+            "if let Some(world) = self.world {{\n    world.search_query({instance:?}, &({query}).to_string())\n}} else {{\n    self.search.search({SEARCH_INDEX_NAME:?}, &serde_json::json!({{\"query\": {{\"query_string\": {{\"query\": {query}}}}}}})).await?\n}}"
         )
     }
     fn http_call(&self, url: &str, json_body: &str, body_ty: &HirType) -> String {
+        let instance = self
+            .http_instance
+            .as_deref()
+            .expect("a handler calling an external_http verb has a bound instance, per sema");
         let json_val = self.json_value(json_body, body_ty);
-        format!("self.http.post(&{url}).json(&{json_val}).send().await?.json::<serde_json::Value>().await?")
+        format!(
+            "if let Some(world) = self.world {{\n    world.http_post({instance:?}, &{url}, {json_val})?\n}} else {{\n    self.http.post(&{url}).json(&{json_val}).send().await?.json::<serde_json::Value>().await?\n}}"
+        )
     }
 }
 
@@ -585,7 +832,12 @@ pub struct LogicFileCtx {
 
 /// Builds the render context for one typed handler node. `name` is the
 /// handler's declared name (`node.component.name()`).
-pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx {
+pub fn render(
+    ir: &NormalizedIr,
+    name: &str,
+    hir: &HandlerBody,
+    service_name: Option<&str>,
+) -> LogicFileCtx {
     let needs = scan(ir, hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
@@ -616,9 +868,25 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         .collect();
 
     let db_engine = db_engine_of(ir, hir);
+    let instance_of = |kind: &str| {
+        bindings
+            .iter()
+            .find(|b| b.kind == kind)
+            .map(|b| b.name.clone())
+    };
     let body = match &hir.body {
         Some(_) => {
-            let syntax = RustSyntax { ir, db_engine };
+            let syntax = RustSyntax {
+                ir,
+                db_engine,
+                cache_instance: instance_of("cache"),
+                object_store_instance: instance_of("object_store"),
+                email_instance: instance_of("email"),
+                search_instance: instance_of("search"),
+                http_instance: instance_of("external_http"),
+                batching: std::cell::Cell::new(false),
+                service_name: service_name.map(str::to_owned),
+            };
             lower::lower_body_expr(&syntax, ir, hir)
         }
         None => "Err(anyhow::anyhow!(\"not implemented\"))".to_owned(),

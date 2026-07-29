@@ -8,10 +8,33 @@
     does (a `handler`/`call` step's output has no static relationship
     to its input beyond "whatever the target declares").
 
-    `call`/`match` steps render plausible code (mirroring every other
-    target's own M3-era templates, which did the same before their
-    own `call` infrastructure existed) but are unreachable by any
-    25UpdatePlan.md M3 example -- inert until M6/M7 exercise it.
+    `call` steps render plausible code (mirroring every other target's
+    own M3-era templates, which did the same before their own `call`
+    infrastructure existed).
+
+    `match` was originally written the same speculative way, casting
+    `result` to `java.util.Map<?, ?>` and reading the matched field
+    out of it as a generic JSON value -- plausible for a step whose
+    predecessor might be untyped, but never actually exercised by any
+    25UpdatePlan.md M3 example, and the same speculative shape Go's
+    own M7d live proof against `multi-service-media.ciac` caught as a
+    real bug: a worker's payload is always deserialized straight into
+    its known typed record (`Worker.java.j2`'s own `MAPPER.readValue(raw,
+    <PayloadClass>.class)`), so `result` is never a `Map` in the first
+    place by the time `match`
+    runs whenever `payload_type` is known -- it stays that same
+    concrete record type an untyped `handler` step passes straight
+    through unchanged (the common case: the seed stub's default `return
+    payload;`). Fixed proactively, before any Java example ever hit
+    the `ClassCastException`, to cast to `payload_type` and call the
+    matched field's own accessor method instead -- the same typed-
+    field-access shape Go's own fix (`result.(payload_type).<Field>`)
+    and Rust's own `match result.status { ... }` already use. The old
+    `Map`-cast branch stays as the fallback for the one context that
+    still has no known payload type -- `Job.java.j2` passes
+    `payload_type = ""` unconditionally, since a scheduled job has no
+    incoming record to type a `match` against -- still inert, no
+    example reaches it.
 
     `handler` steps call a constructor-injected Spring bean field
     (`{{ step.handler.class_name | java_camel }}`) rather than
@@ -32,7 +55,11 @@
 {%- elif step.kind == "call" %}
 {{ indent }}result = {{ step.call.class_name | java_camel }}.{{ step.call.method | java_camel }}(result);
 {%- elif step.kind == "match" %}
+{%- if payload_type %}
+{{ indent }}switch (String.valueOf((({{ payload_type }}) result).{{ step.field | java_camel }}())) {
+{%- else %}
 {{ indent }}switch (String.valueOf(((java.util.Map<?, ?>) result).get("{{ step.field }}"))) {
+{%- endif %}
 {%- for arm in step.arms %}
 {%- if arm.label %}
 {{ indent }}    case "{{ arm.label }}" -> {

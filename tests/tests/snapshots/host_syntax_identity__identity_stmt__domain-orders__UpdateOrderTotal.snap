@@ -1,0 +1,7 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(db-update! Orders (field-access order id) order)
+(discard order)
+(return order)

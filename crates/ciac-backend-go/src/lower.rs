@@ -47,10 +47,9 @@
 //! orders.ciac`/`query-verbs.ciac` (db-only) are this milestone's
 //! actual proving examples, exactly as they were for TS.
 
-pub(crate) use ciac_codegen::lower::scan;
 use ciac_codegen::lower::{
     self, apply_dest, fidelity_checked_float, strip_outer_parens, Dest, HostSyntax, IndexKey,
-    LoweredPredicate, Orientation, PredValue,
+    LoweredPredTerm, LoweredPredicate, Orientation, PredValue,
 };
 use ciac_codegen::model::{self as context, FieldCtx, RecordCtx};
 use ciac_codegen::template::sqlph;
@@ -231,6 +230,19 @@ struct GoSyntax<'a> {
     email_field: Option<String>,
     search_field: Option<String>,
     http_field: Option<String>,
+    /// 27UpdatePlan.md M7: the *declared* capability instance name
+    /// (e.g. `"Sessions"` from `cache Sessions`), distinct from the
+    /// `*_field` names above (the Go `AppState` field, e.g.
+    /// `CacheSessions`) -- `World`'s own cache/object-store/email/
+    /// search/http maps are keyed by this declared name, matching
+    /// `given.cache`/`given.store`/etc.'s own `instance` field in
+    /// scenario JSON, mirroring Rust's/TypeScript's own
+    /// `cache_instance`/... accessors exactly.
+    cache_instance: Option<String>,
+    object_store_instance: Option<String>,
+    email_instance: Option<String>,
+    search_instance: Option<String>,
+    http_instance: Option<String>,
     zero_return: String,
     /// A handler body can call more than one fallible verb within the
     /// same block scope (e.g. two `db.insert`s inside one
@@ -244,6 +256,13 @@ struct GoSyntax<'a> {
     /// `(name, HirType)` pairs `collect_branching_lets` found — see
     /// its own doc and `assign`'s.
     branching_locals: std::collections::HashMap<String, HirType>,
+    /// 28UpdatePlan.md M7c: this handler's own service name in a
+    /// multi-service system (`None` for a single-service program) —
+    /// mirrors `ciac-backend-rust`'s `RustSyntax::service_name`/
+    /// `ciac-backend-ts`'s `TsSyntax.service_name` exactly. Feeds
+    /// [`Self::world_table_key`], the same namespacing composition
+    /// those two backends' own lowering already applies.
+    service_name: Option<String>,
 }
 
 impl GoSyntax<'_> {
@@ -251,6 +270,21 @@ impl GoSyntax<'_> {
         let n = self.tmp.get();
         self.tmp.set(n + 1);
         format!("{base}{n}")
+    }
+
+    /// Composes the namespaced key every world-guard db-verb branch
+    /// addresses through — `"{service}::{table}"`, degenerating to the
+    /// bare `table_snake` when `service_name` is `None` (single-service
+    /// mode; the real-SQL branch beside each of these call sites keeps
+    /// using the bare `table_snake` unconditionally regardless, since
+    /// the physical table itself is never namespaced). Mirrors
+    /// `RustSyntax::world_table_key`/`TsSyntax::world_table_key`
+    /// exactly.
+    fn world_table_key(&self, table_snake: &str) -> String {
+        match &self.service_name {
+            Some(service) => format!("{service}::{table_snake}"),
+            None => table_snake.to_owned(),
+        }
     }
 
     /// The `*sql.DB`-or-`*sql.Tx` handle a db verb reaches through:
@@ -288,6 +322,102 @@ impl GoSyntax<'_> {
                 .clone()
                 .expect("an object_store verb requires a bound object_store instance"),
         )
+    }
+
+    /// 27UpdatePlan.md M7: the declared instance name a `cache.*` verb
+    /// call's world-guard branch resolves against -- `.expect()`, not
+    /// a fallback, because sema already refuses a `cache.*` call with
+    /// no bound `cache` capability before codegen ever runs.
+    fn cache_instance(&self) -> String {
+        self.cache_instance
+            .clone()
+            .expect("a cache verb requires a bound cache instance")
+    }
+    fn object_store_instance(&self) -> String {
+        self.object_store_instance
+            .clone()
+            .expect("an object_store verb requires a bound object_store instance")
+    }
+    fn email_instance(&self) -> String {
+        self.email_instance
+            .clone()
+            .expect("an email verb requires a bound email instance")
+    }
+    fn search_instance(&self) -> String {
+        self.search_instance
+            .clone()
+            .expect("a search verb requires a bound search instance")
+    }
+    fn http_instance(&self) -> String {
+        self.http_instance
+            .clone()
+            .expect("an external_http verb requires a bound external_http instance")
+    }
+
+    /// 27UpdatePlan.md M7: `db.query`/`count`/`delete_where`'s `where`
+    /// clause compiled into a Go boolean expression evaluated per-row
+    /// against `world.Row` (a `map[string]any` JSON-decoded document)
+    /// -- `World`'s own `queryWhere`'s only filter is a caller-supplied
+    /// predicate closure, so every term (not just `Eq`) needs to be
+    /// compiled here, the same reason Rust's/TypeScript's own
+    /// `world_predicate_expr` exists. `"true"` (matches everything)
+    /// for no predicate at all.
+    fn world_predicate_expr(&self, predicate: Option<&LoweredPredicate>) -> String {
+        let Some(predicate) = predicate else {
+            return "true".to_owned();
+        };
+        if predicate.terms.is_empty() {
+            return "true".to_owned();
+        }
+        predicate
+            .terms
+            .iter()
+            .map(|term| self.world_predicate_term_expr(term))
+            .collect::<Vec<_>>()
+            .join(" && ")
+    }
+
+    fn world_pred_value_expr(&self, term: &LoweredPredTerm) -> String {
+        match &term.value {
+            PredValue::EnumVariant(v) => format!("{v:?}"),
+            PredValue::BoolLit(b) => b.to_string(),
+            PredValue::Rendered(s) => s.clone(),
+        }
+    }
+
+    /// `world.JSONEq`/`world.Contains`/`world.Lt`/... take `any`, so
+    /// `Eq`/`NotEq` need no per-type conversion at all (JSON-marshal
+    /// comparison already treats an `int64` production value and the
+    /// `float64` a JSON-decoded row carries as equal); `Lt`/`LtEq`/
+    /// `Gt`/`GtEq` do, since Go's `map[string]any` values decode to
+    /// exactly the two ordered types `world.compare` accepts
+    /// (`float64` for every numeric field, `string` for
+    /// Str/Uuid/Timestamp -- an RFC3339 timestamp orders correctly as
+    /// a plain string, the same trick Rust's own `f64`-uniform
+    /// simplification takes for numerics).
+    fn world_predicate_term_expr(&self, term: &LoweredPredTerm) -> String {
+        let field = &term.field;
+        let value = self.world_pred_value_expr(term);
+        match term.op {
+            PredOp::Eq => format!("world.JSONEq(row[{field:?}], {value})"),
+            PredOp::NotEq => format!("!world.JSONEq(row[{field:?}], {value})"),
+            PredOp::Contains => format!("world.Contains(row[{field:?}], {value})"),
+            PredOp::Lt | PredOp::LtEq | PredOp::Gt | PredOp::GtEq => {
+                let conv = match term.field_ty {
+                    HirType::Int => format!("float64({value})"),
+                    HirType::Timestamp => format!("({value}).Format(time.RFC3339Nano)"),
+                    _ => value,
+                };
+                let func = match term.op {
+                    PredOp::Lt => "world.Lt",
+                    PredOp::LtEq => "world.LtEq",
+                    PredOp::Gt => "world.Gt",
+                    PredOp::GtEq => "world.GtEq",
+                    _ => unreachable!("guarded by the outer match"),
+                };
+                format!("{func}(row[{field:?}], {conv})")
+            }
+        }
     }
 
     /// A field's write-side bind expression: `{base}.{PascalField}`.
@@ -610,9 +740,10 @@ impl HostSyntax for GoSyntax<'_> {
         // way -- `st` (the outer AppState) stays in scope through a
         // transaction block the same way `self.handle(in_tx)`'s own
         // `st.{}.BeginTx` call site already relies on.
+        let world_key = self.world_table_key(&table_snake);
         out.push(format!("{indent}if st.World != nil {{"));
         out.push(format!(
-            "{indent}\tif {err} := st.World.DBInsertChecked({table_snake:?}, {row}); {err} != nil {{"
+            "{indent}\tif {err} := st.World.DBInsertChecked({world_key:?}, {row}); {err} != nil {{"
         ));
         out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
         out.push(format!("{indent}\t}}"));
@@ -675,8 +806,16 @@ impl HostSyntax for GoSyntax<'_> {
             ),
             self.db_engine,
         );
+        // 27UpdatePlan.md M7: a `st.World != nil` early-return branch
+        // inside the same closure, ahead of the real
+        // `ExecContext`/`RowsAffected` path — `World.DBUpdateChecked`
+        // is batch-aware internally (queues instead of applying when
+        // `transaction_stmt`'s own `BeginWorldBatch` is active), so no
+        // `in_tx`-specific branching is needed here at all, mirroring
+        // TypeScript's own `dbUpdateChecked` design exactly.
+        let world_key = self.world_table_key(&table_snake);
         let closure = format!(
-            "func() (*{record_name}, error) {{ __row := {value}; __result, __err := {handle}.ExecContext(ctx, {sql:?}, {}); if __err != nil {{ return nil, __err }}; __n, __err2 := __result.RowsAffected(); if __err2 != nil {{ return nil, __err2 }}; if __n == 0 {{ return nil, nil }}; return &__row, nil }}()",
+            "func() (*{record_name}, error) {{ __row := {value}; if st.World != nil {{ var __wout {record_name}; __ok, __werr := st.World.DBUpdateChecked({world_key:?}, {key}, __row, &__wout); if __werr != nil {{ return nil, __werr }}; if !__ok {{ return nil, nil }}; return &__wout, nil }}; __result, __err := {handle}.ExecContext(ctx, {sql:?}, {}); if __err != nil {{ return nil, __err }}; __n, __err2 := __result.RowsAffected(); if __err2 != nil {{ return nil, __err2 }}; if __n == 0 {{ return nil, nil }}; return &__row, nil }}()",
             binds.join(", ")
         );
         self.fallible_tail(&closure, dest, indent)
@@ -689,27 +828,52 @@ impl HostSyntax for GoSyntax<'_> {
         indent: &str,
         in_tx: bool,
     ) -> Vec<String> {
-        let result = self.fresh("__result");
-        let err = self.fresh("__err");
         let table_snake = self.ir.table(table).name.to_snake_case();
         let handle = self.handle(in_tx);
         let sql = sqlph(
             &format!("DELETE FROM {table_snake} WHERE id = $1"),
             self.db_engine,
         );
-        let mut out = vec![format!(
-            "{indent}{result}, {err} := {handle}.ExecContext(ctx, {sql:?}, {key})"
-        )];
-        out.push(format!("{indent}if {err} != nil {{"));
-        out.push(format!("{indent}\treturn {}, {err}", self.zero_return));
-        out.push(format!("{indent}}}"));
+        // 27UpdatePlan.md M7: `{out_var}` is declared once, above the
+        // world/production split, and only ever *assigned* inside
+        // each branch -- Go's `if {} else {}` opens a real block
+        // scope (unlike Rust's `if let`/Python's `if/else`, which
+        // share the enclosing scope), so a `:=`-declared name inside
+        // one branch would be invisible after the block closes,
+        // mirroring TypeScript's own M6 fix for the identical bug
+        // class (found live there via `tsc`; applied here from the
+        // start rather than re-discovering it).
+        let world_key = self.world_table_key(&table_snake);
+        let out_var = self.fresh("__out");
+        let mut out = vec![format!("{indent}var {out_var} bool")];
+        out.push(format!("{indent}if st.World != nil {{"));
+        let v = self.fresh("__v");
+        let werr = self.fresh("__err");
+        out.push(format!(
+            "{indent}\t{v}, {werr} := st.World.DBDeleteChecked({world_key:?}, {key})"
+        ));
+        out.push(format!("{indent}\tif {werr} != nil {{"));
+        out.push(format!("{indent}\t\treturn {}, {werr}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
+        out.push(format!("{indent}\t{out_var} = {v}"));
+        out.push(format!("{indent}}} else {{"));
+        let result = self.fresh("__result");
+        let err = self.fresh("__err");
+        out.push(format!(
+            "{indent}\t{result}, {err} := {handle}.ExecContext(ctx, {sql:?}, {key})"
+        ));
+        out.push(format!("{indent}\tif {err} != nil {{"));
+        out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
         let n = self.fresh("__n");
         let nerr = self.fresh("__err");
-        out.push(format!("{indent}{n}, {nerr} := {result}.RowsAffected()"));
-        out.push(format!("{indent}if {nerr} != nil {{"));
-        out.push(format!("{indent}\treturn {}, {nerr}", self.zero_return));
+        out.push(format!("{indent}\t{n}, {nerr} := {result}.RowsAffected()"));
+        out.push(format!("{indent}\tif {nerr} != nil {{"));
+        out.push(format!("{indent}\t\treturn {}, {nerr}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
+        out.push(format!("{indent}\t{out_var} = {n} > 0"));
         out.push(format!("{indent}}}"));
-        apply_dest(self, dest, &format!("{n} > 0"), indent, &mut out);
+        apply_dest(self, dest, &out_var, indent, &mut out);
         out
     }
     fn query_tail(
@@ -722,8 +886,6 @@ impl HostSyntax for GoSyntax<'_> {
     ) -> Vec<String> {
         match verb {
             Verb::DbQuery(table) => {
-                let rows = self.fresh("__rows");
-                let err = self.fresh("__err");
                 let table_snake = self.ir.table(table).name.to_snake_case();
                 let record = context::build_record(self.ir, self.ir.table(table).record);
                 let record_name = record_class_name(self.ir, self.ir.table(table).record);
@@ -736,44 +898,74 @@ impl HostSyntax for GoSyntax<'_> {
                     ),
                     self.db_engine,
                 );
-                let mut out = vec![format!(
-                    "{indent}{rows}, {err} := {handle}.QueryContext(ctx, {sql:?}, {})",
-                    binds.join(", ")
-                )];
-                out.push(format!("{indent}if {err} != nil {{"));
-                out.push(format!("{indent}\treturn {}, {err}", self.zero_return));
-                out.push(format!("{indent}}}"));
-                out.push(format!("{indent}defer {rows}.Close()"));
+                let world_pred = self.world_predicate_expr(predicate);
+                let world_key = self.world_table_key(&table_snake);
+                // 27UpdatePlan.md M7: `{out_var}` hoisted above the
+                // world/production split (see `db_delete_tail`'s own
+                // doc on why), but via `:=` with a literal empty-slice
+                // initializer, never a bare `var` -- a bare `var
+                // {out_var} []T` defaults to `nil`, which
+                // `typed_handler_equivalence.rs`'s own pre-existing
+                // `go_db_query_result_initializes_as_a_non_nil_empty_
+                // slice` test exists specifically to forbid (a nil
+                // slice marshals to JSON `null` instead of `[]`).
+                // `World.DBQuery`'s own `json.Unmarshal` into
+                // `&{out_var}` overwrites this initial value
+                // unconditionally, so pre-seeding it here is free, not
+                // wasted work.
                 let out_var = self.fresh("__out");
-                out.push(format!("{indent}{out_var} := []{record_name}{{}}"));
-                out.push(format!("{indent}for {rows}.Next() {{"));
+                let mut out = vec![format!("{indent}{out_var} := []{record_name}{{}}")];
+                out.push(format!("{indent}if st.World != nil {{"));
+                let pred_var = self.fresh("__pred");
+                out.push(format!(
+                    "{indent}\t{pred_var} := func(row world.Row) bool {{ return {world_pred} }}"
+                ));
+                let werr = self.fresh("__err");
+                out.push(format!(
+                    "{indent}\tif {werr} := st.World.DBQuery({world_key:?}, {pred_var}, &{out_var}); {werr} != nil {{"
+                ));
+                out.push(format!("{indent}\t\treturn {}, {werr}", self.zero_return));
+                out.push(format!("{indent}\t}}"));
+                out.push(format!("{indent}}} else {{"));
+                let rows = self.fresh("__rows");
+                let err = self.fresh("__err");
+                out.push(format!(
+                    "{indent}\t{rows}, {err} := {handle}.QueryContext(ctx, {sql:?}, {})",
+                    binds.join(", ")
+                ));
+                out.push(format!("{indent}\tif {err} != nil {{"));
+                out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
+                out.push(format!("{indent}\t}}"));
+                out.push(format!("{indent}\tdefer {rows}.Close()"));
+                out.push(format!("{indent}\tfor {rows}.Next() {{"));
                 let elem = self.fresh("__elem");
-                out.push(format!("{indent}\tvar {elem} {record_name}"));
+                out.push(format!("{indent}\t\tvar {elem} {record_name}"));
                 let scan_err = self.fresh("__err");
                 out.push(format!(
-                    "{indent}\tif {scan_err} := {rows}.Scan({}); {scan_err} != nil {{",
+                    "{indent}\t\tif {scan_err} := {rows}.Scan({}); {scan_err} != nil {{",
                     self.scan_targets(&record, &elem)
                 ));
                 out.push(format!(
-                    "{indent}\t\treturn {}, {scan_err}",
+                    "{indent}\t\t\treturn {}, {scan_err}",
+                    self.zero_return
+                ));
+                out.push(format!("{indent}\t\t}}"));
+                out.push(format!("{indent}\t\t{out_var} = append({out_var}, {elem})"));
+                out.push(format!("{indent}\t}}"));
+                let rows_err = self.fresh("__err");
+                out.push(format!(
+                    "{indent}\tif {rows_err} := {rows}.Err(); {rows_err} != nil {{"
+                ));
+                out.push(format!(
+                    "{indent}\t\treturn {}, {rows_err}",
                     self.zero_return
                 ));
                 out.push(format!("{indent}\t}}"));
-                out.push(format!("{indent}\t{out_var} = append({out_var}, {elem})"));
-                out.push(format!("{indent}}}"));
-                let rows_err = self.fresh("__err");
-                out.push(format!(
-                    "{indent}if {rows_err} := {rows}.Err(); {rows_err} != nil {{"
-                ));
-                out.push(format!("{indent}\treturn {}, {rows_err}", self.zero_return));
                 out.push(format!("{indent}}}"));
                 apply_dest(self, dest, &out_var, indent, &mut out);
                 out
             }
             Verb::DbCount(table) => {
-                let row = self.fresh("__row");
-                let err = self.fresh("__err");
-                let count = self.fresh("__count");
                 let table_snake = self.ir.table(table).name.to_snake_case();
                 let handle = self.handle(in_tx);
                 let (where_sql, binds) = self.where_clause(predicate);
@@ -781,22 +973,35 @@ impl HostSyntax for GoSyntax<'_> {
                     &format!("SELECT COUNT(*) FROM {table_snake}{where_sql}"),
                     self.db_engine,
                 );
-                let mut out = vec![format!(
-                    "{indent}{row} := {handle}.QueryRowContext(ctx, {sql:?}, {})",
-                    binds.join(", ")
-                )];
-                out.push(format!("{indent}var {count} int64"));
+                let world_pred = self.world_predicate_expr(predicate);
+                let world_key = self.world_table_key(&table_snake);
+                let count = self.fresh("__count");
+                let mut out = vec![format!("{indent}var {count} int64")];
+                out.push(format!("{indent}if st.World != nil {{"));
+                let pred_var = self.fresh("__pred");
                 out.push(format!(
-                    "{indent}if {err} := {row}.Scan(&{count}); {err} != nil {{"
+                    "{indent}\t{pred_var} := func(row world.Row) bool {{ return {world_pred} }}"
                 ));
-                out.push(format!("{indent}\treturn {}, {err}", self.zero_return));
+                out.push(format!(
+                    "{indent}\t{count} = st.World.DBCount({world_key:?}, {pred_var})"
+                ));
+                out.push(format!("{indent}}} else {{"));
+                let row = self.fresh("__row");
+                let err = self.fresh("__err");
+                out.push(format!(
+                    "{indent}\t{row} := {handle}.QueryRowContext(ctx, {sql:?}, {})",
+                    binds.join(", ")
+                ));
+                out.push(format!(
+                    "{indent}\tif {err} := {row}.Scan(&{count}); {err} != nil {{"
+                ));
+                out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
+                out.push(format!("{indent}\t}}"));
                 out.push(format!("{indent}}}"));
                 apply_dest(self, dest, &count, indent, &mut out);
                 out
             }
             Verb::DbDeleteWhere(table) => {
-                let result = self.fresh("__result");
-                let err = self.fresh("__err");
                 let table_snake = self.ir.table(table).name.to_snake_case();
                 let handle = self.handle(in_tx);
                 let (where_sql, binds) = self.where_clause(predicate);
@@ -804,18 +1009,61 @@ impl HostSyntax for GoSyntax<'_> {
                     &format!("DELETE FROM {table_snake}{where_sql}"),
                     self.db_engine,
                 );
-                let mut out = vec![format!(
-                    "{indent}{result}, {err} := {handle}.ExecContext(ctx, {sql:?}, {})",
-                    binds.join(", ")
-                )];
-                out.push(format!("{indent}if {err} != nil {{"));
-                out.push(format!("{indent}\treturn {}, {err}", self.zero_return));
-                out.push(format!("{indent}}}"));
+                let world_pred = self.world_predicate_expr(predicate);
+                let world_key = self.world_table_key(&table_snake);
+                // `World` has no bulk delete-by-predicate method
+                // (`CommitBatchChecked` takes explicit `(table, pk)`
+                // pairs, not a filter), so the world branch resolves
+                // matching ids first, then deletes each through
+                // `DBDeleteChecked` (real cascade/restrict handling,
+                // real failure-injection) -- a disclosed divergence
+                // from production's single bulk `DELETE`, mirroring
+                // Rust's/TypeScript's own `query_tail` world branch
+                // exactly.
                 let n = self.fresh("__n");
+                let mut out = vec![format!("{indent}var {n} int64")];
+                out.push(format!("{indent}if st.World != nil {{"));
+                let pred_var = self.fresh("__pred");
+                out.push(format!(
+                    "{indent}\t{pred_var} := func(row world.Row) bool {{ return {world_pred} }}"
+                ));
+                let ids = self.fresh("__ids");
+                out.push(format!(
+                    "{indent}\t{ids} := st.World.DBMatchingIDs({world_key:?}, {pred_var})"
+                ));
+                let id = self.fresh("__id");
+                out.push(format!("{indent}\tfor _, {id} := range {ids} {{"));
+                let ok = self.fresh("__ok");
+                let werr = self.fresh("__err");
+                out.push(format!(
+                    "{indent}\t\t{ok}, {werr} := st.World.DBDeleteChecked({world_key:?}, {id})"
+                ));
+                out.push(format!("{indent}\t\tif {werr} != nil {{"));
+                out.push(format!("{indent}\t\t\treturn {}, {werr}", self.zero_return));
+                out.push(format!("{indent}\t\t}}"));
+                out.push(format!("{indent}\t\tif {ok} {{"));
+                out.push(format!("{indent}\t\t\t{n}++"));
+                out.push(format!("{indent}\t\t}}"));
+                out.push(format!("{indent}\t}}"));
+                out.push(format!("{indent}}} else {{"));
+                let result = self.fresh("__result");
+                let err = self.fresh("__err");
+                out.push(format!(
+                    "{indent}\t{result}, {err} := {handle}.ExecContext(ctx, {sql:?}, {})",
+                    binds.join(", ")
+                ));
+                out.push(format!("{indent}\tif {err} != nil {{"));
+                out.push(format!("{indent}\t\treturn {}, {err}", self.zero_return));
+                out.push(format!("{indent}\t}}"));
                 let nerr = self.fresh("__err");
-                out.push(format!("{indent}{n}, {nerr} := {result}.RowsAffected()"));
-                out.push(format!("{indent}if {nerr} != nil {{"));
-                out.push(format!("{indent}\treturn {}, {nerr}", self.zero_return));
+                let nval = self.fresh("__nval");
+                out.push(format!(
+                    "{indent}\t{nval}, {nerr} := {result}.RowsAffected()"
+                ));
+                out.push(format!("{indent}\tif {nerr} != nil {{"));
+                out.push(format!("{indent}\t\treturn {}, {nerr}", self.zero_return));
+                out.push(format!("{indent}\t}}"));
+                out.push(format!("{indent}\t{n} = {nval}"));
                 out.push(format!("{indent}}}"));
                 apply_dest(self, dest, &n, indent, &mut out);
                 out
@@ -859,20 +1107,26 @@ impl HostSyntax for GoSyntax<'_> {
     /// — this is the ordinary Go transaction pattern, not a hand-
     /// rolled rollback-on-panic scheme.
     ///
-    /// v0.24 M9's world guard: under simulation (`st.World` set) the
-    /// real `BeginTx`/`Commit`/`Rollback` calls are skipped entirely —
-    /// there is no live database to check a connection out from, and
-    /// every db verb this checkpoint's sim gate allows inside a
-    /// transaction (`db.insert` only; anything else is on
-    /// `unsupported_sim_capabilities`'s unguarded list and already
-    /// refuses `ciac sim` before this code path is reached) already
-    /// redirects to `World` itself in `inner_lines`. Mirrors TS's own
-    /// `if (!this.state.world)` guard around `__connect`/`BEGIN`/
-    /// `COMMIT`/`ROLLBACK` exactly. `{TX_HANDLE}` is still declared
+    /// 27UpdatePlan.md M7's world guard: under simulation (`st.World`
+    /// set), `World`'s own ambient batch mode (`BeginWorldBatch`/
+    /// `CommitWorldBatch`/`RollbackWorldBatch`) stands in for the real
+    /// `BeginTx`/`Commit`/`Rollback` sequence — every world-guarded db
+    /// verb inside `inner_lines` (`db.insert`/`update`/`delete`, now
+    /// all of them, not just `db.insert` as the v0.24 M9 narrow world
+    /// allowed) queues into `World`'s own pending batch instead of
+    /// applying immediately once `BeginWorldBatch` is active, so the
+    /// same real, atomic all-or-nothing guarantee production's `*sql.
+    /// Tx` gives applies under simulation too. `defer
+    /// st.World.RollbackWorldBatch()` unconditionally after
+    /// `BeginWorldBatch`, mirroring the real-`*sql.Tx` branch's own
+    /// `defer .. Rollback()` idiom exactly: `RollbackWorldBatch` after
+    /// a successful `CommitWorldBatch` is a safe no-op (the pending
+    /// batch is already `nil`), the identical "defer rollback, commit
+    /// clears it" pattern `database/sql`'s own `sql.ErrTxDone` gives
+    /// the production path for free. `{TX_HANDLE}` is still declared
     /// unconditionally (typed `nil`, never dereferenced under
-    /// simulation since `db_insert_tail`'s own world-guard skips the
-    /// branch that would use it) — Go requires the identifier to exist
-    /// even on a path that never runs.
+    /// simulation) — Go requires the identifier to exist even on a
+    /// path that never runs.
     fn transaction_stmt(&self, inner_lines: Vec<String>, indent: &str) -> Vec<String> {
         let field = self
             .db_field
@@ -892,12 +1146,23 @@ impl HostSyntax for GoSyntax<'_> {
         out.push(format!(
             "{indent}\tdefer func() {{ _ = {TX_HANDLE}.Rollback() }}()"
         ));
+        out.push(format!("{indent}}} else {{"));
+        out.push(format!("{indent}\tst.World.BeginWorldBatch()"));
+        out.push(format!(
+            "{indent}\tdefer func() {{ st.World.RollbackWorldBatch() }}()"
+        ));
         out.push(format!("{indent}}}"));
         out.extend(inner_lines);
         let cerr = self.fresh("__err");
         out.push(format!("{indent}if st.World == nil {{"));
         out.push(format!(
             "{indent}\tif {cerr} := {TX_HANDLE}.Commit(); {cerr} != nil {{"
+        ));
+        out.push(format!("{indent}\t\treturn {}, {cerr}", self.zero_return));
+        out.push(format!("{indent}\t}}"));
+        out.push(format!("{indent}}} else {{"));
+        out.push(format!(
+            "{indent}\tif {cerr} := st.World.CommitWorldBatch(); {cerr} != nil {{"
         ));
         out.push(format!("{indent}\t\treturn {}, {cerr}", self.zero_return));
         out.push(format!("{indent}\t}}"));
@@ -939,6 +1204,12 @@ impl HostSyntax for GoSyntax<'_> {
         // that method and the module doc); kept correct in case a
         // future `HostSyntax` consumer calls it directly the way
         // `db_get_tail`'s own default implementation would.
+        //
+        // 27UpdatePlan.md M7: an early-return world guard inside the
+        // same closure, ahead of the real `QueryRowContext` path —
+        // this preserves every other engine's own async/sync wrapper
+        // shape unchanged (the same pattern Rust's own `db_get`
+        // reached at M4).
         let table_snake = self.ir.table(table).name.to_snake_case();
         let record = context::build_record(self.ir, self.ir.table(table).record);
         let record_name = record_class_name(self.ir, self.ir.table(table).record);
@@ -957,8 +1228,9 @@ impl HostSyntax for GoSyntax<'_> {
             ),
             self.db_engine,
         );
+        let world_key = self.world_table_key(&table_snake);
         format!(
-            "func() (*{record_name}, error) {{ var __row {record_name}; if err := {handle}.QueryRowContext(ctx, {sql:?}, {key}).Scan({}); err != nil {{ if err == sql.ErrNoRows {{ return nil, nil }}; return nil, err }}; return &__row, nil }}()",
+            "func() (*{record_name}, error) {{ if st.World != nil {{ var __wrow {record_name}; __ok, __werr := st.World.DBGet({world_key:?}, {key}, &__wrow); if __werr != nil {{ return nil, __werr }}; if !__ok {{ return nil, nil }}; return &__wrow, nil }}; var __row {record_name}; if err := {handle}.QueryRowContext(ctx, {sql:?}, {key}).Scan({}); err != nil {{ if err == sql.ErrNoRows {{ return nil, nil }}; return nil, err }}; return &__row, nil }}()",
             self.scan_targets(&record, "__row")
         )
     }
@@ -972,17 +1244,24 @@ impl HostSyntax for GoSyntax<'_> {
     }
     fn cache_get(&self, key: &str) -> String {
         let cache = self.cache_handle();
+        let instance = self.cache_instance();
         format!(
-            "func() (any, error) {{ __cv, err := {cache}.Get(ctx, {key}).Result(); if err == redis.Nil {{ return nil, nil }}; if err != nil {{ return nil, err }}; var __out any; if err := json.Unmarshal([]byte(__cv), &__out); err != nil {{ return nil, err }}; return __out, nil }}()"
+            "func() (any, error) {{ if st.World != nil {{ __wv, __wok := st.World.CacheGet({instance:?}, {key}); if !__wok {{ return nil, nil }}; var __wout any; if err := json.Unmarshal([]byte(__wv), &__wout); err != nil {{ return nil, err }}; return __wout, nil }}; __cv, err := {cache}.Get(ctx, {key}).Result(); if err == redis.Nil {{ return nil, nil }}; if err != nil {{ return nil, err }}; var __out any; if err := json.Unmarshal([]byte(__cv), &__out); err != nil {{ return nil, err }}; return __out, nil }}()"
         )
     }
     fn cache_get_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
         self.fallible_tail(&self.cache_get(key), dest, indent)
     }
+    /// `cache.set` carries no TTL argument at the CIaC language level
+    /// today (production always passes `0`, "never expire", to
+    /// go-redis's own `Set`) — the world branch matches that by
+    /// always passing a `nil` TTL to `World.CacheSet`, not a gap this
+    /// milestone introduces.
     fn cache_set(&self, key: &str, value: &str, _value_ty: &HirType) -> String {
         let cache = self.cache_handle();
+        let instance = self.cache_instance();
         format!(
-            "func() (any, error) {{ __b, err := json.Marshal({value}); if err != nil {{ return nil, err }}; return {cache}.Set(ctx, {key}, __b, 0).Err(), nil }}()"
+            "func() (any, error) {{ __b, err := json.Marshal({value}); if err != nil {{ return nil, err }}; if st.World != nil {{ st.World.CacheSet({instance:?}, {key}, string(__b), nil); return nil, nil }}; return {cache}.Set(ctx, {key}, __b, 0).Err(), nil }}()"
         )
     }
     fn cache_set_tail(
@@ -997,17 +1276,22 @@ impl HostSyntax for GoSyntax<'_> {
     }
     fn cache_delete(&self, key: &str) -> String {
         let cache = self.cache_handle();
-        format!("func() (any, error) {{ return nil, {cache}.Del(ctx, {key}).Err() }}()")
+        let instance = self.cache_instance();
+        format!(
+            "func() (any, error) {{ if st.World != nil {{ st.World.CacheDelete({instance:?}, {key}); return nil, nil }}; return nil, {cache}.Del(ctx, {key}).Err() }}()"
+        )
     }
     fn cache_delete_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
         self.fallible_tail(&self.cache_delete(key), dest, indent)
     }
-    // --- object store / email / search / http (unexercised this
-    // milestone -- see the module doc): each leaf reaches the
-    // handler's bound instance through `st.<state_field>`, resolved
-    // once in `render()` exactly like `db_field`/`cache_field`.
+    // --- object store / email / search / http: each leaf reaches the
+    // handler's bound instance through `st.<state_field>` in
+    // production (resolved once in `render()` exactly like
+    // `db_field`/`cache_field`), or `World`'s own per-instance map,
+    // keyed by the declared instance name, under simulation.
     fn object_store_put(&self, key: &str, value: &str, value_ty: &HirType) -> String {
         let field = self.object_store_state_field();
+        let instance = self.object_store_instance();
         // Reuses `json_body` (the same Record/Json/scalar 3-way
         // `search.index`/`http.call` already use) rather than its own
         // bespoke match: an earlier version of this match built a
@@ -1020,7 +1304,9 @@ impl HostSyntax for GoSyntax<'_> {
         // a single `any` payload and marshals it itself, so every
         // branch here is single-valued.
         let payload = self.json_body(value, value_ty);
-        format!("st.{field}.Put(ctx, {key}, {payload})")
+        format!(
+            "func() (struct{{}}, error) {{ if st.World != nil {{ __wb, __werr := json.Marshal({payload}); if __werr != nil {{ return struct{{}}{{}}, __werr }}; st.World.ObjectPut({instance:?}, {key}, __wb); return struct{{}}{{}}, nil }}; return st.{field}.Put(ctx, {key}, {payload}) }}()"
+        )
     }
     fn object_store_put_tail(
         &self,
@@ -1034,8 +1320,9 @@ impl HostSyntax for GoSyntax<'_> {
     }
     fn object_store_get(&self, key: &str) -> String {
         let field = self.object_store_state_field();
+        let instance = self.object_store_instance();
         format!(
-            "func() (any, error) {{ __b, err := st.{field}.Get(ctx, {key}); if err != nil {{ return nil, err }}; var __out any; if err := json.Unmarshal(__b, &__out); err != nil {{ return nil, err }}; return __out, nil }}()"
+            "func() (any, error) {{ var __b []byte; var __err error; if st.World != nil {{ __b, __err = st.World.ObjectGet({instance:?}, {key}) }} else {{ __b, __err = st.{field}.Get(ctx, {key}) }}; if __err != nil {{ return nil, __err }}; var __out any; if err := json.Unmarshal(__b, &__out); err != nil {{ return nil, err }}; return __out, nil }}()"
         )
     }
     fn object_store_get_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
@@ -1043,14 +1330,20 @@ impl HostSyntax for GoSyntax<'_> {
     }
     fn object_store_delete(&self, key: &str) -> String {
         let field = self.object_store_state_field();
-        format!("st.{field}.Delete(ctx, {key})")
+        let instance = self.object_store_instance();
+        format!(
+            "func() (struct{{}}, error) {{ if st.World != nil {{ st.World.ObjectDelete({instance:?}, {key}); return struct{{}}{{}}, nil }}; return st.{field}.Delete(ctx, {key}) }}()"
+        )
     }
     fn object_store_delete_tail(&self, key: &str, dest: &Dest, indent: &str) -> Vec<String> {
         self.fallible_tail(&self.object_store_delete(key), dest, indent)
     }
     fn object_store_list(&self, prefix: &str) -> String {
         let field = self.object_store_state_field();
-        format!("st.{field}.List(ctx, {prefix})")
+        let instance = self.object_store_instance();
+        format!(
+            "func() ([]string, error) {{ if st.World != nil {{ return st.World.ObjectList({instance:?}, {prefix}), nil }}; return st.{field}.List(ctx, {prefix}) }}()"
+        )
     }
     fn object_store_list_tail(&self, prefix: &str, dest: &Dest, indent: &str) -> Vec<String> {
         self.fallible_tail(&self.object_store_list(prefix), dest, indent)
@@ -1061,7 +1354,10 @@ impl HostSyntax for GoSyntax<'_> {
                 .clone()
                 .expect("an email verb requires a bound email instance"),
         );
-        format!("st.{field}.Send(ctx, {to}, {subject}, {body})")
+        let instance = self.email_instance();
+        format!(
+            "func() (struct{{}}, error) {{ if st.World != nil {{ st.World.EmailSend({instance:?}, {to}, {subject}, {body}); return struct{{}}{{}}, nil }}; return st.{field}.Send(ctx, {to}, {subject}, {body}) }}()"
+        )
     }
     fn email_send_tail(
         &self,
@@ -1079,8 +1375,11 @@ impl HostSyntax for GoSyntax<'_> {
                 .clone()
                 .expect("a search verb requires a bound search instance"),
         );
+        let instance = self.search_instance();
         let document = self.json_body(document, document_ty);
-        format!("st.{field}.Index(ctx, {SEARCH_INDEX_NAME:?}, {doc_id}, {document})")
+        format!(
+            "func() (struct{{}}, error) {{ if st.World != nil {{ st.World.SearchIndex({instance:?}, {doc_id}, {document}); return struct{{}}{{}}, nil }}; return st.{field}.Index(ctx, {SEARCH_INDEX_NAME:?}, {doc_id}, {document}) }}()"
+        )
     }
     fn search_index_tail(
         &self,
@@ -1102,7 +1401,10 @@ impl HostSyntax for GoSyntax<'_> {
                 .clone()
                 .expect("a search verb requires a bound search instance"),
         );
-        format!("st.{field}.Search(ctx, {SEARCH_INDEX_NAME:?}, {query})")
+        let instance = self.search_instance();
+        format!(
+            "func() ([]json.RawMessage, error) {{ if st.World != nil {{ __hits := st.World.SearchQuery({instance:?}, {query}); __out := make([]json.RawMessage, 0, len(__hits)); for _, __h := range __hits {{ __b, __err := json.Marshal(__h); if __err != nil {{ return nil, __err }}; __out = append(__out, __b) }}; return __out, nil }}; return st.{field}.Search(ctx, {SEARCH_INDEX_NAME:?}, {query}) }}()"
+        )
     }
     fn search_query_tail(&self, query: &str, dest: &Dest, indent: &str) -> Vec<String> {
         self.fallible_tail(&self.search_query(query), dest, indent)
@@ -1113,8 +1415,11 @@ impl HostSyntax for GoSyntax<'_> {
                 .clone()
                 .expect("an external_http verb requires a bound external_http instance"),
         );
+        let instance = self.http_instance();
         let json_val = self.json_body(json_body, body_ty);
-        format!("st.{field}.Post(ctx, {url}, {json_val})")
+        format!(
+            "func() (json.RawMessage, error) {{ if st.World != nil {{ __wv, __werr := st.World.HTTPPost({instance:?}, {url}, {json_val}); if __werr != nil {{ return nil, __werr }}; return json.Marshal(__wv) }}; return st.{field}.Post(ctx, {url}, {json_val}) }}()"
+        )
     }
     fn http_call_tail(
         &self,
@@ -1208,11 +1513,26 @@ pub struct LogicFileCtx {
     /// M6/M7 — see the module doc), kept structurally correct the same
     /// way `needs_fmt` is.
     pub needs_redis: bool,
+    /// 27UpdatePlan.md M7: `internal/world` — the world-guarded
+    /// `db.query`/`count`/`delete_where` branches spell `world.Row`/
+    /// `world.JSONEq`/... directly in their own predicate closure. No
+    /// dedicated `Needs` flag exists for this (predicate compilation
+    /// isn't scanned), so this is a textual fallback the same way
+    /// `needs_fmt`/`needs_redis` already are.
+    pub needs_world: bool,
 }
 
 /// Builds the render context for one typed handler node. `name` is the
-/// handler's declared name (`node.component.name()`).
-pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx {
+/// handler's declared name (`node.component.name()`). `service_name` is
+/// `Some(..)` in a multi-service system (mirrors `ciac-backend-rust`'s/
+/// `ciac-backend-ts`'s own `render` signature exactly), threaded into
+/// [`GoSyntax::world_table_key`].
+pub fn render(
+    ir: &NormalizedIr,
+    name: &str,
+    hir: &HandlerBody,
+    service_name: Option<&str>,
+) -> LogicFileCtx {
     let needs = lower::scan(ir, hir);
     let bindings = context::hir_bindings(ir, hir);
     let access = context::access_of(&bindings);
@@ -1227,6 +1547,21 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
     let email_field = extra_field("email");
     let search_field = extra_field("search");
     let http_field = extra_field("external_http");
+    // 27UpdatePlan.md M7: the *declared* instance name (distinct from
+    // the `*_field` values above, the Go `AppState` field) — `World`'s
+    // own per-instance maps are keyed by this, mirroring TypeScript's
+    // own `instance_of` closure exactly.
+    let instance_of = |kind: &str| {
+        bindings
+            .iter()
+            .find(|b| b.kind == kind)
+            .map(|b| b.name.clone())
+    };
+    let cache_instance = instance_of("cache");
+    let object_store_instance = instance_of("object_store");
+    let email_instance = instance_of("email");
+    let search_instance = instance_of("search");
+    let http_instance = instance_of("external_http");
 
     let params = hir
         .params
@@ -1251,9 +1586,15 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
                 email_field: email_field.clone(),
                 search_field: search_field.clone(),
                 http_field: http_field.clone(),
+                cache_instance: cache_instance.clone(),
+                object_store_instance: object_store_instance.clone(),
+                email_instance: email_instance.clone(),
+                search_instance: search_instance.clone(),
+                http_instance: http_instance.clone(),
                 zero_return: go_zero(ir, &hir.return_ty),
                 tmp: std::cell::Cell::new(0),
                 branching_locals: branching.iter().cloned().collect(),
+                service_name: service_name.map(str::to_owned),
             };
             lower::lower_body_stmt(&syntax, ir, hir, "\t")
         }
@@ -1316,6 +1657,7 @@ pub fn render(ir: &NormalizedIr, name: &str, hir: &HandlerBody) -> LogicFileCtx 
         needs_sql_pkg: needs.db_get || body_text.contains("*sql.Tx"),
         needs_fmt: body_text.contains("fmt."),
         needs_redis: body_text.contains("redis."),
+        needs_world: body_text.contains("world."),
         body,
     }
 }

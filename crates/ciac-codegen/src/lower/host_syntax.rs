@@ -238,6 +238,26 @@ pub trait HostSyntax {
         let _ = (world_branch, real_branch);
         unimplemented!("transaction_expr is Expression-oriented only")
     }
+    /// 27UpdatePlan.md M4: called immediately before the dispatcher
+    /// lowers `world_branch` (`in_tx=false`) for a `transaction {}`
+    /// block's body -- a hook, not a parameter, because `in_tx=false`
+    /// is otherwise indistinguishable from a bare top-level db verb
+    /// call outside any transaction, and a host that wants its
+    /// world-branch db verbs to accumulate into one atomic batch
+    /// (rather than each calling its own `*_checked` method
+    /// immediately, the "degraded per-verb shape" this milestone
+    /// closes) needs to know it's specifically inside a transaction's
+    /// world branch. Default no-op: every host that doesn't override
+    /// this keeps today's behavior byte-for-byte.
+    fn begin_world_batch(&self) {}
+    /// The counterpart to [`HostSyntax::begin_world_batch`], called
+    /// with the freshly-rendered `world_branch` string immediately
+    /// after it's produced, to append (or otherwise fold in) whatever
+    /// batch-commit code the host accumulated while rendering it.
+    /// Default: pass `world_branch` through unchanged.
+    fn end_world_batch(&self, world_branch: &str) -> String {
+        world_branch.to_owned()
+    }
 
     // --- Statement-oriented block leaves (Python today) ---
     fn if_tail(

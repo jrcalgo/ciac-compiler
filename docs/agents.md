@@ -1,5 +1,8 @@
 # The agent front door
 
+*Reader: an agent (or the human wiring one up) working against this
+CLI instead of a human.*
+
 Everything a human does with the `ciac` CLI, an agent can do too — but
 parsing human-formatted stdout is brittle, and speaking LSP just to
 look up what a keyword means is a lot of protocol for a lookup. v0.13

@@ -9,12 +9,20 @@ pub mod observability;
 {%- if c.has_queue %}
 pub mod queue;
 {%- endif %}
-{%- if c.has_db or c.has_queue %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
+{%- if multi %}
+pub use sim_shared::{clock, failure, scenario, world};
+{%- if c.jobs %}
+pub use sim_shared::cron;
+{%- endif %}
+{%- else %}
+pub mod clock;
 pub mod failure;
 pub mod scenario;
 pub mod world;
 {%- if c.jobs %}
 pub mod cron;
+{%- endif %}
 {%- endif %}
 {%- endif %}
 pub mod routes;

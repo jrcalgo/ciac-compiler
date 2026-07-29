@@ -1,5 +1,10 @@
 # The CIaC Language (v1.0.0)
 
+*Reader: anyone wanting the full language reference — every
+declaration kind, every provider, per-target support. The
+[guide series](guide/01-first-service.md) teaches the same language
+narratively; this page is what you come back to for the exact rule.*
+
 A CIaC program describes one deployable service — or, with `project` +
 `service { .. }` blocks, a system of services — as a set of
 declarations. Declaration order is free; the compiler resolves
@@ -26,7 +31,7 @@ live, machine-derived source of truth for current per-target support
 Two version numbers appear everywhere `ciac` reports itself
 (`ciac --version`, `ciac describe`, `ciac targets --json`, the
 generated manifest stamp): the **compiler** version
-(`CARGO_PKG_VERSION`, e.g. `0.24.0`) and the **language** version
+(`CARGO_PKG_VERSION`, e.g. `0.28.0`) and the **language** version
 (this document's own title, e.g. `1.0.0`). They move independently
 and on purpose — a compiler release can ship faster codegen, a new
 backend, or a bug fix without the language surface changing at all,

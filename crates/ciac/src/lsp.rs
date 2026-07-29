@@ -2,34 +2,43 @@
 //! stdio — editors configure `ciac lsp` as the server command for
 //! `.ciac` files.
 //!
-//! Scope for the first cut, per 12UpdatePlan.md:
+//! Scope for the first cut, per 12UpdatePlan.md (widened since, most
+//! recently by `29UpdatePlan.md` M8 -- see below):
 //!
-//! * **diagnostics** on didOpen/didSave — the same front end the CLI
-//!   runs (`ciac_syntax::load` + `ciac_sema::analyze`, so imports
-//!   resolve exactly as `ciac check` would from the file's real
-//!   path), spans resolved through the same `line_col` pipeline the
-//!   `--json` output uses (converted to LSP's 0-based positions).
-//!   didChange only marks the buffer dirty; revalidation happens on
-//!   save, because import resolution reads from disk — resolving
-//!   unsaved buffers needs a VFS layer that is deliberately out of
-//!   v0.12's scope.
+//! * **diagnostics** on didOpen/didSave (`revalidate`, always reads
+//!   the entry file from disk) and, since M8, on a debounced didChange
+//!   too (`revalidate_overlay`, `DIDCHANGE_DEBOUNCE` after the last
+//!   keystroke) — the same front end the CLI runs (`ciac_syntax::load`
+//!   / `load_with_overlay` + `ciac_sema::analyze`), spans resolved
+//!   through the same `line_col` pipeline the `--json` output uses
+//!   (converted to LSP's 0-based positions). `load_with_overlay`
+//!   substitutes the *open document's own* dirty buffer for its entry-
+//!   file read only; anything it `import`s still resolves from disk,
+//!   since only the document actually open in the client has unsaved
+//!   content to substitute — still no general VFS layer, which stays
+//!   deliberately out of scope.
 //! * **hover** — the shared vocabulary in [`crate::vocab`] (keywords,
 //!   capabilities, and providers, with their per-target support
 //!   notes — the same table `ciac describe` renders from), plus the
 //!   record/stream/api/handler/... declarations harvested from the
 //!   file's last good parse.
-//! * **completion** — the same shared vocabulary plus the harvested
-//!   declaration names.
+//! * **completion** — the same shared vocabulary (snippet bodies for
+//!   declaration keywords since M7, `InsertTextFormat::Snippet`) plus
+//!   the harvested declaration names.
 //! * **rename** (v0.18 M7, Pillar 8) — `textDocument/prepareRename` and
 //!   `textDocument/rename` over the same whole-program resolver
 //!   `ciac rename` uses ([`ciac_syntax::rename_index`]). Like
-//!   diagnostics, this reads the document's on-disk content (no VFS
-//!   overlay, same disclosed gap as above) and treats the requesting
-//!   document's own path as the resolution entry point — consistent
-//!   with how `revalidate` already parses each open document
-//!   independently rather than tracking a separate workspace root.
+//!   diagnostics, this reads the document's on-disk content and treats
+//!   the requesting document's own path as the resolution entry point
+//!   — consistent with how `revalidate` already parses each open
+//!   document independently rather than tracking a separate workspace
+//!   root.
+//! * **definition** (M8) — a thin projection of the same
+//!   `rename_index`: identifier at the cursor resolves to its
+//!   declaration site, same-file or across an `import`.
 //!
-//! References and incremental parsing are explicitly deferred.
+//! References, incremental (non-FULL) sync, and a real VFS overlay for
+//! imported files are still explicitly deferred.
 
 use crate::json_out::{JsonEdit, JsonFix};
 use crate::vocab;
@@ -42,11 +51,12 @@ use lsp_types::{
     CodeActionProviderCapability, CodeActionResponse, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, Hover, HoverContents, HoverProviderCapability, MarkupContent,
-    MarkupKind, NumberOrString, OneOf, Position, PrepareRenameResponse, PublishDiagnosticsParams,
-    Range, RenameOptions, RenameParams, ServerCapabilities, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, TextEdit, Url, WorkDoneProgressOptions, WorkspaceEdit,
+    DidSaveTextDocumentParams, Documentation, GotoDefinitionResponse, Hover, HoverContents,
+    HoverProviderCapability, InsertTextFormat, Location, MarkupContent, MarkupKind, NumberOrString,
+    OneOf, Position, PrepareRenameResponse, PublishDiagnosticsParams, Range, RenameOptions,
+    RenameParams, ServerCapabilities, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Url,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,8 +65,9 @@ use std::process::ExitCode;
 /// Everything the server remembers about one open document.
 struct DocState {
     /// Latest buffer content (kept current by FULL didChange sync) —
-    /// used only for hover/completion word extraction, never for
-    /// validation, which always reads from disk.
+    /// feeds hover/completion word extraction immediately, and (since
+    /// M8) the debounced `revalidate_overlay` reparse once
+    /// `DIDCHANGE_DEBOUNCE` has passed with no further edits.
     text: String,
     /// Declarations harvested from the last parse that produced a
     /// program (parse errors keep the previous harvest).
@@ -88,6 +99,7 @@ pub fn run() -> Result<ExitCode> {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
+        definition_provider: Some(OneOf::Left(true)),
         ..Default::default()
     })?;
     connection.initialize(capabilities)?;
@@ -99,9 +111,42 @@ pub fn run() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// v0.27 M8: how long a document sits dirty before its debounced
+/// `didChange` reparse fires — long enough that a fast typist doesn't
+/// trigger a reparse per keystroke, short enough to still read as
+/// "live" rather than "waits for save" (the v0.12-era gap this
+/// milestone closes).
+const DIDCHANGE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+/// How often the main loop wakes with no message pending, purely to
+/// check whether any debounced reparse has come due. Shorter than
+/// [`DIDCHANGE_DEBOUNCE`] so the fire time is never late by more than
+/// this much.
+const DEBOUNCE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 fn main_loop(connection: &Connection) -> Result<()> {
     let mut docs: HashMap<Url, DocState> = HashMap::new();
-    for msg in &connection.receiver {
+    // Doc -> the instant its debounced didChange reparse should fire.
+    // Reset on every further keystroke; cleared the moment a real
+    // save/open reparse (from disk) makes it moot.
+    let mut pending_reparse: HashMap<Url, std::time::Instant> = HashMap::new();
+    loop {
+        let msg = match connection.receiver.recv_timeout(DEBOUNCE_POLL) {
+            Ok(msg) => msg,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                let now = std::time::Instant::now();
+                let due: Vec<Url> = pending_reparse
+                    .iter()
+                    .filter(|(_, deadline)| **deadline <= now)
+                    .map(|(uri, _)| uri.clone())
+                    .collect();
+                for uri in due {
+                    pending_reparse.remove(&uri);
+                    revalidate_overlay(connection, &uri, &mut docs)?;
+                }
+                continue;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return Ok(()),
+        };
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
@@ -154,6 +199,13 @@ fn main_loop(connection: &Connection) -> Result<()> {
                             ),
                         }
                     }
+                    "textDocument/definition" => {
+                        let result =
+                            serde_json::from_value::<TextDocumentPositionParams>(req.params)
+                                .ok()
+                                .and_then(|p| definition(&p));
+                        Response::new_ok(req.id, serde_json::to_value(result)?)
+                    }
                     other => Response::new_err(
                         req.id,
                         lsp_server::ErrorCode::MethodNotFound as i32,
@@ -174,13 +226,17 @@ fn main_loop(connection: &Connection) -> Result<()> {
                                 symbols: Vec::new(),
                             },
                         );
+                        pending_reparse.remove(&uri);
                         revalidate(connection, &uri, &mut docs)?;
                     }
                 }
                 "textDocument/didChange" => {
                     // FULL sync: the last change is the whole buffer.
-                    // Dirty text feeds hover/completion only —
-                    // diagnostics wait for the save.
+                    // Dirty text feeds hover/completion immediately;
+                    // diagnostics follow after `DIDCHANGE_DEBOUNCE` of
+                    // no further edits (v0.27 M8), reading this
+                    // in-memory buffer via `load_with_overlay` rather
+                    // than waiting for a save.
                     if let Ok(mut p) =
                         serde_json::from_value::<DidChangeTextDocumentParams>(note.params)
                     {
@@ -188,18 +244,24 @@ fn main_loop(connection: &Connection) -> Result<()> {
                             (docs.get_mut(&p.text_document.uri), p.content_changes.pop())
                         {
                             doc.text = change.text;
+                            pending_reparse.insert(
+                                p.text_document.uri,
+                                std::time::Instant::now() + DIDCHANGE_DEBOUNCE,
+                            );
                         }
                     }
                 }
                 "textDocument/didSave" => {
                     if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(note.params)
                     {
+                        pending_reparse.remove(&p.text_document.uri);
                         revalidate(connection, &p.text_document.uri, &mut docs)?;
                     }
                 }
                 "textDocument/didClose" => {
                     if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(note.params)
                     {
+                        pending_reparse.remove(&p.text_document.uri);
                         docs.remove(&p.text_document.uri);
                         publish(connection, &p.text_document.uri, Vec::new())?;
                     }
@@ -209,7 +271,6 @@ fn main_loop(connection: &Connection) -> Result<()> {
             Message::Response(_) => {}
         }
     }
-    Ok(())
 }
 
 /// Runs the CLI's front end on the document's on-disk content and
@@ -240,6 +301,47 @@ fn revalidate(connection: &Connection, uri: &Url, docs: &mut HashMap<Url, DocSta
             ..Default::default()
         }],
     };
+    publish(connection, uri, lsp_diags)
+}
+
+/// The debounced `didChange` counterpart to [`revalidate`] (v0.27 M8):
+/// same front end, same diagnostic shape, but the entry file's content
+/// comes from the dirty in-memory buffer (`load_with_overlay`) instead
+/// of disk -- everything the document itself `import`s still resolves
+/// from disk, since only the document open in the client has unsaved
+/// content to substitute. A no-op if the document has since closed
+/// (its `DocState` is gone by the time the debounce timer fires).
+fn revalidate_overlay(
+    connection: &Connection,
+    uri: &Url,
+    docs: &mut HashMap<Url, DocState>,
+) -> Result<()> {
+    let Ok(path) = uri.to_file_path() else {
+        return Ok(());
+    };
+    let Some(text) = docs.get(uri).map(|doc| doc.text.clone()) else {
+        return Ok(());
+    };
+    let mut sources = SourceMap::new();
+    let mut diags = Diagnostics::new();
+    let lsp_diags =
+        match ciac_syntax::module::load_with_overlay(&path, &text, &mut sources, &mut diags) {
+            Ok(program) => {
+                ciac_sema::analyze(&program, &mut diags);
+                diags.sort();
+                if let Some(doc) = docs.get_mut(uri) {
+                    doc.symbols = harvest(&program);
+                }
+                to_lsp_diagnostics(&diags, &sources, &path)
+            }
+            Err(err) => vec![Diagnostic {
+                range: Range::default(),
+                severity: Some(DiagnosticSeverity::ERROR),
+                message: format!("{err:#}"),
+                source: Some("ciac".into()),
+                ..Default::default()
+            }],
+        };
     publish(connection, uri, lsp_diags)
 }
 
@@ -493,6 +595,41 @@ fn rename(params: &RenameParams) -> std::result::Result<WorkspaceEdit, String> {
     })
 }
 
+/// `textDocument/definition` (v0.27 M8) — a thin projection of the
+/// same `rename_index` `prepare_rename`/`rename` already ride: the
+/// identifier at the cursor resolves to a [`ResolvedSymbol`], whose
+/// `def_span` is the declaration site, same-file or across an
+/// `import` (the index is built over the whole spliced program, so a
+/// definition in another file already carries that file's own span).
+/// `None` for an unresolved position, a parse error, or a definition
+/// site with no real on-disk file (`std/`-embedded blueprints and
+/// `registry:`-fetched content use synthetic source names, not real
+/// paths -- there's nowhere to navigate to, so no location is better
+/// than a broken one).
+fn definition(params: &TextDocumentPositionParams) -> Option<GotoDefinitionResponse> {
+    let path = params.text_document.uri.to_file_path().ok()?;
+    let mut sources = SourceMap::new();
+    let mut diags = Diagnostics::new();
+    let program = ciac_syntax::load(&path, &mut sources, &mut diags).ok()?;
+    if diags.has_errors() {
+        return None;
+    }
+    let index = ciac_syntax::rename_index::build_index(&program);
+    let (file_id, offset) = locate(&path, &sources, params.position)?;
+    let resolved = index.resolve_at(file_id, offset).into_iter().next()?;
+    let file = sources.file(resolved.def_span.file);
+    let uri = Url::from_file_path(&file.name).ok()?;
+    let (start_line, start_col) = file.line_col(resolved.def_span.start);
+    let (end_line, end_col) = file.line_col(resolved.def_span.end);
+    Some(GotoDefinitionResponse::Scalar(Location {
+        uri,
+        range: Range {
+            start: Position::new(start_line - 1, start_col - 1),
+            end: Position::new(end_line - 1, end_col - 1),
+        },
+    }))
+}
+
 fn hover(params: &TextDocumentPositionParams, docs: &HashMap<Url, DocState>) -> Option<Hover> {
     let doc = docs.get(&params.text_document.uri)?;
     let word = word_at(&doc.text, params.position)?;
@@ -514,7 +651,16 @@ fn hover(params: &TextDocumentPositionParams, docs: &HashMap<Url, DocState>) -> 
 fn completion(params: &CompletionParams, docs: &HashMap<Url, DocState>) -> CompletionResponse {
     let mut items: Vec<CompletionItem> = Vec::new();
     for (word, doc) in vocab::KEYWORDS {
-        items.push(item(word, CompletionItemKind::KEYWORD, doc));
+        match vocab::SNIPPETS.iter().find(|s| s.prefix == *word) {
+            // v0.27 Pillar 5: a declaration keyword with a tab-stopped
+            // skeleton offers it as a real snippet completion instead
+            // of just the bare keyword -- the same table
+            // `every_snippet_default_expansion_parses` already proved
+            // compiles, so what a user accepts here can never be a
+            // skeleton that doesn't actually parse.
+            Some(snip) => items.push(snippet_item(snip, doc)),
+            None => items.push(item(word, CompletionItemKind::KEYWORD, doc)),
+        }
     }
     for cap in vocab::CAPABILITIES {
         let doc = vocab::doc_for(cap.name).unwrap_or_default();
@@ -553,6 +699,23 @@ fn item(label: &str, kind: CompletionItemKind, detail: &str) -> CompletionItem {
         label: label.to_string(),
         kind: Some(kind),
         detail: Some(detail.to_string()),
+        ..Default::default()
+    }
+}
+
+/// A declaration keyword's [`vocab::Snippet`] rendered as a real
+/// tab-stopped completion — `insert_text` carries the raw VS Code
+/// snippet body (`${1:Name}`, `${2|a,b,c|}`, `$0`) verbatim, and
+/// `insert_text_format: Snippet` tells the client to interpret it
+/// rather than insert it literally.
+fn snippet_item(snip: &vocab::Snippet, keyword_doc: &str) -> CompletionItem {
+    CompletionItem {
+        label: snip.prefix.to_string(),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some(snip.description.to_string()),
+        documentation: Some(Documentation::String(keyword_doc.to_string())),
+        insert_text: Some(snip.body.join("\n")),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
         ..Default::default()
     }
 }

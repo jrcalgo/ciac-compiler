@@ -27,12 +27,33 @@
     semicolon-joined statements) naming `err`, rendered as-is and
     reformatted by the real `gofmt` binary at the render_go call site.
 
-    `call`/`match` steps render plausible code (mirroring Rust/TS's
-    own M3-era templates, which did the same before their `call`
-    infrastructure -- clients/scope arms -- actually existed) but are
-    unreachable by every 24UpdatePlan.md M3 example: no example
-    populates `call_imports` or a `match` step yet, so this is inert
-    until 24UpdatePlan.md M6/M7 exercise it for real.
+    `call` steps render plausible code (mirroring Rust/TS's own
+    M3-era templates, which did the same before their `call`
+    infrastructure -- clients/scope arms -- actually existed).
+
+    `match` was originally written the same speculative way, type-
+    asserting `result` to `map[string]any` and reading the matched
+    field out of it as a generic JSON value -- plausible for a step
+    whose predecessor might be untyped, but never actually exercised
+    by any 24UpdatePlan.md example. 28UpdatePlan.md M7d's own live
+    proof against `multi-service-media.ciac` (Transcoder's `pipeline
+    Transcode: TranscodeVideo -> match status { ... }`) was the first
+    real run to reach this code and it panicked:
+    `handle_message_once`'s payload was decoded straight into the
+    typed `schemas.Video` struct (worker.go.j2's drain loop always
+    knows the worker's own payload type), so `result` was never a
+    `map[string]any` in the first place by the time `match` ran --
+    the map assumption was simply wrong whenever `payload_type` is
+    known, which for a worker or a typed-API pipeline it always is.
+    Fixed to switch on `result.(payload_type).<field in PascalCase>`
+    instead, the same typed-field-access shape Rust's own `match
+    result.status { ... }` already uses (Rust's pipeline threads the
+    real `Video` type throughout rather than `any`, so it never had
+    this problem to begin with). The old `map[string]any` branch
+    stays as the fallback for the one context that still has no
+    known payload type -- `job.go.j2` passes `payload_type = ""`
+    unconditionally, since a scheduled job has no incoming record to
+    type a `match` against -- still inert, no example reaches it.
 
     v0.24 M4: a `handler` step whose `step.handler.is_typed_handler` is
     true is a v0.7 typed handler (a plain function --
@@ -72,7 +93,11 @@
 {{ indent }}	result = v
 {{ indent }}}
 {%- elif step.kind == "match" %}
+{%- if payload_type %}
+{{ indent }}switch v := result.({{ payload_type }}); v.{{ step.field | go_pascal }} {
+{%- else %}
 {{ indent }}switch v, _ := result.(map[string]any)["{{ step.field }}"].(string); v {
+{%- endif %}
 {%- for arm in step.arms %}
 {%- if arm.label %}
 {{ indent }}case "{{ arm.label }}":

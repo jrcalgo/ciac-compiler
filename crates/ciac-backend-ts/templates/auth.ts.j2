@@ -16,6 +16,7 @@ import { jwtVerify } from "jose";
 {%- endif %}
 import type { FastifyRequest } from "fastify";
 import type { Config } from "./config.js";
+import type { AppState } from "./state.js";
 
 export class AuthError extends Error {
   constructor(
@@ -45,12 +46,23 @@ function getJwks(config: Config): ReturnType<typeof createRemoteJWKSet> {
 }
 {%- endif %}
 
-export async function verifyToken(request: FastifyRequest, config: Config): Promise<Claims> {
+export async function verifyToken(request: FastifyRequest, state: AppState): Promise<Claims> {
   const header = request.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
     throw new AuthError(401, "missing bearer token");
   }
   const token = header.slice("Bearer ".length);
+  // 27UpdatePlan.md M6: claims-lookup, not real JWT/JWKS crypto --
+  // mirrors `world.ts`'s own `SimWorld.authVerify` (Python's
+  // `FakeAuth`, Rust's `auth.rs.j2` seam, 27UpdatePlan.md M4).
+  if (state.world) {
+    try {
+      return state.world.authVerify(token) as Claims;
+    } catch {
+      throw new AuthError(401, "invalid or expired token");
+    }
+  }
+  const config: Config = state.config;
   try {
 {%- if c.auth_scheme == "oauth2" %}
     const { payload } = await jwtVerify(token, getJwks(config), {

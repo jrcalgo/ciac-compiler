@@ -98,7 +98,12 @@ async def count_active_api(
     result = payload
 
     result = await CountActive(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/delete_by_active_api.py
 ============================================================
@@ -127,7 +132,12 @@ async def delete_by_active_api(
     result = payload
 
     result = await DeleteByActive(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/list_active_api.py
 ============================================================
@@ -156,7 +166,12 @@ async def list_active_api(
     result = payload
 
     result = await ListActive(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/remove_api.py
 ============================================================
@@ -185,7 +200,12 @@ async def remove_api(
     result = payload
 
     result = await Remove(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/replace_api.py
 ============================================================
@@ -214,7 +234,12 @@ async def replace_api(
     result = payload
 
     result = await Replace(session=session).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/config.py
 ============================================================
@@ -268,6 +293,15 @@ class Base(DeclarativeBase):
     """Declarative base for all models."""
 
 
+# 28UpdatePlan.md M4: this project's own name, or `None` for a
+# single-service project -- threaded to `world.fake_sessionmaker`'s
+# `service` argument so a multi-service simulation namespaces this
+# project's table keys (`SimWorld.namespaced_table_key`, `world.py`);
+# `None` keeps the single-service degenerate case (bare table name)
+# unchanged.
+SERVICE_FOR_SIM: str | None = None
+
+
 def _urls() -> dict[str, str]:
     settings = get_settings()
     return {
@@ -297,8 +331,11 @@ def get_sessionmaker(instance: str = "default") -> async_sessionmaker[AsyncSessi
         # a fake session factory instead of a real engine-backed one; every
         # call site below (`session_dep`, worker/job `session_with`) is
         # unaware of the difference, since both shapes are used the same
-        # way: `async with sessionmaker() as session:`.
-        return state.world.fake_sessionmaker(instance)
+        # way: `async with sessionmaker() as session:`. 28UpdatePlan.md
+        # M4: `service` namespaces this project's own table keys in a
+        # multi-service simulation's shared `FakeDatabase` -- see
+        # `SERVICE_FOR_SIM`'s own doc comment above.
+        return state.world.fake_sessionmaker(instance, service=SERVICE_FOR_SIM)
     sessionmakers = state.sessionmakers
     if instance not in sessionmakers:
         sessionmakers[instance] = async_sessionmaker(
@@ -1095,6 +1132,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 tests/test_logic_count_active.py
 ============================================================
@@ -1103,8 +1151,9 @@ tests/test_logic_count_active.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.count_active import CountActive
 from app.schemas import ActiveFilter
@@ -1132,8 +1181,9 @@ tests/test_logic_delete_by_active.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.delete_by_active import DeleteByActive
 from app.schemas import ActiveFilter
@@ -1161,8 +1211,9 @@ tests/test_logic_list_active.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.logic.list_active import ListActive
 from app.schemas import ActiveFilter
@@ -1190,10 +1241,11 @@ tests/test_logic_remove.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.remove import Remove
 from app.schemas import IdOnly
 
@@ -1215,13 +1267,13 @@ tests/test_logic_replace.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
 from uuid import uuid4
+
+import pytest
+
 from app.logic.replace import Replace
-from app.schemas import Note
-from app.schemas import NoteUpdate
+from app.schemas import Note, NoteUpdate
 
 
 @pytest.mark.anyio

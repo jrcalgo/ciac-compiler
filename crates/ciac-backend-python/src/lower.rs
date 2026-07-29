@@ -758,32 +758,42 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
         "\"\"\"Generated behavioral test for `{}`. Regenerated on every build.\n\nExercises the lowered handler body against mocked runtime dependencies;\nreal persistence round-trips are `ciac verify --live`'s job, not this test.\n\"\"\"",
         ctx.class_name
     ));
-    lines.push("import pytest".to_owned());
+    // 27UpdatePlan.md M3: stdlib imports (`unittest.mock`/`uuid`/
+    // `datetime`) must precede the third-party `pytest` import, each
+    // group separated by a blank line -- `ruff`'s isort otherwise flags
+    // "un-sorted or un-formatted" and `ciac verify`'s lint gate fails
+    // the build. The previous ordering (`pytest` first, stdlib after)
+    // never tripped this because no checked-in example had exercised a
+    // handler test needing both until this arc's simulation corpus.
+    let mut uuid = false;
+    let mut datetime = false;
+    for (_, ty) in &hir.params {
+        dummy_value_needs(ir, ty, &mut uuid, &mut datetime);
+    }
     // Only import what the mocked-dependency setup below actually uses —
     // a handler with no capability calls (e.g. a pure transform) needs
     // neither, and an unused import fails `ruff check`.
     let needs_async_mock =
         ctx.needs_db || ctx.needs_cache || ctx.needs_queue || !ctx.extras.is_empty();
     let needs_magic_mock = ctx.needs_db;
+    let stdlib_before = lines.len();
+    if datetime {
+        lines.push("from datetime import datetime, timezone".to_owned());
+    }
     match (needs_async_mock, needs_magic_mock) {
         (true, true) => lines.push("from unittest.mock import AsyncMock, MagicMock".to_owned()),
         (true, false) => lines.push("from unittest.mock import AsyncMock".to_owned()),
         (false, true) => lines.push("from unittest.mock import MagicMock".to_owned()),
         (false, false) => {}
     }
-    lines.push(String::new());
-
-    let mut uuid = false;
-    let mut datetime = false;
-    for (_, ty) in &hir.params {
-        dummy_value_needs(ir, ty, &mut uuid, &mut datetime);
-    }
     if uuid {
         lines.push("from uuid import uuid4".to_owned());
     }
-    if datetime {
-        lines.push("from datetime import datetime, timezone".to_owned());
+    if lines.len() > stdlib_before {
+        lines.push(String::new());
     }
+    lines.push("import pytest".to_owned());
+    lines.push(String::new());
     lines.push(format!(
         "from app.logic.{} import {}",
         ctx.module, ctx.class_name
@@ -802,8 +812,21 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
         .map(|id| record_class_name(ir, *id))
         .collect();
     test_schema_imports.sort();
-    for name in &test_schema_imports {
-        lines.push(format!("from app.schemas import {name}"));
+    test_schema_imports.dedup();
+    // 27UpdatePlan.md M3: a handler whose payload and return type are
+    // different records (e.g. `NotifyUser(payload: Notification) ->
+    // Ack`) used to emit one `from app.schemas import X` line per
+    // record -- `ruff`'s isort flags two same-module import lines as
+    // "un-sorted or un-formatted" and `ciac verify`'s lint gate fails
+    // the build. Nothing had generated this shape before this arc's
+    // simulation corpus needed record-returning handlers throughout
+    // (to dodge a separate, out-of-scope route-wrapper bug -- see
+    // `examples/sim-peripherals.ciac`'s header comment).
+    if !test_schema_imports.is_empty() {
+        lines.push(format!(
+            "from app.schemas import {}",
+            test_schema_imports.join(", ")
+        ));
     }
     lines.push(String::new());
     lines.push(String::new());

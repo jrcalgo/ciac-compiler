@@ -33,10 +33,12 @@ What this interpreter is not:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from cron import CronSchedule, parse_duration_ms
+from world import SEARCH_INDEX_NAME, namespaced_table_key
 
 
 class ScenarioAssertionError(AssertionError):
@@ -47,13 +49,16 @@ class ScenarioAssertionError(AssertionError):
 class ApiEntry:
     """One registered API: `call(payload_json) -> Any`, raising on
     failure. `service` is the scenario's own name for the owning
-    service, matching `request.service` -- unused for routing today
-    (single-service only, see module docstring) but recorded so a
-    scenario naming the wrong service is at least visible in the
-    registry, not silently ignored."""
+    service, matching `request.service` -- consulted for routing
+    (28UpdatePlan.md M3: `ScenarioRunner.apis` is keyed by
+    `(service, api)`, not `api` alone, since two services may declare
+    an api with the same name), and still doubles as its single-
+    service-era self-check: a scenario naming the wrong service simply
+    fails the `(service, api)` lookup with a clear `KeyError` rather
+    than silently routing to some other service's handler."""
 
     service: str
-    call: Callable[[dict[str, Any]], Awaitable[Any]]
+    call: Callable[[dict[str, Any], dict[str, Any] | None], Awaitable[Any]]
 
 
 @dataclass
@@ -87,10 +92,27 @@ class StreamEntry:
 @dataclass
 class ScenarioRunner:
     world: Any  # world.SimWorld
-    apis: dict[str, ApiEntry] = field(default_factory=dict)
+    # 28UpdatePlan.md M3: keyed by `(service, api)`, not `api` alone --
+    # see `ApiEntry`'s own docstring for why. `workers`/`jobs` stay
+    # keyed by bare name: `expect.worker_attempts`/`expect.job_runs`
+    # carry no `service` field to disambiguate by (only `request`/
+    # `given.db`/`expect.row` do), so those two names must already be
+    # unique per system for a scenario to assert against them
+    # unambiguously at all -- a scenario-schema-level constraint this
+    # milestone did not introduce and is not this milestone's job to
+    # widen.
+    apis: dict[tuple[str, str], ApiEntry] = field(default_factory=dict)
     workers: dict[str, WorkerEntry] = field(default_factory=dict)
     jobs: dict[str, JobEntry] = field(default_factory=dict)
     streams: dict[str, StreamEntry] = field(default_factory=dict)
+    # 28UpdatePlan.md M4: `False` (the default, `auto_driver.py`'s own
+    # single-service path) keeps `expect.row`'s table lookup on the
+    # degenerate bare-key path even though `spec["service"]` is always
+    # populated in the scenario JSON -- matching `SERVICE_FOR_SIM`'s own
+    # codegen-time decision (`db.py.j2`) exactly, so a write and the
+    # `expect.row` that checks it always agree on which key it landed
+    # under. `multi_driver.py` sets this `True`.
+    multi_service: bool = False
 
     _saved: dict[str, tuple[bool, Any]] = field(default_factory=dict, init=False)
     _worker_attempts: dict[str, int] = field(default_factory=dict, init=False)
@@ -114,15 +136,15 @@ class ScenarioRunner:
         elif "drain" in step:
             await self._drain()
         elif "expect" in step:
-            self._expect(step["expect"])
+            await self._expect(step["expect"])
         else:
             raise ScenarioAssertionError(f"unrecognized scenario step: {step!r}")
 
     async def _request(self, spec: dict[str, Any]) -> None:
-        entry = self.apis[spec["api"]]
+        entry = self.apis[(spec["service"], spec["api"])]
         ok, value = True, None
         try:
-            value = await entry.call(spec.get("json", {}))
+            value = await entry.call(spec.get("json", {}), spec.get("as"))
         except Exception as exc:  # noqa: BLE001 -- recorded, not swallowed
             ok, value = False, exc
         if spec.get("save_as"):
@@ -155,7 +177,7 @@ class ScenarioRunner:
                 self._worker_attempts.get(worker_name, 0) + attempts
             )
 
-    def _expect(self, spec: dict[str, Any]) -> None:
+    async def _expect(self, spec: dict[str, Any]) -> None:
         if "response" in spec:
             self._expect_response(spec["response"])
         elif "row" in spec:
@@ -166,6 +188,16 @@ class ScenarioRunner:
             self._expect_job_runs(spec["job_runs"])
         elif "quiescence" in spec:
             self._expect_quiescence()
+        elif "email" in spec:
+            self._expect_email(spec["email"])
+        elif "cache" in spec:
+            await self._expect_cache(spec["cache"])
+        elif "object" in spec:
+            await self._expect_object(spec["object"])
+        elif "search_hits" in spec:
+            await self._expect_search_hits(spec["search_hits"])
+        elif "http_calls" in spec:
+            self._expect_http_calls(spec["http_calls"])
         else:
             raise ScenarioAssertionError(f"unrecognized expect step: {spec!r}")
 
@@ -173,7 +205,7 @@ class ScenarioRunner:
         of = spec.get("of")
         if of not in self._saved:
             raise ScenarioAssertionError(f"expect.response.of references unknown save_as {of!r}")
-        ok, _value = self._saved[of]
+        ok, value = self._saved[of]
         want_status = spec.get("status")
         if want_status is not None:
             # See module docstring: no real HTTP transport, so "2xx"
@@ -184,9 +216,22 @@ class ScenarioRunner:
                     f"expect.response.of={of!r}: expected "
                     f"{'success' if is_2xx else 'failure'}, call {'raised' if not ok else 'succeeded'}"
                 )
+        # 27UpdatePlan.md M4: this was silently never checked -- found
+        # via Rust's own stricter `expect.response.json` implementation
+        # catching a genuine wrong expectation in
+        # `sim/relational-depth.ciac-sim.json` that this gap had let
+        # through since M2. Only meaningful on the success path (`ok`);
+        # `value` is the raised exception itself otherwise, not a value
+        # comparable to a JSON body.
+        want_json = spec.get("json")
+        if want_json is not None and ok:
+            if value != want_json:
+                raise ScenarioAssertionError(
+                    f"expect.response.of={of!r}: expected json {want_json!r}, got {value!r}"
+                )
 
     def _expect_row(self, spec: dict[str, Any]) -> None:
-        table = spec["table"]
+        table = namespaced_table_key(spec["service"] if self.multi_service else None, spec["table"])
         where = spec.get("where", {})
         rows = self.world.db.snapshot().get(table, {}).values()
         found = any(all(row.get(k) == v for k, v in where.items()) for row in rows)
@@ -216,3 +261,67 @@ class ScenarioRunner:
                 raise ScenarioAssertionError(
                     f"expect.quiescence: worker {worker_name!r} still has {pending} undelivered message(s)"
                 )
+
+    def _expect_email(self, spec: dict[str, Any]) -> None:
+        # 27UpdatePlan.md M1 (`ciac_sim::scenario::ExpectStep::Email`)
+        # carries no `instance` field -- it counts sends across every
+        # `email` instance the world has seen, not one named sender.
+        to = spec.get("to")
+        subject_contains = spec.get("subject_contains")
+        sent = [msg for fake in self.world._emails.values() for msg in fake.sent]
+        if to is not None:
+            sent = [msg for msg in sent if msg["to"] == to]
+        if subject_contains is not None:
+            sent = [msg for msg in sent if subject_contains in msg["subject"]]
+        actual = len(sent)
+        if actual != spec["count"]:
+            raise ScenarioAssertionError(
+                f"expect.email: to={to!r} subject_contains={subject_contains!r} "
+                f"expected {spec['count']}, got {actual}"
+            )
+
+    async def _expect_cache(self, spec: dict[str, Any]) -> None:
+        cached = await self.world.fake_cache(spec["instance"]).get(spec["key"])
+        present = cached is not None
+        if present != spec["present"]:
+            raise ScenarioAssertionError(
+                f"expect.cache: instance={spec['instance']!r} key={spec['key']!r} "
+                f"expected present={spec['present']!r}, found present={present}"
+            )
+        if spec.get("value") is not None:
+            actual_value = json.loads(cached) if cached is not None else None
+            if actual_value != spec["value"]:
+                raise ScenarioAssertionError(
+                    f"expect.cache: instance={spec['instance']!r} key={spec['key']!r} "
+                    f"expected value={spec['value']!r}, got {actual_value!r}"
+                )
+
+    async def _expect_object(self, spec: dict[str, Any]) -> None:
+        try:
+            await self.world.fake_object_store(spec["store"]).get(spec["key"])
+            present = True
+        except KeyError:
+            present = False
+        if present != spec["present"]:
+            raise ScenarioAssertionError(
+                f"expect.object: store={spec['store']!r} key={spec['key']!r} "
+                f"expected present={spec['present']!r}, found present={present}"
+            )
+
+    async def _expect_search_hits(self, spec: dict[str, Any]) -> None:
+        docs = await self.world.fake_search(spec["instance"]).search(
+            SEARCH_INDEX_NAME, {"query": {"query_string": {"query": spec["query"]}}}
+        )
+        actual = len(docs)
+        if actual != spec["count"]:
+            raise ScenarioAssertionError(
+                f"expect.search_hits: instance={spec['instance']!r} query={spec['query']!r} "
+                f"expected {spec['count']}, got {actual}"
+            )
+
+    def _expect_http_calls(self, spec: dict[str, Any]) -> None:
+        actual = len(self.world.fake_http_client(spec["instance"]).requests)
+        if actual != spec["count"]:
+            raise ScenarioAssertionError(
+                f"expect.http_calls: instance={spec['instance']!r} expected {spec['count']}, got {actual}"
+            )

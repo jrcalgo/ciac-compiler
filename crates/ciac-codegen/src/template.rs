@@ -7,6 +7,7 @@
 
 use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use minijinja::Environment;
+use std::sync::OnceLock;
 
 /// Builds a strict environment from `(name, source)` template pairs.
 ///
@@ -39,6 +40,45 @@ pub fn environment<'a>(
         env.add_template(name, source)?;
     }
     Ok(env)
+}
+
+/// Fetches (or builds once and caches) a backend's full template
+/// environment (`30UpdatePlan.md` M4).
+///
+/// Every `generate()` call previously rebuilt a fresh [`Environment`]
+/// from scratch — re-parsing every one of a backend's embedded
+/// templates on every call, including the 290 redundant calls
+/// `determinism.rs`'s own deliberate double-generate makes across the
+/// full example corpus. Each backend owns its own `static
+/// OnceLock<Environment<'static>>` — **never shared across backends**,
+/// since `add_filters` registers backend-specific filters — and passes
+/// it here; the environment is built once, on the first `generate()`
+/// call for that backend within a process, and every later call reuses
+/// the same `&'static Environment`. Building only ever happens once
+/// per process regardless of how many threads call `generate()`
+/// concurrently (the test suite does exactly that): [`OnceLock::
+/// get_or_init`] guarantees the initializer runs at most once, with
+/// every other concurrent caller blocking until it completes rather
+/// than racing to build a second copy. **This caches parsed templates
+/// only, never rendered output** — every `generate()` call still walks
+/// the model and renders every template fresh, so this is a startup-
+/// cost optimization, not a correctness-risking cache: `determinism.
+/// rs`'s own double-`generate()` proof stays meaningful, since nothing
+/// about a render's *result* is memoized here, only the machinery that
+/// parses `{{ ... }}` once instead of once per call.
+pub fn cached_environment(
+    cache: &'static OnceLock<Environment<'static>>,
+    templates: impl IntoIterator<Item = (&'static str, &'static str)>,
+    add_filters: impl FnOnce(&mut Environment<'static>),
+) -> &'static Environment<'static> {
+    cache.get_or_init(|| {
+        let mut env = environment(templates).expect(
+            "backend's own embedded templates are valid minijinja sources, \
+             already exercised by every golden/conformance test",
+        );
+        add_filters(&mut env);
+        env
+    })
 }
 
 /// Whether `engine` binds with positional `?` placeholders instead of

@@ -89,6 +89,48 @@ error InvalidOrder {
     reason: String;
 }
 
+// 27UpdatePlan.md M2: the update/delete/count trio `relational-depth`/
+// `atomic-batch`'s corpus scenarios need, added to this example rather
+// than a new `sim-relational.ciac` since the schema above (customer/
+// order `restrict`, order/line-item `cascade`+`unique`) already covers
+// the reference/cascade/restrict/unique half of that family -- see
+// Pillar 7's own "fewest new moving parts" criterion. `db.get` is
+// deliberately not added here: the corpus row this milestone targets
+// names only "update/delete/count, uniques, references, cascade +
+// restrict," not get.
+record IdOnly {
+    id: Uuid;
+}
+
+record OrderCountFilter {
+    min_total: Float;
+}
+
+// Wraps the raw `Bool` `db.delete` returns in a record rather than
+// returning it directly -- a route whose typed handler returns a bare
+// scalar (`Bool`/`Int`) instead of a record hits an unrelated,
+// pre-existing bug in the generated route wrapper (`result.model_dump()`
+// assumes every handler return value is a Pydantic model); real and
+// worth disclosing, but out of this milestone's own scope (world.rs)
+// to fix, so this example works around it instead of exercising it.
+record DeleteResult {
+    deleted: Bool;
+}
+
+handler UpdateOrderTotal(order: Order) -> Order {
+    db.update(Orders, order.id, order);
+    return order;
+}
+
+handler DeleteOrder(payload: IdOnly) -> DeleteResult {
+    let deleted = db.delete(Orders, payload.id);
+    return DeleteResult { deleted: deleted };
+}
+
+handler CountOrders(filter: OrderCountFilter) -> Int {
+    return db.count(Orders) where total >= filter.min_total;
+}
+
 handler CreateCustomer(c: Customer) -> Customer {
     db.insert(Customers, c);
     return c;
@@ -137,4 +179,28 @@ api Items: LineItem {
 }
 pipeline Items:
     AddLineItem
+    -> Return;
+
+api UpdateOrderRoute: Order {
+    method: POST;
+    path: "/orders/update";
+}
+pipeline UpdateOrderRoute:
+    UpdateOrderTotal
+    -> Return;
+
+api DeleteOrderRoute: IdOnly {
+    method: POST;
+    path: "/orders/delete";
+}
+pipeline DeleteOrderRoute:
+    DeleteOrder
+    -> Return;
+
+api CountOrdersRoute: OrderCountFilter {
+    method: POST;
+    path: "/orders/count";
+}
+pipeline CountOrdersRoute:
+    CountOrders
     -> Return;

@@ -1,5 +1,8 @@
 # Regeneration
 
+*Reader: a builder regenerating a project they've already started
+editing.*
+
 CIaC v0.6 treats generated projects as living artifacts. Re-running
 `ciac build` into an existing output directory preserves user-owned code,
 detects drift, and refuses to overwrite modified compiler-owned files.

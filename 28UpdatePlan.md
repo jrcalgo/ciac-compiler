@@ -814,6 +814,63 @@ push, in-place Shipped notes).
    accepts. docs/simulation.md's scenario-reference updates
    drafted alongside (docs move with schema, the standing rule).
 
+   **Shipped (v0.28 M1) — a course correction, not a straight
+   execution.** `SimPlan` (`crates/ciac-sim/src/plan.rs`) grew
+   `apis: Vec<SimApi>` and `call_edges: Vec<SimCallEdge>`, derived
+   from `ir.nodes_of_kind(NodeKind::Api)` and
+   `ir.edges().filter(|e| e.kind == EdgeKind::ServiceCall)` — both
+   already existed in the IR (`ciac-sema::build::wire_steps` wires
+   a `ServiceCall` edge for every `Call` step; no new IR modeling
+   was needed, only consuming what was already there), sorted by
+   stable key like every other `Sim*` collection so `plan_hash`
+   stays architecture-order-independent. **SIM0012 (routed-call
+   cycle) was reserved, implemented, then removed before
+   shipping.** Investigation before wiring it in found
+   `ciac-sema`'s existing `CycleDetection` pass
+   (`crates/ciac-sema/src/passes/cycles.rs`) already treats
+   `EdgeKind::ServiceCall` as a flow edge in its combined request-
+   flow/message/call/dependency cycle check, run on every `ciac
+   check`/`build`/`sim` invocation via `front_end` ->
+   `ciac_sema::analyze` — so a program with a call cycle already
+   fails compilation with `CyclicDependency` (`CIAC*`, not `SIM*`)
+   before a `SimPlan` can exist at all. A sim-layer
+   `check_acyclic()` (built, unit-tested, then deleted along with
+   the `CallCycle` type and the `SIM0012` registry entry) would
+   have been permanently unreachable dead code duplicating a check
+   that already runs earlier and is already mandatory — see
+   `docs/simulation.md`'s "Multi-service topology" section for the
+   disclosed reasoning. **SIM0011 shipped as designed.**
+   `Scenario::validate_against_plan` (`crates/ciac-sim/src/scenario.rs`)
+   checks every `request.service`, `given.db[].service`, and
+   `expect.row.service` against `SimPlan.services`; wired into
+   `sim_inner` (`crates/ciac/src/commands.rs`) as a preflight over
+   every `--scenario` file — parse, structural `validate()`, then
+   `validate_against_plan(&plan)` — right after `SimPlan::from_ir`,
+   before any target's driver runs. Live-verified against the real
+   CLI: the unmodified flagship (`order-system.ciac` + its own
+   scenario) still passes with the new preflight in place, and a
+   scenario with a deliberately wrong `request.service` fails with
+   `unknown service "NoSuchService" (known services: OrderSystem)
+   (SIM0011)` — before any project is built or driven, not after.
+   **A second finding, carried over from this same investigation:**
+   the scenario schema's `service` fields (`RequestStep.service`,
+   `GivenTableRows.service`, `ExpectStep::Row.service`) were
+   already required, non-optional fields with no
+   `#[serde(default)]` — not "optional and defaulted" as some
+   earlier prose described them — so this milestone's addition is
+   the *validation* against a real plan, not a schema change.
+   Namespacing/ordering/clock-tiebreak rules and the `given.db`
+   service qualifier are unchanged from Pillar 1/2's own design (no
+   correction needed there); the composition decision matrix and
+   process-shape rule (Pillar 3) are affirmed here as M1's
+   committed record, unchanged from their pre-registered form — M2
+   onward builds on them as drafted. 6 new unit tests added
+   (`ciac-sim`'s suite: 81 -> 87, all passing); full `cargo test
+   --workspace --no-fail-fast` clean except the same disclosed
+   pre-existing `ruff`-version-drift failure in `backfill_cli` (27
+   M9's own finding, reconfirmed unrelated to this milestone's
+   changes).
+
 2. **M2 — The world at system scope.** ciac-sim: (service,
    table) namespacing with the single-service degenerate case
    (27's corpus green untouched — the proof the degeneracy
@@ -825,6 +882,112 @@ push, in-place Shipped notes).
    always (unexercised until M6 — recorded, familiar from 27's
    M2/M3 shape).
 
+   **Shipped (v0.28 M2) — as designed, plus a found-and-fixed M1
+   regression.** `SimWorld::namespaced_table_key(service: Option<&str>,
+   table: &str) -> String` (`crates/ciac-sim/src/world.rs`) is the
+   whole namespacing scheme: `None` (or, once a runner is driving,
+   the single-service degenerate case) returns the bare table name
+   unchanged, `Some(service)` returns `"{service}/{table}"`; every
+   `db_*` entry point funnels through it, so the single-service
+   corpus is byte-identical to before this milestone by construction,
+   not by a separate code path. `SimWorld` grew an `apis:
+   Mutex<ApiRegistry>` (`BTreeMap<(String, String), Arc<ApiHandler>>`,
+   `ApiHandler = dyn Fn(Value) -> anyhow::Result<Value> + Send +
+   Sync`) plus `register_api`/`call_checked`: routing is inline and
+   synchronous on the caller's own logical thread (production's own
+   typed call-client shape, just against a registered handler instead
+   of real HTTP), an unregistered `(service, api)` is a clear `Err`
+   rather than a silent no-op, and `call.request` participates in the
+   existing failure-injection vocabulary the same way `db.commit`/
+   `broker.publish` already do. The handler map is cloned out and its
+   lock dropped *before* invoking the handler (`std::sync::Mutex`
+   isn't reentrant; holding the lock across a call that might itself
+   call back in would deadlock the first recursive call on the same
+   thread) — a `CallDepthGuard` RAII-decrements a `call_depth: Mutex<u32>`
+   bounded at `MAX_CALL_DEPTH = 64`, unwinding correctly even through a
+   handler panic. That guard is deliberately *not* a cycle detector:
+   `ciac-sema`'s `CycleDetection` pass already treats
+   `EdgeKind::ServiceCall` as a flow edge in its combined cycle check
+   (M1's own finding, reconfirmed here), so a compiled program can
+   never reach it — it exists only for a hand-built `SimWorld` (this
+   crate's own tests, or a future non-generated driver) whose handlers
+   call each other in a way the compiler never saw, turning what would
+   otherwise be an unrecoverable stack overflow into a graceful `Err`.
+   The negative fixture proving that compile-time refusal
+   (`tests/ui/service-call-cycle.ciac`, `expect: CIAC0006`, two
+   services calling each other's apis) was added this milestone, not
+   M1 — M1's Shipped note recorded the *investigation* that found
+   `CycleDetection` already sufficient; M2 is what actually landed the
+   fixture proving it, closing that coverage gap. `SchedulingKey`'s
+   `service` field (`crates/ciac-sim/src/schedule.rs`) needed **no
+   code change at all** — it was already part of 17UpdatePlan.md
+   Pillar 6's documented total order (`virtual_timestamp_ms`, `phase`,
+   `service`, `actor`, ...), ahead of `actor` in field-declaration
+   order, which is comparison order for a derived `Ord`. "Service-aware
+   scheduler tiebreak" was a verification item, not an implementation
+   item: the new
+   `events_from_different_services_tiebreak_by_service_before_actor`
+   test schedules two same-timestamp, same-phase events from different
+   services with actor names that would sort the *other* way, and
+   asserts service identity wins the tie — proving the M1-era design
+   was already correct rather than adding behavior that wasn't there.
+
+   **The found-and-fixed regression:** running this milestone's own
+   required live Rust-target sim proof (`ciac sim --target rust` against
+   `examples/sim-vertical-slice.ciac`) — needed because M2's own changes
+   live in `world.rs`, which Rust inherits via `include_str!`
+   vendoring — failed to compile with `E0433: could not find 'plan' in
+   the crate root`. Root cause, unrelated to any M2 code: 28's M1 added
+   `Scenario::validate_against_plan(&self, plan: &crate::plan::SimPlan)`
+   directly inside `crates/ciac-sim/src/scenario.rs`, but `scenario.rs`
+   is one of the files `ciac-backend-rust` vendors verbatim
+   (`include_str!`) into *every* generated Rust project's own crate
+   (`VENDORED_SIM_SCENARIO` in `crates/ciac-backend-rust/src/lib.rs`),
+   while `plan.rs` is never vendored and cannot easily be — it hard-
+   depends on the compiler-only `ciac_ir` crate and `sha2`, neither
+   available nor appropriate in a generated runtime project's own
+   dependency tree. This broke compilation of every generated Rust
+   project's own `sim_runner` binary for any Rust-target `ciac sim`
+   invocation since M1 shipped (M1's own verification apparently
+   exercised only the Python-target flagship and compile-time
+   cycle-detection checks, never a live Rust-target proof — the same
+   class of gap 26/27 have surfaced before: a milestone's own
+   verification not reaching every path its change touches). Fixed by
+   relocating the method (renamed `SimPlan::validate_scenario(&self,
+   scenario: &crate::scenario::Scenario) -> Result<(), ScenarioPlanError>`,
+   receiver/argument swapped, otherwise behavior-identical) plus
+   `ScenarioPlanError` into `plan.rs`, where `ciac_ir` is already a
+   legitimate dependency — confirmed via grep that the method is
+   called only from the compiler-side CLI preflight
+   (`crates/ciac/src/commands.rs`'s `sim_inner`, before any target's
+   driver runs), never from within any vendored/generated code path,
+   making the relocation semantically safe. `lib.rs`'s re-export and
+   the `commands.rs` call site (`plan.validate_scenario(&scenario)`,
+   swapped from `scenario.validate_against_plan(&plan)`) were updated
+   to match; the two tests that exercised the old method moved from
+   `scenario.rs` to `plan.rs` (renamed, same assertions). All 26 Rust
+   golden snapshots were regenerated a second time this milestone (the
+   vendored `scenario.rs` content changed), reviewed, and are stable
+   under a stability re-run. Re-running the Rust-target live proof
+   after the fix: `[PASS] v0.17-m5-vertical-slice`, no compile error —
+   the regression this milestone found is also the regression this
+   milestone closed, disclosed here rather than silently folded into
+   "M2 shipped as designed."
+
+   `ciac-sim`'s unit suite grew from 87 (M1's exit count) to 93: the
+   namespacing/router/depth-guard/tiebreak coverage above, net of the
+   validate_against_plan -> validate_scenario relocation (2 tests
+   moved, not added — same coverage, new home). Full `cargo test
+   --workspace --no-fail-fast` (`cargo fmt --check` and `cargo clippy
+   --workspace --all-targets -- -D warnings` both clean) exits with
+   only the same disclosed pre-existing `ruff`-version-drift failure in
+   `backfill_cli` (27 M9's own finding, reconfirmed unrelated to this
+   milestone). Both live-proof anchors reconfirmed after the fix:
+   Python-target `order-system.ciac` (`[PASS]
+   27-m9-order-system-flagship`) and Rust-target
+   `sim-vertical-slice.ciac` (`[PASS] v0.17-m5-vertical-slice`, the one
+   that originally failed).
+
 3. **M3 — Python composition, the pathfinder.** The pyrunner
    system driver: N services loaded under package aliases, one
    world, routes/consumers/jobs registered per service in
@@ -835,6 +998,134 @@ push, in-place Shipped notes).
    data, which is this milestone's second deliverable beyond
    working code).
 
+   **Shipped (v0.28 M3) — the aliasing sharp edge resolved by
+   capture-and-swap, plus one production-code bug the live proof
+   found and fixed.** Every generated Python project's top-level
+   package is literally named `app`; loading N such projects into one
+   process the straightforward way (`sys.path` holding all N project
+   directories at once) is unsound — whichever project's `app.db`
+   resolves first on `sys.path` wins for *every* service's own `from
+   app.db import ...`, silently misrouting every other service's
+   database access. This was reproduced live in scratch testing before
+   the fix, not just reasoned about. `sim/pyrunner/multi_service.py`'s
+   `ServiceModules` is the resolution: each service's fully imported
+   `app.*` module tree is captured once (`sys.path` scoped to just that
+   project during the import so a not-yet-cached submodule resolves to
+   the right files), then swapped into `sys.modules` immediately before
+   invoking any of that service's code. Sound specifically because the
+   driver's event loop never runs two coroutines' bodies concurrently
+   on the same thread — `ScenarioRunner` awaits every step in strict
+   sequence — so "which service's `app.*` is live" is a well-defined
+   value at every point in execution; a lazy, call-time import (e.g.
+   `db.py.j2`'s own `from app.db import ...` inside `get_sessionmaker`,
+   reached only when a route actually runs) resolves correctly because
+   the target module was already cached during that service's own
+   `load()` pass. Confirmed by a standalone smoke test against the real
+   generated `multi-service-media.ciac` output before wiring it into
+   the driver proper: `billing.app.config` and `upload-api.app.config`
+   captured as distinct module objects, module identity round-tripping
+   correctly across repeated `activate()` calls, and a lazy call-time
+   `from app.state import current` resolving to the *currently active*
+   service's own state, not whichever service loaded last.
+
+   `sim/pyrunner/multi_driver.py` is the new N-service counterpart to
+   `auto_driver.py` (which is untouched in shape — a single-service run
+   still uses it unchanged): it loads every service in `plan.services`
+   declaration order into one shared `world.SimWorld`, registers each
+   service's workers/jobs/apis wrapped in `_service_scoped` (a
+   save-current/activate-target/restore-in-`finally` wrapper, symmetric
+   at any nesting depth so a routed call into another service that
+   itself routes into a third composes correctly without any call site
+   needing to know about `ServiceModules` at all — the same recursive-
+   symmetry discipline `CallDepthGuard` uses in Rust), and routes every
+   `call <Service>.<Api>` step through `world.call_checked` instead of
+   real HTTP via M3b's already-shipped `client.py.j2` guard. `commands.
+   rs`'s `sim_drive_python` is now two functions (`_single`, unchanged
+   shape, and `_multi`, new): the multi-service path matches each
+   `plan.services` entry to its generated project directory by kebab-
+   casing the service name (`ciac_codegen::model::Ctx::dir`'s own
+   derivation, now also a direct `heck` dependency of the `ciac` crate)
+   rather than guessing, `uv sync`s each project's own venv (a service
+   may declare dependencies none of the others need — `nats-py` only
+   where a queue is used, `aioboto3` only where an object store is
+   used), and assembles one `PYTHONPATH` unioning every venv's own
+   `site-packages` directory (found by globbing, since the exact
+   `pythonX.Y` component varies) alongside the sim scratch dir — third-
+   party packages need this global union; `app.*` resolution is what
+   `ServiceModules` handles per call.
+
+   **Two bugs the live proof found, neither hypothetical, both fixed
+   before this milestone could exit — the API registration gap.**
+   Building the live proof against `multi-service-media.ciac` (Billing,
+   UploadApi, Transcoder, Notifier, ProgressFeed; `UploadApi.Upload`
+   calls `Billing.Charge`, then publishes into a three-hop worker
+   chain) surfaced two real defects, not scenario-authoring mistakes:
+   (1) the api-discovery logic borrowed from single-service `build_apis`
+   only ever registers apis a scenario's own `request` steps name
+   directly — correct for single-service (nothing else could call an
+   api), wrong for multi-service, where `Billing.Charge` is reached
+   *only* via `UploadApi`'s own routed call and is never itself a
+   `request` step. Reproduced exactly: `RoutingError: no handler
+   registered for Billing.Charge (called from UploadApi)`. Fixed by
+   discovering each service's apis from `plan["apis"]` filtered by
+   `service_key` — every api the service declares, the same source
+   `build_workers_and_jobs` already used for workers/jobs — not from
+   scenario steps. (2) Once routing worked, `Video.model_validate`
+   failed with three field errors: `call_checked`'s return value turned
+   out to carry the *same* `{"status": ..., "data": ...}` envelope
+   every route function's own body already builds (`api.py.j2`'s
+   `Return` step wraps every pipeline outcome this way, confirmed by
+   reading the generated `charge.py`), contradicting M3b's own
+   documented assumption ("no HTTP response envelope to unwrap") — a
+   real error in that milestone's design note, not just an
+   implementation gap. Fixed in `client.py.j2`'s world-guard branch:
+   `result["data"]` unwrapped before validation, exactly mirroring the
+   real-HTTP branch's `response.json()["data"]`; the doc comment
+   corrected to match. Both fixes are additive to the sim-only branch
+   only — `client.py.j2`'s production (real-HTTP) branch is untouched,
+   confirmed byte-identical by the golden diff review this milestone's
+   own exit checklist requires.
+
+   `sim/multi-service-media.ciac-sim.json` (new) is the live-proof
+   scenario: one `request` (`UploadApi.Upload`), an `expect.response`
+   assertion (proving the routed call round-tripped), two `drain`
+   steps, and `expect.quiescence`. Two drains, not one, was itself a
+   finding worth recording: `plan.services` (and therefore worker
+   registration order, since `ScenarioRunner.workers` is a plain dict
+   in registration order) is alphabetical, not source-declaration
+   order, so `_drain()`'s single pass reaches `Notifier`'s own worker
+   *before* `Transcoder`'s worker has published the `Transcoded`
+   message that worker consumes — one drain leaves `Notifier` with an
+   undelivered message, exactly as `expect.quiescence` reported before
+   the second `drain` step was added. Not a bug: `_drain()`'s single-
+   pass-in-registration-order semantics are unchanged from single-
+   service and this is the expected shape of a multi-hop cascade
+   needing multiple drains, not a defect — but real enough that it
+   belongs in this note for whoever authors M4's own three-scenario
+   corpus next, rather than being silently absorbed into "the proof
+   passed."
+
+   Both single-service anchors reconfirmed unaffected after every fix
+   in this milestone (`client.py.j2` is only ever rendered for a
+   multi-service system — a single-service program has no `call
+   <Service>.<Api>` target to reach): Python-target `order-system.ciac`
+   (`[PASS] 27-m9-order-system-flagship`) and Rust-target
+   `sim-vertical-slice.ciac` (`[PASS] v0.17-m5-vertical-slice`, unaffected
+   since this milestone touched no vendored file). Full `cargo test
+   --workspace --no-fail-fast` (`cargo fmt --check` and `cargo clippy
+   --workspace --all-targets -- -D warnings` both clean) exits with
+   only the same disclosed pre-existing `ruff`-version-drift failure in
+   `backfill_cli`. All three multi-service Python golden snapshots
+   (`inventory-system`, `multi-service-media`, `traced-checkout`)
+   regenerated for the `client.py.j2` change, reviewed, and stable
+   under a second, non-updating run; the 26 Rust golden snapshots from
+   M2's own fix are untouched by this milestone (no vendored file
+   changed). The "sim-only shim fallback" branch this milestone's own
+   description names as a possible outcome was not needed — capture-
+   and-swap resolved the aliasing edge outright, so M5's checkpoint
+   inherits real multi-service data from an actually-working driver,
+   not a documented workaround.
+
 4. **M4 — The system corpus, proven on Python.** The three
    scenarios authored (outcomes frozen); `sim-three-service.ciac`
    added and verifying ×5 as an example; the corpus green on
@@ -843,6 +1134,144 @@ push, in-place Shipped notes).
    call-seam failure, N=3 global ordering. Single-service corpus
    + anchors re-proven untouched. The wall-clock data for
    Python's system runs recorded.
+
+   **Shipped (v0.28 M4) — the three-scenario corpus landed as
+   planned, plus two real defects the live proofs found (not
+   scenario-authoring mistakes) and a documented, intentional
+   coverage trade the second one exposed.** Split into three
+   passes rather than one: M4a threaded per-service database
+   namespacing end-to-end (the gap M3c's own Shipped note
+   disclosed and deferred); M4b authored and proved the new N=3
+   example; M4c authored and proved `inventory-system.ciac`'s
+   scenario and reviewed `multi-service-media.ciac`'s existing
+   M3c scenario against this milestone's own proof-ledger row.
+
+   **M4a — `world.py`'s `namespaced_table_key` (M3a) actually
+   wired into the write path, failure-injection subject, and
+   transcript, plus the read path.** `_FakeSession._key` composes
+   `namespaced_table_key(self._service, table)` once per session
+   and every storage/delete/select/commit call site now goes
+   through it instead of the bare table name; `ScenarioRunner`
+   gained a `multi_service: bool` field so `_expect_row` namespaces
+   its own lookup the same way, mirroring `db.py.j2`'s own
+   `SERVICE_FOR_SIM` constant — baked in at codegen time (`multi.
+   then_some(ctx.service_name.as_str())`, Rust `{:?}`-formatted
+   into a Python literal), not derived at runtime, so a
+   single-service project's degenerate case (`None` → bare table
+   name) is exactly what it was before this milestone touched
+   nothing in that path. Disclosed, not fixed: schema-based
+   reference/uniqueness validation (Python's `_check_write`,
+   Rust's `validate_write`) is keyed by bare table names on both
+   targets and silently no-ops against an already-namespaced key —
+   traced to M2's own original design, confirmed identical in Rust
+   by reading `RelationalSchema::from_tables`/`outgoing`/`incoming`,
+   and deliberately unexercised by any of this milestone's three
+   scenarios (`sim-three-service.ciac`'s two tables declare no
+   `Reference<T>` across the namespaced boundary, by design). A
+   real gap, filed for whichever future milestone first needs
+   cross-service relations under simulation.
+
+   **M4b — `sim-three-service.ciac`, the N>2 proof.** `Intake`
+   calls `Billing.Charge` synchronously, then publishes
+   `OrderAccepted` for `Fulfillment`'s worker to consume, each
+   downstream service owning its own table (no cross-service
+   `Reference<T>`, sidestepping M4a's disclosed gap on purpose).
+   The scenario asserts the routed call's effect, the
+   cross-service stream delivery, and a `call.request` failure
+   injected on `Charge` at occurrence 2 — no charge row, no
+   shipment row for the failed order, confirmed genuinely causal
+   by a negative control (removing the failure rule, watching the
+   previously-failing request succeed instead). All twelve ×5
+   golden snapshots (dot/ir/five gen targets/four host-syntax-
+   identity/ts-client) generated clean on the first `INSTA_UPDATE`
+   pass once `queue NATS` capabilities were added to `Intake` and
+   `Fulfillment` (both initially omitted, caught immediately by
+   `ciac check`'s CIAC0005).
+
+   **M4c — `inventory-system.ciac`'s call round trip and scoped
+   auth, plus two real defects the live proof found.** Extended
+   the existing flagship with two scope-gated apis rather than
+   inventing a new program: `Gateway.Quote` (the system's own
+   ingress) and `Catalog.Restock` (an independent entrypoint on
+   the other service), both checked against the one shared,
+   system-scoped `FakeAuth`; `Catalog.Price` stays auth-less since
+   it's reached only by Gateway's routed `call`, and Pillar 4's own
+   "Identity propagation through routed calls" finding — production
+   forwards no caller identity through the existing call clients,
+   so the router must not invent one — means a call-only callee
+   could never satisfy a scope in the first place, sim or real.
+
+   First defect: `multi_driver.py`'s per-service api
+   auto-registration loop assumed every `plan["apis"]` entry
+   resolves to a single `app.api.<snake>.<snake>` function —
+   true for a plain `api`, false for `crud <Name>;`, which lowers
+   to a same-shaped `NodeKind::Api` node (`ciac-sema/src/build.rs`'s
+   `crud()` expansion) whose module is a five-verb REST resource
+   file with no such function. Reproduced live: `AttributeError:
+   module 'app.api.item' has no attribute 'item'` the moment
+   `Catalog` — which already owned `crud Item` before this
+   milestone — was loaded by the multi-service driver for the
+   first time. This means the M3c driver could never have loaded
+   *any* multi-service system with a `crud` resource, regardless of
+   what a scenario actually exercised; not a regression from this
+   milestone's own changes, but a latent gap this milestone's
+   first `crud`-bearing multi-service proof was always going to
+   hit. Fixed by skipping non-single-function modules in that
+   loop; a program that genuinely writes `call Catalog.Item` (which
+   `ciac check` does not reject — `resolve_call` only checks the
+   node exists and the payload type matches, another disclosed,
+   pre-existing gap) still fails loudly at simulation time via
+   `call_checked`'s own `RoutingError`, not silently.
+
+   Second finding, a correct consequence rather than a bug:
+   declaring `auth JWT;` on `Catalog` at all — needed for
+   `Restock`'s scope — also flips `crud Item`'s own `has_auth`
+   (`docs/language.md`: "`crud` gates every route with that
+   capability automatically once it's declared"), even though
+   `Item` sets neither `read_scope` nor `write_scope`. This
+   silently drops the project's original v0.9 M2 capability
+   round-trip system test for `Item` from generation, since
+   `ciac-codegen::system_tests::build_capability_checks` already
+   and correctly skips any `has_auth` resource ("no credentials to
+   present") — confirmed by regenerating the project and finding
+   `tests/system/` now emits only `test_calls.py`, no
+   `test_capabilities.py`. Documented in the example's own doc
+   comment as a disclosed trade rather than avoided by picking a
+   different design; `ciac verify --system`'s call-reachability
+   test for `Gateway`→`Catalog.Price` is unaffected. Reviewed
+   `multi-service-media.ciac`'s existing M3c scenario against this
+   milestone's own proof-ledger row ("per-service row assertions")
+   and found it genuinely unsatisfiable as written — the program
+   declares zero `table`s in any of its five services, a v0.5-era
+   topology choice predating this arc — so `sim-three-service.ciac`
+   is the proof that actually delivers request→publish→
+   cross-service-worker *with* per-service row assertions;
+   retrofitting a table onto the v0.5 flagship for this row alone
+   was judged higher-risk than worth it (that example's handlers
+   are old-style capability-bound stubs, not typed-handler bodies,
+   so giving `TranscodeVideo` a real `db.insert` would mean
+   changing its fundamental shape, not just adding a field) and is
+   left as a named, undone option rather than done silently.
+
+   One clippy regression from M4a's own already-committed code
+   (`multi.then(|| ctx.service_name.as_str())`, `clippy::
+   unnecessary_lazy_evaluations` under this toolchain) was caught
+   and fixed by this milestone's own verification pass
+   (`then_some`), not introduced by M4b/M4c.
+
+   Both single-service anchors reconfirmed green:
+   `sim-vertical-slice.ciac` at `{"ProcessOrder": 3}`/
+   `{"Reconcile": 1}` (`[PASS] v0.17-m5-vertical-slice`) and at
+   `{"Reconcile": 7}` via `virtual-week.ciac-sim.json` (`[PASS]
+   v0.17-m5-virtual-week`); Python-target `order-system.ciac` via
+   the full workspace test suite. Wall-clock data for Python's
+   system runs (`ciac sim`, cold, including codegen — not isolated
+   scenario-runner time): `multi-service-media` 3.34s,
+   `inventory-system` 3.14s, `sim-three-service` 2.77s. Full `cargo
+   test --workspace --no-fail-fast` (`cargo fmt --check` and
+   `cargo clippy --workspace --all-targets -- -D warnings` both
+   clean) exits with only the same disclosed pre-existing `ruff`-
+   version-drift failure in `backfill_cli`.
 
 5. **M5 — CHECKPOINT.** The composition go/no-go for compiled
    targets, priced on M3/M4's measured reality: Python's
@@ -859,6 +1288,103 @@ push, in-place Shipped notes).
    — pre-registered as always, expected never). Checkpoint
    report lands in this file.
 
+   **Shipped (v0.28 M5) — go, with the biggest priced risk
+   already retired and a different, unpriced one found in its
+   place.** This plan's own text called the Rust lib+bin
+   reshaping "the single most golden-visible item in the arc" —
+   checked against the actual generator (`crates/ciac-backend-
+   rust/src/lib.rs`) rather than against the M1 estimate's
+   assumption, **it has already shipped**: every generated Rust
+   project has carried both `src/lib.rs` (a full `pub mod` tree —
+   `routes`, `state`, `db`, `models`, `services`, `clients`,
+   `world`, everything) and a thin `src/main.rs` that only calls
+   into `{{ c.module }}::` since v0.17 M11, when `src/bin/
+   sim_runner.rs` first needed to import the service's own routes
+   and state as a library rather than duplicating them. `Cargo.
+   toml.j2` carries no explicit `[lib]`/`[[bin]]` sections at
+   all — Cargo's own convention (a package with both `src/lib.rs`
+   and `src/main.rs` gets both target kinds for free) already does
+   the job. **Net effect: M6 owes zero golden churn for the
+   reshaping itself** — every one of the 28 Rust golden snapshots
+   the plan expected to touch for this reason alone stays
+   untouched by it, because there is nothing left to reshape.
+   Reshape-first is consequently not a live outcome: there is no
+   separable "reshaping" step left to isolate as its own review.
+
+   That finding does not, on its own, clear M6 — it just means the
+   M1 estimate's *named* risk was already retired by earlier work
+   for an unrelated reason, not that composition is free. Reading
+   the generator further surfaced the risk the M1 estimate never
+   named: `crates/ciac-backend-rust/src/lib.rs` vendors `ciac-sim`'s
+   `world.rs` (and `clock.rs`/`cron.rs`/`failure.rs`/`scenario.rs`)
+   via `include_str!`, pasting the same source text into **every**
+   generated project's own `src/world.rs` — a deliberate choice
+   (a generated project depends on nothing from this repo's own
+   crates, staying self-contained for a user who never sees `ciac`'s
+   source) which this plan's own Pillar 3 correctly named as a
+   consequence of "Rust: generated projects are binary crates" but
+   did not carry one step further: N services built this way get N
+   *nominally distinct* `SimWorld` types (same source, but Rust's
+   type identity is per-crate, not per-source-text), and a
+   system-runner crate depending on all N service crates as
+   libraries cannot construct "one world" of a type any of them
+   share — the exact "one memory space, one world" property Pillar
+   3 opens by naming as the whole reason single-process composition
+   was chosen over the rejected N-process design. Python has no
+   analogous problem (`sim/pyrunner/world.py` is one file the driver
+   imports directly, never duplicated per project), so M3/M4's
+   measured experience gives no precedent either way for this one.
+
+   Two paths were weighed, not yet chosen (M6's own first
+   pre-registered open question, resolved on contact, in the exact
+   tradition M3's aliasing-vs-shim question was): **(a)** extract
+   the vendored sim modules into one small path-dependency crate
+   that a multi-service system's own N service crates *and* its
+   system-runner crate all depend on in place of their private
+   `include_str!` copy — single-service projects keep today's
+   vendored-and-self-contained shape untouched, since this only
+   ever applies when a system-runner crate exists at all; **(b)**
+   accept the pre-registered process-fallback for Rust specifically
+   (an N-process system runner coordinating N `sim_runner`
+   binaries over the existing one-line-stdout protocol, multiplied)
+   if (a) proves more invasive than it looks on paper — a
+   legitimate, plan-sanctioned outcome for exactly this shape of
+   structural wall, not a failure. (a) is the working assumption
+   for M6 to open with, since it preserves the single-process
+   design Pillar 3 argues for and touches no single-service golden
+   file.
+
+   Python's own measured composition cost (M3/M4, cross-checked
+   against this checkpoint rather than restated) supports proceeding
+   rather than hesitating: `multi_driver.py` (331 lines) + `multi_
+   service.py` (153 lines) is the full second driver, and every
+   sharp edge the plan predicted in Pillar 3 (import identity in M3,
+   database namespacing and API-registration completeness in M4)
+   was found live, diagnosed, and fixed with a small, targeted
+   change — the aliasing shim fallback was never needed, and no
+   scenario ever required a design reversal. The lesson worth
+   carrying into M6 specifically: M4c's `crud`-shaped-api
+   registration bug (a plan-level api entry that doesn't resolve to
+   a single callable, found only once a `crud`-bearing multi-service
+   program was actually driven) has no Rust analogue to check for
+   yet, since Rust's own call/route registration is direct function
+   wiring at codegen time rather than reflective module lookup — but
+   the general shape of the lesson ("a system-runner's registration
+   pass must be checked against every api-*shaped* IR node the
+   corpus actually produces, not just the ones today's examples
+   happen to exercise") carries forward regardless of mechanism.
+
+   **Decision: go.** M6–M8 proceed. No reshape-first step (there is
+   nothing left to reshape); no process-fallback taken pre-emptively
+   (path (a) above is untried, not ruled out); no no-go (nothing
+   found here is structural in the sense Pillar 3 reserves that
+   outcome for — the vendored-world type-identity question has a
+   credible single-process answer that simply wasn't written down
+   before this checkpoint went looking for it). M6's own exit
+   checklist gains one concrete addition beyond what M1 specified:
+   record which of (a)/(b) above was actually taken, and why, the
+   same way M3 recorded aliasing-over-shim.
+
 6. **M6 — Rust composition.** The lib+bin project reshaping
    (uniform, behavior-neutral, golden-reviewed under the 26
    invariant discipline — likely pre-shipped per M5), the
@@ -867,6 +1393,136 @@ push, in-place Shipped notes).
    guard, driver topology handling. The system corpus green on
    Rust; outcomes identical to Python's byte-for-byte; build
    timings recorded.
+
+   **Shipped (v0.28 M6) — path (a) taken as planned, a new
+   system-runner crate generated and driven, three-scenario corpus
+   green with Python-identical outcomes.** M6a (call-client
+   world-guard) and M6b (the shared `sim-shared` crate, resolving
+   M5's vendored-type-identity finding via path (a) exactly as
+   that checkpoint recorded) had already shipped by the time this
+   note was written; M6c/M6d close the milestone.
+
+   A gap M5's own checkpoint reading missed surfaced first: Rust's
+   vendored `world.rs` had carried M2's namespaced `_for`-suffixed
+   methods (`db_insert_checked_for`, etc.) since 28's M2, but
+   nothing in `ciac-backend-rust/src/lower.rs`'s typed-handler
+   lowering ever called them — every db verb wrote/read the bare
+   table name regardless of service, the exact collision risk
+   Python's M4a closed for `world.py`. Fixed the same way: `lower.
+   rs`'s `RustSyntax` gained a `service_name: Option<String>` field
+   (populated from `emit_service`'s own `multi.then_some(ctx.
+   service_name.as_str())`, mirroring the Python driver's own
+   per-service scoping) and a `world_table_key(&self, table_snake)`
+   helper composing `"{service}::{table}"` (`None` degenerates to
+   the bare name — the single-service path is untouched, confirmed
+   by every single-service Rust golden staying byte-identical
+   through this change). Every world-guard branch across `db_
+   insert_expr`/`db_update_expr`/`db_delete_expr`/`query_expr`'s
+   three arms/`db_get` now composes this key instead of the bare
+   `table_snake`, while the real-SQL branch beside it keeps using
+   the bare name unconditionally (the physical table itself is
+   never namespaced) — the same split M4a drew in Python. A
+   `sim_world_tables_multi` counterpart to the existing single-
+   service `sim_world_tables` builds the system-runner's own
+   `SimWorld::with_schema` table list with the identical namespaced
+   keys (and namespaced FK `target_table`s, resolved through a
+   `physical name -> owning service` map built from `ir.tables()`),
+   so the schema a reference/uniqueness check validates against can
+   never drift from what the lowered code actually addresses.
+
+   The system-runner crate itself (`system-runner/`, sibling to
+   `sim-shared/` and every service directory) is a plain Cargo
+   binary crate with path dependencies on `sim-shared` and every
+   service crate by its real package name — since (unlike Python's
+   uniformly-`app`-named packages, which needed `multi_driver.py`'s
+   `ServiceModules` aliasing shim) every generated Rust service
+   crate already has a distinct crate name, there is no aliasing
+   problem to solve at all; the driver just names each service
+   crate directly. Its `main.rs` (`system_sim_runner.rs.j2`, a new
+   template) builds one shared `Arc<sim_shared::world::SimWorld>`,
+   constructs each service's own `AppState::simulation(config,
+   world.clone())` (sound because `crate::world::SimWorld` is a
+   `pub use sim_shared::world` re-export in multi-service mode, so
+   every service's "own" world type is the identical nominal type
+   M6b's extraction bought), and registers every api in every
+   service on the shared world's call router up front, in
+   declaration order — mirroring `multi_driver.py`'s own coverage
+   rule (an api reachable only via a routed `call` needs an entry
+   too, not just the ones a scenario's `request` steps name
+   directly). `request`/`advance`/`drain`/`expect` mirror the
+   single-service runner's own methods almost verbatim, generalized
+   across the `services` list; the one new piece of machinery is
+   `block_on_ready`, a same-file helper that polls a future exactly
+   once with a no-op waker rather than parking a thread — needed
+   because `world.register_api`'s handler type is a *synchronous*
+   `Fn(Value) -> anyhow::Result<Value>` (so it stays callable from
+   `call_checked`'s own synchronous body), while dispatching a
+   routed call still has to drive the same async `axum::Router::
+   oneshot` the direct `request` path awaits normally. This is sound
+   specifically because full simulation coverage (27's M4: "no
+   longer refuses anything") means no world-guarded call site ever
+   really suspends on first poll — confirmed live, not just argued:
+   every one of the three corpus scenarios (including `sim-three-
+   service`'s own cross-service `call` through the Billing/
+   Fulfillment seam) ran clean with no `Poll::Pending` panic.
+   `commands.rs`'s `sim_drive_rust` gained the same `_single`/
+   `_multi` split `sim_drive_python` already has (`find_project_dirs`
+   now also excludes `system-runner/`, the same treatment M6b gave
+   `sim-shared/`); `_multi` needs no `PYTHONPATH`-style dependency
+   assembly at all — `cargo build`/`cargo run` inside `system-
+   runner/` already resolves the whole path-dependency graph through
+   Cargo itself.
+
+   Live-proofed against all three system scenarios through the real
+   `ciac sim` CLI (`--target rust`): `sim-three-service` (N=3,
+   cross-service `call` + failure injection), `multi-service-media`
+   (upload/charge/transcode/notify fan-out), `inventory-system`
+   (call round-trip + scoped auth). All three passed with `error:
+   null`, and every field of the JSON outcome matched the Python
+   run byte-for-byte with one disclosed, *pre-existing* exception:
+   Python's `_drain` unconditionally records `_worker_attempts
+   [worker] = 0 + attempts` for every registered worker on every
+   `drain` step (so a worker that never fires still appears in the
+   dumped map with count `0`, e.g. `multi-service-media`'s own
+   `DeadLetterSink`), while the single-service Rust runner's `drain`
+   — and this milestone's system-runner, which deliberately mirrors
+   it rather than diverging — only touches the map entry inside the
+   loop draining that worker's actual messages, so a never-fired
+   worker is simply absent from the map rather than present at `0`.
+   This predates M6c (the identical structure already existed in
+   `sim_runner.rs.j2` since v0.17 M11) and is cosmetic, not
+   behavioral: `expect.worker_attempts`/`expect.job_runs` on both
+   sides default a missing key to `0` before comparing, so no
+   scenario assertion can observe the difference — tracked as an
+   open ledger row for a future milestone to close by aligning
+   Rust's bookkeeping to Python's, not fixed here since it would
+   also require touching the already-shipped single-service
+   template, out of this milestone's own scope.
+
+   Golden churn matched the shape M5 predicted for path (a): the
+   five multi-service Rust examples (`audited-crud`, `inventory-
+   system`, `multi-service-media`, `sim-three-service`, `traced-
+   checkout` — every multi-service program in the corpus, no more
+   and no fewer) picked up `system-runner/Cargo.toml` + `system-
+   runner/src/main.rs`, plus (only in `sim-three-service`, the one
+   example with a `table` declaration reachable from a typed
+   handler) the two-line bare-to-namespaced `db_insert_checked`
+   diff described above (`"charges"` → `"Billing::charges"`,
+   `"shipments"` → `"Fulfillment::shipments"`); every single-service
+   Rust golden in the corpus stayed byte-identical, confirming the
+   `service_name: None` degenerate path is truly a no-op. `cargo
+   fmt --check`, `cargo clippy --workspace --all-targets` (zero
+   warnings), and `cargo test --workspace --no-fail-fast` all ran
+   clean, the latter's only failure being the one standing,
+   pre-existing `backfill_cli` ruff-version-drift case this whole
+   arc has carried since before it started. Timings: a cold `cargo
+   check`/`cargo build` of a fresh `system-runner` crate (first
+   resolution of the union of every service's own dependency tree
+   plus `tower`/`base64`) took ~35-40s; every subsequent `cargo
+   run -- <scenario.json>` was sub-second; the full golden-snapshot
+   regeneration across the whole example corpus and all five
+   backends (not Rust alone) took ~370-380s, unchanged in shape
+   from prior milestones' own recorded runs.
 
 7. **M7 — TypeScript and Go compositions.** TS: system entry
    module importing N app factories; the dependency-skew
@@ -877,12 +1533,670 @@ push, in-place Shipped notes).
    (Pillar 3's per-target analysis) — if either surprises, it
    splits out with the deviation recorded, the standing rule.
 
+   **Shipped (v0.28 M7a) — TS half of M7: system-runner npm
+   package, real `file:`-dependency resolution verified live, no
+   shared Fastify dispatch helper (a deliberate deviation from the
+   design sketched at M5/M6, corrected after a live repro), and the
+   dependency-skew assertion.** Go's half (M7c/M7d) is separate,
+   tracked work; this note covers TS only.
+
+   Before writing `system_sim_runner.ts.j2`, the two open questions
+   Pillar 3 flagged for this target — whether `system-runner`
+   needs `fastify`/`pg`/etc. as its own direct dependencies, and
+   whether a `file:` dependency's own transitive dependencies get
+   hoisted into the depending package's `node_modules` — were
+   answered empirically, not assumed: a minimal three-package repro
+   (`sim-shared` + a mock service with `pg` + a `system-runner`
+   depending on both via `file:`) was built in the scratchpad and
+   run through real `npm install --package-lock-only`, then real
+   `npm ci`/`npm run build`/`node`. Confirmed: npm does **not**
+   hoist a `file:` dependency's own transitive dependencies into
+   the depender's `node_modules` (only a `node_modules/<name>`
+   symlink is created); Node's module resolution, when it follows
+   that symlink to the real target directory, searches *that*
+   directory's own already-`npm ci`'d `node_modules` for bare
+   specifiers reached from within it. This means every service
+   still needs its own independent `npm ci && npm run build` before
+   `system-runner`'s own build can run (matching the design already
+   sketched), but — the one real finding — `system-runner` itself
+   needs **no** direct dependency on `fastify`, `pg`, or any other
+   provider package: it never imports them directly, and Node
+   resolves each service's own transitive imports through that
+   service's own installed tree, not through `system-runner`'s.
+   `system-runner`'s own `package.json` (built as a small helper
+   function in `lib.rs`, mirroring `system_runner_cargo_toml`'s own
+   shape, using real `serde_json::json!` construction rather than
+   hand-formatted strings) declares exactly three things: `sim-
+   shared` and every service by `file:../<dir>`, and `croner`
+   (needed directly for the runner's own `dueInstants` helper,
+   since `advance` steps compute due job instants without going
+   through any service's own code). The `package-lock.json` was
+   likewise built from the real lockfile the scratchpad repro
+   produced (`node_modules/*` link entries for every local package,
+   ordinary registry entries only for `croner`/`typescript`/`@types/
+   node`/its `undici-types` transitive) rather than hand-guessed.
+
+   A design point sketched before implementation — a shared,
+   structurally-typed `dispatch()` helper so every `(service, api)`
+   pair's `app.inject()` call site could funnel through one
+   function, mirroring Rust's own `Router`-erasure trick — was
+   dropped once actually attempted: unlike `axum::Router::with_
+   state`, which erases every service's distinct state type into
+   one uniform `Router`, each service's own `buildApp()` return type
+   carries its *own* inferred Fastify generic parameters (e.g. from
+   `@fastify/otel`'s plugin registration when `tracing` is
+   declared), so a shared helper risked exactly the generic-variance
+   friction Pillar 3's composition matrix names as this target's
+   sharp edge. The template instead inlines the `app.inject()` call
+   per `(service, api)` pair — both in `request()`'s big
+   `if`/`else if` chain and in the up-front `world.registerApi`
+   loop — the same shape the single-service `sim_runner.ts.j2`
+   already uses for its one app, just repeated per pair via Jinja
+   loops. This sidesteps the friction entirely rather than fighting
+   it, at the cost of some duplicated inject-call boilerplate per
+   pair — judged the right trade for a target Pillar 3 already
+   priced as "expected cheapest," not worth a second design pass to
+   avoid.
+
+   One more consequence of the cross-package boundary needed
+   fixing: `tsconfig.build.json.j2` had `"declaration": false`
+   unconditionally, but `system-runner` needs to import types
+   (`AppState`, etc.) from each service's own compiled `dist/*.js`
+   output, which requires a co-located `.d.ts`. Gated `"declaration":
+   true` on `multi` only (verified live: with it on, every service's
+   own `npm run build` in the corpus's three multi-service examples
+   emits correct `.d.ts` alongside `.js`, and `system-runner`'s own
+   `tsc` resolves `import type { AppState } from "billing/dist/
+   state.js"` cleanly, including the transitively-referenced `pg`/
+   `drizzle-orm` types inside that `.d.ts`, resolved through
+   `billing`'s own already-installed `node_modules` reached via the
+   symlink); single-service golden output is untouched by the gate
+   (confirmed: no single-service `tsconfig.build.json` snapshot
+   changed).
+
+   The dependency-skew assertion Pillar 3 named for this target
+   (`assert_no_dependency_skew` in `lib.rs`) checks, for real,
+   against the actually-rendered `<dir>/package.json` of every
+   service in the system — not just assumed from reading the
+   template — that every one of them declares an identical
+   dependency/devDependency map (the only per-service variables in
+   `package.json.j2` are the `name` field and, uniformly here, the
+   `sim-shared` line), returning a `BackendError` naming the first
+   divergent service if a future template edit ever broke that
+   invariant. Runs unconditionally whenever `system-runner` is
+   emitted, before any of its own files are written.
+
+   Live-proofed against all three system scenarios exactly as M6
+   was: `sim-three-service`, `multi-service-media`, `inventory-
+   system`, each built through the *real* toolchain (`sim-shared`'s
+   `npm ci && npm run build`, then every service's own, then `system-
+   runner`'s own `npm ci && npm run build`) and run via `node dist/
+   sim_runner.js <scenario.json>`. All three passed with `error:
+   null`, every field byte-identical to Rust's own M6c system-runner
+   output on the same scenarios (worker/job-outcome key ordering
+   differs cosmetically — Rust's `BTreeMap` sorts alphabetically,
+   TS's plain object keeps insertion order — the same non-finding
+   M6 already disclosed, now confirmed to hold at N=3/N=5 service
+   scope too, not just single-service). Golden churn: the same five
+   multi-service TS examples M6 touched on the Rust side (`audited-
+   crud`, `inventory-system`, `multi-service-media`, `sim-three-
+   service`, `traced-checkout`) picked up six new `system-runner/*`
+   files each (`package.json`, `package-lock.json`, `tsconfig.json`,
+   `tsconfig.build.json`, `.gitignore`, `src/sim_runner.ts`) plus the
+   per-service `"declaration": true` addition to `tsconfig.build.
+   json`; every single-service TS golden in the corpus stayed
+   byte-identical. `cargo fmt --check`, `cargo clippy --workspace
+   --all-targets` (zero warnings), and `cargo test --workspace
+   --no-fail-fast` all ran clean, the latter's only failure being
+   the same standing, pre-existing `backfill_cli` ruff-version-drift
+   case M6's own note disclosed (confirmed unrelated by reproducing
+   it identically against a clean stash of this milestone's changes).
+
+   The live-proof above was run by hand through the raw toolchain
+   (`npm ci`/`npm run build`/`node`), not through `ciac sim` itself
+   — `commands.rs`'s own `sim_drive_typescript` `_single`/`_multi`
+   split (mirroring `sim_drive_rust`/`sim_drive_python`) is the
+   remaining TS work this milestone still owes, tracked next.
+
+   **Shipped (v0.28 M7b) — the driver split, and the same three
+   scenarios re-proved through the real `ciac sim --target
+   typescript` CLI end-to-end.** `sim_drive_typescript` gained the
+   identical `_single`/`_multi` split `sim_drive_rust`/`sim_drive_
+   python` already carry: `find_project_dirs(out, "package.json")`
+   (already excluding both `sim-shared/` and `system-runner/`, per
+   M6b/M6c's own additions to that walk) dispatches to
+   `sim_drive_typescript_single` for exactly one project (unchanged
+   body) or `sim_drive_typescript_multi` for more than one. Unlike
+   Rust's own `_multi` (where `cargo build` inside `system-runner/`
+   resolves the whole path-dependency graph unaided), M7a's own
+   live repro already established that npm does not hoist a `file:`
+   dependency's transitive dependencies, so `_multi` builds `sim-
+   shared`, then every service project, then `system-runner`
+   itself, in that order (`npm ci && npm run build` at each step)
+   before driving it -- the same three-phase build order the manual
+   scratchpad proof used, now the actual driver's own behavior. Both
+   `_single` and `_multi` funnel through one new shared helper,
+   `run_node_sim_runner` (`node dist/sim_runner.js <scenario>`,
+   one-line-JSON-on-stdout parsing), factored out since the drive
+   loop itself was byte-identical between the two paths -- only the
+   build steps beforehand differ.
+
+   Live-proofed through the real CLI this time, not by hand: `ciac
+   sim --target typescript --out <dir> --scenario <path> <file>`
+   against all three system scenarios (`sim-three-service.ciac`,
+   `multi-service-media.ciac`, `inventory-system.ciac`), each from a
+   clean `--out` directory so every `npm ci` was a genuine cold
+   install. All three printed `[PASS]` (and, separately, verified
+   with `--json`, produced a well-formed envelope with `sim.
+   scenarios[0].passed: true`). Timings (cold, no npm cache reuse
+   across services): `sim-three-service` (3 services + sim-shared +
+   system-runner, 5 `npm ci`s) ~56s wall; `multi-service-media` (5
+   services) ~72s wall; `inventory-system` (2 services) ~31s wall --
+   scaling with service count as expected, dominated by `npm ci`
+   itself rather than `tsc` or the scenario run (every individual
+   `node dist/sim_runner.js` invocation after the builds completed
+   was sub-second, matching Rust's own M6d timing note). `cargo fmt
+   --check`, `cargo clippy -p ciac --all-targets` (zero warnings),
+   and `cargo test -p ciac --no-fail-fast` (skipping the same
+   standing, pre-existing `backfill_cli` ruff case) all ran clean.
+   This closes the TS half of M7 in full; Go's half (M7c/M7d)
+   remains, tracked next.
+
+   **Shipped (v0.28 M7c) — Go's half of M7: the `simbridge` facade
+   package (a discovery beyond what Pillar 3 anticipated), the
+   `sim-shared` module, `world.go`'s call router, the `client.go`
+   world-guard, and `system-runner`'s own `go.mod`/`main.go`.**
+   Unlike TS's file-boundary friction (all solved by M7a's own
+   npm findings) or Rust's crate-boundary friction (solved cleanly
+   by M6b's vendored `sim-shared` crate alone), Go's own module
+   boundary turned out to need a *second*, independent fix once
+   actually attempted: Go's `internal/` package-visibility rule is
+   directory-based and scoped to the import-path prefix rooted at
+   `internal`'s own parent, and this scoping holds **at the module
+   level too** — a live `go build -mod=mod` against a hand-built
+   `system-runner` module reached only through a `go.mod` `replace`
+   directive produced `"use of internal package billing/internal/
+   config not allowed"` the moment it tried to import anything under
+   a service's own `internal/` tree, not just `internal/world` as
+   the plan's own composition matrix had assumed. `world.World`
+   itself was already solved the same way `sim-shared` solves it for
+   Rust — moving `world.go` out of any single service's `internal/`
+   tree into its own `sim-shared` module, imported identically by
+   every service and by `system-runner` — but every *other* internal
+   symbol `system-runner` needs (`Config`, `AppState`, `FromEnv`,
+   `New`, `NewSimulation`, `Router`, worker/job handler funcs and
+   their subject/queue-group/retry constants, typed payload structs)
+   still needed a per-service answer, since those types must stay
+   each service's own distinct types, not one shared type the way
+   `world.World` could be.
+
+   The fix: a new `simbridge.go.j2` template emitting a non-
+   `internal` `simbridge` package per service (`simbridge/
+   simbridge.go`, gated to multi-service emission only, unconditional
+   whenever `system-runner` exists since `Config`/`AppState`/`New`
+   always exist regardless of which capabilities a service declares)
+   whose entire content is bare re-exports of already-`internal`
+   symbols — Go type aliases (`type Config = config.Config`) and
+   function-value vars (`var FromEnv = config.FromEnv`) — mirroring
+   how a Rust crate's `pub use` or a TypeScript package's named
+   export already cross an equivalent boundary for free; Go's own
+   directory-based visibility needed an explicit facade package to
+   do the same job. `system_sim_runner.go.j2` imports one aliased
+   `simbridge` package per service (`{{ suffix }} "{{ svc.package }}/
+   simbridge"`) rather than four separate `internal/*` imports per
+   service, and every previously-`{{ suffix }}Workers.`/`{{ suffix
+   }}Schemas.`/`{{ suffix }}Config.`/`{{ suffix }}State.`/`{{ suffix
+   }}Routes.`-prefixed reference collapses to one `{{ suffix }}.`
+   prefix. One live bug the corpus caught before this shipped: two
+   workers in the `notifier` service (`Notify` and
+   `DeadLetterSink`) both consume `Video`-typed payloads, and the
+   per-worker Jinja loop originally emitted `type Video =
+   schemas.Video` twice — a `go vet` "Video redeclared in this
+   block" failure. Fixed with a `{%- set ns =
+   namespace(seen_payloads=[]) %}` loop tracking already-emitted
+   `worker.payload.class_name` values, only emitting the alias once
+   per distinct payload type.
+
+   `world.go.j2` gained the call router M2's design already named:
+   `type ApiHandler func(req any) (any, error)`, an `apiKey{service,
+   api}` map key, `const maxCallDepth = 64`, `apis
+   map[apiKey]ApiHandler` and `callDepth int` fields on `World`, and
+   `RegisterAPI`/`CallChecked` methods. Go's handler-invocation chain
+   is naturally synchronous — no async bridge was needed at all here,
+   unlike Rust's `block_on_ready` seam or even TypeScript's own
+   (trivial) `async`/`await` — `CallChecked` just unlocks `w.mu`
+   before invoking the handler, since the handler may itself call
+   back into `World` and the mutex is not reentrant. A
+   `NamespacedTableKey` free function (`if service == "" { return
+   table }; return service + "::" + table`) mirrors Rust's
+   `SimWorld::namespaced_table_key`/TS's `namespacedTableKey`,
+   used only by `system-runner`'s own `given.db` seeding at scenario-
+   load time (runtime service/table values); codegen-time call
+   sites still bake the equivalent key in as a literal via the
+   already-existing `GoSyntax::world_table_key`. `client.go.j2`
+   gained the same world-guard shape as Rust's/TS's own clients: a
+   `world *world.World` field plus, per api method, an `if
+   c.world != nil { ...c.world.CallChecked(...)... }` branch that
+   unwraps `result.(map[string]any)["data"]` from the real `{
+   "status":"accepted","data":<result>}` envelope `httpx.Accepted`
+   already builds, falling through to the real HTTP path when
+   `world` is nil (single-service, unchanged).
+
+   `system-runner`'s own `go.mod` needed one more empirically-found
+   correction: a first attempt hand-wrote a minimal `require` list
+   (just `sim-shared` plus per-service `replace` targets and a
+   conditional `robfig/cron/v3`), which failed under Go's default
+   `-mod=readonly` build mode with `"go: updates to go.mod needed"`
+   — `system-runner` transitively needs every third-party package
+   any service's own `simbridge` package pulls in (aws-sdk-s3,
+   redis, nats, jwt/validator deps, …), and `-mod=readonly` refuses
+   to resolve anything not already declared. `go build -mod=mod`
+   confirmed the auto-populated `// indirect` block was exactly the
+   same fixed, capability-independent set every service's own `go.
+   mod.j2` already declares unconditionally — so
+   `system_runner_go_mod()` was rewritten to actually **render**
+   `go.mod.j2` itself (with `c.package = "system-runner"`, `multi =
+   true`) rather than hand-duplicating a dependency list, appending
+   only the genuinely per-system `require <pkg> v0.0.0` / `replace
+   <pkg> => ../<dir>` lines as plain text afterward. `sim-shared`'s
+   own `go.mod` needed no such treatment — `world.go.j2` has zero
+   per-service template variables and imports only Go stdlib, so its
+   `SIM_SHARED_GO_MOD` constant is a fixed three-line module
+   declaration.
+
+   `system_sim_runner.go.j2` (the new, ~800-line multi-service
+   scenario-driving runner, mirroring TS's own `system_sim_runner.
+   ts.j2` but simplified) took one genuine, disclosed shortcut TS
+   couldn't: Go's `*http.ServeMux` is a plain non-generic concrete
+   type, unlike TS's per-app Fastify generic types (the friction
+   that forced M7a to inline every `app.inject()` call site rather
+   than share one helper), so Go's runner drives every `(service,
+   api)` pair through one shared `doInject(mux *http.ServeMux,
+   method, path string, body []byte, headers map[string]string)
+   (int, any, error)` function — no per-pair inlining needed. One
+   compile-time lesson the corpus caught: `drain`/`advance` were
+   first written as top-level functions taking `*world.World` and a
+   counts map, but `go build` reported `undefined: stTranscoder`
+   (etc.) — Go has no closures over top-level functions, so a
+   separate `func drain(...)` can't see a `st{{suffix}}` variable
+   declared inside `main()`. Fixed by converting both into local
+   closures declared inside `main()` right after the per-service
+   state-building loop, dropping their `world`/state parameters
+   entirely since closures capture the enclosing scope directly —
+   the same reason TS's own runner nests its equivalent two
+   functions inside its own `main()`-equivalent. A second, unrelated
+   compile error (`declared and not used: stProgressFeed`, for a
+   service with zero apis/workers/jobs of its own) was fixed with an
+   unconditional `_ = st{{ suffix }}` right after each service's
+   state construction.
+
+   Build-verified (not yet run through `ciac sim` end-to-end — that
+   CLI wiring is M7d's own remaining work, matching the M7a/M7b
+   split TS just went through) across the full corpus: `gofmt -l`
+   and `go vet ./...` came back clean under Go's *default*
+   `-mod=readonly` mode for every one of the five multi-service
+   corpus examples (`audited-crud`, `inventory-system`, `multi-
+   service-media`, `sim-three-service`, `traced-checkout`) — every
+   service directory, `sim-shared`, and `system-runner` itself, each
+   regenerated fresh into a clean scratch directory rather than
+   reusing a stale build cache. Single-service Go golden output was
+   spot-checked unaffected beyond the new call-router additions to
+   `world.go.j2` (present in every target, single- or multi-service,
+   since the router costs nothing when `RegisterAPI` is never
+   called). `cargo fmt -p ciac-backend-go -- --check` initially
+   flagged two spots (the `sim_needs_context` closure and the `client.
+   go.j2` render call site) needing rustfmt's own line-wrapping;
+   `cargo fmt -p ciac-backend-go` fixed both. `cargo clippy -p ciac-
+   backend-go --all-targets -- -D warnings` was clean on the first
+   run; `cargo test -p ciac-backend-go` passed 5/5 with no
+   regressions. Golden-snapshot regeneration (`INSTA_UPDATE=always
+   cargo test -p ciac-integration-tests --test golden
+   example_generated_project_snapshots`, 464.75s) updated 27 `golden__
+   gen__go__*.snap` files with zero cross-target contamination
+   (verified: no non-Go golden file touched) — 20 single-service Go
+   examples picked up only the call-router section, and the five
+   multi-service examples picked up the full new `simbridge/
+   simbridge.go`, `sim-shared/go.mod`, `sim-shared/world/world.go`,
+   `system-runner/go.mod`, `system-runner/go.sum`, `system-runner/
+   main.go` file set. Full `cargo test --workspace -q --no-fail-fast`
+   (skipping the one standing, pre-existing, already-disclosed
+   `backfill_cli` ruff-drift case every prior milestone's own note
+   also excludes) ran clean end to end, `EXIT_CODE:0`, zero `FAILED`
+   lines anywhere in the log. Go's half of M7 now has its
+   implementation and build-verification half done; the driver
+   wiring, `ciac sim`-CLI-driven live proof against all three system
+   scenarios, and M7 close-out remain, tracked next as M7d.
+
+   **Shipped (v0.28 M7d) — the driver split, a live-proof-caught
+   `_steps.go.j2` correctness bug, and M7 close-out.** `sim_drive_go`
+   gained the identical `_single`/`_multi` split `sim_drive_rust`/
+   `sim_drive_typescript` already carry:
+   `find_project_dirs(out, "go.mod")` dispatches to
+   `sim_drive_go_single` for exactly one project (unchanged body,
+   `cmd/sim_runner` sub-package) or `sim_drive_go_multi` for more
+   than one (`system-runner/main.go`, a plain package-root `main` —
+   no sub-package split needed there since a module with only one
+   `main` package never collides with anything). Unlike TypeScript's
+   `_multi` (three-phase build required, since npm doesn't hoist a
+   `file:` dependency's own transitive dependencies — M7a's own
+   finding), Go's `_multi` needs no build-ordering logic at all:
+   `go build`/`go run` inside `system-runner/` resolves the whole
+   `replace`-directive dependency graph unaided, the same as Rust's
+   own Cargo path-dependency resolution in `sim_drive_rust_multi`.
+   Both paths funnel through one new shared helper,
+   `run_go_sim_runner(project_dir, args, scenarios, wall_timeout)`,
+   parameterized only on the caller's own `go run` package selector
+   (`["run", "./cmd/sim_runner"]` vs `["run", "."]`) — the drive loop
+   itself (one-line-JSON-on-stdout parsing) is otherwise byte-
+   identical between single- and multi-service, mirroring exactly why
+   TS's own `run_node_sim_runner` was factored out the same way.
+
+   Live-proofed through the real CLI against all three system
+   scenarios (`sim-three-service.ciac`, `multi-service-media.ciac`,
+   `inventory-system.ciac`), each from a clean `--out` directory:
+   `multi-service-media` failed immediately, not with a driver bug
+   but a genuine template-correctness bug this milestone's own proof
+   was the first thing ever to reach. Root cause, found via the
+   panic trace: `_steps.go.j2`'s `match` step (`pipeline Transcode:
+   TranscodeVideo -> match status { Ready -> publish Transcoded;
+   Failed -> publish DeadLetters; }`) had always type-asserted
+   `result` to `map[string]any` and read the matched field out of it
+   as a generic JSON value — a speculative shape the template's own
+   doc comment already flagged as untested ("`call`/`match` steps
+   render plausible code ... but are unreachable by every
+   24UpdatePlan.md M3 example"), written before Go's `call`
+   infrastructure existed and never revisited once it did. But
+   `result` at that point in a worker pipeline is never
+   `map[string]any` — `worker.go.j2`'s drain loop always JSON-decodes
+   into the worker's own known typed payload struct
+   (`schemas.Video`), and the preceding untyped `handler` step's
+   `services.NewTranscodeVideo(st).Handle(ctx, result)` call passes
+   that typed value straight through unchanged when (as here) the
+   seed stub is left as its default `return payload, nil`. The
+   type assertion panicked: `interface conversion: interface {} is
+   schemas.Video, not map[string]interface {}`. Fixed by switching on
+   `result.(payload_type).<Field>` instead — `payload_type` was
+   already threaded through `emit_step` for typed-handler steps, so
+   `worker.go.j2` and `route_api.go.j2` (both of which already
+   compute a real `payload_type`) needed no changes; only
+   `_steps.go.j2`'s own `match` branch changed, gated on whether
+   `payload_type` is non-empty, falling back to the old
+   `map[string]any` shape only for `job.go.j2`'s still-`payload_type
+   = ""` context (no example reaches a job-pipeline `match`, so that
+   branch stays exactly as speculative as before). This is the same
+   typed-field-access shape Rust's own `match result.status { ... }`
+   already uses — Rust never had this bug because its pipeline
+   threads the real `Video` type throughout rather than `any`.
+
+   Golden churn from the fix: exactly two snapshots, one line each
+   (`golden__gen__go__multi-service-media.snap`,
+   `golden__gen__go__routed-media.snap` — the only two corpus
+   examples whose `match` step is ever actually reached) —
+   `switch v, _ := result.(map[string]any)["status"].(string); v {`
+   became `switch v := result.(schemas.Video); v.Status {`; every
+   other Go golden file, single- or multi-service, stayed byte-
+   identical.
+
+   With the fix in, all three system scenarios passed clean through
+   the real CLI: `sim-three-service` 1.5s, `multi-service-media`
+   1.3s, `inventory-system` 1.7s (each `[PASS]`, `--json` confirming
+   `error: null`) — an order of magnitude faster than TS's own
+   cold-`npm-ci` timings (M7b: 31–72s), since `go build`/`go run`
+   never needs a package-manager round-trip once the module cache is
+   warm, the same shape Rust's own M6d timings already showed. Ran a
+   four-way identity comparison (Python/Rust/TypeScript/Go) against
+   the same three scenarios: all twelve runs printed `passed: true,
+   error: null`, with matching `worker_attempts`/`job_runs` — Python's
+   own `multi-service-media` outcome carries one extra
+   `DeadLetterSink: 0` zero-attempt key the other three targets'
+   maps omit, the same cosmetic non-finding M6d/M7b's own notes
+   already disclosed (an unreached worker some targets omit from the
+   attempts map entirely, Python includes at zero), confirmed to
+   still hold at this scope. `cargo fmt --check`, `cargo clippy
+   --workspace --all-targets` (zero warnings), and a full `cargo test
+   --workspace --no-fail-fast` (skipping the same standing,
+   pre-existing, already-disclosed `backfill_cli` ruff-drift case
+   every prior milestone's own note excludes) all ran clean —
+   `EXIT_CODE:0`, zero `FAILED` lines. This closes M7 in full: both
+   TS's half (M7a/M7b) and Go's half (M7c/M7d) now have implementation,
+   build verification, driver wiring, and CLI-driven live proof done,
+   with the one real correctness finding (the `match`-step bug) fixed
+   rather than merely disclosed, since it was caught before this
+   milestone's own exit rather than after.
+
 8. **M8 — Java composition.** N isolated
    `AnnotationConfigApplicationContext`s in one JVM sharing the
    world bean; the classpath-assembly decision (aggregator POM
    vs generalized exec arrangement) made against 25's packaging
    precedents and recorded; driver + guard; corpus green,
    identity ×5 complete; timings recorded.
+
+   **Shipped (v0.28 M8a) — `World.java`'s call router and table
+   namespacing.** `World.java.j2` gained the identical call-router
+   section TypeScript's M7a/Go's M7c already carry:
+   `ApiHandler` (a `@FunctionalInterface Object handle(Object req)`
+   — no `throws` clause, since Java signals failure by throwing
+   unchecked, matching the `RuntimeException` convention every
+   other World-internal failure already uses, unlike Go's
+   `(any, error)` return), `ApiKey` record, `MAX_CALL_DEPTH = 64`,
+   a `Map<ApiKey, ApiHandler> apis` registry, `registerApi`
+   (`synchronized`), and `callChecked(caller, calleeService, api,
+   req)` — the failure-vocabulary check and depth check happen
+   inside the monitor, but the handler itself is invoked *outside*
+   it (released before dispatch): Java's own `synchronized` is
+   reentrant on the same thread (unlike Go's `sync.Mutex`), so this
+   isn't needed to avoid self-deadlock the way Go's release is, but
+   holding it across the call would still serialize a genuinely
+   concurrent servlet thread against every other request for the
+   call's full duration — mirrored anyway for the same reason.
+   `JavaSyntax` (`lower.rs`) gained a `service_name: Option<String>`
+   field and a `world_table_key(&self, table_sql: &str) -> String`
+   method (`"{service}::{table_sql}"` when `Some`, bare otherwise),
+   applied at all 8 world-guard call sites (`db_insert_tail`,
+   `db_update_tail`, `db_delete_tail`, the `DbQuery`/`DbCount`/
+   `DbDeleteWhere` arms, `db_get_tail`) — only the
+   `world.db*Checked(...)` calls switch to the namespaced key; the
+   SQL branch beside each keeps the bare `table_sql` unconditionally,
+   same split Go's/TS's own M7c/M7a made. `sim_world_tables_multi`
+   (mirroring Go's/TS's own, modulo Java's pre-existing uppercase
+   `CASCADE`/`RESTRICT` `on_delete` spelling) was added to `lib.rs`
+   but deliberately left unwired (a disclosed, temporary `dead_code`
+   risk) until M8c's `SystemSimRunner` could consume it — the plan
+   was to commit M8a–d together as one commit to avoid ever actually
+   shipping that gap, which is what happened.
+
+   **Shipped (v0.28 M8b) — the call-client world-guard, and a
+   `_steps.java.j2` bug fixed proactively.** `Client.java.j2` gained
+   an `ObjectProvider<World> worldProvider` constructor parameter and
+   a `private final World world` field (the `Queue.java`/`Search.
+   java` precedent exactly), and each generated api method now
+   branches `if (world != null) { ... world.callChecked(caller,
+   service, api, payload) ...  unwrap "data" if the result is a
+   `Map` ... } else { ... the existing real `RestClient` call ... }`
+   — mirroring Go's own `client.go.j2` M7c guard down to the
+   envelope-unwrap shape. This branch is **not** gated on `multi`:
+   a single-service program with a `call <Service>.<Api>` target
+   gets the identical guard (harmless — `world` is always `null`
+   under single-service `SimRunner`, which never registers any api
+   against it), the same unconditional choice Go's own `client.go.j2`
+   already made. Ten templates that already imported
+   `com.ciac.<pkg>.sim.World` (`ApiController`, `AppState`, `Auth`,
+   `Email`, `ExternalHttp`, `ObjectStore`, `Queue`,
+   `ResourceController`, `Search`, `logic.java.j2`) had that import
+   gated on `multi`, switching to `com.ciac.simshared.World` in
+   multi mode; `Client.java.j2` and `SimRunner.java.j2` needed the
+   same gated import added fresh, since neither had one before. A
+   `multi: bool` parameter was threaded into `emit_service`'s shared
+   `render` closure so every template could gate on `{% if multi %}`
+   without per-call-site wiring, mirroring Go's own M7c pattern
+   exactly. Separately — found by pattern-matching against Go's own
+   M7d live-proof finding, not by hitting it live — `_steps.java.
+   j2`'s `match` step carried the identical latent bug Go's `match`
+   step had: a `((java.util.Map<?, ?>) result).get(field)` cast the
+   template's own doc comment already flagged as untested. Fixed
+   proactively, before any Java example ever reached the
+   `ClassCastException`, by switching to `(({{ payload_type }})
+   result).{{ field | java_camel }}()` when `payload_type` is
+   non-empty (the old `Map`-cast branch stays only for `Job.java.j2`'s
+   still-`payload_type = ""` context, exactly as inert as before).
+
+   **Shipped (v0.28 M8c) — `com.ciac.simshared.World`,
+   `SystemSimRunner.java`, and the packaging decision.** The
+   packaging question this milestone's own forecast flagged
+   (aggregator POM vs generalized exec arrangement) resolved in
+   favor of the latter — "Option B" — after a research pass found
+   the aggregator-POM alternative would need `mvn install` to
+   populate `~/.m2` or a `<modules>` reactor, either of which would
+   cause golden churn on every existing single-service Java example
+   just to add multi-service support. Option B needs no new `pom.xml`
+   at all: each service's own Maven build stays completely
+   untouched; a driver assembles one joined classpath by hand across
+   every service (`target/classes` + `target/test-classes`, plus
+   `mvn dependency:build-classpath`'s own jar list), compiles the one
+   new `SystemSimRunner.java` directly with `javac` against it, and
+   runs it with a plain `java -cp` — no Maven at all for the run
+   phase, the closest of any of the five targets' own system-runners
+   to Python's own `PYTHONPATH`-union approach.
+
+   Since Java has no `go.mod` `replace` directive or npm `file:`
+   dependency to make one physical `World` type resolvable across N
+   independently-built projects, `World.java` (which takes no
+   per-service template variable) is instead **physically
+   duplicated, byte-identical**, into every service's own
+   `src/main/java/com/ciac/simshared/World.java` at generation time
+   — package `com.ciac.simshared`, never `com.ciac.<service>.sim`,
+   so every service and the driver-compiled `SystemSimRunner` agree
+   on one nominal type. This works because every copy compiles to
+   the byte-identical `.class` file; whichever copy a classpath
+   resolves first is interchangeable with any other — confirmed live
+   (`md5sum` across all N copies in a real multi-service build).
+   `World.java`'s own emission gate gained
+   `|| !ctx.call_targets.is_empty()`, closing the same gap Rust's/
+   TS's/Go's own M6a/M7a checkpoints already found: a service
+   reachable only via a routed call from another service (no local
+   db/queue/etc. of its own) still needs a world instance to
+   register its handlers against. `SimRunner.java` is still emitted
+   per service even in multi mode (harmless, unused by
+   `SystemSimRunner`, kept for single-service-within-a-system build
+   symmetry, mirroring Go's own M7c precedent) and now imports the
+   shared `World` type explicitly, since it no longer shares a
+   package with it.
+
+   `SystemSimRunner.java.j2` (new template, ~600 lines) generalizes
+   `SimRunner.java.j2`'s single-service interpreter across every
+   service: one shared `World`; N independent
+   `AnnotationConfigApplicationContext`s (one per service, each
+   scanning only that service's own packages and registering the
+   same `world` bean, mirroring `SimRunner`'s own scan-and-register
+   exactly); N `MockMvc` instances built from each context's own
+   `@RestController`s; every api of every service registered on the
+   shared world's call router in declaration order, each handler a
+   lambda invoking that service's own `MockMvc` and converting the
+   JSON response body to a raw `Map` (so `Client.java.j2`'s own
+   `instanceof java.util.Map<?, ?>` unwrap succeeds identically to
+   the routed-Go/TS case). Every per-service class (workers, jobs,
+   payload schema types) is referenced by fully-qualified name,
+   never imported — two services may legitimately declare a worker
+   or job with the same simple class name, and Java's `import` has
+   no `as`-rename escape hatch the way TypeScript's `import { X as
+   Y }` gives `system_sim_runner.ts.j2` for the identical problem;
+   qualifying by FQN sidesteps the collision entirely. Emitted at
+   the system root (`system-runner/SystemSimRunner.java`, no package
+   of its own), not inside any one service's own Maven tree, since
+   it needs to import every service at once.
+
+   Hand-verified end to end before any driver wiring existed: for
+   each of the three system scenarios, ran `./mvnw test-compile` +
+   `./mvnw dependency:build-classpath` per service, joined the
+   classpaths by hand, `javac`-compiled `SystemSimRunner.java`
+   against the join, and ran it with `java -cp`. Found and fixed one
+   real bug this way — a `MockMvc registeredMvc = mvc;` local
+   variable declared once per registered api inside the same
+   enclosing per-service block collided (`variable registeredMvc is
+   already defined`) the moment a service declared more than one
+   api (surfaced first on `inventory-system`, which has two);
+   `mvc` itself is effectively final and already in scope, so the
+   fix was simply to drop the redundant local and capture `mvc`
+   directly in the lambda. With the fix in, all three scenarios
+   compiled and passed on the very first re-run — cross-service
+   routing, failure injection (`sim-three-service`'s own injected
+   `call.request` failure), and group-aware worker fan-out
+   (`multi-service-media`'s `Transcode`/`Notify` chain) all correct
+   with zero further debugging.
+
+   **Shipped (v0.28 M8d) — driver wiring, live CLI proof, five-way
+   identity, and M8 close-out.** `sim_drive_java` gained the
+   identical `_single`/`_multi` split every other target's driver
+   already carries: `find_project_dirs(out, "pom.xml")` dispatches
+   to `sim_drive_java_single` (unchanged body) for exactly one
+   project or `sim_drive_java_multi` for more than one.
+   `sim_drive_java_multi` is this target's own version of the M8c
+   hand-verification, made real: per service, `./mvnw test-compile`
+   then `./mvnw dependency:build-classpath` (to a per-service temp
+   file under that service's own `target/`), building one joined
+   classpath string; `javac -cp <joined> -d system-runner/target/
+   classes SystemSimRunner.java`; then, per `--scenario`, a plain
+   `java -cp <compiled>:<joined> SystemSimRunner <scenario>` —
+   exactly the sequence M8c had already proven by hand, now driven
+   by the real CLI.
+
+   Live-proofed through the real `ciac sim --target java` CLI
+   against all three system scenarios, each from a clean `--out`
+   directory: `multi-service-media` `[PASS]` (~83s), `inventory-
+   system` `[PASS]` (~44s), `sim-three-service` `[PASS]` (~55s) —
+   noticeably slower than Go's/Rust's own sub-2s timings, since each
+   service needs two separate `./mvnw` invocations (`test-compile`
+   and `dependency:build-classpath`) before `javac`/`java` ever run;
+   disclosed as a known, accepted cost of Option B's no-reactor
+   design, not a regression to chase down — the same cold-toolchain
+   tradeoff TS's own M7b timings (31–72s under `npm ci`) already
+   established as acceptable for this milestone's scope. Ran a
+   five-way identity comparison (Python/Rust/TypeScript/Go/Java)
+   across all three scenarios via `ciac sim --json`, canonicalized
+   and hashed: Java's own output is **byte-identical** to Rust's/
+   TypeScript's/Go's on all three scenarios; Python's own `multi-
+   service-media` outcome still carries the one extra `DeadLetterSink:
+   0` zero-attempt key the other four targets' maps omit, the same
+   pre-existing, already-disclosed cosmetic non-finding M6d/M7b/M7d's
+   own notes already recorded, confirmed to still hold with a fifth
+   target added.
+
+   The one piece of churn this milestone's own final verification
+   pass surfaced, not caught earlier because M8a–c were built and
+   compiled but never run through the full golden-snapshot suite
+   until this step: 25 of the corpus's Java example snapshots
+   changed. Every example with a `World.java` at all (db/queue/
+   cache/object_store/email/search/external_http/auth, or now a
+   call target) picked up M8a's call-router addition — unconditional,
+   not gated on `multi`, the same "the router lands everywhere, not
+   just multi-service" shape TypeScript's/Go's own M7a/M7c call-
+   router landings already established; single-service examples with
+   a `call <Service>.<Api>` target (`traced-checkout`'s
+   `PaymentsClient`, calling `Payments.Charge`) additionally picked
+   up M8b's `ObjectProvider<World>`/`callChecked` branch. The four
+   already-multi-service examples in the corpus (`audited-crud`,
+   `multi-service-media`, `inventory-system`, `sim-three-service`)
+   carry the largest diffs, from `com.ciac.simshared.World`'s package
+   relocation plus the new `SystemSimRunner.java` file set. Every
+   diff was reviewed by hand against the M8a/M8b/M8c changes that
+   produced it before regenerating (`cargo insta`, `INSTA_UPDATE=
+   always`); none was unexplained. `cargo fmt --check`, `cargo
+   clippy --workspace --all-targets` (zero warnings), and a full
+   `cargo test --workspace --no-fail-fast` (skipping the same
+   standing, pre-existing, already-disclosed `backfill_cli`
+   ruff-drift case every prior milestone's own note excludes) all
+   ran clean afterward — `EXIT_CODE:0`, zero other `FAILED` lines.
+
+   This closes M8 in full: Java composition now has implementation
+   (M8a/M8b), the `SystemSimRunner`/packaging design (M8c), and
+   driver wiring plus live CLI/identity proof (M8d) all done, the
+   same four-part shape Go's own M7 closed with — no correctness bug
+   was ever caught live this time (the one real Java-specific bug,
+   the duplicate `registeredMvc` local, was caught during M8c's own
+   hand-verification, before any driver code existed to hide it
+   behind), and the one proactive fix (`_steps.java.j2`'s `match`
+   step) was applied from Go's own M7d finding rather than
+   rediscovered the hard way.
 
 9. **M9 — Close-out: ×5 identity, docs, ledger, version,
    retrospective.** The full system corpus asserted identical
@@ -899,6 +2213,259 @@ push, in-place Shipped notes).
    retrospective appended after a rule — composition cost per
    target vs M1/M5 estimates, the sharp edges that materialized
    vs the ones that didn't, and the handoff to 29UpdatePlan.md.
+
+   **Shipped (v0.28 M9) — the five-way corpus closed as a
+   standing oracle, docs/ledger reconciled, version bumped.**
+   `scripts/sim-corpus-x5.sh`'s `PROGRAM_SCENARIOS` map gained the
+   three multi-service scenarios (`sim-three-service.ciac`,
+   `multi-service-media.ciac`, `inventory-system.ciac`) alongside
+   the nine single-service ones, widening the script's own scope
+   from "single-service depth ×5" to "every corpus program, single-
+   or multi-service, ×5" for the first time — full run: **45
+   program×target combinations, all green**, joining `order-
+   system.ciac`'s M9-of-27 acceptance sentence with this arc's own
+   ("any topology, one command, zero infrastructure"). `.github/
+   workflows/ci.yml`'s `generated-sim` job gained the same three
+   scenarios as Python-only rows, matching the existing job's own
+   established split (`scripts/sim-corpus-x5.sh`, not CI, is the
+   arc's real cross-target oracle — recorded in that job's own doc
+   comment rather than re-litigated). `docs/simulation.md`: the
+   stale "Single-service projects only, every target" paragraph
+   (unedited since v0.17) was rewritten to point at the composition
+   architecture instead of asserting a refusal that no longer
+   exists; the M1-era "Composition (M2+, not this milestone)"
+   section was rewritten past tense, naming each target's own
+   closure milestone (Python M3, Rust M6, TypeScript/Go M7, Java
+   M8) and summarizing the four genuinely different composition
+   shapes Pillar 4 produced (N in-process factories for Python/TS,
+   a generated `system-runner` crate/module for Rust/Go, N
+   independently-built Maven projects for Java); the checked-in
+   scenario reference table and the top "Status" section both
+   gained the three multi-service rows. `docs/backends.md`'s Open
+   (tracked) ledger row for "Multi-service programs refused by
+   `ciac sim`" was closed the same way `27UpdatePlan.md`'s own
+   simulation-depth row was — `Affected` set to "none (all five
+   closed)", per-target closure milestones and a one-line
+   architecture summary recorded in the `Closes in` column rather
+   than the row being deleted or moved to Permanent by design
+   (reserved for gaps that will never close, which this
+   demonstrably was not). Version **0.25.0 → 0.26.0**: workspace
+   `Cargo.toml` (the crate's own version plus all 11 internal
+   `ciac-*` path-dependency pins), `Cargo.lock` (regenerated via
+   `cargo build --workspace`), `editors/vscode/package.json`,
+   `docs/language.md`'s illustrative `CARGO_PKG_VERSION` example,
+   and `docs/targets.json` (regenerated through the real CLI,
+   `cargo run -p ciac -- targets --json > docs/targets.json` —
+   confirmed only the `ciac_version` field changed, the same one-
+   line diff every prior arc's own version bump produced). Language
+   version stays `1.0.0`, unchanged — the fourth consecutive arc
+   (`26`, `27`, and now `28`) to prove the two-version discipline
+   `26UpdatePlan.md` M8 established: a compiler release with no
+   language-surface change bumps only its own number.
+
+   A resource-exhaustion finding during this milestone's own
+   verification, disclosed rather than silently retried: running
+   the newly-widened `sim-corpus-x5.sh` (which now generates and
+   builds nine single-service *and* three multi-service projects
+   across five targets in one pass) concurrently with the full
+   `cargo test --workspace` run exhausted this sandbox's writable-
+   disk allowance mid-run, producing two failures that looked like
+   real regressions at first glance — a wave of `rust`/`typescript`/
+   `go`/`python` "build/refusal" errors in the corpus script's own
+   output, and an unrelated `mcp_round_trip_initialize_tools_list_
+   and_tool_calls` failure in the `cargo test` run (`success: false`
+   with an empty diagnostics array — the signature of a subprocess
+   failing to write, not a logic error). Both were confirmed
+   transient, not caused by any M9 change: freeing ~2.4GB of stale
+   `/tmp` cruft from earlier debugging sessions let a clean, solo
+   re-run of each pass green on the first try, and the specific
+   `mcp_round_trip` test was independently re-run in isolation and
+   confirmed passing before that conclusion was trusted rather than
+   assumed. The corrective discipline this confirms for any future
+   milestone budgeting a corpus-wide run alongside a full test
+   suite: run them sequentially, not concurrently, on a fixed-quota
+   sandbox — the same "don't run two disk-heavy things at once"
+   lesson M7d's own Shipped note already recorded for a five-way
+   identity check, now reconfirmed at a larger scale (45 combinations
+   vs. that milestone's 12).
+
+   `cargo fmt --check`, `cargo clippy --workspace --all-targets`
+   (zero warnings), and a full `cargo test --workspace --no-fail-
+   fast` — run solo, after the disk-space finding above — all ran
+   clean: `EXIT_CODE:0`, zero `FAILED` lines beyond the one standing,
+   pre-existing, already-disclosed `backfill_cli` ruff-drift case
+   every milestone since `26UpdatePlan.md` M6 has carried and
+   excluded. This closes M9, and with it the arc: `ciac sim` has no
+   structural refusal left on any of the five targets, for any
+   topology the compiler accepts.
+
+   ---
+
+   ### Arc retrospective
+
+   **Composition cost per target, measured against M1's and M5's
+   own calibration.** M1's forecast text left the compiled-target
+   packaging question open by design ("aggregator POM vs
+   generalized exec arrangement" for Java, an unnamed but implied
+   "cheap" cost for TS/Go per Pillar 3's own per-target table); M5
+   priced only Rust concretely, finding its named risk (the lib+bin
+   reshaping) already retired by earlier work and a different,
+   unpriced one in its place (N nominally-distinct vendored
+   `SimWorld` types). Measured in the one unit comparable across
+   all five targets — the generated system-runner's own line count
+   — the four compiled targets landed within a narrow band of each
+   other despite writing to four different host languages and four
+   different composition shapes: Rust `system_sim_runner.rs.j2`
+   **643** lines, TypeScript `system_sim_runner.ts.j2` **637**,
+   Java `SystemSimRunner.java.j2` **627**, Go `system_sim_runner.go.j2`
+   **872** (the outlier — Go's own `switch`-arm-uniqueness rule
+   forces an if/else-if chain instead of a `switch` anywhere two
+   workers might share a subject, and its drain loop is unrolled
+   per-worker rather than iterated, both discussed live in M7c/M7d's
+   own Shipped notes). Python's own combined driver (`multi_driver.
+   py` 331 + `multi_service.py` 153 = **484** lines, M3/M4, restated
+   here rather than re-measured) stayed the cheapest by a real
+   margin, the same shape `27UpdatePlan.md`'s own retrospective
+   found for Python's M9 verb closure: never a restatement, a
+   narrower change inside one already-complete implementation
+   (`AppState.simulation(world)` swapping the whole session/app-
+   factory object rather than four separate from-scratch ports).
+   Unlike the world-restatement line-count multiples `27UpdatePlan.
+   md`'s retrospective reported (4.1×-5.2× per target against a
+   single Rust baseline), this arc has no single naive baseline to
+   multiply against — every target's system-runner is new code, not
+   an extension of something narrower that already existed — so the
+   fairer reading is the absolute spread itself: **627-872 lines**,
+   a 1.4× band across four otherwise-unrelated host languages and
+   composition strategies, tighter than 27's own restatement spread
+   despite this arc's problem (N-service orchestration) being
+   structurally harder than 27's (widening one already-existing
+   single-service world).
+
+   **The packaging decision Pillar 3 and M1 left open resolved
+   cleanly, and cheaply, for every target.** Rust and Go each
+   answered "how does a system-runner share one type across N
+   independently-built projects" with the mechanism their own
+   toolchain already provides for exactly this problem — a Cargo
+   path dependency and a `go.mod` `replace` directive, respectively
+   — needing no new abstraction invented for this arc. TypeScript
+   answered it with an npm `file:` dependency plus a discovered
+   wrinkle (`file:` doesn't hoist a linked package's own transitive
+   dependencies the way a registry install does, M7a/M7b's own
+   three-phase-build finding) — a real but small correction, not a
+   design reversal. Java had no toolchain-native answer at all (no
+   reactor, no path-dependency equivalent in default Maven) and so
+   needed this arc's own genuine design decision, M8c's "Option B":
+   no aggregator POM, no `mvn install` side effects on `~/.m2`, a
+   driver-assembled classpath via `mvn dependency:build-classpath`
+   plus direct `javac`/`java` invocations for the run phase, and a
+   physically-duplicated (byte-identical) `World` class standing in
+   for the shared nominal type every other target's toolchain gave
+   for free. This was the one packaging question this arc's own M1
+   forecast named as genuinely open going in, and it is also the
+   one that cost the most deliberate design time — proportionate,
+   not a surprise.
+
+   **The bug-count trend, continued honestly from `27UpdatePlan.md`'s
+   own scorecard.** That arc's retrospective found the bug count
+   trended *up*, not down, across TS (2) → Go (4) → Java (4+1),
+   naming the likely cause as "the find-space per target is
+   dominated by that ecosystem's own quirks... not shared learning
+   that transfers." This arc's own numbers read differently: Python
+   (M3/M4) found and fixed its sharp edges live but never needed a
+   design reversal (the aliasing shim fallback was pre-registered
+   and never taken); Rust (M6) found **1** real bug (a threading gap
+   — `lower.rs`'s typed-handler lowering never called the namespaced
+   `_for`-suffixed methods `world.rs` had carried since M2, so every
+   db verb silently addressed the bare table name regardless of
+   service until this milestone caught it); TypeScript (M7a/M7b)
+   found **0** — the one named risk (dependency skew) materialized
+   only as a needed assertion, never as an actual bug; Go (M7c/M7d)
+   found **1** (the `_steps.go.j2` `match`-step type-assumption bug,
+   the arc's one finding that was a genuine, previously-undetected
+   production-path defect rather than composition-specific); Java
+   (M8a-d) found **1** (`SystemSimRunner.java.j2`'s duplicate
+   `registeredMvc` local, caught during M8c's own hand-verification
+   before any driver code existed to hide it behind). Total: **3**
+   real composition-specific bugs across four from-scratch system-
+   runners, all caught by the same three-scenario corpus regardless
+   of which target's own toolchain produced them — lower than 27's
+   own per-target average despite writing more new code per target,
+   plausibly because this arc's own architecture (one shared world,
+   one call router, one scenario vocabulary, restated four times)
+   is more mechanically uniform across targets than 27's four
+   independent from-scratch *world* restatements were, leaving less
+   room for the kind of ecosystem-specific surprise 27's retrospective
+   named as the dominant source. Not proof the pattern reverses for
+   good — one arc's worth of evidence — but a real, measured
+   contrast worth recording rather than assuming the prior trend
+   would simply repeat.
+
+   **The sharp edges named going in, checked against what actually
+   happened.** Pillar 3's own per-target table and M1's forecast
+   named: Rust's vendored-`SimWorld`-type-identity risk (materialized
+   almost exactly as guessed, resolved by M5's own path-(a)
+   decision — a shared `sim-shared` crate — taken without
+   revision); TypeScript's dependency-skew risk (materialized as a
+   real toolchain gap requiring a three-phase build, not merely a
+   defensive assertion that never fired — worse than the minimal
+   framing but still resolved within M7a/M7b, no spillover); Go's
+   `replace`-directive resolution (materialized as expected, no
+   surprise — the one target whose actual bug was unrelated to its
+   own named risk entirely); Java's packaging question (materialized
+   as the single largest genuine design decision in the arc, exactly
+   as flagged "open" rather than "cheap" the way Pillar 3's own table
+   implicitly suggested for TS/Go). What was **not** named going in
+   and materialized anyway: the Go `_steps.go.j2` match-step bug (a
+   latent, pre-existing template gap the plan's own risk table had
+   no way to predict, since it required a worker payload actually
+   reaching a typed `match` step for the first time — a corpus-
+   coverage gap, not a composition-design gap) and Java's duplicate-
+   local compile error (an ecosystem-specific Java scoping rule, the
+   same category of "genuinely orthogonal discovery" 27's own
+   retrospective named for its own per-target quirks). The pattern
+   holds across both arcs: named structural risks resolve close to
+   plan; the real bugs tend to be unnamed, ecosystem-specific, and
+   caught only by actually running generated code against a real
+   scenario — the corpus-identity harness doing exactly the job
+   both arcs' own risk sections bet it would do.
+
+   **One item carried forward, not closed here.** A Docker build-
+   context gap for path-shared crates/packages in multi-service
+   systems was flagged during this arc's own implementation work
+   (tracked separately, outside this file) and was never picked up
+   as an in-scope fix — `docker compose build` for a multi-service
+   system whose services share a path-dependency crate/module/
+   package (Rust's `sim-shared`, Go's analogous shared module, a
+   TypeScript `file:`-linked package) needs each service's own
+   Dockerfile build context to actually include that shared source
+   tree, which the generated `docker-compose.yml`/`Dockerfile` pair
+   does not yet arrange for. This is a **production deploy-path**
+   gap, not a simulation gap — `ciac sim`'s own multi-service
+   composition never touches Docker at all (the claim boundary
+   `docs/simulation.md` states explicitly), so nothing in this arc's
+   own acceptance sentence depended on it, and no scenario in the
+   corpus exercises `docker compose build` for a multi-service
+   system with a shared dependency. Recorded here rather than
+   silently dropped: a real, disclosed gap for a future arc to close
+   with its own ledger row, not folded into this arc's own "closed"
+   claim.
+
+   **Handoff to `29UpdatePlan.md`.** The "Confidence and handoff"
+   section below (written before this arc's own execution) predicted
+   the sentence this arc would get to hand forward — "five targets,
+   full depth, any topology, one command, zero infrastructure" — and
+   that is what M9's own ×5 corpus run (45/45 green) and the docs/
+   ledger closure above confirm actually held. `29UpdatePlan.md`
+   inherits a compiler with nothing left to disclose as "narrow" or
+   "single-service only" in either simulation depth (27) or
+   simulation topology (28) — the honest remaining gaps are the ones
+   already named as permanent-by-design (Redis/NATS compose-
+   delegated fidelity, `--record`/`--replay` staying Python-only) or
+   explicitly carried forward (the Docker build-context item above).
+   That is the system 29's own README rewrite, guide series,
+   positioning doc, and dogfooding-readiness work get to describe
+   truthfully rather than aspirationally.
 
 ### Per-milestone exit checklists
 

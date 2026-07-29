@@ -12,11 +12,17 @@ import com.ciac.{{ java_package }}.schemas.{{ resource.name }}In;
 import com.ciac.{{ java_package }}.services.{{ resource.store_class }};
 import com.fasterxml.jackson.databind.JsonNode;
 {%- if resource.has_auth %}
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
+import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import jakarta.servlet.http.HttpServletRequest;
 {%- endif %}
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 {%- if resource.has_auth %}
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 {%- endif %}
@@ -33,13 +39,23 @@ import org.springframework.web.bind.annotation.RestController;
 public class {{ resource.name }}Controller {
     private final {{ resource.store_class }} store;
 {%- if resource.has_auth %}
+    // Real in production; `null` under simulation (SimRunner never
+    // registers `SecurityConfig`'s own `JwtDecoder` bean at all) --
+    // an `ObjectProvider` here, not a hard constructor dependency, is
+    // what keeps this controller constructible under `ciac sim`
+    // (27UpdatePlan.md M8).
     private final JwtDecoder jwtDecoder;
+    // `null` in production; a simulation-run `World` when SimRunner
+    // manually registers one -- see `Auth.verifyToken`'s own
+    // `if (world != null)` branch (27UpdatePlan.md M8).
+    private final World world;
 {%- endif %}
 
-    public {{ resource.name }}Controller({{ resource.store_class }} store{% if resource.has_auth %}, JwtDecoder jwtDecoder{% endif %}) {
+    public {{ resource.name }}Controller({{ resource.store_class }} store{% if resource.has_auth %}, ObjectProvider<JwtDecoder> jwtDecoderProvider, ObjectProvider<World> worldProvider{% endif %}) {
         this.store = store;
 {%- if resource.has_auth %}
-        this.jwtDecoder = jwtDecoder;
+        this.jwtDecoder = jwtDecoderProvider.getIfAvailable();
+        this.world = worldProvider.getIfAvailable();
 {%- endif %}
     }
 
@@ -48,7 +64,7 @@ public class {{ resource.name }}Controller {
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @RequestBody JsonNode body) {
 {%- if resource.has_auth %}
-        Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+        Jwt jwt = Auth.verifyToken(request, jwtDecoder, world);
 {%- if resource.write_scope %}
         Auth.requireScope(jwt, "{{ resource.write_scope }}");
 {%- endif %}
@@ -63,7 +79,7 @@ public class {{ resource.name }}Controller {
             @RequestParam(defaultValue = "{{ resource.page_size }}") int limit,
             @RequestParam(defaultValue = "0") int offset) {
 {%- if resource.has_auth %}
-        Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+        Jwt jwt = Auth.verifyToken(request, jwtDecoder, world);
 {%- if resource.read_scope %}
         Auth.requireScope(jwt, "{{ resource.read_scope }}");
 {%- endif %}
@@ -76,7 +92,7 @@ public class {{ resource.name }}Controller {
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @PathVariable String id) {
 {%- if resource.has_auth %}
-        Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+        Jwt jwt = Auth.verifyToken(request, jwtDecoder, world);
 {%- if resource.read_scope %}
         Auth.requireScope(jwt, "{{ resource.read_scope }}");
 {%- endif %}
@@ -89,7 +105,7 @@ public class {{ resource.name }}Controller {
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @PathVariable String id, @RequestBody JsonNode body) {
 {%- if resource.has_auth %}
-        Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+        Jwt jwt = Auth.verifyToken(request, jwtDecoder, world);
 {%- if resource.write_scope %}
         Auth.requireScope(jwt, "{{ resource.write_scope }}");
 {%- endif %}
@@ -103,7 +119,7 @@ public class {{ resource.name }}Controller {
 {%- if resource.has_auth %}HttpServletRequest request, {% endif -%}
             @PathVariable String id) {
 {%- if resource.has_auth %}
-        Jwt jwt = Auth.verifyToken(request, jwtDecoder);
+        Jwt jwt = Auth.verifyToken(request, jwtDecoder, world);
 {%- if resource.write_scope %}
         Auth.requireScope(jwt, "{{ resource.write_scope }}");
 {%- endif %}

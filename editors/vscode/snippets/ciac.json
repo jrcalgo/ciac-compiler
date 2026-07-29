@@ -1,0 +1,174 @@
+{
+  "project": {
+    "prefix": "project",
+    "description": "A multi-service project",
+    "body": [
+      "project ${1:Name};",
+      "$0"
+    ]
+  },
+  "service": {
+    "prefix": "service",
+    "description": "A service block with a capability",
+    "body": [
+      "service ${1:Name} {",
+      "  use { ${2|db Postgres,db MySQL,db SQLite|}; }",
+      "  $0",
+      "}"
+    ]
+  },
+  "import": {
+    "prefix": "import",
+    "description": "Splice another file's declarations in",
+    "body": [
+      "import \"${1:std/crud.ciac}\";",
+      "$0"
+    ]
+  },
+  "use": {
+    "prefix": "use",
+    "description": "Declare a capability requirement",
+    "body": [
+      "use { ${1|db Postgres,db MySQL,db SQLite,queue NATS,queue Kafka,cache Redis,auth JWT,auth OAuth2|}; }",
+      "$0"
+    ]
+  },
+  "record": {
+    "prefix": "record",
+    "description": "A typed data schema",
+    "body": [
+      "record ${1:Name} {",
+      "    id: Uuid;",
+      "    $0",
+      "}"
+    ]
+  },
+  "error": {
+    "prefix": "error",
+    "description": "An error record, for `fail`",
+    "body": [
+      "error ${1:Name} {",
+      "    ${2:message}: String;",
+      "    $0",
+      "}"
+    ]
+  },
+  "stream": {
+    "prefix": "stream",
+    "description": "A named message channel",
+    "body": [
+      "stream ${1:Name}: ${2:Record};",
+      "$0"
+    ]
+  },
+  "table": {
+    "prefix": "table",
+    "description": "A persistent table",
+    "body": [
+      "table ${1:Name}: ${2:Record};",
+      "$0"
+    ]
+  },
+  "api": {
+    "prefix": "api",
+    "description": "An HTTP endpoint",
+    "body": [
+      "api ${1:Name}: ${2:Record} {",
+      "    method: ${3|POST,GET,PUT,DELETE,PATCH|};",
+      "    path: \"${4:/path}\";",
+      "}",
+      "pipeline ${1:Name}: Return;",
+      "$0"
+    ]
+  },
+  "worker": {
+    "prefix": "worker",
+    "description": "A broker consumer",
+    "body": [
+      "worker ${1:Name} on ${2:Stream};",
+      "pipeline ${1:Name}: ${3:Handler};",
+      "$0"
+    ]
+  },
+  "job": {
+    "prefix": "job",
+    "description": "A scheduled cron job",
+    "body": [
+      "job ${1:Name} {",
+      "    schedule: \"${2:0 * * * *}\";",
+      "}",
+      "pipeline ${1:Name}: ${3:Handler};",
+      "$0"
+    ]
+  },
+  "channel": {
+    "prefix": "channel",
+    "description": "Fan a stream out to realtime clients",
+    "body": [
+      "channel ${1:Name} on ${2:Stream};",
+      "$0"
+    ]
+  },
+  "crud": {
+    "prefix": "crud",
+    "description": "Free REST CRUD for a record",
+    "body": [
+      "crud ${1:Name}: ${2:Record};",
+      "$0"
+    ]
+  },
+  "events": {
+    "prefix": "events",
+    "description": "Stream + worker shorthand",
+    "body": [
+      "events ${1:Name};",
+      "$0"
+    ]
+  },
+  "handler": {
+    "prefix": "handler",
+    "description": "A typed inline handler",
+    "body": [
+      "handler ${1:Name}(${2:v}: ${3:Record}) -> ${3:Record} {",
+      "    return ${2:v};",
+      "}",
+      "$0"
+    ]
+  },
+  "extern": {
+    "prefix": "extern",
+    "description": "A typed handler stub you implement yourself",
+    "body": [
+      "extern handler ${1:Name}(${2:v}: ${3:Record}) -> ${3:Record};",
+      "$0"
+    ]
+  },
+  "pipeline": {
+    "prefix": "pipeline",
+    "description": "Attach behavior to an api/worker/job",
+    "body": [
+      "pipeline ${1:Name}: ${2:Return};",
+      "$0"
+    ]
+  },
+  "blueprint": {
+    "prefix": "blueprint",
+    "description": "A parameterized declaration template",
+    "body": [
+      "blueprint ${1:Name}<${2:R}: record> {",
+      "    params { }",
+      "    crud ${2:R}: ${2:R};",
+      "}",
+      "$0"
+    ]
+  },
+  "expand": {
+    "prefix": "expand",
+    "description": "Instantiate a blueprint",
+    "body": [
+      "expand ${1:Blueprint}<${2:Record}> {",
+      "    $0",
+      "}"
+    ]
+  }
+}

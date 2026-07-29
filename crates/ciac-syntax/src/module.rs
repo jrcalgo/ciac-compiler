@@ -70,8 +70,36 @@ pub fn load_with_origins(
         &mut loaded,
         &mut stack,
         &mut origins,
+        None,
     )?;
     Ok((Program { items }, origins))
+}
+
+/// Like [`load`], but `entry`'s own content comes from `overlay_text`
+/// instead of disk (v0.27 M8, `ciac lsp`'s debounced `didChange`
+/// diagnostics) -- every *other* file `entry` imports still resolves
+/// from disk exactly as `load` does, since only the document actually
+/// open and edited in the client has unsaved content to substitute.
+pub fn load_with_overlay(
+    entry: &Path,
+    overlay_text: &str,
+    sources: &mut SourceMap,
+    diags: &mut Diagnostics,
+) -> io::Result<Program> {
+    let mut loaded = BTreeSet::new();
+    let mut stack = Vec::new();
+    let mut origins = HashMap::new();
+    let items = resolve_file(
+        entry,
+        None,
+        sources,
+        diags,
+        &mut loaded,
+        &mut stack,
+        &mut origins,
+        Some(overlay_text),
+    )?;
+    Ok(Program { items })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -83,6 +111,11 @@ fn resolve_file(
     loaded: &mut BTreeSet<PathBuf>,
     stack: &mut Vec<PathBuf>,
     origins: &mut HashMap<FileId, SourceOrigin>,
+    // v0.27 M8: `Some` only ever reaches here for the entry file itself
+    // (`importer.is_none()` is exactly "this is the top-level call" --
+    // every recursive call below passes `Some(&canonical)`), so an
+    // overlay can never accidentally apply to an imported file.
+    overlay: Option<&str>,
 ) -> io::Result<Vec<Item>> {
     let canonical = path.canonicalize().map_err(|err| {
         let msg = match importer {
@@ -113,7 +146,10 @@ fn resolve_file(
         return Ok(Vec::new());
     }
 
-    let src = std::fs::read_to_string(&canonical)?;
+    let src = match (importer, overlay) {
+        (None, Some(text)) => text.to_owned(),
+        _ => std::fs::read_to_string(&canonical)?,
+    };
     let file_id = sources.add_file(canonical.display().to_string(), src.clone());
     origins.insert(file_id, SourceOrigin::Local);
     let program = parse(&src, file_id, diags);
@@ -156,6 +192,7 @@ fn resolve_file(
                     loaded,
                     stack,
                     origins,
+                    None,
                 )?);
             }
             other => items.push(other),

@@ -1,5 +1,10 @@
 # Writing a Code-Generation Backend
 
+*Reader: a contributor adding a new code-generation target. The
+[divergence ledger](#divergence-ledger) further down this same page
+is also the evaluator's reference for what differs, and doesn't
+differ, across the five bundled targets.*
+
 Backends turn the validated IR into a project. The language, IR, and
 validation never change when a target is added.
 
@@ -246,6 +251,26 @@ every "Closes in" reference (other than an explicit "no plan yet") must
 name a plan file that exists in the repo root, and no divergence string
 may appear in both tables.
 
+**Raised, not decided (`30UpdatePlan.md` M8):** both tables above
+answer "what differs" for *capability* — what a target can or can't
+do. Neither has a vocabulary for what `30UpdatePlan.md` found: that
+one target's generation *cost* was ~1186x another's, for no capability
+reason at all (a formatter-invocation pattern, not a language or
+ecosystem constraint) — the divergence ledger would have said nothing
+about it even though it was the most severe cross-target divergence in
+the repo's own history. Whether this ledger should grow a third
+dimension — a cost column, or a parallel "performance divergences"
+table alongside "Permanent by design"/"Open (tracked)" — is an open
+question this arc raises without answering. Arguments either way:
+a cost dimension would have made this defect discoverable by reading
+this page instead of by running a stopwatch; against it, cost is
+continuous and environment-dependent in a way capability isn't (a
+"Permanent by design" row states a fact, a cost number states a
+snapshot that ages), and `docs/perf/codegen-baseline.md` plus
+`tests/tests/perf_budget.rs` already own that vocabulary now. Left
+for whoever next finds a real cost divergence to decide with a second
+data point in hand, rather than speculatively designed here on one.
+
 ### Permanent by design
 
 | Divergence | Targets | Why this is a decision |
@@ -261,8 +286,8 @@ may appear in both tables.
 
 | Gap | Targets | Closes in |
 | --- | --- | --- |
-| Simulation depth: only `db.insert` + publish faked | Rust, TypeScript, Go, Java | `27UpdatePlan.md` |
-| Multi-service programs refused by `ciac sim` | all five | `28UpdatePlan.md` |
+| Simulation depth: only `db.insert` + publish faked | none (all five closed) | `27UpdatePlan.md` — Rust CLOSED at M4, TypeScript CLOSED at M6, Go CLOSED at M7, Java CLOSED at M8, Python CLOSED at M9 (`db.update` + predicate-filtered `db.query`/`db.count`/`db.delete_where`, `_FakeSession`'s own last disclosed gap; gate-emptiness proven across the whole example corpus, live-verified against eleven corpus scenarios each including the flagship `order-system.ciac` — refused by every target through M8, green on all five with identical outcomes as of M9; proof recorded in each milestone's own Shipped note) |
+| Multi-service programs refused by `ciac sim` | none (all five closed) | `28UpdatePlan.md` — Python CLOSED at M3, Rust CLOSED at M6, TypeScript and Go CLOSED at M7, Java CLOSED at M8 (one shared world — one broker, one virtual clock, one `FailureEngine` — spanning N per-service driver processes/contexts; every `sim_drive_*` driver split into a `_single`/`_multi` pair; cross-service `call <Service>.<Api>` routed through each target's own world call router instead of real HTTP; every database table namespaced `"{service}::{table}"` so two services may share a table name without colliding; composition architecture itself target-specific per Pillar 4 — N in-process app factories (Python, TypeScript), a generated `system-runner` crate/module holding the shared world (Rust, Go), or N independently-built Maven projects driven by a hand-assembled classpath with no aggregator POM (Java) — live-verified against three multi-service corpus scenarios with identical outcomes across all five targets as of M9; proof recorded in each milestone's own Shipped note) |
 | `transaction {}` non-atomic in production | Rust | `26UpdatePlan.md` M1–M2 — CLOSED, live rollback proof recorded in that milestone's own Shipped note |
 | `logging Structured` refused (`CIAC0011`) | Java | `26UpdatePlan.md` M3 — CLOSED, `LogShapeTest` proof recorded in that milestone's own Shipped note |
 | OAuth2 scope tests excluded from the no-infra suite | all five | `26UpdatePlan.md` M4–M5 — CLOSED, five-target live-proof recorded in those milestones' own Shipped notes |
@@ -274,6 +299,15 @@ may appear in both tables.
 See the Divergence ledger above for which of this section's own gaps
 are permanent decisions and which are open, addressed debts — this
 section is the linked detail those tables index, not a restatement.
+**This section narrates the v0.17/23-25-era narrow-slice architecture
+as originally shipped and is not current-state documentation** — by
+the end of `27UpdatePlan.md` (M9), every target fakes every capability
+identically, closing the "Rust/TypeScript/Go/Java refuse a wider
+program" behavior described below. [simulation.md](simulation.md)'s
+own Status section is the current-truth surface; this narrative is
+kept for its historical account of how each target's simulation
+support was actually built; it is not rewritten every time the ledger
+row above closes further.
 
 `ciac sim`/`verify --sim` drive a generated project's real code through
 in-memory fakes instead of real provider containers — see

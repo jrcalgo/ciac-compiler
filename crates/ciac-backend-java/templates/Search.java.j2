@@ -10,9 +10,30 @@
 // only -- the underlying `HttpClient` opens no connection until a
 // request is actually sent, so a `Search` bean never blocks
 // `AppState` construction.
+//
+// World-guarded (27UpdatePlan.md M8): `object_store`/`email`/`search`/
+// `external_http` each hold their own `ObjectProvider<World>`
+// (mirroring `Queue.java`'s own pre-existing `publishJson` pattern,
+// v0.25 M9) rather than getting a `lower.rs` world-guard leaf of their
+// own -- a Java-specific structural choice (Pillar 4: "structure may
+// diverge; answers may not"), not a narrower fake. `instanceName` is
+// this bean's own declared instance name (`AppState`'s own `inst.name`,
+// e.g. `default`/`catalog`), matching the key `World.searchIndex`/
+// `searchQuery` key their own per-instance index by. `delete` stays
+// real-only -- `search.delete` is not part of the shared `HostSyntax`
+// leaf set any backend's `lower.rs` lowers a verb through (confirmed
+// via `ciac-codegen::lower::host_syntax`'s own trait definition), so
+// this method is unreachable from any generated handler body; adding a
+// symmetric `World.searchDelete` for parity is disclosed, deliberate
+// future scope, not required for this milestone.
 package com.ciac.{{ java_package }}.state;
 
 import com.ciac.{{ java_package }}.schemas.Schemas;
+{%- if multi %}
+import com.ciac.simshared.World;
+{%- else %}
+import com.ciac.{{ java_package }}.sim.World;
+{%- endif %}
 import com.fasterxml.jackson.databind.JsonNode;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -20,15 +41,20 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
+import org.springframework.beans.factory.ObjectProvider;
 
 public final class Search {
     private static final String INDEX = "documents";
     private static final HttpClient HTTP = HttpClient.newHttpClient();
 
+    private final String instanceName;
     private final String url;
+    private final World world;
 
-    public Search(String url) {
+    public Search(String instanceName, String url, ObjectProvider<World> worldProvider) {
+        this.instanceName = instanceName;
         this.url = url;
+        this.world = worldProvider.getIfAvailable();
     }
 
     private byte[] doRequest(String method, String path, String body) {
@@ -55,12 +81,19 @@ public final class Search {
 
     /** Upserts document under {@code INDEX}/docId. */
     public void index(String docId, String document) {
+        if (world != null) {
+            world.searchIndex(instanceName, docId, document);
+            return;
+        }
         doRequest("PUT", "/" + INDEX + "/_doc/" + docId, document);
     }
 
     /** Runs a `query_string` search over {@code INDEX} and returns each
      * hit's `_source`. */
     public List<JsonNode> search(String query) {
+        if (world != null) {
+            return world.searchQuery(instanceName, query);
+        }
         String body = "{\"query\":{\"query_string\":{\"query\":" + Schemas.toJson(query) + "}}}";
         byte[] raw = doRequest("POST", "/" + INDEX + "/_search", body);
         JsonNode parsed;

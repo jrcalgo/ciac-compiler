@@ -37,7 +37,7 @@ from app.workers.process_order import handle_message_once as process_order_handl
 from app.workers.reconcile import handle_tick_once
 
 
-async def call_place_order_api(payload: dict) -> dict:
+async def call_place_order_api(payload: dict, _principal: dict | None = None) -> dict:
     async with get_sessionmaker("default")() as session:
         return await place_order_api(Order(**payload), session)
 

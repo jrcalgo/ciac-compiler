@@ -1,6 +1,6 @@
 {
   "targets_version": 1,
-  "ciac_version": "0.24.0",
+  "ciac_version": "0.28.0",
   "language_version": "1.0.0",
   "targets": [
     {

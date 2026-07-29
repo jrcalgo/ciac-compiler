@@ -33,6 +33,15 @@ expression: json
     {
       "id": 2,
       "service": 0,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "Jwt",
+      "issuer": null,
+      "audience": null
+    },
+    {
+      "id": 3,
+      "service": 0,
       "kind": "Api",
       "name": "Item",
       "request": 0,
@@ -43,14 +52,14 @@ expression: json
       }
     },
     {
-      "id": 3,
+      "id": 4,
       "service": 0,
       "kind": "Service",
       "name": "ItemStore",
       "signature": null
     },
     {
-      "id": 4,
+      "id": 5,
       "service": 0,
       "kind": "Api",
       "name": "Price",
@@ -62,7 +71,28 @@ expression: json
       }
     },
     {
-      "id": 5,
+      "id": 6,
+      "service": 0,
+      "kind": "Api",
+      "name": "Restock",
+      "request": 0,
+      "config": {
+        "method": "Post",
+        "path": "/restock",
+        "scope": "catalog:restock"
+      }
+    },
+    {
+      "id": 7,
+      "service": 1,
+      "kind": "Auth",
+      "name": "default",
+      "scheme": "Jwt",
+      "issuer": null,
+      "audience": null
+    },
+    {
+      "id": 8,
       "service": 1,
       "kind": "Api",
       "name": "Quote",
@@ -70,58 +100,101 @@ expression: json
       "config": {
         "method": "Post",
         "path": "/quote",
-        "scope": null
+        "scope": "gateway:quote"
       }
     },
     {
-      "id": 6,
+      "id": 9,
       "service": 0,
       "kind": "Service",
       "name": "ComputePrice",
+      "signature": null
+    },
+    {
+      "id": 10,
+      "service": 0,
+      "kind": "Service",
+      "name": "ComputeRestock",
       "signature": null
     }
   ],
   "edges": [
     {
       "id": 0,
-      "from": 2,
-      "to": 3,
+      "from": 3,
+      "to": 2,
       "kind": "RequestFlow"
     },
     {
       "id": 1,
-      "from": 3,
-      "to": 0,
-      "kind": "DataFlow"
+      "from": 2,
+      "to": 4,
+      "kind": "RequestFlow"
     },
     {
       "id": 2,
-      "from": 3,
-      "to": 1,
+      "from": 4,
+      "to": 0,
       "kind": "DataFlow"
     },
     {
       "id": 3,
-      "from": 6,
-      "to": 0,
-      "kind": "DataFlow"
-    },
-    {
-      "id": 4,
-      "from": 6,
+      "from": 4,
       "to": 1,
       "kind": "DataFlow"
     },
     {
+      "id": 4,
+      "from": 9,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
       "id": 5,
-      "from": 4,
-      "to": 6,
-      "kind": "RequestFlow"
+      "from": 9,
+      "to": 1,
+      "kind": "DataFlow"
     },
     {
       "id": 6,
       "from": 5,
-      "to": 4,
+      "to": 9,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 7,
+      "from": 10,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 8,
+      "from": 10,
+      "to": 1,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 6,
+      "to": 2,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 2,
+      "to": 10,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 11,
+      "from": 8,
+      "to": 7,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 12,
+      "from": 7,
+      "to": 5,
       "kind": "ServiceCall"
     }
   ],
@@ -150,12 +223,31 @@ expression: json
     {
       "name": "Price",
       "service": 0,
-      "owner": 4,
+      "owner": 5,
       "payload": 0,
       "steps": [
         {
           "step": "Handler",
-          "node": 6
+          "node": 9
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "Restock",
+      "service": 0,
+      "owner": 6,
+      "payload": 0,
+      "steps": [
+        {
+          "step": "Auth",
+          "node": 2
+        },
+        {
+          "step": "Handler",
+          "node": 10
         },
         {
           "step": "Return"
@@ -165,12 +257,16 @@ expression: json
     {
       "name": "Quote",
       "service": 1,
-      "owner": 5,
+      "owner": 8,
       "payload": 0,
       "steps": [
         {
+          "step": "Auth",
+          "node": 7
+        },
+        {
           "step": "Call",
-          "target": 4
+          "target": 5
         },
         {
           "step": "Return"
@@ -182,11 +278,11 @@ expression: json
     {
       "name": "Item",
       "service_owner": 0,
-      "api": 2,
-      "service": 3,
+      "api": 3,
+      "service": 4,
       "database": 0,
       "cache": 1,
-      "auth": null,
+      "auth": 2,
       "record": 0,
       "config": {
         "cache_ttl": 300,

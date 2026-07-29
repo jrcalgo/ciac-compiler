@@ -96,7 +96,12 @@ async def call_upstream_api(
     result = payload
 
     result = await CallUpstream(http=get_http_client("upstream")).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/evict_cache_api.py
 ============================================================
@@ -123,7 +128,12 @@ async def evict_cache_api(
     result = payload
 
     result = await EvictCache(cache=get_cache()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/index_doc_api.py
 ============================================================
@@ -150,7 +160,12 @@ async def index_doc_api(
     result = payload
 
     result = await IndexDoc(search=get_search()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/list_docs_api.py
 ============================================================
@@ -177,7 +192,12 @@ async def list_docs_api(
     result = payload
 
     result = await ListDocs(object_store=get_object_store()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/notify_user_api.py
 ============================================================
@@ -204,7 +224,12 @@ async def notify_user_api(
     result = payload
 
     result = await NotifyUser(email=get_email()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/remove_doc_api.py
 ============================================================
@@ -231,7 +256,12 @@ async def remove_doc_api(
     result = payload
 
     result = await RemoveDoc(object_store=get_object_store()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/api/search_docs_api.py
 ============================================================
@@ -258,7 +288,12 @@ async def search_docs_api(
     result = payload
 
     result = await SearchDocs(search=get_search()).handle(result)
-    return {"status": "accepted", "data": result.model_dump(mode="json")}
+    if isinstance(result, list):
+        return {"status": "accepted", "data": [r.model_dump(mode="json") if hasattr(r, "model_dump") else r for r in result]}
+    return {
+        "status": "accepted",
+        "data": result.model_dump(mode="json") if hasattr(result, "model_dump") else result,
+    }
 ============================================================
 app/cache.py
 ============================================================
@@ -1456,6 +1491,17 @@ norecursedirs = ["tests/system"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+# Pinned explicitly, not left to ruff's own default: `ruff>=0.6`
+# above has no upper bound, and a newer ruff resolved at generation
+# time silently expanded its defaults (bugbear, isort, pyupgrade
+# style checks) past what these templates were written to satisfy,
+# breaking `ciac verify` on every fresh project (v0.29 M1 finding
+# F4). This is ruff's own long-documented default selection --
+# pinning it here makes the templates immune to ruff's own default
+# ever moving again.
+select = ["E4", "E7", "E9", "F"]
 ============================================================
 tests/test_logic_call_upstream.py
 ============================================================
@@ -1464,8 +1510,9 @@ tests/test_logic_call_upstream.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.call_upstream import CallUpstream
 from app.schemas import HttpRequest
@@ -1487,8 +1534,9 @@ tests/test_logic_evict_cache.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.evict_cache import EvictCache
 from app.schemas import KeyOnly
@@ -1510,8 +1558,9 @@ tests/test_logic_index_doc.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.index_doc import IndexDoc
 from app.schemas import IndexRequest
@@ -1533,8 +1582,9 @@ tests/test_logic_list_docs.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.list_docs import ListDocs
 from app.schemas import PrefixOnly
@@ -1558,8 +1608,9 @@ tests/test_logic_notify_user.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.notify_user import NotifyUser
 from app.schemas import Notification
@@ -1581,8 +1632,9 @@ tests/test_logic_remove_doc.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.remove_doc import RemoveDoc
 from app.schemas import KeyOnly
@@ -1604,8 +1656,9 @@ tests/test_logic_search_docs.py
 Exercises the lowered handler body against mocked runtime dependencies;
 real persistence round-trips are `ciac verify --live`'s job, not this test.
 """
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.logic.search_docs import SearchDocs
 from app.schemas import SearchRequest

@@ -2,7 +2,7 @@
   "name": "ciac",
   "displayName": "CIaC",
   "description": "Syntax highlighting and Language Server Protocol support for .ciac files",
-  "version": "0.24.0",
+  "version": "0.28.0",
   "publisher": "ciac",
   "license": "Apache-2.0",
   "repository": {
@@ -29,6 +29,12 @@
         "language": "ciac",
         "scopeName": "source.ciac",
         "path": "../ciac.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "ciac",
+        "path": "./snippets/ciac.json"
       }
     ],
     "configuration": {

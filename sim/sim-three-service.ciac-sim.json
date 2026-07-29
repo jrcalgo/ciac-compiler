@@ -1,0 +1,106 @@
+{
+  "simulation_version": 1,
+  "name": "28-m4-three-service-n3-global-ordering-and-call-seam-failure",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "db": [],
+    "failures": [
+      {
+        "at": {
+          "effect": "call.request",
+          "subject": "Charge",
+          "occurrence": 2,
+          "phase": "after"
+        },
+        "action": {"kind": "error"}
+      }
+    ]
+  },
+  "steps": [
+    {
+      "request": {
+        "service": "Intake",
+        "api": "SubmitOrder",
+        "json": {
+          "id": "a0000000-0000-4000-8000-000000000001",
+          "total": 42.5
+        },
+        "save_as": "submit1"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "submit1",
+          "status": 200
+        }
+      }
+    },
+    { "drain": {} },
+    {
+      "expect": {
+        "row": {
+          "service": "Billing",
+          "table": "charges",
+          "where": {"order_id": "a0000000-0000-4000-8000-000000000001"},
+          "present": true
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "Fulfillment",
+          "table": "shipments",
+          "where": {"order_id": "a0000000-0000-4000-8000-000000000001"},
+          "present": true
+        }
+      }
+    },
+    {
+      "request": {
+        "service": "Intake",
+        "api": "SubmitOrder",
+        "json": {
+          "id": "b0000000-0000-4000-8000-000000000002",
+          "total": 7.0
+        },
+        "save_as": "submit2"
+      }
+    },
+    {
+      "expect": {
+        "response": {
+          "of": "submit2",
+          "status": 500
+        }
+      }
+    },
+    { "drain": {} },
+    {
+      "expect": {
+        "row": {
+          "service": "Billing",
+          "table": "charges",
+          "where": {"order_id": "b0000000-0000-4000-8000-000000000002"},
+          "present": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "row": {
+          "service": "Fulfillment",
+          "table": "shipments",
+          "where": {"order_id": "b0000000-0000-4000-8000-000000000002"},
+          "present": false
+        }
+      }
+    },
+    {
+      "expect": {
+        "quiescence": {}
+      }
+    }
+  ]
+}

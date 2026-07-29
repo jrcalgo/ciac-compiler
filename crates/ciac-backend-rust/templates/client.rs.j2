@@ -12,22 +12,48 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 {% endif -%}
 use crate::state::AppState;
 
-/// Calls `{{ t.service }}` over HTTP and unwraps its response envelope.
+/// Calls `{{ t.service }}` over HTTP and unwraps its response envelope --
+/// or, under `ciac sim` (28UpdatePlan.md M6), routes through
+/// `SimWorld::call_checked` against `{{ t.service }}`'s own registered
+/// handler instead of real HTTP, the same `state.world` guard `db.rs`'s
+/// own world-guarded verbs already use. `call_checked` invokes the target
+/// api's registered handler directly, so its return value carries the
+/// *same* `{"status": ..., "data": ...}` envelope every route function's
+/// own body already builds (see `route_api.rs.j2`) -- this unwraps
+/// `["data"]` from it exactly the way the real-HTTP branch unwraps
+/// `body["data"]`, same post-processing, different transport.
 pub struct {{ t.class_name }}<'a> {
     base_url: &'a str,
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
+    world: Option<std::sync::Arc<crate::world::SimWorld>>,
+{%- endif %}
 }
 
 impl<'a> {{ t.class_name }}<'a> {
     pub fn new(state: &'a AppState) -> Self {
         Self {
             base_url: &state.config.{{ t.url_field }},
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
+            world: state.world.clone(),
+{%- endif %}
         }
     }
 {% for a in t.apis %}
 {%- set payload_type = a.payload.class_name if a.payload else "serde_json::Value" %}
     pub async fn {{ a.method }}(&self, payload: {{ payload_type }}) -> anyhow::Result<{{ payload_type }}> {
 {%- if not a.has_body %}
-        let _ = payload;
+        let _ = &payload;
+{%- endif %}
+{%- if c.has_db or c.has_queue or c.has_cache or c.has_object_store or c.has_email or c.has_search or c.has_external_http or c.has_auth or c.call_targets %}
+        if let Some(world) = &self.world {
+{%- if a.has_body %}
+            let req = serde_json::to_value(&payload)?;
+{%- else %}
+            let req = serde_json::json!({});
+{%- endif %}
+            let result = world.call_checked("{{ caller }}", "{{ t.service }}", "{{ a.name }}", req)?;
+            return Ok(serde_json::from_value(result["data"].clone())?);
+        }
 {%- endif %}
 {%- if c.has_tracing %}
         let mut headers = reqwest::header::HeaderMap::new();

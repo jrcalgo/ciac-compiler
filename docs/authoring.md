@@ -1,4 +1,10 @@
-# Authoring CIaC (v0.13)
+# Authoring CIaC
+
+*Reader: a builder setting up editor support, or reusing blueprints
+across projects. [docs/guide/01-first-service.md](guide/01-first-service.md)
+is the narrative walkthrough this page assumes as background;
+this page is the reference for the editing/reuse tooling that
+walkthrough only touches briefly.*
 
 Everything in this page is about the minutes *before* and *during*
 `ciac build`: starting a project, editing `.ciac` with live feedback,
@@ -31,23 +37,46 @@ is deliberately no `--force` (regeneration workflows belong to
 `ciac lsp` speaks the Language Server Protocol over stdio. It
 publishes the **same diagnostics `ciac check` prints** (same codes,
 same spans, resolved through the same line/column pipeline as
-`--json`) on file open and save, plus:
+`--json`) on file open and save, *and* — since `29UpdatePlan.md` M8 —
+on a **debounced edit**: a short pause after your last keystroke
+reparses the dirty, unsaved buffer and republishes, instead of waiting
+for the next save. This is the arc's final editor claim; the full
+capability set, current as of this milestone:
 
-- **hover** over any keyword, capability, provider, or declared name
-  — providers carry their per-target support notes (every provider
-  generates on both bundled targets as of v0.13; see
-  [docs/language.md](language.md)'s support table);
+- **diagnostics** on open, save, and debounced didChange (above);
+- **hover** over any keyword, capability, provider, or declared name.
+  A capability hover (v0.27 M7) is a structured block — its providers,
+  per-target support (every provider generates on all five bundled
+  targets), the handler-body verbs it exposes, and how `ciac sim`
+  treats it — not just a one-line description;
 - **completion** for keywords, capabilities, providers, builtin
-  pipeline steps, and the names your own file declares.
+  pipeline steps, and the names your own file declares. A declaration
+  keyword (`service`, `worker`, `crud`, ...) completes as a real
+  tab-stopped **snippet** (v0.27 M7), not just the bare word;
+- **rename** (v0.18) — `prepareRename`/`rename` over the whole
+  program, cross-file through `import`s, with the same collision/
+  editability checks `ciac rename` enforces on the CLI;
+- **go-to-definition** (v0.27 M8) — a thin projection of the same
+  whole-program resolver rename already rides: the identifier under
+  the cursor jumps to its declaration site, same-file or across an
+  `import`;
+- **quick-fixes** (v0.15 M7, widened at v0.27 M8) on the mechanically
+  fixable diagnostics — missing capability, unknown provider/stream/
+  table/capability-instance/attribute name (nearest-match rename,
+  offered only when one candidate is a plausible typo, never a
+  guess), and OAuth2's missing-`issuer` case. See
+  [docs/errors.md](errors.md) for exactly which codes carry one.
 
-Diagnostics refresh on *save*, not on every keystroke: imports
-resolve against the filesystem exactly as the CLI resolves them, and
-resolving unsaved buffers would need a VFS layer that remains
-deliberately out of scope (as are rename, references, and code
-actions). `ciac lsp` and `ciac describe` (v0.13, see
-[docs/agents.md](agents.md)) render their vocabulary from the same
-table in `crates/ciac/src/vocab.rs`, so hover text and the
-machine-readable registry can't drift apart.
+One disclosed gap, unchanged since v0.12: only the *entry file you
+have open* gets its unsaved edits reparsed (`load_with_overlay`
+substitutes its dirty buffer only) — anything it `import`s still
+resolves from disk, since only the document actually open in the
+client has unsaved content to substitute. A full cross-file VFS
+overlay remains out of scope. `ciac lsp` and `ciac describe` (v0.13,
+see [docs/agents.md](agents.md)) render their vocabulary — including
+snippets — from the same table in `crates/ciac/src/vocab.rs`, so
+hover text, completions, and the machine-readable registry can't
+drift apart.
 
 ### Editor setup
 

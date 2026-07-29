@@ -38,7 +38,7 @@ use ciac_codegen::{
     Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
     TargetInfo, ValidateStep,
 };
-use ciac_ir::{Component, NodeKind, NormalizedIr};
+use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 
@@ -117,49 +117,151 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     sim: SimSupport::Narrow {
         unsupported: unsupported_sim_capabilities,
     },
+    // 27UpdatePlan.md M1: see ciac-backend-rust's identical comment —
+    // depth and replay-tape support are decoupled fields on purpose.
+    sim_replay: false,
 };
 
 /// Human-readable, closed list of reasons `ciac sim --target go`
-/// (v0.24 M9) cannot yet simulate `ir`, empty when it can — the same
-/// gate Rust's own `unsupported_sim_capabilities` (v0.17 M11) and
-/// TypeScript's (v0.23 M9) compute, over the same shared `lower::scan`
-/// this backend already reuses elsewhere: `world.go` only fakes
-/// `db.insert` and broker publish/consume; every other verb a typed
-/// handler calls falls straight through the world-guard to real
-/// infrastructure (`db_update_tail` and friends never check
-/// `st.World`).
-pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
-    let mut reasons = Vec::new();
-    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
-        reasons.push(
-            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
-             cryptography against a real issuer, which this milestone's simulation world does \
-             not fake"
-                .to_owned(),
-        );
-    }
-    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
-    for node in ir.nodes() {
-        if let Component::Service {
-            signature: Some(hir),
-            ..
-        } = &node.component
-        {
-            for verb in lower::scan(ir, hir).unguarded_verbs {
-                if !unguarded_verbs.contains(&verb) {
-                    unguarded_verbs.push(verb);
-                }
-            }
+/// cannot yet simulate `ir`, empty when it can — the same gate Rust's
+/// own `unsupported_sim_capabilities` (v0.17 M11, full parity
+/// 27UpdatePlan.md M4) and TypeScript's (v0.23 M9, full parity M6)
+/// compute. 27UpdatePlan.md M7 closes Go's own gate the identical
+/// way: `world.go` (`world.go.j2`) now fakes every capability a typed
+/// handler can call — `db.get`/`update`/`delete`/`query`/`count`/
+/// `delete_where` (in addition to the v0.24 M9 narrow `db.insert`/
+/// publish), `cache`, `object_store`, `email`, `search`,
+/// `external_http`, and `auth` (`World.AuthVerify`, wired into
+/// `auth.go.j2`'s `VerifyToken`) all have a world-guard leaf in
+/// `lower.rs` now, so `lower::scan`'s own `unguarded_verbs` list is
+/// always empty and `auth` no longer needs a standalone refusal
+/// either. Kept as a function (not a bare `Vec::new()` constant) for
+/// the identical reason Rust's/TypeScript's own M4/M6 kept theirs:
+/// `TargetInfo::sim` needs a `fn(&NormalizedIr) -> Vec<String>`
+/// value, and a real function documents the empty list's own
+/// reasoning inline rather than leaving a bare literal to look
+/// unintentional.
+///
+/// **A structural note, identical to Rust's/TypeScript's own M4/M6
+/// finding:** this does *not* flip `TargetInfo::sim` from
+/// `SimSupport::Narrow` to `SimSupport::Full` — `commands.rs`'s
+/// `sim_inner` dispatch hardcodes `SimSupport::Full =>
+/// sim_drive_python(..)`, so doing that would silently misroute Go-
+/// generated projects through Python's driver. Go's `TargetInfo`
+/// stays `SimSupport::Narrow` with this function now always
+/// returning empty — "full" in observed behavior, not in enum shape.
+pub fn unsupported_sim_capabilities(_ir: &NormalizedIr) -> Vec<String> {
+    Vec::new()
+}
+
+/// Template-facing counterpart of `ciac-sim`'s `WorldReference`.
+#[derive(serde::Serialize)]
+struct SimWorldReferenceCtx {
+    field_name: String,
+    target_table: Option<String>,
+    on_delete: &'static str,
+    unique: bool,
+}
+
+/// Template-facing counterpart of `ciac-sim`'s `WorldTable`.
+#[derive(serde::Serialize)]
+struct SimWorldTableCtx {
+    name: String,
+    references: Vec<SimWorldReferenceCtx>,
+}
+
+/// Builds the schema `sim_runner.go.j2` passes to `world.New(..)`
+/// (27UpdatePlan.md M7) -- without it, `World` falls back to an empty
+/// schema and every reference/unique/cascade check silently becomes a
+/// no-op, the same gap Rust's own M4 and TypeScript's own M6 caught
+/// live against `domain-orders.ciac`. Reuses
+/// `ciac_codegen::migrations::snapshot_schema` -- the same reference/
+/// unique-column facts the migration DDL itself is built from, so
+/// this can never drift from what the real schema actually enforces.
+/// Mirrors `ciac-backend-rust`'s/`ciac-backend-ts`'s own
+/// `sim_world_tables` exactly, modulo the lowercase `on_delete`
+/// spelling TypeScript's own version already established.
+fn sim_world_tables(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(fk.target_table),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "cascade"
+                    } else {
+                        "restrict"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx { name, references }
+        })
+        .collect()
+}
+
+/// Multi-service counterpart of [`sim_world_tables`]: the system-runner's
+/// one shared `world.World` (28UpdatePlan.md M7c) needs every table
+/// name -- and every foreign key's `target_table` -- spelled the same
+/// namespaced way `lower.rs`'s own `world_table_key` composes them at
+/// typed-handler lowering time (`"{service}::{table}"`, via
+/// `world.NamespacedTableKey`), or a reference/uniqueness check would
+/// silently look up a table the world never registered. Builds a
+/// `physical table name -> owning service` map from `ir.tables()`
+/// directly (mirrors `ciac-backend-rust`'s own `sim_world_tables_multi`
+/// exactly, modulo the lowercase `on_delete` spelling this backend's
+/// own `sim_world_tables` already established). A compiler-owned link
+/// table (`orders__line_items`) carries no `Table` node of its own; its
+/// prefix (`orders`) is always its source table's physical name, so the
+/// same map resolves it too.
+fn sim_world_tables_multi(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    use heck::ToSnakeCase;
+
+    let mut owner_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (_, table) in ir.tables() {
+        if let Some(sid) = table.service {
+            owner_of.insert(table.name.to_snake_case(), ir.service(sid).name.clone());
         }
     }
-    if !unguarded_verbs.is_empty() {
-        unguarded_verbs.sort_unstable();
-        reasons.push(format!(
-            "calls verb(s) the simulation world does not fake: {}",
-            unguarded_verbs.join(", ")
-        ));
-    }
-    reasons
+    let namespace = |physical: &str| -> String {
+        let key = physical
+            .split_once("__")
+            .map_or(physical, |(prefix, _)| prefix);
+        match owner_of.get(key) {
+            Some(service) => format!("{service}::{physical}"),
+            None => physical.to_owned(),
+        }
+    };
+
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(namespace(&fk.target_table)),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "cascade"
+                    } else {
+                        "restrict"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx {
+                name: namespace(&name),
+                references,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -260,17 +362,24 @@ impl Backend for GoBackend {
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
-            (
-                f.path().to_str().expect("template names are utf-8"),
-                f.contents_utf8().expect("templates are utf-8"),
-            )
-        }))?;
-        env.add_filter("go_type", filters::go_type);
-        env.add_filter("go_db_type", filters::go_db_type);
-        env.add_filter("go_zero", filters::go_zero);
-        env.add_filter("go_validate_tag", filters::go_validate_tag);
-        env.add_filter("go_pascal", filters::go_pascal);
+        static ENV: std::sync::OnceLock<minijinja::Environment<'static>> =
+            std::sync::OnceLock::new();
+        let env = ciac_codegen::template::cached_environment(
+            &ENV,
+            TEMPLATES.files().map(|f| {
+                (
+                    f.path().to_str().expect("template names are utf-8"),
+                    f.contents_utf8().expect("templates are utf-8"),
+                )
+            }),
+            |env| {
+                env.add_filter("go_type", filters::go_type);
+                env.add_filter("go_db_type", filters::go_db_type);
+                env.add_filter("go_zero", filters::go_zero);
+                env.add_filter("go_validate_tag", filters::go_validate_tag);
+                env.add_filter("go_pascal", filters::go_pascal);
+            },
+        );
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -279,7 +388,7 @@ impl Backend for GoBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
 
         if model.multi {
@@ -300,6 +409,41 @@ impl Backend for GoBackend {
                 serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
                     .map_err(|e| BackendError::Other(e.to_string()))?,
             );
+            // 28UpdatePlan.md M7c: the `sim-shared` module (one
+            // `world.World` type every service and the system-runner
+            // import identically, resolved via `replace` -- see
+            // `emit_service`'s own `!multi` gate and `go.mod.j2`'s own
+            // `{% if multi %}` block for why this is needed at all: Go's
+            // `internal/` package-visibility rule makes each service's
+            // own private `internal/world` copy unimportable from
+            // outside that service's own module tree). `world.go.j2`
+            // has no per-service template variables (it never
+            // references `c.*`), so this is the exact same rendered
+            // content every service's own single-service `internal/
+            // world/world.go` would have gotten.
+            project.add_file("sim-shared/go.mod", SIM_SHARED_GO_MOD);
+            project.add_file(
+                "sim-shared/world/world.go",
+                env.get_template("world.go.j2")?.render(context! {})?,
+            );
+            // The system-runner module: drives `ciac sim` scenarios
+            // across every service in this system through the one
+            // shared world above (M7d wires the actual driver).
+            project.add_file("system-runner/go.mod", system_runner_go_mod(env, &model)?);
+            project.add_file("system-runner/go.sum", GO_SUM);
+            let sim_needs_context = model
+                .services
+                .iter()
+                .any(|ctx| !ctx.jobs.is_empty() || ctx.workers.iter().any(|w| !w.steps.is_empty()));
+            project.add_file(
+                "system-runner/main.go",
+                env.get_template("system_sim_runner.go.j2")?
+                    .render(context! {
+                        services => model.services,
+                        sim_world_tables => sim_world_tables_multi(ir),
+                        sim_needs_context => sim_needs_context,
+                    })?,
+            );
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
                  `docker compose up` runs them all together"
@@ -311,6 +455,7 @@ impl Backend for GoBackend {
                     .to_owned(),
             );
         }
+        format_all_go(&mut project)?;
         Ok(project)
     }
 }
@@ -330,7 +475,7 @@ fn emit_service(
     let render = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
         Ok(env
             .get_template(name)?
-            .render(context! { c => base, ..extra })?)
+            .render(context! { c => base, multi, ..extra })?)
     };
     // `.go` files specifically route through the real `gofmt` binary
     // (Pillar "determinism and supply chain": "generated code is
@@ -351,13 +496,34 @@ fn emit_service(
     // own formatter to render into it — a disclosed, narrow
     // dependency: `gofmt` must be on `PATH` to run `--target go`
     // generation at all, not only to *validate* its output.
-    let render_go = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
-        gofmt(&render(name, extra)?)
-    };
+    // `30UpdatePlan.md` M3: formatting itself is no longer done here,
+    // per file — it's one batched pass (`format_all_go`) over every
+    // `.go` file `generate()` produced, called once at the very end.
+    // This alias exists only so every call site below keeps reading as
+    // "produces formatted Go source" without a 33-site rename.
+    let render_go = render;
     let empty = || context! {};
     let at = |path: &str| format!("{prefix}{path}");
 
     project.add_file(at("go.mod"), render("go.mod.j2", empty())?);
+    // 28UpdatePlan.md M7c: the one non-`internal` package this service
+    // exposes to the system's own system-runner module -- found live
+    // (`go build`'s "use of internal package ... not allowed" refusal)
+    // that Go's directory-based `internal/` visibility rule blocks a
+    // *separate* module (even one reached through a `go.mod` `replace`
+    // directive) from importing anything under `internal/` at all, not
+    // only `internal/world` -- see `templates/simbridge.go.j2`'s own
+    // doc comment. Every symbol it re-exports already exists
+    // unconditionally (`config.FromEnv`/`state.New`) or is itself
+    // already gated inside the template, so this is emitted
+    // unconditionally in multi mode, mirroring `world.go`'s own "any
+    // service might be a routed-call target" reasoning.
+    if multi {
+        project.add_file(
+            at("simbridge/simbridge.go"),
+            render_go("simbridge.go.j2", empty())?,
+        );
+    }
     project.add_file(at("go.sum"), GO_SUM);
     project.add_file(at("README.md"), render("README.md.j2", empty())?);
     project.add_file(at("Dockerfile"), render("Dockerfile.j2", empty())?);
@@ -459,7 +625,10 @@ fn emit_service(
     for target in &ctx.call_targets {
         project.add_file(
             at(&format!("internal/clients/{}.go", target.module)),
-            render_go("client.go.j2", context! { t => target })?,
+            render_go(
+                "client.go.j2",
+                context! { t => target, caller => ctx.service_name },
+            )?,
         );
     }
 
@@ -480,16 +649,48 @@ fn emit_service(
         );
     }
     // v0.24 M9: the simulation world -- only for programs with
-    // something it can actually fake (`db.insert`, broker `publish`),
-    // the same gate Rust's/TypeScript's own `world.rs`/`world.ts`
-    // emission (v0.17 M11 / v0.23 M9) uses. `sim_needs_schemas` tells
-    // the runner template whether any worker's typed payload needs
-    // the `internal/schemas` import at all.
-    if ctx.has_db || ctx.has_queue {
-        project.add_file(
-            at("internal/world/world.go"),
-            render_go("world.go.j2", empty())?,
-        );
+    // something it can actually fake, the same gate Rust's/
+    // TypeScript's own `world.rs`/`world.ts` emission (v0.17 M11 /
+    // v0.23 M9, broadened at 27UpdatePlan.md M4/M6) uses. 27UpdatePlan.md
+    // M7 broadens this from `has_db or has_queue` to the full 8-
+    // condition check, matching TypeScript's own M6 fix, now that
+    // `world.go` fakes every capability, not just db.insert/publish.
+    // 28UpdatePlan.md M7c: `|| !ctx.call_targets.is_empty()` closes a
+    // gap found live -- a service reachable only via a routed `call`
+    // from another service (no local db/queue/etc. of its own) still
+    // needs a world instance to register its handlers against, the
+    // same fix Rust's/TypeScript's own M6a/M7a checkpoints already
+    // made to their analogous gates.
+    // `sim_needs_schemas` tells the runner template whether any
+    // worker's typed payload needs the `internal/schemas` import at
+    // all.
+    if ctx.has_db
+        || ctx.has_queue
+        || ctx.has_cache
+        || ctx.has_object_store
+        || ctx.has_email
+        || ctx.has_search
+        || ctx.has_external_http
+        || ctx.has_auth
+        || !ctx.call_targets.is_empty()
+    {
+        // 28UpdatePlan.md M7c: a multi-service system's own services
+        // import the shared `sim-shared/world` module (emitted once per
+        // system by `GoBackend::generate`, below) instead of each
+        // vendoring a private copy under `internal/world` -- N private
+        // copies of the identical source text are still N *nominally
+        // distinct* Go types (Go's own `internal/` visibility rule also
+        // makes a private copy unimportable across module boundaries
+        // regardless), and a system-runner module depending on every
+        // service needs exactly one `world.World` type all of them
+        // share. Single-service projects are untouched: still self-
+        // contained, still emitted at `internal/world/world.go`.
+        if !multi {
+            project.add_file(
+                at("internal/world/world.go"),
+                render_go("world.go.j2", empty())?,
+            );
+        }
         let sim_needs_schemas = ctx.workers.iter().any(|w| w.payload.is_some());
         // `context.Background()` only appears inside the runner's
         // `drain`/`advance` bodies, and only for a worker with a
@@ -504,7 +705,11 @@ fn emit_service(
             at("cmd/sim_runner/main.go"),
             render_go(
                 "sim_runner.go.j2",
-                context! { sim_needs_schemas => sim_needs_schemas, sim_needs_context => sim_needs_context },
+                context! {
+                    sim_needs_schemas => sim_needs_schemas,
+                    sim_needs_context => sim_needs_context,
+                    sim_world_tables => sim_world_tables(ir),
+                },
             )?,
         );
     }
@@ -629,8 +834,9 @@ fn emit_service(
             _ => None,
         })
         .collect();
+    let service_for_sim = multi.then_some(ctx.service_name.as_str());
     for (name, hir) in &typed_handlers {
-        let handler = lower::render(ir, name, hir);
+        let handler = lower::render(ir, name, hir, service_for_sim);
         let content = render_go(
             "logic.go.j2",
             context! { handler => minijinja::Value::from_serialize(&handler) },
@@ -712,41 +918,74 @@ fn emit_service(
     Ok(())
 }
 
-/// Formats Go source through the real `gofmt` binary — see
-/// `emit_service`'s `render_go` for why this is a deliberate,
-/// disclosed dependency rather than a template-layer approximation.
-fn gofmt(src: &str) -> Result<String, BackendError> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
+/// Batch-formats every `.go` file this backend just generated through
+/// one `gofmt -w <files...>` invocation instead of one process per file
+/// (`30UpdatePlan.md` M3 — the same seam Java's M2 built for
+/// `google-java-format`, now shared via `ciac_codegen::format_batch`).
+/// `gofmt`'s own startup cost is only ~2ms, so this milestone's value
+/// is consistency and future-proofing rather than a measurable
+/// speedup — but it's the same batching contract every
+/// formatter-shelling backend must follow, in one place, so a future
+/// backend can't reintroduce the JVM-per-file-shaped tax by copying
+/// the wrong example. No `@argfile` here: unlike `google-java-format`,
+/// `gofmt` takes file paths as plain positional arguments with no
+/// alternate list-file syntax, and generated Go projects stay well
+/// under `ARG_MAX` for path-list length.
+fn format_all_go(project: &mut GeneratedProject) -> Result<(), BackendError> {
+    ciac_codegen::format_batch::format_batch(
+        project,
+        |path| path.ends_with(".go"),
+        |_scratch, paths| {
+            let mut cmd = std::process::Command::new("gofmt");
+            cmd.arg("-w").args(paths);
+            Ok(cmd)
+        },
+    )
+}
 
-    let mut child = Command::new("gofmt")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            BackendError::Other(format!(
-                "`gofmt` not found on PATH ({e}) — the Go toolchain must be \
-                 installed to generate `--target go` output, not only to validate it"
-            ))
-        })?;
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(src.as_bytes())
-        .map_err(|e| BackendError::Other(format!("writing to gofmt: {e}")))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|e| BackendError::Other(format!("running gofmt: {e}")))?;
-    if !output.status.success() {
-        return Err(BackendError::Other(format!(
-            "gofmt rejected generated source (this is a codegen bug, not a \
-             user error): {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
+/// The shared `sim-shared` module's own `go.mod` (28UpdatePlan.md
+/// M7c): no third-party requirement of its own -- `world.go.j2`
+/// depends on nothing beyond the Go standard library -- mirroring
+/// Rust's `SIM_SHARED_CARGO_TOML`/TypeScript's `system_runner_
+/// package_json`'s own minimal-dependency finding for the same reason.
+const SIM_SHARED_GO_MOD: &str = "module sim-shared\n\ngo 1.24.0\n\ntoolchain go1.24.7\n";
+
+/// The system-runner module's own `go.mod` (28UpdatePlan.md M7c):
+/// `replace` directives pointing `sim-shared` and every service in
+/// this system at their real, local directories, by their real module
+/// names. Renders the real `go.mod.j2` template (with `c.package` set
+/// to `"system-runner"`) rather than hand-writing a second copy of its
+/// dependency list -- found live: `go build`'s own default `-mod=
+/// readonly` mode refuses to resolve `system-runner/main.go`'s own
+/// transitive imports (pulled in through every service's own
+/// `simbridge` -- pgx, redis, franz-go, aws-sdk-s3, ...) unless every
+/// one of them is already present in `go.mod`'s own `require` block
+/// (confirmed with `go build -mod=mod`, which auto-populated exactly
+/// the fixed indirect set `go.mod.j2`'s own unconditional require
+/// blocks already declare for every service) -- `go.mod.j2` already
+/// declares that full, fixed set unconditionally (no per-capability
+/// gating), the same "every possible provider, always" shape every
+/// service's own `go.mod` already carries, so reusing it here needs no
+/// per-system dependency computation at all. The per-service `require`/
+/// `replace` lines this template doesn't know about are appended as
+/// plain text after it, mirroring `ciac-backend-rust`'s own
+/// `system_runner_cargo_toml`/`ciac-backend-ts`'s own `system_runner_
+/// package_json` for the one part that *is* genuinely per-system.
+fn system_runner_go_mod(
+    env: &minijinja::Environment<'_>,
+    model: &context::SystemModel,
+) -> Result<String, BackendError> {
+    let base = env.get_template("go.mod.j2")?.render(context! {
+        c => context! { package => "system-runner" },
+        multi => true,
+    })?;
+    let mut out = base.trim_end().to_owned();
+    out.push('\n');
+    for ctx in &model.services {
+        out.push_str(&format!("\nrequire {} v0.0.0\n", ctx.package));
+        out.push_str(&format!("\nreplace {} => ../{}\n", ctx.package, ctx.dir));
     }
-    String::from_utf8(output.stdout).map_err(|e| BackendError::Other(format!("gofmt output: {e}")))
+    Ok(out)
 }
 
 /// The full, fixed transitive dependency pin for every Go module this

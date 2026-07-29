@@ -43,6 +43,13 @@ import (
 	"{{ c.package }}/internal/schemas"
 {%- endif %}
 	"{{ c.package }}/internal/state"
+{%- if handler.needs_world %}
+{%- if multi %}
+	"sim-shared/world"
+{%- else %}
+	"{{ c.package }}/internal/world"
+{%- endif %}
+{%- endif %}
 )
 
 // {{ handler.class_name }} implements the `{{ handler.class_name }}` typed handler.

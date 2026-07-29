@@ -1,0 +1,17 @@
+// expect: CIAC0006
+// 28UpdatePlan.md M1/M2: proves `ciac-sema`'s existing `CycleDetection`
+// pass already refuses a `call <Service>.<Api>` cycle at compile time
+// (`EdgeKind::ServiceCall` is one of the edge kinds its combined
+// flow-graph check considers) -- the load-bearing fact behind M1's
+// decision to drop the originally-planned SIM0012 sim-layer cycle
+// check as permanently unreachable dead code.
+project X;
+record A { id: Uuid; }
+service Caller {
+    api In: A;
+    pipeline In: call Callee.Out -> Return;
+}
+service Callee {
+    api Out: A;
+    pipeline Out: call Caller.In -> Return;
+}

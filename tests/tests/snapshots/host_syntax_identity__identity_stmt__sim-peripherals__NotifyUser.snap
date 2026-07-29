@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(discard (email-send (field-access payload to) (field-access payload subject) (field-access payload body)))
+(return (record-cons Ack (ok true)))

@@ -6,6 +6,15 @@ every open `.ciac` file — live diagnostics, hover, and completion, the
 same as any other LSP-backed language extension. `ciac` itself must be
 on `$PATH` (or set `ciac.serverPath` in your VS Code settings).
 
+Declaration keywords (`service`, `worker`, `crud`, ...) complete as
+real tab-stopped snippets, not just bare words — type `worker` and tab
+through `Name`/`Stream` — via `snippets/ciac.json` (v0.27 M7), generated
+from the same `vocab.rs` table the LSP's own completion reads, with a
+test (`crates/ciac/tests/snippets_cli.rs`) holding the two in sync.
+Hovering a capability (`db`, `cache`, ...) shows its providers,
+per-target support, verbs, and `ciac sim` behavior in one block, not
+just a one-line description.
+
 ## Load it unpacked (no packaging needed)
 
 ```sh

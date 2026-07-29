@@ -1,0 +1,6 @@
+---
+source: tests/tests/host_syntax_identity.rs
+expression: rendered
+---
+(let v1 (db-delete Orders (field-access payload id)))
+(return (record-cons DeleteResult (deleted v1)))

@@ -1,5 +1,7 @@
 # Handler-Body Expressions (v0.7, extended v0.14, v0.16)
 
+*Reader: a builder writing typed handler-body logic in CIaC itself.*
+
 Through v0.6, a pipeline handler was always an opaque business-logic
 unit: the compiler generated a typed constructor and a `handle` stub,
 and you filled in the body by hand in the target language. v0.7 adds a

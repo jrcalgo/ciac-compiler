@@ -1,0 +1,77 @@
+{
+  "simulation_version": 1,
+  "name": "28-m4-inventory-system-call-round-trip-and-scoped-auth",
+  "start_at": "2030-01-01T00:00:00Z",
+  "given": {
+    "db": [],
+    "failures": [
+      {
+        "at": {
+          "effect": "call.request",
+          "subject": "Price",
+          "occurrence": 2,
+          "phase": "after"
+        },
+        "action": {"kind": "error"}
+      }
+    ]
+  },
+  "steps": [
+    {
+      "request": {
+        "service": "Gateway",
+        "api": "Quote",
+        "json": {"id": "a0000000-0000-4000-8000-000000000001", "name": "Widget"},
+        "as": {"sub": "ada", "scopes": ["gateway:quote"]},
+        "save_as": "quote_ok"
+      }
+    },
+    {"expect": {"response": {"of": "quote_ok", "status": 200}}},
+
+    {
+      "request": {
+        "service": "Gateway",
+        "api": "Quote",
+        "json": {"id": "b0000000-0000-4000-8000-000000000002", "name": "Widget"},
+        "as": {"sub": "bob", "scopes": []},
+        "save_as": "quote_no_scope"
+      }
+    },
+    {"expect": {"response": {"of": "quote_no_scope", "status": 403}}},
+
+    {
+      "request": {
+        "service": "Catalog",
+        "api": "Restock",
+        "json": {"id": "c0000000-0000-4000-8000-000000000003", "name": "Gadget"},
+        "as": {"sub": "ada", "scopes": ["catalog:restock"]},
+        "save_as": "restock_ok"
+      }
+    },
+    {"expect": {"response": {"of": "restock_ok", "status": 200}}},
+
+    {
+      "request": {
+        "service": "Catalog",
+        "api": "Restock",
+        "json": {"id": "d0000000-0000-4000-8000-000000000004", "name": "Gadget"},
+        "as": {"sub": "bob", "scopes": ["gateway:quote"]},
+        "save_as": "restock_wrong_scope"
+      }
+    },
+    {"expect": {"response": {"of": "restock_wrong_scope", "status": 403}}},
+
+    {
+      "request": {
+        "service": "Gateway",
+        "api": "Quote",
+        "json": {"id": "e0000000-0000-4000-8000-000000000005", "name": "Widget"},
+        "as": {"sub": "ada", "scopes": ["gateway:quote"]},
+        "save_as": "quote_failed"
+      }
+    },
+    {"expect": {"response": {"of": "quote_failed", "status": 500}}},
+
+    {"expect": {"quiescence": {}}}
+  ]
+}

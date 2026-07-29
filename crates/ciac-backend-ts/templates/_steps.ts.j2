@@ -27,7 +27,7 @@
 {%- elif step.kind == "publish" %}
 {{ indent }}await publish(state, "{{ step.subject }}", Buffer.from(JSON.stringify(result)));
 {%- elif step.kind == "call" %}
-{{ indent }}result = await new {{ step.call.class_name }}(state.config).{{ step.call.method }}(result);
+{{ indent }}result = await new {{ step.call.class_name }}(state).{{ step.call.method }}(result);
 {%- elif step.kind == "match" %}
 {{ indent }}// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see _steps.ts.j2's own doc comment on why `result` stays `unknown`
 {{ indent }}switch ((result as any).{{ step.field }}) {

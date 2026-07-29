@@ -40,7 +40,7 @@ use ciac_codegen::{
     Backend, BackendError, DevCommands, GenOptions, GeneratedProject, RestartStyle, SimSupport,
     TargetInfo, ValidateStep,
 };
-use ciac_ir::{Component, NodeKind, NormalizedIr};
+use ciac_ir::{Component, NormalizedIr};
 use include_dir::{include_dir, Dir};
 use minijinja::context;
 use serde::Serialize;
@@ -108,49 +108,148 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     sim: SimSupport::Narrow {
         unsupported: unsupported_sim_capabilities,
     },
+    // 27UpdatePlan.md M1: see ciac-backend-rust's identical comment —
+    // depth and replay-tape support are decoupled fields on purpose.
+    sim_replay: false,
 };
 
-/// Human-readable, closed list of reasons `ciac sim --target java`
-/// (v0.25 M9) cannot yet simulate `ir`, empty when it can — the same
-/// gate Rust's own `unsupported_sim_capabilities` (v0.17 M11),
-/// TypeScript's (v0.23 M9), and Go's (v0.24 M9) compute, over the same
-/// shared `lower::scan` this backend already reuses elsewhere:
-/// `World.java` only fakes `db.insert` and broker publish/consume;
-/// every other verb a typed handler calls falls straight through the
-/// world-guard to real infrastructure (`db_update_tail` and friends
-/// never check `world`).
-pub fn unsupported_sim_capabilities(ir: &NormalizedIr) -> Vec<String> {
-    let mut reasons = Vec::new();
-    if ir.nodes_of_kind(NodeKind::Auth).next().is_some() {
-        reasons.push(
-            "declares `auth` (OAuth2/JWT): validating a real signed token needs real \
-             cryptography against a real issuer, which this milestone's simulation world does \
-             not fake"
-                .to_owned(),
-        );
-    }
-    let mut unguarded_verbs: Vec<&'static str> = Vec::new();
-    for node in ir.nodes() {
-        if let Component::Service {
-            signature: Some(hir),
-            ..
-        } = &node.component
-        {
-            for verb in lower::scan(ir, hir).unguarded_verbs {
-                if !unguarded_verbs.contains(&verb) {
-                    unguarded_verbs.push(verb);
-                }
-            }
+/// Human-readable, closed list of reasons `ciac sim --target java` cannot
+/// yet simulate `ir`, empty when it can — the same gate Rust's own
+/// `unsupported_sim_capabilities` (v0.17 M11, full parity 27UpdatePlan.md
+/// M4), TypeScript's (v0.23 M9, full parity M6), and Go's (v0.24 M9, full
+/// parity M7) compute. 27UpdatePlan.md M8 closes Java's own gate the
+/// identical way: `World.java` (`World.java.j2`) now fakes every capability
+/// a typed handler can call — `db.get`/`update`/`delete`/`query`/`count`/
+/// `delete_where` (in addition to the v0.25 M9 narrow `db.insert`/publish),
+/// `cache` (both via a `lower.rs` world-guard leaf), and `object_store`/
+/// `email`/`search`/`external_http`/`auth` (each via its own wrapper
+/// class's own `ObjectProvider<World>`, mirroring `Queue.java`'s own
+/// pre-existing `publishChecked` pattern) — so `lower::scan`'s own
+/// `unguarded_verbs` list is always empty and `auth` no longer needs a
+/// standalone refusal either. Kept as a function (not a bare `Vec::new()`
+/// constant) for the identical reason Rust's/TypeScript's/Go's own M4/M6/M7
+/// kept theirs: `TargetInfo::sim` needs a `fn(&NormalizedIr) -> Vec<String>`
+/// value, and a real function documents the empty list's own reasoning
+/// inline rather than leaving a bare literal to look unintentional.
+///
+/// **A structural note, identical to Rust's/TypeScript's/Go's own M4/M6/M7
+/// finding:** this does *not* flip `TargetInfo::sim` from `SimSupport::
+/// Narrow` to `SimSupport::Full` — `commands.rs`'s `sim_inner` dispatch
+/// hardcodes `SimSupport::Full => sim_drive_python(..)`, so doing that would
+/// silently misroute Java-generated projects through Python's driver.
+/// Java's `TargetInfo` stays `SimSupport::Narrow` with this function now
+/// always returning empty — "full" in observed behavior, not in enum shape.
+pub fn unsupported_sim_capabilities(_ir: &NormalizedIr) -> Vec<String> {
+    Vec::new()
+}
+
+/// Template-facing counterpart of `World.java`'s own `WorldReference`.
+#[derive(serde::Serialize)]
+struct SimWorldReferenceCtx {
+    field_name: String,
+    target_table: Option<String>,
+    on_delete: &'static str,
+    unique: bool,
+}
+
+/// Template-facing counterpart of `World.java`'s own `WorldTable`.
+#[derive(serde::Serialize)]
+struct SimWorldTableCtx {
+    name: String,
+    references: Vec<SimWorldReferenceCtx>,
+}
+
+/// Builds the schema `SimRunner.java.j2` passes to `new World(.., tables)`
+/// (27UpdatePlan.md M8) -- without it, `World` falls back to an empty
+/// schema and every reference/unique/cascade check silently becomes a
+/// no-op, the same gap Rust's/TypeScript's/Go's own M4/M6/M7 caught live
+/// against `domain-orders.ciac`. Reuses `ciac_codegen::migrations::
+/// snapshot_schema` -- the same reference/unique-column facts the
+/// migration DDL itself is built from, so this can never drift from what
+/// the real schema actually enforces. Mirrors `ciac-backend-go`'s own
+/// `sim_world_tables` exactly, except `on_delete`'s own uppercase spelling
+/// here (`World.java.j2`'s `RefAction.valueOf` reads this string
+/// directly, unlike TS's/Go's own lowercase-string `on_delete` field).
+fn sim_world_tables(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(fk.target_table),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "CASCADE"
+                    } else {
+                        "RESTRICT"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx { name, references }
+        })
+        .collect()
+}
+
+/// Multi-service counterpart of [`sim_world_tables`]: the SystemSimRunner's
+/// one shared `World` (28UpdatePlan.md M8) needs every table name -- and
+/// every foreign key's `target_table` -- spelled the same namespaced way
+/// `lower.rs`'s own `world_table_key` composes them at typed-handler
+/// lowering time (`"{service}::{table}"`, via `World.namespacedTableKey`),
+/// or a reference/uniqueness check would silently look up a table the world
+/// never registered. Builds a `physical table name -> owning service` map
+/// from `ir.tables()` directly (mirrors `ciac-backend-rust`'s/
+/// `ciac-backend-go`'s own `sim_world_tables_multi` exactly, modulo the
+/// uppercase `on_delete` spelling this backend's own `sim_world_tables`
+/// already established). A compiler-owned link table (`orders__line_items`)
+/// carries no `Table` node of its own; its prefix (`orders`) is always its
+/// source table's physical name, so the same map resolves it too.
+fn sim_world_tables_multi(ir: &NormalizedIr) -> Vec<SimWorldTableCtx> {
+    use heck::ToSnakeCase;
+
+    let mut owner_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (_, table) in ir.tables() {
+        if let Some(sid) = table.service {
+            owner_of.insert(table.name.to_snake_case(), ir.service(sid).name.clone());
         }
     }
-    if !unguarded_verbs.is_empty() {
-        unguarded_verbs.sort_unstable();
-        reasons.push(format!(
-            "calls verb(s) the simulation world does not fake: {}",
-            unguarded_verbs.join(", ")
-        ));
-    }
-    reasons
+    let namespace = |physical: &str| -> String {
+        let key = physical
+            .split_once("__")
+            .map_or(physical, |(prefix, _)| prefix);
+        match owner_of.get(key) {
+            Some(service) => format!("{service}::{physical}"),
+            None => physical.to_owned(),
+        }
+    };
+
+    ciac_codegen::migrations::snapshot_schema(ir)
+        .into_iter()
+        .map(|(name, schema)| {
+            let unique_columns = schema.unique_columns;
+            let references = schema
+                .foreign_keys
+                .into_iter()
+                .map(|fk| SimWorldReferenceCtx {
+                    unique: unique_columns.contains(&fk.column),
+                    field_name: fk.column,
+                    target_table: Some(namespace(&fk.target_table)),
+                    on_delete: if fk.on_delete == "CASCADE" {
+                        "CASCADE"
+                    } else {
+                        "RESTRICT"
+                    },
+                })
+                .collect();
+            SimWorldTableCtx {
+                name: namespace(&name),
+                references,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -258,21 +357,28 @@ impl Backend for JavaBackend {
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
-            (
-                f.path().to_str().expect("template names are utf-8"),
-                f.contents_utf8().expect("templates are utf-8"),
-            )
-        }))?;
-        env.add_filter("java_type", filters::java_type);
-        env.add_filter("java_db_type", filters::java_db_type);
-        env.add_filter("java_is_primitive", filters::java_is_primitive);
-        env.add_filter("java_camel", filters::java_camel);
-        env.add_filter("java_pascal", filters::java_pascal);
-        env.add_filter("java_is_uuid", filters::java_is_uuid);
-        env.add_filter("java_ddl_type", filters::java_ddl_type);
-        env.add_filter("spring_cron", filters::spring_cron);
-        env.add_filter("jdbcph", filters::jdbcph);
+        static ENV: std::sync::OnceLock<minijinja::Environment<'static>> =
+            std::sync::OnceLock::new();
+        let env = ciac_codegen::template::cached_environment(
+            &ENV,
+            TEMPLATES.files().map(|f| {
+                (
+                    f.path().to_str().expect("template names are utf-8"),
+                    f.contents_utf8().expect("templates are utf-8"),
+                )
+            }),
+            |env| {
+                env.add_filter("java_type", filters::java_type);
+                env.add_filter("java_db_type", filters::java_db_type);
+                env.add_filter("java_is_primitive", filters::java_is_primitive);
+                env.add_filter("java_camel", filters::java_camel);
+                env.add_filter("java_pascal", filters::java_pascal);
+                env.add_filter("java_is_uuid", filters::java_is_uuid);
+                env.add_filter("java_ddl_type", filters::java_ddl_type);
+                env.add_filter("spring_cron", filters::spring_cron);
+                env.add_filter("jdbcph", filters::jdbcph);
+            },
+        );
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -281,7 +387,7 @@ impl Backend for JavaBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ir, ctx, &prefix, &mut project)?;
+            emit_service(env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
         if model.multi {
             // No system-level README template -- matching Go's/TS's
@@ -302,12 +408,41 @@ impl Backend for JavaBackend {
                 serde_json::to_string_pretty(&ciac_codegen::openapi::build_index(&model))
                     .map_err(|e| BackendError::Other(e.to_string()))?,
             );
+            // 28UpdatePlan.md M8c: `system-runner/SystemSimRunner.java`
+            // -- one shared driver for every `--scenario` run across
+            // the whole system, compiled directly by `commands.rs`'s
+            // own `sim_drive_java_multi` against a driver-assembled
+            // classpath (Option B, no aggregator pom -- see the
+            // template's own doc comment). Each service's own `Ctx`
+            // gains a `java_package` field here (the same
+            // underscore-stripped name `emit_service` computes for
+            // itself) since the template needs it to spell every
+            // service's own fully-qualified class references.
+            let system_services: Vec<minijinja::Value> = model
+                .services
+                .iter()
+                .map(|ctx| {
+                    let java_package = ctx.module.replace('_', "");
+                    context! { java_package => java_package, ..minijinja::Value::from_serialize(ctx) }
+                })
+                .collect();
+            project.add_file(
+                "system-runner/SystemSimRunner.java",
+                env.get_template("SystemSimRunner.java.j2")
+                    .map_err(BackendError::Template)?
+                    .render(context! {
+                        services => system_services,
+                        sim_world_tables => sim_world_tables_multi(ir),
+                    })
+                    .map_err(BackendError::Template)?,
+            );
             project.notes.push(
                 "multi-service system: each directory is a complete project; \
                  `docker compose up` runs them all together"
                     .to_owned(),
             );
         }
+        format_all_java(&mut project)?;
         Ok(project)
     }
 }
@@ -335,6 +470,7 @@ fn emit_service(
     env: &minijinja::Environment<'_>,
     ir: &NormalizedIr,
     ctx: &context::Ctx,
+    multi: bool,
     prefix: &str,
     project: &mut GeneratedProject,
 ) -> Result<(), BackendError> {
@@ -350,18 +486,23 @@ fn emit_service(
     let render = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
         env.get_template(name)
             .map_err(BackendError::Template)?
-            .render(context! { c => ctx, java_package => java_package, ..extra })
+            .render(context! { c => ctx, java_package => java_package, multi, ..extra })
             .map_err(BackendError::Template)
     };
     // No hand-written Jinja template can reproduce
     // `google-java-format`'s own line-wrapping/column-width decisions
-    // (mirrors Go's own `render_go`/`gofmt` reasoning exactly) — every
-    // `.java` file routes through the real formatter at generation
-    // time so Spotless's `check` goal (bound to `verify`, Pillar 8)
-    // agrees with what CIaC just emitted instead of drifting from it.
-    let render_java = |name: &str, extra: minijinja::Value| -> Result<String, BackendError> {
-        google_java_format(&render(name, extra)?)
-    };
+    // (mirrors Go's own `render_go`/`gofmt` reasoning exactly), so
+    // every `.java` file still needs the real formatter's pass before
+    // Spotless's `check` goal (bound to `verify`, Pillar 8) will agree
+    // with what CIaC emitted. `30UpdatePlan.md` M2: that pass no longer
+    // happens here, per file — a JVM cold start plus javac-internals
+    // classload costs ~0.51s regardless of file size, so one process
+    // per file scaled the whole build to tens of seconds. Formatting is
+    // now a single batched `format_all_java` post-pass over every
+    // `.java` file `generate()` produced; this alias exists only so
+    // every call site below keeps reading as "produces formatted Java
+    // source" without a 39-site rename.
+    let render_java = render;
 
     project.add_file(at("pom.xml"), render("pom.xml.j2", empty())?);
     project.add_file(
@@ -609,20 +750,51 @@ fn emit_service(
     // M9 simulation slice: `World.java` (main, gated the same as
     // Rust's/TS's/Go's own restatement) plus `SimRunner.java` (test-
     // scoped, `MockMvc`/`spring-test` only ever sit on the `test`
-    // classpath) -- generated unconditionally for any has_db/has_queue
-    // program, whether or not that specific program is ever actually
-    // eligible for `ciac sim` (an auth-declaring or unguarded-verb-
-    // calling program still gets a compiling SimRunner; `ciac sim`
+    // classpath) -- generated unconditionally for any program with
+    // something this world can fake, whether or not that specific
+    // program is ever actually eligible for `ciac sim` (an unguarded-
+    // verb-calling program still gets a compiling SimRunner; `ciac sim`
     // itself is what refuses to run it, via `unsupported_sim_
-    // capabilities` above), mirroring Go's own M9 emission gate.
-    if ctx.has_db || ctx.has_queue {
-        project.add_file(
-            at(&format!("{java_root}/sim/World.java")),
-            render_java("World.java.j2", empty())?,
-        );
+    // capabilities` above). 27UpdatePlan.md M8 broadens this from
+    // `has_db or has_queue` to the full 8-condition check, matching
+    // TypeScript's/Go's own M6/M7 fix, now that `World.java` fakes
+    // every capability, not just db.insert/publish.
+    //
+    // 28UpdatePlan.md M8c: `|| !ctx.call_targets.is_empty()` closes the
+    // same gap Rust's/TypeScript's/Go's own M6a/M7a checkpoints already
+    // found -- a service reachable only via a routed `call` from
+    // another service (no local db/queue/etc. of its own) still needs a
+    // world instance to register its handlers against. `World.java`
+    // itself is emitted at `com.ciac.simshared.World` (physically
+    // duplicated per service -- see the template's own doc comment) in
+    // multi mode instead of `com.ciac.<pkg>.sim.World`; `SimRunner.java`
+    // is still emitted per service even in multi mode (mirroring Go's
+    // own M7c precedent: harmless, unused by `SystemSimRunner`, kept
+    // for single-service-within-a-system build/test symmetry) and
+    // imports the shared `World` type explicitly since it no longer
+    // shares a package with it.
+    if ctx.has_db
+        || ctx.has_queue
+        || ctx.has_cache
+        || ctx.has_object_store
+        || ctx.has_email
+        || ctx.has_search
+        || ctx.has_external_http
+        || ctx.has_auth
+        || !ctx.call_targets.is_empty()
+    {
+        let world_path = if multi {
+            format!("{prefix}src/main/java/com/ciac/simshared/World.java")
+        } else {
+            at(&format!("{java_root}/sim/World.java"))
+        };
+        project.add_file(world_path, render_java("World.java.j2", empty())?);
         project.add_file(
             at(&format!("{test_root}/sim/SimRunner.java")),
-            render_java("SimRunner.java.j2", empty())?,
+            render_java(
+                "SimRunner.java.j2",
+                context! { sim_world_tables => sim_world_tables(ir) },
+            )?,
         );
     }
 
@@ -665,7 +837,10 @@ fn emit_service(
                 "{java_root}/clients/{}.java",
                 target.class_name.clone()
             )),
-            render_java("Client.java.j2", context! { t => target })?,
+            render_java(
+                "Client.java.j2",
+                context! { t => target, caller => ctx.service_name },
+            )?,
         );
     }
 
@@ -699,8 +874,9 @@ fn emit_service(
             _ => None,
         })
         .collect();
+    let service_for_sim = multi.then_some(ctx.service_name.as_str());
     for (name, hir) in &typed_handlers {
-        let handler = lower::render(ir, name, hir);
+        let handler = lower::render(ir, name, hir, service_for_sim);
         let content = render_java(
             "logic.java.j2",
             context! { handler => minijinja::Value::from_serialize(&handler) },
@@ -805,69 +981,6 @@ const MVNW_CMD: &str = include_str!("../vendor/mvnw.cmd");
 const GOOGLE_JAVA_FORMAT_JAR: &[u8] =
     include_bytes!("../vendor/google-java-format-1.19.2-all-deps.jar");
 
-/// Formats Java source through the real `google-java-format` tool —
-/// see `emit_service`'s `render_java` for why this is a deliberate,
-/// disclosed dependency rather than a template-layer approximation
-/// (mirrors Go's own `gofmt` reasoning exactly: no Jinja template can
-/// reproduce a real formatter's column-width-sensitive line-wrapping
-/// decisions).
-///
-/// The JVM's module system hides `com.sun.tools.javac.*` behind
-/// `--add-exports`/`--add-opens` by default (JDK 16+ strong
-/// encapsulation) — `google-java-format` reaches into javac's own
-/// parser/AST internals to do its formatting, so every invocation
-/// needs these flags; verified live against the vendored jar (piping
-/// a test file through stdin/stdout) before wiring this in.
-fn google_java_format(src: &str) -> Result<String, BackendError> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    let jar_path = vendored_jar_path()?;
-
-    let mut child = Command::new("java")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
-        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
-        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
-        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED")
-        .arg("-jar")
-        .arg(&jar_path)
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            BackendError::Other(format!(
-                "`java` not found on PATH ({e}) — a JDK 21 must be installed \
-                 to generate `--target java` output, not only to validate it"
-            ))
-        })?;
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(src.as_bytes())
-        .map_err(|e| BackendError::Other(format!("writing to google-java-format: {e}")))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|e| BackendError::Other(format!("running google-java-format: {e}")))?;
-    if !output.status.success() {
-        if std::env::var("CIAC_DEBUG_JAVA_SRC").is_ok() {
-            eprintln!("=== rejected source ===\n{src}\n=== end ===");
-        }
-        return Err(BackendError::Other(format!(
-            "google-java-format rejected generated source (this is a codegen \
-             bug, not a user error): {}",
-            String::from_utf8_lossy(&output.stderr)
-        )));
-    }
-    String::from_utf8(output.stdout)
-        .map_err(|e| BackendError::Other(format!("google-java-format output: {e}")))
-}
-
 /// Materializes the embedded jar to a stable path on disk once (`java
 /// -jar` needs a real file, not stdin-supplied bytes) — reused across
 /// calls within a process (and across processes, since the path is
@@ -883,6 +996,51 @@ fn vendored_jar_path() -> Result<std::path::PathBuf, BackendError> {
             .map_err(|e| BackendError::Other(format!("writing vendored jar to {path:?}: {e}")))?;
     }
     Ok(path)
+}
+
+/// Batch-formats every `.java` file this backend just generated through
+/// one `google-java-format -i @argfile` invocation instead of one JVM
+/// spawn per file (`30UpdatePlan.md` M2, the dominant fix in the arc:
+/// per-file stdin formatting cost ~0.51s/file regardless of size —
+/// mostly JVM startup and javac-internals classload — so a 40-file
+/// `order-system.ciac` Java build paid ~20s in formatter spawns alone).
+/// The batching machinery itself lives in `ciac_codegen::format_batch`
+/// (M3 generalized it so Go's `gofmt` could share it); this function is
+/// only the Java-specific configuration: which files to match, and how
+/// to invoke `google-java-format` given the scratch directory and file
+/// list `format_batch` already wrote out. `@argfile` is used
+/// unconditionally (not just past `ARG_MAX`) since it costs nothing on
+/// small batches and removes a size-dependent code path entirely.
+fn format_all_java(project: &mut GeneratedProject) -> Result<(), BackendError> {
+    ciac_codegen::format_batch::format_batch(
+        project,
+        |path| path.ends_with(".java"),
+        |scratch, paths| {
+            let argfile_path = scratch.join("argfile");
+            let mut argfile_lines = String::new();
+            for path in paths {
+                argfile_lines.push_str(&path.to_string_lossy());
+                argfile_lines.push('\n');
+            }
+            std::fs::write(&argfile_path, &argfile_lines)
+                .map_err(|e| BackendError::Other(format!("writing java-format argfile: {e}")))?;
+
+            let jar_path = vendored_jar_path()?;
+            let mut cmd = std::process::Command::new("java");
+            cmd.arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
+                .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
+                .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED")
+                .arg("-jar")
+                .arg(&jar_path)
+                .arg("-i")
+                .arg(format!("@{}", argfile_path.display()));
+            Ok(cmd)
+        },
+    )
 }
 
 #[cfg(test)]
@@ -987,5 +1145,28 @@ mod tests {
         ] {
             assert!(paths.contains(&expect), "missing {expect} in {paths:?}");
         }
+    }
+
+    /// `30UpdatePlan.md` M2's own exit condition: a rejected file's
+    /// error must name the real generated path the user can go look
+    /// at, not the batch pass's own scratch-directory path (which is
+    /// removed by the time the error reaches anyone).
+    #[test]
+    fn format_all_java_remaps_scratch_paths_in_errors() {
+        let mut project = GeneratedProject::new();
+        project.add_file(
+            "src/main/java/com/ciac/broken/Broken.java",
+            "this is not valid java {{{",
+        );
+        let err = format_all_java(&mut project).expect_err("invalid source is rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("src/main/java/com/ciac/broken/Broken.java"),
+            "error should name the real path: {message}"
+        );
+        assert!(
+            !message.contains("ciac-java-fmt"),
+            "error should not leak the scratch directory: {message}"
+        );
     }
 }

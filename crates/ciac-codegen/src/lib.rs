@@ -19,6 +19,7 @@ pub mod compose;
 pub mod emit;
 pub mod evolution;
 pub mod external;
+pub mod format_batch;
 pub mod k8s;
 pub mod lower;
 pub mod manifest;
@@ -267,6 +268,19 @@ pub struct TargetInfo {
     pub source_extension: &'static str,
     /// Simulation support level.
     pub sim: SimSupport,
+    /// Whether this target's `ciac sim` runner implements `--record`/
+    /// `--replay` (27UpdatePlan.md M1). Decoupled from `sim` on
+    /// purpose: simulation depth (`SimSupport`) and replay-tape support
+    /// are separate capabilities — a target can simulate every verb
+    /// the language has and still not implement a replay tape, and the
+    /// reverse is meaningless but the types don't need to enforce that.
+    /// Before this field existed, `sim_inner` inferred replay support
+    /// from `SimSupport::Narrow`, which would have quietly (and
+    /// wrongly) become "replay works everywhere" the moment a `Narrow`
+    /// target flipped to `Full`. Only Python's runner implements replay
+    /// today; every other target names its own scope explicitly here
+    /// rather than inheriting an unrelated flag's truth.
+    pub sim_replay: bool,
 }
 
 /// Verifies every component in the IR is supported by `backend`, returning

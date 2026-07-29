@@ -58,6 +58,42 @@ expression: json
     {
       "id": 4,
       "service": 0,
+      "kind": "Api",
+      "name": "UpdateOrderRoute",
+      "request": 1,
+      "config": {
+        "method": "Post",
+        "path": "/orders/update",
+        "scope": null
+      }
+    },
+    {
+      "id": 5,
+      "service": 0,
+      "kind": "Api",
+      "name": "DeleteOrderRoute",
+      "request": 5,
+      "config": {
+        "method": "Post",
+        "path": "/orders/delete",
+        "scope": null
+      }
+    },
+    {
+      "id": 6,
+      "service": 0,
+      "kind": "Api",
+      "name": "CountOrdersRoute",
+      "request": 6,
+      "config": {
+        "method": "Post",
+        "path": "/orders/count",
+        "scope": null
+      }
+    },
+    {
+      "id": 7,
+      "service": 0,
       "kind": "Service",
       "name": "CreateCustomer",
       "signature": {
@@ -115,7 +151,7 @@ expression: json
       }
     },
     {
-      "id": 5,
+      "id": 8,
       "service": 0,
       "kind": "Service",
       "name": "PlaceOrder",
@@ -275,7 +311,7 @@ expression: json
       }
     },
     {
-      "id": 6,
+      "id": 9,
       "service": 0,
       "kind": "Service",
       "name": "AddLineItem",
@@ -332,43 +368,288 @@ expression: json
           }
         ]
       }
+    },
+    {
+      "id": 10,
+      "service": 0,
+      "kind": "Service",
+      "name": "UpdateOrderTotal",
+      "signature": {
+        "params": [
+          [
+            "order",
+            {
+              "Record": 1
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 1
+        },
+        "locals": [
+          {
+            "Record": 1
+          }
+        ],
+        "body": [
+          {
+            "Expr": {
+              "VerbCall": {
+                "capability": 0,
+                "verb": {
+                  "DbUpdate": 1
+                },
+                "args": [
+                  {
+                    "FieldAccess": {
+                      "base": {
+                        "Local": {
+                          "slot": 0,
+                          "ty": {
+                            "Record": 1
+                          }
+                        }
+                      },
+                      "field": "id",
+                      "ty": "Uuid"
+                    }
+                  },
+                  {
+                    "Local": {
+                      "slot": 0,
+                      "ty": {
+                        "Record": 1
+                      }
+                    }
+                  }
+                ],
+                "ty": {
+                  "Option": {
+                    "Record": 1
+                  }
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "Local": {
+                "slot": 0,
+                "ty": {
+                  "Record": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "service": 0,
+      "kind": "Service",
+      "name": "DeleteOrder",
+      "signature": {
+        "params": [
+          [
+            "payload",
+            {
+              "Record": 5
+            }
+          ]
+        ],
+        "return_ty": {
+          "Record": 7
+        },
+        "locals": [
+          {
+            "Record": 5
+          },
+          "Bool"
+        ],
+        "body": [
+          {
+            "Let": {
+              "slot": 1,
+              "value": {
+                "VerbCall": {
+                  "capability": 0,
+                  "verb": {
+                    "DbDelete": 1
+                  },
+                  "args": [
+                    {
+                      "FieldAccess": {
+                        "base": {
+                          "Local": {
+                            "slot": 0,
+                            "ty": {
+                              "Record": 5
+                            }
+                          }
+                        },
+                        "field": "id",
+                        "ty": "Uuid"
+                      }
+                    }
+                  ],
+                  "ty": "Bool"
+                }
+              }
+            }
+          },
+          {
+            "Return": {
+              "RecordCons": {
+                "record": 7,
+                "base_value": null,
+                "fields": [
+                  [
+                    "deleted",
+                    {
+                      "Local": {
+                        "slot": 1,
+                        "ty": "Bool"
+                      }
+                    }
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "service": 0,
+      "kind": "Service",
+      "name": "CountOrders",
+      "signature": {
+        "params": [
+          [
+            "filter",
+            {
+              "Record": 6
+            }
+          ]
+        ],
+        "return_ty": "Int",
+        "locals": [
+          {
+            "Record": 6
+          }
+        ],
+        "body": [
+          {
+            "Return": {
+              "Query": {
+                "capability": 0,
+                "verb": {
+                  "DbCount": 1
+                },
+                "predicate": {
+                  "terms": [
+                    {
+                      "field": "total",
+                      "field_ty": "Float",
+                      "op": "GtEq",
+                      "value": {
+                        "FieldAccess": {
+                          "base": {
+                            "Local": {
+                              "slot": 0,
+                              "ty": {
+                                "Record": 6
+                              }
+                            }
+                          },
+                          "field": "min_total",
+                          "ty": "Float"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "ty": "Int"
+              }
+            }
+          }
+        ]
+      }
     }
   ],
   "edges": [
     {
       "id": 0,
-      "from": 4,
+      "from": 7,
       "to": 0,
       "kind": "DataFlow"
     },
     {
       "id": 1,
       "from": 1,
-      "to": 4,
+      "to": 7,
       "kind": "RequestFlow"
     },
     {
       "id": 2,
-      "from": 5,
+      "from": 8,
       "to": 0,
       "kind": "DataFlow"
     },
     {
       "id": 3,
       "from": 2,
-      "to": 5,
+      "to": 8,
       "kind": "RequestFlow"
     },
     {
       "id": 4,
-      "from": 6,
+      "from": 9,
       "to": 0,
       "kind": "DataFlow"
     },
     {
       "id": 5,
       "from": 3,
-      "to": 6,
+      "to": 9,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 6,
+      "from": 10,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 7,
+      "from": 4,
+      "to": 10,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 8,
+      "from": 11,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 9,
+      "from": 5,
+      "to": 11,
+      "kind": "RequestFlow"
+    },
+    {
+      "id": 10,
+      "from": 12,
+      "to": 0,
+      "kind": "DataFlow"
+    },
+    {
+      "id": 11,
+      "from": 6,
+      "to": 12,
       "kind": "RequestFlow"
     }
   ],
@@ -498,6 +779,42 @@ expression: json
         }
       ],
       "kind": "Error"
+    },
+    {
+      "name": "IdOnly",
+      "fields": [
+        {
+          "name": "id",
+          "ty": {
+            "type": "Uuid"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "OrderCountFilter",
+      "fields": [
+        {
+          "name": "min_total",
+          "ty": {
+            "type": "Float"
+          }
+        }
+      ],
+      "kind": "Data"
+    },
+    {
+      "name": "DeleteResult",
+      "fields": [
+        {
+          "name": "deleted",
+          "ty": {
+            "type": "Bool"
+          }
+        }
+      ],
+      "kind": "Data"
     }
   ],
   "tables": [
@@ -535,7 +852,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 4
+          "node": 7
         },
         {
           "step": "Return"
@@ -550,7 +867,7 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 5
+          "node": 8
         },
         {
           "step": "Return"
@@ -565,7 +882,52 @@ expression: json
       "steps": [
         {
           "step": "Handler",
-          "node": 6
+          "node": 9
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "UpdateOrderRoute",
+      "service": 0,
+      "owner": 4,
+      "payload": 1,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 10
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "DeleteOrderRoute",
+      "service": 0,
+      "owner": 5,
+      "payload": 5,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 11
+        },
+        {
+          "step": "Return"
+        }
+      ]
+    },
+    {
+      "name": "CountOrdersRoute",
+      "service": 0,
+      "owner": 6,
+      "payload": 6,
+      "steps": [
+        {
+          "step": "Handler",
+          "node": 12
         },
         {
           "step": "Return"

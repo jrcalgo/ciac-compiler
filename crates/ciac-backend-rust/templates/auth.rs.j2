@@ -91,6 +91,15 @@ impl FromRequestParts<AppState> for Claims {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or((StatusCode::UNAUTHORIZED, "missing bearer token"))?;
+        // 27UpdatePlan.md M4: claims-lookup, not real JWT/JWKS crypto --
+        // mirrors Python's `FakeAuth` (see `ciac-sim/src/world.rs`'s
+        // `auth_verify` doc comment for the disclosed rationale).
+        if let Some(world) = state.world.as_deref() {
+            return world
+                .auth_verify(token)
+                .map(Claims)
+                .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid or expired token"));
+        }
 {%- if c.auth_scheme == "oauth2" %}
         let header = jsonwebtoken::decode_header(token)
             .map_err(|_| (StatusCode::UNAUTHORIZED, "malformed token"))?;

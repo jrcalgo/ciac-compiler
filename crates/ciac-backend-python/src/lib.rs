@@ -89,6 +89,9 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     },
     source_extension: "py",
     sim: SimSupport::Full,
+    // 27UpdatePlan.md M1: the only target whose generated runner
+    // implements a replay tape.
+    sim_replay: true,
 };
 
 #[derive(Debug, Default)]
@@ -119,14 +122,21 @@ impl Backend for PythonBackend {
         opts: &GenOptions,
     ) -> Result<GeneratedProject, BackendError> {
         let model = context::build_system(ir, opts);
-        let mut env = ciac_codegen::template::environment(TEMPLATES.files().map(|f| {
-            (
-                f.path().to_str().expect("template names are utf-8"),
-                f.contents_utf8().expect("templates are utf-8"),
-            )
-        }))?;
-        env.add_filter("py_type", filters::py_type);
-        env.add_filter("py_out_type", filters::py_out_type);
+        static ENV: std::sync::OnceLock<minijinja::Environment<'static>> =
+            std::sync::OnceLock::new();
+        let env = ciac_codegen::template::cached_environment(
+            &ENV,
+            TEMPLATES.files().map(|f| {
+                (
+                    f.path().to_str().expect("template names are utf-8"),
+                    f.contents_utf8().expect("templates are utf-8"),
+                )
+            }),
+            |env| {
+                env.add_filter("py_type", filters::py_type);
+                env.add_filter("py_out_type", filters::py_out_type);
+            },
+        );
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {
@@ -135,7 +145,7 @@ impl Backend for PythonBackend {
             } else {
                 String::new()
             };
-            emit_service(&env, ir, ctx, model.multi, &prefix, &mut project)?;
+            emit_service(env, ir, ctx, model.multi, &prefix, &mut project)?;
         }
 
         if model.multi {
@@ -257,7 +267,26 @@ fn emit_service(
         project.add_file(at("app/auth.py"), render("auth.py.j2", empty())?);
     }
     if ctx.has_db {
-        project.add_file(at("app/db.py"), render("db.py.j2", empty())?);
+        // 28UpdatePlan.md M4: `db.py.j2` bakes this into a
+        // `SERVICE_FOR_SIM` constant, threaded to `world.
+        // fake_sessionmaker`'s `service` argument so a multi-service
+        // simulation namespaces this project's own table keys
+        // (`SimWorld.namespaced_table_key`, world.py) -- `None` for a
+        // single-service project keeps that path's degenerate case
+        // (bare table name) exactly as it was before this milestone.
+        // `{name:?}` renders as a double-quoted, backslash-escaped
+        // literal -- valid Python syntax for every service name, which
+        // is always a plain identifier -- avoiding a dependency on
+        // minijinja's optional `tojson` filter for what is otherwise a
+        // one-line literal.
+        let service_for_sim_literal = match multi.then_some(ctx.service_name.as_str()) {
+            Some(name) => format!("{name:?}"),
+            None => "None".to_owned(),
+        };
+        project.add_file(
+            at("app/db.py"),
+            render("db.py.j2", context! { service_for_sim_literal })?,
+        );
     }
     if ctx.has_cache {
         project.add_file(at("app/cache.py"), render("cache.py.j2", empty())?);
@@ -291,7 +320,16 @@ fn emit_service(
         for target in &ctx.call_targets {
             project.add_file(
                 at(&format!("app/clients/{}.py", target.module)),
-                render("client.py.j2", context! { t => target })?,
+                // 28UpdatePlan.md M3: `caller` is this project's own
+                // service name -- `call_checked`'s `caller` argument is
+                // informational only (used in its own error messages),
+                // but it still needs a real value baked in here since
+                // this template has no other way to know its own
+                // identity at render time.
+                render(
+                    "client.py.j2",
+                    context! { t => target, caller => ctx.service_name },
+                )?,
             );
         }
     }

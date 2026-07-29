@@ -717,6 +717,54 @@ push; in-place Shipped notes).
    milestone — measurement first, so the arc's deltas mean
    something.
 
+   **Shipped (v0.29 M1) — six findings, zero fixes, as designed.**
+   `docs/dogfooding/transcripts/01-baseline.md` records the script
+   run for real against the live binary in this session's sandbox
+   (with an honest caveat: a warm `cargo`/`uv` cache, not a bare
+   machine — called out per-step where it matters). Six findings,
+   F1-F6. The two fix-now items (M2's queue): **F4**, the highest-
+   priority finding in the transcript — the scaffolded README's own
+   documented third step, `ciac verify`, fails immediately on a
+   freshly generated, untouched project with 18 ruff lint errors
+   (`B008`/`I001`/`UP037`) inside generated code the reader never
+   touched. Root cause confirmed by inspection, not guessed:
+   `crates/ciac-backend-python/templates/pyproject.toml.j2` pins
+   `"ruff>=0.6"` with no upper bound, no lockfile, and a
+   `[tool.ruff]` block that sets only `target-version` — no explicit
+   `select`. `uv run ruff --version` resolves 0.16.0 today; ruff's
+   own default/implied rule set picked up findings between whenever
+   the templates were last hand-verified and now. Confirmed not
+   scaffold-specific: the same 18 errors at the same lines reproduce
+   against the checked-in `examples/crud-notes.ciac` directly (the
+   exact program `ciac new --template crud` embeds verbatim, per
+   `docs/authoring.md`), meaning this breaks `ciac verify` on every
+   fresh Python project today, not a scaffold edge case — and no
+   existing test catches it, since `crates/ciac/tests/scaffold_cli.rs`
+   asserts scaffolds pass `ciac check` only, never `ciac verify`,
+   and CI's example sweep verifies `examples/*.ciac` without pinning
+   ruff any tighter than the template does. **F5**: `ciac dev`, run
+   exactly as the top-level README documents (no flags), produces
+   zero output for 8-20s when Docker's daemon is unreachable — a
+   realistic "clean container" state this very sandbox is in (the
+   `docker` CLI exists, no daemon) — before its own clear failure
+   message finally surfaces; `--no-docker` reports instantly but
+   isn't mentioned in the quick start. Three fix-via-rewrite items,
+   each already homed in a later milestone rather than reopened
+   here: **F1** (the `curl \| sh` 404 — expected, already disclosed
+   in 26 M8/M9, the real fix is M9's actual release cut), **F2**
+   (the `cargo install` fallback is a silent >100s wait with no
+   framing that it needs a Rust toolchain or how long it takes —
+   Pillar 2's job), **F6** (`docs/authoring.md`, read cold as
+   today's nearest guide-01 substitute, is stale — still titled
+   `v0.13` and still claims rename/code-actions are "deliberately
+   out of scope" for `ciac lsp`, false since v0.15 M7 and v0.18 —
+   Pillar 3's guide-01 supersedes it and Pillar 7's coherence pass
+   catches the staleness generally). Zero defer-with-reason items —
+   every finding had a home already. F3 is recorded as a positive
+   baseline (scaffold/check/build messaging is already good,
+   sub-10ms) so M5/M9 have something to *not* regress, not just
+   things to fix. No code changed this milestone, per M1's own rule.
+
 2. **M2 — Friction fixes, round one.** The fix-now queue
    executed: the predictable candidates (scaffold next-steps
    output, beginner error messages, dev-loop messaging,
@@ -726,6 +774,54 @@ push; in-place Shipped notes).
    where output text changes; the `ciac new` scaffold is
    golden-snapshotted already). Exit is the queue empty or
    explicitly deferred-with-reason, not vibes.
+
+   **Shipped (v0.29 M2) — F4 and F5 fixed, plus a third bug the
+   fix's own verification caught.** **F4** (the highest-priority
+   finding — `ciac verify` failing on every fresh Python project):
+   `crates/ciac-backend-python/templates/pyproject.toml.j2` gained
+   an explicit `[tool.ruff.lint] select = ["E4", "E7", "E9", "F"]`
+   — ruff's own long-documented default selection, pinned rather
+   than left to whatever ruff resolves at generation time. Verified
+   directly: `ruff==0.6.9` (near the old `>=0.6` floor) already
+   passed the generated `crud` project clean with no explicit
+   select, confirming the regression was ruff's own default
+   widening between 0.6 and today's 0.16.0, not a template defect;
+   adding the explicit select made 0.16.0 pass the same project
+   clean too, without touching a single line of generated code.
+   **F5** (the silent multi-second gap before `ciac dev` reports
+   anything when Docker's daemon is unreachable): `crates/ciac/src/
+   dev.rs` gained one `eprintln!("dev: starting the compose
+   stack...")` immediately before the `docker compose up`
+   invocation — the only signal a reader gets between "regenerated"
+   and whatever Docker reports next. Verifying F4 across the full
+   corpus (a sweep script run against all 28 `examples/*.ciac`
+   under `--target python`) caught a third, unpredicted bug:
+   `traced-checkout.ciac` failed with 7 `E402` (module-level import
+   not at top of file) errors — `observability.py.j2` interleaved
+   each capability's imports with that capability's function body
+   (`{% if has_logging %}` imports + `configure_logging()`, then
+   `{% if has_tracing %}` imports + `configure_tracing()`), so
+   whenever two of logging/metrics/tracing were both present, the
+   second capability's imports landed textually after the first
+   capability's function definition. Not caught by F4's own crud
+   template test (which has no tracing) or by the original M1
+   transcript (which never generated a tracing-enabled project).
+   Fixed by restructuring the template into two passes — all
+   capability-gated imports first, then all capability-gated
+   function/statement bodies — rather than one pass per capability.
+   The sweep before this third fix was 27/28 green (only
+   `traced-checkout` failing); after, 28/28. All three fixes are
+   golden-visible (28 `golden__gen__python__*.snap` files
+   regenerated via `cargo insta test`, reviewed diff-by-diff:
+   every diff was exactly the `[tool.ruff.lint]` block and, for the
+   tracing-bearing examples, the import/body reordering — nothing
+   unexpected). Full verification green: `cargo fmt --check`,
+   `cargo clippy --workspace --all-targets -- -D warnings` (zero
+   warnings), `cargo test --workspace` (14/14 test binaries `ok`,
+   zero failures). Fix-now queue is empty — F4 and F5 were the only
+   two items M1 triaged there, and both are closed, with F4's own
+   fix disclosing and closing a third bug along the way rather than
+   leaving it for a later milestone to rediscover.
 
 3. **M3 — The README rewrite.** Pillar 2 executed: narrative
    shape, demonstration program checked in as an example
@@ -737,6 +833,74 @@ push; in-place Shipped notes).
    knows what CIaC is, saw it work, and knows where the
    boundaries live.
 
+   **Shipped (v0.29 M3) — the rewrite, a real demonstration
+   example, and one incidental fix.** `README.md` went from 366
+   lines (194 of them a version-by-version history) to 203 —
+   well inside the <250 budget — following Pillar 2's own shape:
+   claim + anti-claim paragraph, a fifteen-minute walkthrough,
+   the map (five-target table plus one paragraph each for
+   simulation/deployment/evolution/the agent front door), and a
+   "where to go next" pointer section. The demonstration is a
+   new checked-in example, `examples/quickstart.ciac` — one
+   record, free `crud`, one custom handler wrapped in a
+   `transaction`, one stream, one worker — plus
+   `sim/quickstart.ciac-sim.json`, a failure-injection scenario
+   (fail the archive's own `db.commit` once, assert the audit row
+   absent, retry, assert present). Both verified live, not just
+   golden-snapshotted: `ciac check`, `ciac build`, and `ciac sim`
+   with the checked-in scenario all pass on **all five targets**
+   (python, rust, typescript, go, java) — the README's own "swap
+   `--target` and everything below still holds" claim is
+   demonstrable, not asserted, because this session ran it on
+   each target and got `[PASS] 29-m3-quickstart` every time.
+   Wired into the standing regression surface the same way every
+   prior flagship example was: added to `scripts/sim-corpus-x5.sh`
+   and to `.github/workflows/ci.yml`'s `generated-sim` job. One
+   genuinely surprising design snag, resolved and worth recording:
+   the sketch in this plan's own Pillar 2 combined an unbound
+   `crud Note;` with a hand-written `api CreateNote`, which the
+   real grammar can't do — `crud <Name>: <Record>;` owns its
+   bound record's table privately (confirmed by building
+   `examples/sqlite-notes.ciac` and inspecting the generated
+   model), so a second declaration of the same table collides.
+   The shipped example resolves this the way a real author would:
+   `crud Note: Note;` for the free CRUD surface, and a separate
+   `ArchiveEvent`/`ArchiveEvents` table for the one piece of
+   custom logic — arguably a better demonstration than the
+   sketch's own version, since it shows generated CRUD and custom
+   business logic coexisting rather than colliding. `docs/
+   history.md` now carries the old narrative essentially
+   verbatim (retitled, the version list's tail extended through
+   v0.26 to close the gap the old README's own last entry left).
+   The runnable-block annotation format is designed here (not
+   built — M4's job): an `<!-- ciac-verify:start id=NAME -->` /
+   `<!-- ciac-verify:end -->` HTML-comment pair around each
+   fenced command block, invisible in rendered Markdown and
+   trivially greppable by id — used on all four command blocks
+   in the walkthrough. Deliberately **not** linked from the new
+   README: `docs/positioning.md` (Pillar 4, lands M6) and a guide
+   series (Pillar 3, lands M4/M6) — both would be dead links
+   today, so the "where to go next" section links only what
+   exists, and the coherence pass (M6) is where those references
+   get added as the files land. One incidental fix, found while
+   writing the simulation paragraph and cross-checked against
+   `ciac sim --help`: `crates/ciac/src/main.rs`'s `Sim` subcommand
+   doc comment still claimed only `python`/`rust` fake simulation
+   capabilities (stale since 27UpdatePlan.md brought TypeScript,
+   Go, and Java to full parity) — corrected to name all five.
+   Evaluator reader-model review, stated explicitly per this
+   milestone's own bar: a reader of README.md alone now gets what
+   CIaC is (paragraph one's claim), sees it work (the walkthrough
+   ends in real, checked `[PASS]` output, not a promise), and
+   knows the boundary (the anti-claim paragraph, stated before
+   any install command). Full verification green: `cargo fmt
+   --check`, `cargo clippy --workspace --all-targets -- -D
+   warnings` (zero warnings), `cargo test --workspace` (14/14
+   test binaries `ok`, zero failures) — including 12 new golden
+   snapshots for `quickstart` (ir/dot/five gen/four host-syntax-
+   identity/one ts-client) with zero existing snapshots
+   perturbed, confirmed by diff before accepting.
+
 4. **M4 — Guides 01–03 + the veracity harness.** The first
    three guides (install/anatomy, records/CRUD, handlers/
    logic), building the continuous example; the harness
@@ -745,6 +909,75 @@ push; in-place Shipped notes).
    frozen and documented in a contributor note. The
    harness-can-fail proof (a deliberately broken block in a
    scratch branch) demonstrated, per the 26 M6 tradition.
+
+   **Shipped (v0.29 M4) — the harness landed, and its very first
+   real run against the README caught a bug real enough to have
+   broken the arc's own centerpiece.** Three guides —
+   `docs/guide/01-first-service.md` (install/anatomy/first field,
+   `--template minimal`'s `Ping`/`Message`), `02-records-and-crud.md`
+   (`crud Message: Message;` for free persistence, then a schema
+   change previewed with `ciac diff` before rebuilding), and
+   `03-handlers-and-logic.md` (a `transaction`-wrapped handler, a
+   `ReadReceipt` table, a stream, a worker) — one continuous
+   example, each guide independently self-contained (a full,
+   current `main.ciac` written fresh, not a diff from the previous
+   guide) per the plan's own "clean workspace per document" rule.
+   `scripts/check-guides.sh`: builds `ciac` once, then per document
+   creates a temp workspace with `examples/`/`sim/` symlinked in
+   from the real repo (so a block that says `examples/quickstart.
+   ciac` resolves exactly as it would for someone who cloned this
+   repository) and executes every annotated block in order. Final
+   annotation format, frozen here as M4's own text promised:
+   `<!-- ciac-verify:file id=NAME path=REL/PATH -->` (write the
+   fenced block's content to a file), `:start id=NAME` (run it as
+   shell, fail the harness on nonzero exit), `:skip id=NAME
+   reason="..."` (counted and reported by name, never silently
+   dropped — used for the install curl line, which needs a cut
+   release the harness doesn't have yet, and for `ciac dev`, a
+   watch loop with no exit code an exit-code-only harness can
+   check). Harness-can-fail proof: a `/tmp` scratch copy of guide
+   01 (not a git branch — same isolation, no git state touched)
+   with `ciac check main.ciac` swapped for a nonexistent
+   subcommand; the harness reported `[FAIL]` with the real
+   `unrecognized subcommand` text and exited 1, confirmed live in
+   this session.
+
+   The headline finding, though, wasn't a guide bug — it was in the
+   README the harness ran first. `ciac sim examples/quickstart.ciac
+   --target python --out ./build --scenario ...` (the README's own
+   walkthrough, relative `--out` matching its own `build`/`verify`
+   lines) failed with `ModuleNotFoundError: No module named 'app'`.
+   Root cause, traced in `crates/ciac/src/commands.rs`: all five
+   per-target sim drivers (`sim_drive_python`/`_rust`/`_typescript`/
+   `_go`/`_java`) call `find_project_dirs(out, marker)` with the
+   raw, possibly-relative `out` path; the returned `project_dir`
+   then crosses into a subprocess with its *own*, different cwd
+   (concretely, Python's driver builds its `PYTHONPATH` from that
+   relative string), so a relative `--out` silently re-resolved
+   against the wrong directory once inside the child process. Fixed
+   by wrapping all five `find_project_dirs` call sites in
+   `resolve_path(out)?` — a helper that already existed in this
+   same file for exactly this "crossing a subprocess-cwd boundary"
+   class of problem, just not yet applied here. Verified live for
+   all five targets this session with a relative `--out ./build`
+   (python/typescript/go fast; java clean past its own proxy
+   startup noise; rust needed a longer timeout for its own cargo
+   compile, not a retry — same command, same result once given
+   time). This bug would have broken the literal walkthrough this
+   arc's own M3 just finished writing, for any real reader who
+   cloned the repo and typed the commands as documented — the
+   single most consequential finding of the milestone, and one M1's
+   own transcript had no way to predict (its own sim step used an
+   absolute scratch path, the one difference between "measuring
+   friction" and "running the exact block a reader would run").
+   CI wiring: a new `check-guides` job in `.github/workflows/
+   ci.yml`, positioned right after `generated-sim`. Full
+   verification green: `cargo fmt --check`, `cargo clippy
+   --workspace --all-targets -- -D warnings` (zero warnings),
+   `cargo test --workspace` (14/14 test binaries `ok`, zero
+   failures), and `scripts/check-guides.sh` itself green against
+   all four documents (README + guides 01-03: 15 blocks run, 3
+   skipped and disclosed, 0 failed).
 
 5. **M5 — CHECKPOINT: transcript two.** The same scripted run,
    now against the new README + guides 01–03: measured friction
@@ -758,6 +991,55 @@ push; in-place Shipped notes).
    empathy-risk gate: it cannot prove a stranger succeeds, but
    it can prove the author's best stranger-simulation does.
 
+   **Shipped (v0.29 M5) — go, with one small re-fix caught and
+   closed on the spot.** `docs/dogfooding/transcripts/
+   02-checkpoint.md` re-ran the same script for real (install →
+   README walkthrough → guides 01–03, the last of which didn't
+   exist at M1) against a fresh `cargo install` of the current
+   tree. F1 (no release) and F6 (`authoring.md` staleness) are
+   unchanged, as expected — neither was scoped to close before M9/
+   M6. F2, F4, and F5 are confirmed fixed under fresh measurement,
+   not just a harness re-run: the README's install block now states
+   the toolchain requirement and a rough time inline (F2); `ciac
+   verify` on both the quickstart example and a fresh guide-01
+   service passes clean, no ruff errors (F4); `ciac dev`'s
+   previously-silent gap now shows `dev: starting the compose
+   stack...` immediately (F5). One real number worth recording
+   honestly rather than smoothing over: the `cargo install`
+   fallback measured 2m41s this run against 1m40s at M1 — both
+   warm-cache readings, the difference almost certainly this
+   session's own source churn forcing more recompilation, not a
+   regression, and well inside the README's own "~2 minutes"
+   framing.
+
+   One new finding, **F7**, caught by re-reading the guide series
+   with fresh eyes rather than by the harness (which checks command
+   blocks, not prose links): `docs/guide/01-first-service.md` and
+   `03-handlers-and-logic.md` linked forward to `05-simulation.md`
+   and `04-streams-and-workers.md` — files that don't exist until
+   M6. The exact mistake M3's own README rewrite had deliberately
+   avoided (no links to `docs/positioning.md` or the guide series
+   before they exist) hadn't been carried into the guides' own
+   cross-references to each other's future installments. Fixed live
+   during this milestone — replaced with plain, unlinked mentions
+   ("a later guide in this series...") — re-verified by grepping
+   `docs/guide/*.md` and `README.md` for `0[4-7]-`: zero matches.
+   Re-ran `scripts/check-guides.sh` after the fix: still 15 blocks
+   run, 3 skipped (disclosed), 0 failed — the text-only fix changed
+   no command behavior.
+
+   **Checkpoint decision: go.** Pillar 2/3's narrative shape and
+   voice hold up under a second, independent read; every M1 fix-now
+   item is closed and re-confirmed; the one new finding was minor,
+   caught by the checkpoint's own discipline, and closed without
+   needing to reopen an earlier milestone. Guides 04–07 proceed at
+   M6 on the validated shape. No code changed this milestone — docs
+   only (the two guide files' cross-reference text, and the new
+   transcript); `cargo fmt`/`clippy`/`cargo test --workspace` were
+   not re-run since nothing they check was touched, and
+   `scripts/check-guides.sh`'s own green run is the milestone's real
+   verification.
+
 6. **M6 — Guides 04–07, positioning, coherence.** The remaining
    guides (streams/workers, simulation at 27 depth,
    multi-service at 28 scope, deployment/day-two) under the
@@ -767,6 +1049,80 @@ push; in-place Shipped notes).
    verification, history grouping). The docs surface is
    complete at this milestone's exit; what follows is editor
    and kit.
+
+   **Shipped (v0.29 M6) — the full docs surface, coherent, with one
+   deliberate scope break disclosed in the guide it's in.** Four
+   guides landed, continuing `Ping`/`Message` through guide 05: 04
+   adds a `channel` (a third, independent consumer of `MessageRead`
+   alongside the worker) and a `job` (work with no request behind
+   it); 05 injects a real failure into guide 03's own `transaction`
+   and proves the rollback/retry, verified live (not asserted) with
+   a checked-in scenario embedded via the harness's `file` block
+   convention; 07 generates real k8s/Terraform/CI artifacts and
+   previews a real whole-program rename against the series' own
+   final `main.ciac`, disclosing `--system` as the one Docker-
+   required step in the entire seven-guide series. Guide 06 is the
+   deliberate break: rather than inventing a redundant multi-service
+   extension of `Ping`, it reuses the already-checked-in, already-
+   CI-verified `examples/sim-three-service.ciac` (28UpdatePlan.md's
+   own N=3 proof), stated as such in the guide's own opening
+   paragraph rather than silently switching examples — the
+   milestone's version of the "honesty culture" this whole arc
+   keeps naming. `docs/positioning.md` written per Pillar 4 exactly:
+   one-paragraph thesis, three named comparisons (frameworks,
+   generators, BaaS) each with an honest "what they have that CIaC
+   doesn't" clause, an explicit "when not to use CIaC" section, and
+   a maturity statement — every comparative claim cross-checked
+   against the actual mechanism during writing (the dependency-
+   scanner names were verified against `.github/workflows/ci.yml`
+   directly, not recalled from memory, and one was corrected in the
+   process). The coherence pass: `docs/README.md`, a new index
+   table (start-here / guide series / reference / contributor /
+   history) — chosen over a README section because a `docs/`
+   directory's own `README.md` is what GitHub renders when browsing
+   there, the "where GitHub renders best" criterion Pillar 7 itself
+   named; a one-line reader statement added to all 17 pre-existing
+   reference docs; `docs/authoring.md`'s stale "rename/code-actions
+   out of scope" claim (found and disclosed at M1 as F6) finally
+   fixed, with an honest note that its LSP section is provisional
+   until M8 rewrites it for real; `backend-spike-report.md` and
+   `history.md` moved into a new `docs/history/` grouping (their
+   own internal relative links re-pointed for the new depth; the two
+   live cross-references to them, in README.md and
+   `backends/go/README.md`, updated); terminology check for the
+   three drift candidates the plan named (`backend`/`target`,
+   `capability`/`component`, `example`/`program`) — each pair turned
+   out to be a real, deliberate distinction rather than accidental
+   drift, so guide 01 gained a short glossary section recording the
+   distinction instead of a rewrite forcing an artificial "winner";
+   README's own "Where to go next" and repository-layout table
+   updated to link the guide series, `positioning.md`, and the new
+   docs index now that all three exist (M3 had deliberately left
+   them unlinked to avoid dead links — exactly the F7 mistake this
+   arc's own M5 caught and fixed once already, not repeated here).
+   A link-integrity check (a small script walking every `[text]
+   (path)` in README.md and all of `docs/`, resolving relative
+   paths against each file's own directory) found zero broken
+   internal links after the moves. One harness bug found and fixed
+   in the process, unrelated to any guide's own content: `scripts/
+   check-guides.sh` symlinked `examples/`/`sim/` into each
+   document's workspace rather than copying them, so guide 05's own
+   `file` block (writing a scenario to `sim/mark-read.ciac-sim.json`)
+   wrote *through* the symlink into this actual repository's real
+   `sim/` directory instead of staying inside the disposable
+   workspace — caught by `git status` showing an unexpected
+   untracked file, not by the harness itself. Fixed by copying
+   instead of symlinking; re-ran the full harness clean afterward
+   with no stray file left behind. Verification:
+   `scripts/check-guides.sh` run against all eight documents (README
+   + guides 01–07) — 26 blocks run, 5 disclosed skips (the install
+   step twice, `ciac dev`'s watch loop, and the two Docker-required
+   `--system` steps in guides 06/07), 0 failed. No code changed this
+   milestone — docs only; `cargo fmt`/`clippy`/`cargo test
+   --workspace` untouched by this milestone's own changes, so not
+   re-run. The docs surface is complete at this exit, as the
+   milestone's own text promised: what follows is editor polish
+   (M7–M8) and the dogfooding kit (M9).
 
 7. **M7 — Snippets and rich hovers.** The vocab.rs snippet
    table + structured hover data (per-target support derived
@@ -778,6 +1134,165 @@ push; in-place Shipped notes).
    in real VS Code recorded (screenshot-level sanity — the LSP
    tests prove protocol, a human proves rendering).
 
+   **Shipped (v0.29 M7) — the one-vocabulary-source shape the
+   pillar calls for, built with three scope decisions narrowed
+   at implementation and recorded honestly rather than
+   silently:**
+
+   *`vocab.rs`*: a `Snippet { prefix, description, body,
+   parses_with }` struct and a `SNIPPETS` table — one entry per
+   `DECLARATION_KINDS` member (19: project/service/import/use/
+   record/error/stream/table/api/worker/job/channel/crud/
+   events/handler/extern/pipeline/blueprint/expand), each with a
+   tab-stopped VS Code snippet body and a `parses_with` companion
+   (the minimal top-level source its default expansion assumes
+   already exists — e.g. `worker`'s companion declares the
+   `queue` capability and the stream it consumes). **Scope
+   narrowing #1**: the plan's own phrasing ("one per declaration
+   form *and capability*") was narrowed to declaration forms
+   only — a dedicated snippet per single-provider capability (9
+   of 14 capabilities have exactly one provider) would just
+   retype that provider's only name, so the `service`/`use`
+   snippets demonstrate the provider-choice technique once via
+   `${N|a,b,c|}` instead of multiplying near-duplicate entries.
+   Recorded in `vocab.rs`'s own doc comment on `SNIPPETS`, not
+   just here.
+
+   New `VERBS`/`SIM_NOTES` tables (hand-maintained, like
+   `PROVIDERS.targets` already is, for the same reason: no
+   single iterable source exists for either — `ciac-sema`'s verb
+   checker is organized as `(capability, verb)` match arms
+   scattered through `check_verb_call`, not a table, and the 27
+   world contract lives in prose across `docs/simulation.md`),
+   feeding a rewritten `doc_for`: a capability hover is now
+   structured markdown (bolded name, Providers/Targets/Verbs/
+   Simulation lines, a one-line `use { .. }` example, a
+   docs pointer), matching the plan's own worked `cache` example
+   in every line except the deep-anchor links.
+
+   **Scope narrowing #2**: the plan's illustrative hover showed
+   section-level deep links (`docs/language.md#cache`,
+   `docs/expressions.md#cache-verbs`) — neither anchor exists in
+   the real docs (`language.md` has one shared `use { capability
+   Provider; .. }` header for every capability, not a per-
+   capability one; there is no `#cache-verbs` heading anywhere).
+   Computing a GitHub-slug anchor from a header string carries
+   real risk of a silently-wrong link (verified one edge case —
+   a `(vX.Y)` version suffix in a header — where the correct
+   slug behavior was genuinely uncertain without fetching
+   GitHub's real renderer, which this session's dead-link
+   discipline treats as reason enough to not guess). Hovers
+   instead name the whole document (`docs/language.md`,
+   `docs/expressions.md`), which is always correct by
+   construction and still points a reader at the right place.
+
+   **Scope narrowing #3**: individual verb-level hovers (the
+   plan's fourth hover class, "for a builtin verb — signature,
+   behavior, simulation-fake note") were not added. The LSP's
+   `word_at`-based hover has no receiver context — hovering
+   `insert` in `db.insert(...)` can't distinguish it from
+   `cache`'s or `object_store`'s own same-named verb without a
+   larger refactor of how hover resolves position to meaning.
+   The information this class would have carried (verb
+   signatures, sim-fake notes) already surfaces on the
+   capability-level hover instead (hovering `cache` in `use {
+   cache Redis; }`, exactly the plan's own worked example).
+
+   `crates/ciac/src/lsp.rs`: `completion()`'s `KEYWORDS` loop
+   now emits a real snippet completion (`CompletionItemKind::
+   SNIPPET`, `insert_text` = the tab-stopped body,
+   `insert_text_format: InsertTextFormat::SNIPPET`) for any
+   keyword with a `SNIPPETS` entry, falling back to the old
+   plain-keyword item otherwise; `hover()` needed no changes at
+   all — it already called `vocab::doc_for`, so the richer
+   markdown flows through automatically.
+
+   `crates/ciac/src/describe.rs`: a new `snippets: Vec<
+   SnippetEntry>` field (prefix/description/body/parses_with),
+   purely additive — `DESCRIBE_VERSION` stays `1`, proven by
+   `m7_snippet_field_is_additive_not_a_breaking_reshape` (every
+   pre-existing key's shape re-checked field-by-field, not just
+   presence).
+
+   `editors/vscode/`: `package.json` gained a `contributes.
+   snippets` entry pointing at a new checked-in `snippets/
+   ciac.json` (VS Code's own snippet-file format, one entry per
+   prefix); `crates/ciac/tests/snippets_cli.rs` is the drift
+   test — it runs the real `ciac describe` subprocess, reshapes
+   its `snippets` field into the same `{prefix: {prefix,
+   description, body}}` map VS Code expects, and asserts it
+   equals the checked-in file (parsed as JSON, not byte-compared,
+   so key-order never causes a false failure). Chose "checked-in
+   file + drift test" over "generate at package time" per the
+   plan's own either-or, matching `docs/targets.json`'s
+   established precedent in this repo rather than inventing a
+   new pattern.
+
+   **Tests** (all in `crates/ciac/src/vocab.rs`'s own
+   `#[cfg(test)]` module unless noted): `every_snippet_default_
+   expansion_parses` — every one of the 19 snippets' default
+   expansion (`${N:default}`→`default`, `${N|a,..|}`→first
+   choice, `$N`→nothing, via a new `expand_snippet_default`
+   shared by both the test and the hover-preview renderer, so
+   they can never show different text) written to a scratch file
+   with its `parses_with` companion prepended and run through the
+   real `ciac_syntax::load` + `ciac_sema::analyze` pair `ciac
+   check`/`revalidate` both use — zero parse errors, zero
+   semantic errors (warnings like "capability declared but never
+   used" tolerated, matching `ciac check`'s own error/warning
+   split). `verb_and_sim_note_keys_name_real_capabilities` — every
+   `VERBS`/`SIM_NOTES` key is a real `CAPABILITIES` entry, and
+   every capability has a `SIM_NOTES` row (no silent gap).
+   `capability_hover_has_the_structured_shape` — every capability
+   hover leads with its bolded name and carries Providers/
+   Targets/Simulation lines, with Verbs present iff `VERBS` has
+   an entry. `capability_target_line_matches_provider_registry` —
+   the Targets line's ✓/✗ per target is checked against
+   `PROVIDERS` directly, capability by capability, target by
+   target (today all five targets tick for every capability,
+   but the test would catch a real narrowing the moment one
+   happened). `keyword_hover_preview_matches_its_own_snippet` —
+   every declaration keyword's hover preview is exactly its own
+   snippet's rendered default body, line for line.
+   `describe_facing_tables_kept_their_shape` +
+   `m7_snippet_field_is_additive_not_a_breaking_reshape` (in
+   `describe.rs`) — the `DESCRIBE_VERSION` compatibility check.
+   `crates/ciac/tests/snippets_cli.rs` — the vscode-file drift
+   test. `crates/ciac/tests/lsp_cli.rs`'s new
+   `lsp_offers_snippet_completions_and_structured_capability_
+   hover` — the same two features proven over the *real wire
+   protocol*, not just the library functions in isolation: a
+   completion response for `worker` carries
+   `insertTextFormat: 2` and the exact tab-stopped body; a hover
+   on `cache` in `use { cache Redis; }` is the structured
+   multi-line block with all four labeled lines present.
+
+   **Manual VS Code verification**: not performed as an actual
+   GUI session — this session runs headless with no VS Code GUI
+   available, disclosed here rather than claimed. In its place,
+   `lsp_offers_snippet_completions_and_structured_capability_
+   hover` drives the real `ciac lsp` binary over the identical
+   JSON-RPC wire protocol a real VS Code instance speaks (the
+   same harness `lsp_round_trip_diagnostics_hover_and_completion`
+   already used to prove hover/completion/diagnostics before this
+   milestone), asserting the exact wire-level fields
+   (`insertTextFormat`, `insertText`, hover markdown content) a
+   client would render from. This proves the protocol contract
+   completely; it does not prove VS Code's own snippet-expansion
+   UI or markdown-hover renderer look right on screen. The user
+   installing `editors/vscode` locally and typing `worker<Tab>`
+   in a real window is the one honest way to close that gap —
+   flagged explicitly rather than silently assumed.
+
+   Full verification: `cargo fmt --all` clean, `cargo clippy -p
+   ciac --all-targets -- -D warnings` and `cargo clippy
+   --workspace --all-targets -- -D warnings` both zero warnings,
+   `cargo test --workspace` — 69 test binaries, 467 tests total,
+   0 failed (includes the cross-target byte-identical/equivalence
+   suite and the golden snapshot suite, neither of which this
+   milestone's changes touched, run anyway as this session's
+   standing full-verification discipline requires).
+
 8. **M8 — Quick-fixes, go-to-definition, and LSP rounding.**
    The diagnostic inventory (which codes have/could/can't have
    fixes, recorded); structured-fix extension over the
@@ -788,6 +1303,171 @@ push; in-place Shipped notes).
    The LSP capability set after this milestone is the arc's
    final editor claim — recorded in authoring.md's LSP section,
    which this milestone rewrites to match reality.
+
+   **Shipped (v0.27 M8) — the diagnostic inventory, three new
+   nearest-match quick-fixes, go-to-definition off the rename
+   index, and a real debounced-reparse fix for the v0.12-era
+   "diagnostics wait for save" gap:**
+
+   **The diagnostic inventory.** Every code in `docs/errors.md`
+   (CIAC0001-0062; 0063-0072 reserved, empty, N/A) sorted into
+   three buckets:
+
+   *Has a fix* (7, up from 4): `CIAC0005` (missing capability),
+   `CIAC0013` (unknown provider), `CIAC0025` (OAuth2 missing
+   `issuer`), `CIAC0041` (unknown record field) pre-existed;
+   `CIAC0017` (unknown stream), `CIAC0018` (unknown attribute),
+   `CIAC0022` (unknown capability instance) are new this
+   milestone — every one a nearest-match rename gated at
+   Levenshtein distance <= 3 against a real, enumerable
+   candidate set (declared streams/tables/capability-instances
+   of the right kind/the closed per-declaration-kind attribute
+   registry), so a candidate that isn't a plausible typo gets no
+   fix offered rather than a guessed one.
+
+   *Could, deferred* (recorded, not built, each with a reason):
+   `CIAC0027`/`CIAC0028` (unknown service/service-member in a
+   `call` target) and `CIAC0048` (unknown blueprint in `expand`)
+   are the same nearest-match shape as the three just shipped,
+   deferred only because this milestone's own scope already
+   covered the plan's named categories once each — a natural
+   next slice, not a harder problem. `CIAC0045` (unused `let`)
+   is mechanically safe in principle ("delete the binding") but
+   its diagnostic's span is the identifier only, not the whole
+   `let name = expr;` statement through its trailing `;` — a
+   fix built on the wrong span either leaves a dangling `;` or
+   eats the next token, so shipping it needs a small span-
+   plumbing change first, not just a `Fix` at the existing site;
+   deferred rather than rushed. Import-path typos (`import
+   "path";` resolving nowhere) are a real candidate the plan
+   itself names, but a nearest-match against the filesystem
+   introduces I/O and staleness the other fixes don't have (the
+   candidate set can change between the diagnostic firing and
+   the fix being applied) — deferred pending a design for that,
+   not attempted here.
+
+   *Can't, with reason* (the remaining ~52): parse errors
+   (`CIAC0001`/`0002`) carry no semantic understanding of intent
+   to fix toward. Most of the rest fail the "must be *the* fix"
+   bar because the correct resolution is a genuine judgment call
+   only the author can make, not a name lookup: which of two
+   duplicate declarations to keep (`CIAC0003`/`0012`/`0026`),
+   which capability instance an ambiguous binding should pick
+   (`CIAC0023`), what a non-exhaustive `match` arm's actual
+   logic should be (`CIAC0021`), which provider/target to
+   redirect an unsupported construct to (`CIAC0011`), what a
+   cyclic dependency's real break point is (`CIAC0006`), and
+   similarly for `CIAC0004`/`0008`/`0009`/`0010`/`0014`/`0016`/
+   `0019`/`0020`/`0024`/`0029`-`0032`/`0037`/`0039`/`0040`/
+   `0043`/`0044`/`0046`/`0047`/`0049`-`0062`. `CIAC0033`-`0036`
+   are file-state diagnostics (a stale manifest, a drifted seed)
+   about what's on disk, not a source typo, so there is no
+   source-level edit to offer at all. `CIAC0038` is dead —
+   superseded, never fires against a well-formed program.
+
+   **Fixture tests.** `tests/ui/unknown-stream-close-typo.ciac`,
+   `unknown-capability-instance-close-typo.ciac`,
+   `unknown-table-close-typo.ciac`, `unknown-attribute-close-
+   typo.ciac` (each `// expect: CIAC00NN`) — every one declares a
+   real name and references a one-edit-distance typo of it, so
+   `tests/tests/fixes.rs`'s existing corpus-wide test (apply
+   every offered fix, assert the diagnostic's own code clears)
+   exercises all three new fixes automatically, the same way it
+   already covers the four pre-existing ones — no bespoke test
+   harness needed, just fixtures that trigger the new code paths.
+   `crates/ciac-sema/src/build.rs`'s `fix_tests` module gained
+   `nearest_name_finds_a_close_typo_but_not_a_stranger` (the
+   shared threshold-gated matcher new to this milestone) and
+   `known_attrs_lists_only_genuinely_accepted_names` (one program
+   per declaration kind using every one of that kind's
+   `known_attrs()` names with a valid value, asserting zero
+   `UnknownAttribute` diagnostics — guards the hand-maintained
+   attribute-registry table against drifting from the real
+   `apply_*_attrs` match arms it restates).
+
+   **Go-to-definition.** `crates/ciac-syntax/src/module.rs`
+   needed no changes — `rename_index::build_index` already
+   indexes the whole spliced program with each definition's real
+   span/file. `crates/ciac/src/lsp.rs`'s new `definition()` is
+   the thin projection the plan predicted: locate the cursor,
+   `resolve_at`, read `ResolvedSymbol::def_span`, map its
+   `FileId` back to a real path, done — `None` (no location)
+   only for an unresolved position or a definition site with no
+   real on-disk file (`std/`-embedded blueprints, `registry:`-
+   fetched content; there's nowhere to navigate to). Proven both
+   same-file and cross-file via a real `import` in
+   `crates/ciac/tests/lsp_cli.rs`'s new
+   `lsp_definition_resolves_same_file_and_cross_file_import`.
+
+   **Debounced didChange diagnostics — the real fix, not a
+   cosmetic one.** The v0.12-era gap was structural, not just "no
+   handler wired up": `revalidate` always reads the entry file
+   from disk, so even calling it on every keystroke would keep
+   showing the *last-saved* content's diagnostics, not the
+   buffer's. Closing it needed two independent pieces:
+
+   1. `crates/ciac-syntax/src/module.rs` gained `load_with_overlay`
+      — `resolve_file` takes a new `overlay: Option<&str>` used
+      only when `importer.is_none()` (i.e. only for the entry
+      file, never anything it transitively `import`s, since only
+      the document open in the client has unsaved content to
+      substitute). `load`/`load_with_origins` are unaffected
+      (`None` at their call sites).
+   2. `crates/ciac/src/lsp.rs`'s `main_loop` changed from a plain
+      `for msg in &connection.receiver` to a manual
+      `recv_timeout` loop (`DEBOUNCE_POLL` = 50ms) so it can
+      notice a debounce deadline elapsing with no new message to
+      wake it. `didChange` now sets `pending_reparse[uri] = now +
+      DIDCHANGE_DEBOUNCE` (300ms) alongside updating `doc.text`;
+      `didOpen`/`didSave`/`didClose` clear it (a real disk-backed
+      reparse, or the document closing, makes it moot). The new
+      `revalidate_overlay` mirrors `revalidate` exactly except it
+      calls `load_with_overlay` with the dirty buffer.
+
+   Proven, not just built: `crates/ciac/tests/lsp_cli.rs`'s new
+   `lsp_debounces_didchange_diagnostics_from_the_dirty_buffer`
+   opens a clean file, sends a `didChange` introducing a real
+   error *without ever writing it to disk*, and blocks on the
+   next `publishDiagnostics` — which only arrives, with the new
+   error in it, because the debounce fired and reparsed the
+   in-memory buffer via the overlay path. The test re-reads the
+   file from disk afterward and asserts it's still the original,
+   valid content — proof the disk was never touched, so the
+   diagnostic could only have come from the buffer.
+
+   **`authoring.md`'s LSP section** — rewritten in full per this
+   milestone's own exit criterion: names the debounced-diagnostics
+   behavior, the M7 structured capability hover and snippet
+   completions, rename, the new go-to-definition, and the widened
+   quick-fix set, replacing the "provisional until M8" note M6
+   left there. Also states the one disclosed gap that's genuinely
+   unchanged since v0.12: only the *open document itself* gets an
+   overlay; anything it imports still resolves from disk.
+
+   **`docs/errors.md`**'s own fixes-disclosure paragraph updated
+   to name all 7 fixed codes and the shared distance-threshold
+   rule, instead of the stale 4-code list.
+
+   **Extension refresh**: no `editors/vscode` changes needed
+   beyond what M7 already made — go-to-definition and debounced
+   diagnostics are both server-capability-negotiated at the LSP
+   protocol level (`definition_provider` in the `initialize`
+   response; debouncing is invisible to the client, it just sees
+   `publishDiagnostics` arrive sooner), so VS Code's built-in LSP
+   client picks both up with zero `package.json` changes. The
+   arc's actual version-manifest bump is M9's job, not this one's
+   (per the plan's own milestone split).
+
+   Full verification: `cargo fmt --all` clean; `cargo clippy -p
+   ciac --all-targets -- -D warnings`, `-p ciac-sema`, and `-p
+   ciac-syntax` all zero warnings; `cargo test -p ciac-sema`,
+   `-p ciac-syntax`, `-p ciac-integration-tests --test negative
+   --test fixes`, and `-p ciac --test lsp_cli` all green. Given
+   `module.rs`'s `resolve_file` signature change touches a crate
+   nearly everything else in the workspace depends on, the
+   per-crate runs above were followed by a full `cargo test
+   --workspace` re-run rather than deferring it to M9 as first
+   drafted — 69 test binaries, 204 tests total, 0 failed.
 
 9. **M9 — The kit, the final transcript, version, and the arc
    close.** DOGFOODING.md to its exit criterion; issue
@@ -808,6 +1488,142 @@ push; in-place Shipped notes).
    value of planning without new evidence is negative. That
    sentence is the arc's, and the sequence's, deliberate last
    word.
+
+   **Shipped (v0.27 M9).** `DOGFOODING.md` written at repo root
+   to its stated exit criterion (runnable tomorrow, zero
+   additional prep): recruitment note, setup, the three-phase
+   session script (cold start / guided build / the hook),
+   the five debrief questions, the observer's-silence rule, a
+   `docs/dogfooding/feedback-log-template.md` (copy-per-session,
+   tagged `{friction|concept|bug|want}`), and a filing table
+   pointing each tag at one of three new
+   `.github/ISSUE_TEMPLATE/` files (bug report, docs friction,
+   feature request — the repo had none before this milestone),
+   each cross-linking back to `DOGFOODING.md` and the
+   `dogfooding` label.
+
+   Transcript three
+   (`docs/dogfooding/transcripts/03-final.md`) ran the full
+   scripted path — `cargo install --path crates/ciac --force`
+   (1m33.6s, comparable to M1/M2's readings, cache-state
+   variance not a trend), the README's `new`/`check`/`build`/
+   `sim`/`verify` sequence against `examples/quickstart.ciac`,
+   and `scripts/check-guides.sh README.md docs/guide/
+   01-first-service.md docs/guide/05-simulation.md` (10 blocks
+   run, 3 skipped and disclosed, 0 failed, 8.3s) — against the
+   actual M9 release-candidate binary, not a stand-in. The delta
+   table across all three transcripts (01→02→03) shows every
+   finding from M1 onward closed: F1 (install 404, real release
+   not cut — unchanged, explicitly out of this arc's scope) is
+   the only open row, by design.
+
+   The transcript surfaced one new, genuine finding (F8), and it
+   was fixed live rather than merely logged, matching the same
+   "fix on the spot" discipline transcript 02 set at F7. Running
+   the README's own documented two-step sequence — `ciac build`
+   immediately followed by `ciac sim`, both `--out ./build` —
+   printed two `warning[CIAC0035]` lines about the just-written
+   migration file being "no longer produced and left in place."
+   Reproduced against a from-scratch directory with nothing but
+   two consecutive `ciac build` calls and zero source changes:
+   the warning fires on every build after the one that created a
+   migration, forever, for the life of any project that has one
+   — worse than a one-time surprise, since a new user would see
+   it repeatedly with no way to make it stop short of deleting a
+   file they were explicitly told to leave alone. Root cause: a
+   migration file is deliberately never re-emitted once written
+   (that's how migrations are supposed to accumulate), but the
+   regeneration-orphan check had no way to distinguish that
+   permanent, correct steady state from a genuinely stale
+   `Seeded` scaffold the user should investigate, so both hit the
+   same `OrphanLeft` warning path.
+
+   Fixed by giving `FileRole` (`crates/ciac-codegen/src/
+   project.rs`) a third variant, `Migration`, distinct from
+   `Seeded` — write-once like `Seeded` (threaded through every
+   `regen.rs` classification arm, `emit.rs`'s and `external.rs`'s
+   role-dispatch matches, and `rename.rs`'s seeded-reference scan,
+   which still needs to grep migration SQL for renamed names) but
+   exempted from `RegenEntry::is_warning()`'s `OrphanLeft` case
+   and from `commands.rs`'s CLI-facing warning print. `add_migration_files`
+   now calls the new `GeneratedProject::add_migration_file`
+   instead of `add_seeded_file`. Two new tests in
+   `tests/tests/regen.rs` cover both directions:
+   `orphaned_migration_file_does_not_warn` (the fix) and
+   `orphaned_seeded_scaffold_still_warns` (the regression guard —
+   a genuinely stale scaffold must keep warning). `docs/errors.md`'s
+   CIAC0035 entry states the exemption. Re-verified after the fix:
+   the README's exact two-step sequence, and a bare second
+   `ciac build` with zero changes, both produce zero warnings.
+
+   Version bumped **0.26.0 → 0.27.0**: root `Cargo.toml`
+   `[workspace.package]` plus the 11 internal crate pins,
+   `editors/vscode/package.json`, `docs/language.md`'s compiler-
+   version parenthetical, and `docs/positioning.md`'s maturity
+   statement (language stays `1.0.0`, untouched). Two checked-in
+   artifacts embed the compiler version and were caught stale by
+   the workspace test suite itself, not missed silently:
+   `docs/targets.json` (`ciac_version` field) and
+   `docs/protocol-schema.json` (which also gained the new
+   `FileRole::Migration` schema variant) — both regenerated via
+   their own documented commands
+   (`cargo run -p ciac -- targets --json` /
+   `codegen-schema`) and re-verified green.
+
+   Full verification: `cargo fmt --all` clean; `cargo clippy
+   --workspace --all-targets -- -D warnings` zero warnings;
+   `cargo test --workspace` — **69 test binaries, 473 tests
+   total, 0 failed** (after the two stale-artifact regenerations
+   above); `scripts/sim-corpus-x5.sh` — **50 program×target
+   combinations, all green**, confirming the `FileRole::Migration`
+   change and version bump left cross-target simulation
+   equivalence untouched.
+
+   **Arc retrospective.**
+
+   | Transcript | Findings closed this round | Open at exit |
+   | --- | --- | --- |
+   | 01 (M1, baseline) | — (measurement only) | F1–F6 |
+   | 02 (M5, checkpoint) | F2, F4, F5 fixed; F7 found+fixed live | F1 (real release), F6 (deferred to M6) |
+   | 03 (M9, final) | F6 closed at M6/M8; F8 found+fixed live | F1 only — by design, gated on user sign-off |
+
+   Docs surface, before this arc vs. after: the README went from
+   a 366-line version-by-version history to a <250-line narrative
+   demonstration (the history moved to `docs/history/history.md`);
+   `docs/guide/` grew from nothing to a seven-file series (01–07,
+   each ending at a harness-verified checkpoint); `docs/
+   positioning.md` and a docs index (`docs/README.md`) are new;
+   `scripts/check-guides.sh` plus a CI docs job means every
+   runnable block in the README and every guide is executed for
+   real on every CI run, not just read; the LSP gained snippets,
+   richer hovers, go-to-definition, and debounced didChange
+   diagnostics; the structured-fix inventory widened from 4 codes
+   to 7. What the transcripts could measure: every mechanical
+   friction point an author re-reading with fresh eyes can catch
+   — broken commands, missing prerequisites, misleading or absent
+   output, slow steps, dead cross-references, and (F8) a
+   diagnostic that's technically correct-shaped but wrong in
+   substance. What they structurally cannot measure, no matter
+   how many times they're re-run: whether the *concepts* land for
+   someone who has never seen a capability, a pipeline, or a
+   simulation scenario before — whether the README's narrative
+   arc actually persuades, whether the guide series' pacing is
+   right, whether "the hook" (simulation) actually hooks anyone.
+   That gap is categorical, not a matter of running the script a
+   fourth time.
+
+   `29UpdatePlan.md` is complete. Tagging or releasing v0.27.0 is
+   a separate, explicitly-gated decision this session surfaces to
+   the user rather than acting on unprompted, per this session's
+   standing instruction — carried forward from a point in the
+   sequence when the current release was still numbered 0.26.0;
+   the workspace is now at 0.27.0, so that check-in should confirm
+   which version is actually meant before anything is tagged.
+   The next plan file should not be written until a real outside
+   human has run the `DOGFOODING.md` session, because every
+   armchair-derivable improvement now has either shipped or been
+   explicitly cut, and the marginal value of planning without new
+   evidence is negative.
 
 ### Per-milestone exit checklists
 

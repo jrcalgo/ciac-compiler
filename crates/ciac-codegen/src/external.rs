@@ -57,6 +57,7 @@ static EXTERNAL_TARGET_INFO: TargetInfo = TargetInfo {
     sim: SimSupport::None {
         reason: "external-protocol backends have no simulation wire surface (v0.8 M2 non-goal)",
     },
+    sim_replay: false,
 };
 
 /// A backend resolved by name at the moment it's used, not registered
@@ -212,6 +213,7 @@ impl Backend for ExternalBackend {
             match file.role {
                 FileRole::Owned => project.add_file(file.path, file.content),
                 FileRole::Seeded => project.add_seeded_file(file.path, file.content),
+                FileRole::Migration => project.add_migration_file(file.path, file.content),
             }
         }
         project.notes.extend(response.notes);

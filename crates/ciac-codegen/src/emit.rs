@@ -95,6 +95,12 @@ pub fn run(
         match entry.role {
             FileRole::Owned => project.add_file(path, content),
             FileRole::Seeded => project.add_seeded_file(path, content),
+            // No `Emit` constructor declares `Migration` -- every
+            // backend's static file table is `Owned`/`Seeded` only;
+            // migrations are added dynamically by the CLI's own
+            // schema-diffing step (`add_migration_files`), never
+            // through this table.
+            FileRole::Migration => unreachable!("Emit tables never declare FileRole::Migration"),
         }
     }
     Ok(())

@@ -71,6 +71,7 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     sim: SimSupport::None {
         reason: "skeleton-internal is a reference crate, not a real target",
     },
+    sim_replay: false,
 };
 
 #[derive(Debug, Default)]

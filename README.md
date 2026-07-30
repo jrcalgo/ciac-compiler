@@ -9,7 +9,7 @@ real deploy: compose today, Kubernetes or Terraform or CI on request.
 The compiler owns the wiring; your business logic lives in generated
 stubs that are yours to edit and never overwritten.
 
-CIaC is not a scaffolding template you fork and diverge from, and not
+Code-Infrastructure-as-Code (CIaC) compiler is not a scaffolding template you fork and diverge from, and not
 a runtime you deploy — it's a compiler you keep running against a
 source file for the system's whole life. If that tradeoff isn't one
 you want, or your architecture doesn't fit a typed graph of

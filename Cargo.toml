@@ -23,6 +23,8 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/jrcalgo/ciac-compiler"
 rust-version = "1.85"
+keywords = ["compiler", "code-generation", "dsl", "iac", "devops"]
+categories = ["compilers", "development-tools"]
 
 [workspace.dependencies]
 # internal crates

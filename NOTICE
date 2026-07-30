@@ -1,0 +1,48 @@
+This file covers third-party artifacts vendored as raw files (not
+declared as Cargo dependencies). Every Cargo-managed dependency's
+license is tracked separately in `deny.toml` and enforced by the
+`workspace-audit` CI job — this file only names what that job cannot
+see.
+
+## google-java-format
+
+`crates/ciac-backend-java/vendor/google-java-format-1.19.2-all-deps.jar`
+vendors google-java-format (https://github.com/google/google-java-format),
+licensed under the Apache License, Version 2.0.
+
+  Copyright 2015 Google Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+The vendored artifact is the "all-deps" shaded jar, which also bundles
+Checker Framework qualifiers (https://github.com/typetools/checker-framework),
+licensed under the MIT License:
+
+  Copyright 2004-present by the Checker Framework developers
+
+  Permission is hereby granted, free of charge, to any person obtaining
+  a copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to
+  the following conditions:
+
+  The above copyright notice and this permission notice shall be
+  included in all copies or substantial portions of the Software.
+
+The jar's own `META-INF/LICENSE` and `META-INF/LICENSE.txt` are the
+authoritative full texts for these two licenses; the excerpts above are
+reproduced for convenience, not as a substitute.
+
+## Apache Maven Wrapper
+
+`crates/ciac-backend-java/vendor/mvnw` and `mvnw.cmd` vendor the Apache
+Maven Wrapper (https://github.com/apache/maven-wrapper), licensed under
+the Apache License, Version 2.0. The upstream project's own NOTICE file
+is not vendored alongside these scripts here; see the upstream
+repository for that file and the full license text.

@@ -62,11 +62,28 @@ static TEMPLATES: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 // `RustBackend::generate` emits them once instead, as the `sim-shared`
 // crate every service (and, from M6c, the system-runner) depends on by
 // path -- single-service projects are completely unaffected.
-const VENDORED_SIM_CLOCK: &str = include_str!("../../ciac-sim/src/clock.rs");
-const VENDORED_SIM_CRON: &str = include_str!("../../ciac-sim/src/cron.rs");
-const VENDORED_SIM_FAILURE: &str = include_str!("../../ciac-sim/src/failure.rs");
-const VENDORED_SIM_SCENARIO: &str = include_str!("../../ciac-sim/src/scenario.rs");
-const VENDORED_SIM_WORLD: &str = include_str!("../../ciac-sim/src/world.rs");
+//
+// The five files below are read from `vendor/ciac-sim/`, a physical
+// copy checked into this crate's own directory, not from `ciac-sim`'s
+// own `src/` directly -- found live, the hard way, via a real `cargo
+// publish` failure: `cargo package`/`publish` only bundles files inside
+// a crate's own directory, so a `../../ciac-sim/src/...` `include_str!`
+// (reaching into a sibling crate) doesn't exist in the package tarball
+// and the verify-build fails with "No such file or directory". This
+// mirrors `ciac-backend-java`'s own `vendor/` directory (its jar and
+// `mvnw` scripts, one level up, never crossing the crate boundary) --
+// the same fix, for source text instead of a jar. Unlike that jar,
+// `ciac-sim`'s source is actively developed, so a copy here can drift:
+// run `scripts/sync-vendored-sim.sh` after any change to `ciac-sim/src/
+// {clock,cron,failure,scenario,world}.rs`, and see this module's own
+// `vendored_sim_matches_source` test, which fails loudly in a normal
+// workspace build (never in a build from a published crate, where
+// `ciac-sim/src` isn't reachable at all) if the two fall out of sync.
+const VENDORED_SIM_CLOCK: &str = include_str!("../vendor/ciac-sim/clock.rs");
+const VENDORED_SIM_CRON: &str = include_str!("../vendor/ciac-sim/cron.rs");
+const VENDORED_SIM_FAILURE: &str = include_str!("../vendor/ciac-sim/failure.rs");
+const VENDORED_SIM_SCENARIO: &str = include_str!("../vendor/ciac-sim/scenario.rs");
+const VENDORED_SIM_WORLD: &str = include_str!("../vendor/ciac-sim/world.rs");
 
 const SIM_SHARED_CARGO_TOML: &str = r#"[package]
 name = "sim-shared"
@@ -837,4 +854,38 @@ fn emit_service(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Guards `vendor/ciac-sim/`'s own reason for existing: the
+    /// `VENDORED_SIM_*` constants must stay byte-identical to
+    /// `ciac-sim/src/{clock,cron,failure,scenario,world}.rs`. Runs
+    /// only inside the workspace, where the sibling crate's source is
+    /// reachable relative to `CARGO_MANIFEST_DIR` -- never true when
+    /// building from a published crate's own package tarball, which
+    /// contains only the vendored copy this test would have nothing to
+    /// compare it against. If this fails, run
+    /// `scripts/sync-vendored-sim.sh` and re-vendor.
+    #[test]
+    fn vendored_sim_matches_source() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let sim_src = std::path::Path::new(manifest_dir).join("../ciac-sim/src");
+        if !sim_src.is_dir() {
+            return;
+        }
+        for name in ["clock", "cron", "failure", "scenario", "world"] {
+            let source = std::fs::read_to_string(sim_src.join(format!("{name}.rs")))
+                .unwrap_or_else(|e| panic!("reading ciac-sim/src/{name}.rs: {e}"));
+            let vendored = std::fs::read_to_string(
+                std::path::Path::new(manifest_dir).join(format!("vendor/ciac-sim/{name}.rs")),
+            )
+            .unwrap_or_else(|e| panic!("reading vendor/ciac-sim/{name}.rs: {e}"));
+            assert_eq!(
+                source, vendored,
+                "vendor/ciac-sim/{name}.rs has drifted from ciac-sim/src/{name}.rs -- \
+                 run scripts/sync-vendored-sim.sh"
+            );
+        }
+    }
 }

@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Use GitHub's [private vulnerability reporting](https://github.com/jrcalgo/ciac/security/advisories/new)
+Use GitHub's [private vulnerability reporting](https://github.com/jrcalgo/ciac-compiler/security/advisories/new)
 for this repository rather than a public issue. That opens a private
 advisory thread with the maintainer directly.
 

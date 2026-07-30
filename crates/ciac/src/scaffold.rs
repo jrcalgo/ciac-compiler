@@ -146,7 +146,7 @@ CLI's stdout.\n\
 \n\
 ## Learn the language\n\
 \n\
-<https://github.com/jrcalgo/ciac/blob/main/docs/language.md> —\n\
+<https://github.com/jrcalgo/ciac-compiler/blob/main/docs/language.md> —\n\
 records, apis, pipelines, streams, workers, capabilities, and the\n\
 provider support table per target.\n\
 ";
@@ -182,7 +182,7 @@ fn readme(tpl: &Template) -> String {
         "\n## Learn the language\n\
          \n\
          The language reference lives in the ciac repository:\n\
-         <https://github.com/jrcalgo/ciac/blob/main/docs/language.md>\n\
+         <https://github.com/jrcalgo/ciac-compiler/blob/main/docs/language.md>\n\
          — records, apis, pipelines, streams, workers, capabilities,\n\
          and the provider support table per target.\n",
     );

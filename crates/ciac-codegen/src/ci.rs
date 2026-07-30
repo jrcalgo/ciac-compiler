@@ -112,7 +112,7 @@ fn render_semantic_compat_job(gate: &SemanticGate<'_>) -> String {
         "  semantic-compat:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
     );
     out.push_str(&format!(
-        "      - name: Install ciac v{version} (pinned, never latest)\n        run: |\n          curl -fsSL https://github.com/jrcalgo/ciac/releases/download/v{version}/ciac-linux-x86_64 -o /usr/local/bin/ciac\n          chmod +x /usr/local/bin/ciac\n"
+        "      - name: Install ciac v{version} (pinned, never latest)\n        run: |\n          curl -fsSL https://github.com/jrcalgo/ciac-compiler/releases/download/v{version}/ciac-linux-x86_64 -o /usr/local/bin/ciac\n          chmod +x /usr/local/bin/ciac\n"
     ));
     out.push_str(&format!(
         "      - name: Semantic compatibility gate\n        run: |\n          set +e\n          ciac diff {source_file} --semantic --deny-breaking --baseline {baseline} --json > semantic-changelist.json\n          echo \"gate_exit=$?\" >> \"$GITHUB_ENV\"\n          exit 0\n"

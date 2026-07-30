@@ -20,10 +20,18 @@ use std::process::ExitCode;
 // (CARGO_PKG_VERSION, moves every release) and the language number
 // (ciac_syntax::LANGUAGE_VERSION, frozen at v1.0.0) -- the two-version
 // discipline docs/language.md's own stability section commits to.
+// `concat!` requires a literal, so this can't just reference
+// `ciac_syntax::LANGUAGE_VERSION` directly -- it reads its own
+// `vendor/LANGUAGE_VERSION` instead, a physical copy checked into this
+// crate's own directory (found live via a real `cargo publish`
+// failure: packaging never bundles a `../../../LANGUAGE_VERSION` path
+// escaping the crate directory). Run `scripts/sync-vendored-ciac-
+// assets.sh` after `LANGUAGE_VERSION` changes; see this file's own
+// `vendored_language_version_matches_source` test.
 const CLI_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (language ",
-    include_str!("../../../LANGUAGE_VERSION"),
+    include_str!("../vendor/LANGUAGE_VERSION"),
     ")"
 );
 
@@ -658,5 +666,36 @@ fn run(cli: Cli) -> Result<ExitCode> {
             &out,
             allow_destructive.as_deref(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Guards `vendor/LANGUAGE_VERSION`'s own reason for existing:
+    /// `CLI_VERSION` must stay byte-identical to the repo-root
+    /// `LANGUAGE_VERSION` file. Runs only inside the workspace, where
+    /// that file is reachable relative to `CARGO_MANIFEST_DIR` -- never
+    /// true when building from a published crate's own package
+    /// tarball, which contains only the vendored copy this test would
+    /// have nothing to compare it against. If this fails, run
+    /// `scripts/sync-vendored-ciac-assets.sh` and re-vendor.
+    #[test]
+    fn vendored_language_version_matches_source() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let source_path = std::path::Path::new(manifest_dir).join("../../LANGUAGE_VERSION");
+        if !source_path.is_file() {
+            return;
+        }
+        let source =
+            std::fs::read_to_string(&source_path).expect("reading repo-root LANGUAGE_VERSION");
+        let vendored = std::fs::read_to_string(
+            std::path::Path::new(manifest_dir).join("vendor/LANGUAGE_VERSION"),
+        )
+        .expect("reading vendor/LANGUAGE_VERSION");
+        assert_eq!(
+            source, vendored,
+            "vendor/LANGUAGE_VERSION has drifted from the repo-root LANGUAGE_VERSION -- \
+             run scripts/sync-vendored-ciac-assets.sh"
+        );
     }
 }

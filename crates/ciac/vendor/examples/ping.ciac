@@ -1,0 +1,18 @@
+// v0.8 external-backend protocol M3: the same narrow program used by
+// the v0.8 M6 Go backend spike (docs/backend-spike-report.md) — one
+// service, one record, one api, no capabilities — reproduced here so
+// a real `ciac-backend-go` external process (backends/go/) has a
+// checked-in, reproducible target instead of the spike's throwaway one.
+service Ping;
+
+record Message {
+    id: Uuid;
+    text: String;
+}
+
+api Echo: Message {
+    method: POST;
+    path: "/echo";
+}
+
+pipeline Echo: Return;

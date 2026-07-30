@@ -200,15 +200,20 @@ fn readme(tpl: &Template) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// Guards `vendor/examples/`'s own reason for existing: the four
-    /// template bodies must stay byte-identical to the real
-    /// `examples/*.ciac` files this module's own doc comment promises
-    /// a scaffold "can never drift" from. Runs only inside the
-    /// workspace, where the repo-root `examples/` directory is
-    /// reachable relative to `CARGO_MANIFEST_DIR` -- never true when
-    /// building from a published crate's own package tarball, which
-    /// contains only the vendored copy this test would have nothing to
-    /// compare it against. If this fails, run `scripts/sync-vendored-
+    /// Guards `vendor/examples/`'s own reason for existing: every
+    /// template body already vendored there must stay byte-identical
+    /// to its real `examples/*.ciac` original, the promise this
+    /// module's own doc comment makes when it says a scaffold "can
+    /// never drift." The file list itself is *derived* from
+    /// `vendor/examples/`'s own directory listing, not hardcoded here
+    /// -- `scripts/sync-vendored-ciac-assets.sh` derives its list the
+    /// same way, so the two can never independently drift out of sync
+    /// with each other. Runs only inside the workspace, where the
+    /// repo-root `examples/` directory is reachable relative to
+    /// `CARGO_MANIFEST_DIR` -- never true when building from a
+    /// published crate's own package tarball, which contains only the
+    /// vendored copy this test would have nothing to compare it
+    /// against. If this fails, run `scripts/sync-vendored-
     /// ciac-assets.sh` and re-vendor.
     #[test]
     fn vendored_examples_match_source() {
@@ -217,16 +222,19 @@ mod tests {
         if !examples_src.is_dir() {
             return;
         }
-        for name in ["crud-notes", "inventory-system", "kafka-pipeline", "ping"] {
-            let source = std::fs::read_to_string(examples_src.join(format!("{name}.ciac")))
-                .unwrap_or_else(|e| panic!("reading examples/{name}.ciac: {e}"));
-            let vendored = std::fs::read_to_string(
-                std::path::Path::new(manifest_dir).join(format!("vendor/examples/{name}.ciac")),
-            )
-            .unwrap_or_else(|e| panic!("reading vendor/examples/{name}.ciac: {e}"));
+        let vendor_dir = std::path::Path::new(manifest_dir).join("vendor/examples");
+        for entry in std::fs::read_dir(&vendor_dir)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", vendor_dir.display()))
+        {
+            let entry = entry.expect("reading vendor/examples entry");
+            let name = entry.file_name();
+            let source = std::fs::read_to_string(examples_src.join(&name))
+                .unwrap_or_else(|e| panic!("reading examples/{name:?}: {e}"));
+            let vendored = std::fs::read_to_string(entry.path())
+                .unwrap_or_else(|e| panic!("reading vendor/examples/{name:?}: {e}"));
             assert_eq!(
                 source, vendored,
-                "vendor/examples/{name}.ciac has drifted from examples/{name}.ciac -- \
+                "vendor/examples/{name:?} has drifted from examples/{name:?} -- \
                  run scripts/sync-vendored-ciac-assets.sh"
             );
         }

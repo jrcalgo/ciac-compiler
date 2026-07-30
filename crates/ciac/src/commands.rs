@@ -3730,11 +3730,14 @@ mod tests {
         }
     }
 
-    /// Guards `vendor/pyrunner/`'s own reason for existing: the
-    /// `PYRUNNER_*` constants must stay byte-identical to
-    /// `sim/pyrunner/{world,cron,scenario_runner,replay,auto_driver,
-    /// multi_service,multi_driver}.py`. Runs only inside the workspace,
-    /// where the repo-root `sim/` directory is reachable relative to
+    /// Guards `vendor/pyrunner/`'s own reason for existing: every file
+    /// already vendored there must stay byte-identical to its
+    /// `sim/pyrunner/*.py` original. The file list itself is *derived*
+    /// from `vendor/pyrunner/`'s own directory listing, not hardcoded
+    /// here -- `scripts/sync-vendored-ciac-assets.sh` derives its list
+    /// the same way, so the two can never independently drift out of
+    /// sync with each other. Runs only inside the workspace, where the
+    /// repo-root `sim/` directory is reachable relative to
     /// `CARGO_MANIFEST_DIR` -- never true when building from a
     /// published crate's own package tarball, which contains only the
     /// vendored copy this test would have nothing to compare it
@@ -3747,24 +3750,19 @@ mod tests {
         if !pyrunner_src.is_dir() {
             return;
         }
-        for name in [
-            "world",
-            "cron",
-            "scenario_runner",
-            "replay",
-            "auto_driver",
-            "multi_service",
-            "multi_driver",
-        ] {
-            let source = std::fs::read_to_string(pyrunner_src.join(format!("{name}.py")))
-                .unwrap_or_else(|e| panic!("reading sim/pyrunner/{name}.py: {e}"));
-            let vendored = std::fs::read_to_string(
-                std::path::Path::new(manifest_dir).join(format!("vendor/pyrunner/{name}.py")),
-            )
-            .unwrap_or_else(|e| panic!("reading vendor/pyrunner/{name}.py: {e}"));
+        let vendor_dir = std::path::Path::new(manifest_dir).join("vendor/pyrunner");
+        for entry in std::fs::read_dir(&vendor_dir)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", vendor_dir.display()))
+        {
+            let entry = entry.expect("reading vendor/pyrunner entry");
+            let name = entry.file_name();
+            let source = std::fs::read_to_string(pyrunner_src.join(&name))
+                .unwrap_or_else(|e| panic!("reading sim/pyrunner/{name:?}: {e}"));
+            let vendored = std::fs::read_to_string(entry.path())
+                .unwrap_or_else(|e| panic!("reading vendor/pyrunner/{name:?}: {e}"));
             assert_eq!(
                 source, vendored,
-                "vendor/pyrunner/{name}.py has drifted from sim/pyrunner/{name}.py -- \
+                "vendor/pyrunner/{name:?} has drifted from sim/pyrunner/{name:?} -- \
                  run scripts/sync-vendored-ciac-assets.sh"
             );
         }

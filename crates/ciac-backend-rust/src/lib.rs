@@ -858,15 +858,19 @@ fn emit_service(
 
 #[cfg(test)]
 mod tests {
-    /// Guards `vendor/ciac-sim/`'s own reason for existing: the
-    /// `VENDORED_SIM_*` constants must stay byte-identical to
-    /// `ciac-sim/src/{clock,cron,failure,scenario,world}.rs`. Runs
-    /// only inside the workspace, where the sibling crate's source is
-    /// reachable relative to `CARGO_MANIFEST_DIR` -- never true when
-    /// building from a published crate's own package tarball, which
-    /// contains only the vendored copy this test would have nothing to
-    /// compare it against. If this fails, run
-    /// `scripts/sync-vendored-sim.sh` and re-vendor.
+    /// Guards `vendor/ciac-sim/`'s own reason for existing: every file
+    /// already vendored there must stay byte-identical to its
+    /// `ciac-sim/src/*.rs` original. The file list itself is *derived*
+    /// from `vendor/ciac-sim/`'s own directory listing, not hardcoded
+    /// here -- `scripts/sync-vendored-sim.sh` derives its list the
+    /// same way, so the two can never independently drift out of sync
+    /// with each other. Runs only inside the workspace, where the
+    /// sibling crate's source is reachable relative to
+    /// `CARGO_MANIFEST_DIR` -- never true when building from a
+    /// published crate's own package tarball, which contains only the
+    /// vendored copy this test would have nothing to compare it
+    /// against. If this fails, run `scripts/sync-vendored-sim.sh` and
+    /// re-vendor.
     #[test]
     fn vendored_sim_matches_source() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -874,16 +878,19 @@ mod tests {
         if !sim_src.is_dir() {
             return;
         }
-        for name in ["clock", "cron", "failure", "scenario", "world"] {
-            let source = std::fs::read_to_string(sim_src.join(format!("{name}.rs")))
-                .unwrap_or_else(|e| panic!("reading ciac-sim/src/{name}.rs: {e}"));
-            let vendored = std::fs::read_to_string(
-                std::path::Path::new(manifest_dir).join(format!("vendor/ciac-sim/{name}.rs")),
-            )
-            .unwrap_or_else(|e| panic!("reading vendor/ciac-sim/{name}.rs: {e}"));
+        let vendor_dir = std::path::Path::new(manifest_dir).join("vendor/ciac-sim");
+        for entry in std::fs::read_dir(&vendor_dir)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", vendor_dir.display()))
+        {
+            let entry = entry.expect("reading vendor/ciac-sim entry");
+            let name = entry.file_name();
+            let source = std::fs::read_to_string(sim_src.join(&name))
+                .unwrap_or_else(|e| panic!("reading ciac-sim/src/{name:?}: {e}"));
+            let vendored = std::fs::read_to_string(entry.path())
+                .unwrap_or_else(|e| panic!("reading vendor/ciac-sim/{name:?}: {e}"));
             assert_eq!(
                 source, vendored,
-                "vendor/ciac-sim/{name}.rs has drifted from ciac-sim/src/{name}.rs -- \
+                "vendor/ciac-sim/{name:?} has drifted from ciac-sim/src/{name:?} -- \
                  run scripts/sync-vendored-sim.sh"
             );
         }

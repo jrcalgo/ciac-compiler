@@ -15,6 +15,12 @@ on:
   schedule:
     - cron: "0 6 * * 1"
 
+# Every job here only reads the repo and reports check results — no job
+# needs to write back (contrast release.yml/language-release.yml, which
+# scope `contents: write` to the one job that actually publishes).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings

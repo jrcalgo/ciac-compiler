@@ -14,7 +14,7 @@ would go red before you ever saw it.
 
 <!-- ciac-verify:skip id=install reason="needs a cut GitHub release; the harness already has ciac on PATH from its own build step" -->
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jrcalgo/ciac/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jrcalgo/ciac-compiler/main/install.sh | sh
 # or: cargo install --path crates/ciac   (needs a Rust toolchain; ~2 minutes)
 ```
 <!-- ciac-verify:end -->

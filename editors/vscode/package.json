@@ -7,7 +7,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jrcalgo/ciac"
+    "url": "https://github.com/jrcalgo/ciac-compiler"
   },
   "engines": {
     "vscode": "^1.85.0"

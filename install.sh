@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 # Installs the latest `ciac` release binary into ~/.local/bin.
 #
-# Usage: curl -fsSL https://raw.githubusercontent.com/jrcalgo/ciac/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/jrcalgo/ciac-compiler/main/install.sh | sh
 #
 # Downloads the release asset matching this machine's OS/arch from
-# the latest GitHub release of jrcalgo/ciac (see
+# the latest GitHub release of jrcalgo/ciac-compiler (see
 # .github/workflows/release.yml for how assets are named and built),
 # verifies it's executable, and installs it as `ciac` in
 # $HOME/.local/bin (create the directory and add it to $PATH if it
@@ -12,7 +12,7 @@
 
 set -eu
 
-REPO="jrcalgo/ciac"
+REPO="jrcalgo/ciac-compiler"
 INSTALL_DIR="${CIAC_INSTALL_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s)"

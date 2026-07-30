@@ -1,6 +1,6 @@
 # ciac-backend-go-external-demo
 
-A real, standalone external backend for [ciac](https://github.com/jrcalgo/ciac)
+A real, standalone external backend for [ciac](https://github.com/jrcalgo/ciac-compiler)
 — v0.8 external-backend protocol M3. This directory is a self-contained
 Go module, deliberately **not** listed in the root `Cargo.toml`'s
 `[workspace] members`: it has no Rust dependency at build time or

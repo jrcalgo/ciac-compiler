@@ -173,6 +173,31 @@ jobs:
             grype "dir:$proj" --fail-on high
           done
 
+  # Makes vendor-copy drift a hard CI failure instead of something only
+  # caught the next time someone happens to run `cargo test
+  # --workspace` locally (the vendored_sim_matches_source /
+  # vendored_pyrunner_matches_source / vendored_examples_match_source
+  # tests next to each include_str! still exist and still guard the
+  # same thing inside a normal workspace build -- this job removes the
+  # "only if someone runs the tests" gap by re-running the same sync
+  # scripts a human would run to fix drift and failing the build if
+  # that changes anything).
+  vendor-sync:
+    name: Vendored copies match their canonical sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Re-sync and check for drift
+        run: |
+          set -euo pipefail
+          scripts/sync-vendored-sim.sh
+          scripts/sync-vendored-ciac-assets.sh
+          if ! git diff --exit-code -- crates/ciac-backend-rust/vendor crates/ciac/vendor crates/ciac-syntax/vendor; then
+            echo "::error::a vendored copy is stale -- run the sync script(s) above locally and commit the result"
+            exit 1
+          fi
+
   generated-python:
     name: Validate generated Python projects (all examples)
     runs-on: ubuntu-latest

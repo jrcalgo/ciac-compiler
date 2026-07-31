@@ -20,31 +20,41 @@ pub use parser::parse;
 /// `ciac`'s own compiler version (`CARGO_PKG_VERSION`). The language
 /// surface froze at v1.0.0; the compiler continues moving on its own
 /// number (`docs/language.md`'s `## Stability and versioning` section
-/// is the normative contract). Read from this crate's `LANGUAGE_VERSION`
-/// file (packaged for crates.io) so every consumer (`--version`,
-/// `describe`, `targets --json`, the generated manifest stamp) shares
-/// one source, never a duplicated literal. The repo-root
-/// `LANGUAGE_VERSION` is a CI/reviewer mirror and must stay identical.
-pub const LANGUAGE_VERSION: &str = include_str!("../LANGUAGE_VERSION");
+/// is the normative contract). Read from `vendor/LANGUAGE_VERSION`, a
+/// physical copy checked into this crate's own directory, not the
+/// repo-root file directly -- found live via a real `cargo publish`
+/// failure: `cargo package`/`publish` never bundles a
+/// `../../../LANGUAGE_VERSION` path escaping the crate directory. Run
+/// `scripts/sync-vendored-ciac-assets.sh` after `LANGUAGE_VERSION`
+/// changes; see this file's own
+/// `vendored_language_version_matches_source` test.
+pub const LANGUAGE_VERSION: &str = include_str!("../vendor/LANGUAGE_VERSION");
 
 #[cfg(test)]
-mod language_version_tests {
-    use super::LANGUAGE_VERSION;
-    use std::path::Path;
-
+mod tests {
+    /// Guards `vendor/LANGUAGE_VERSION`'s own reason for existing:
+    /// runs only inside the workspace, where the repo-root file is
+    /// reachable relative to `CARGO_MANIFEST_DIR` -- never true when
+    /// building from a published crate's own package tarball, which
+    /// contains only the vendored copy this test would have nothing to
+    /// compare it against.
     #[test]
-    fn root_mirror_matches_crate_file() {
-        // Workspace builds have the repo-root mirror; the crates.io
-        // package tarball does not. Gate so `cargo package` verify still
-        // compiles and runs tests.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../LANGUAGE_VERSION");
-        if !root.exists() {
+    fn vendored_language_version_matches_source() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let source_path = std::path::Path::new(manifest_dir).join("../../LANGUAGE_VERSION");
+        if !source_path.is_file() {
             return;
         }
-        let mirror = std::fs::read_to_string(&root).expect("read root LANGUAGE_VERSION");
+        let source =
+            std::fs::read_to_string(&source_path).expect("reading repo-root LANGUAGE_VERSION");
+        let vendored = std::fs::read_to_string(
+            std::path::Path::new(manifest_dir).join("vendor/LANGUAGE_VERSION"),
+        )
+        .expect("reading vendor/LANGUAGE_VERSION");
         assert_eq!(
-            mirror, LANGUAGE_VERSION,
-            "repo-root LANGUAGE_VERSION must match crates/ciac-syntax/LANGUAGE_VERSION"
+            source, vendored,
+            "vendor/LANGUAGE_VERSION has drifted from the repo-root LANGUAGE_VERSION -- \
+             run scripts/sync-vendored-ciac-assets.sh"
         );
     }
 }

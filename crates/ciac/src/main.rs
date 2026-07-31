@@ -12,7 +12,7 @@ mod scaffold;
 mod vocab;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -38,7 +38,6 @@ const CLI_VERSION: &str = concat!(
 #[derive(Parser)]
 #[command(
     name = "ciac",
-    version = CLI_VERSION,
     about = "Compile declarative backend architectures into runnable systems"
 )]
 struct Cli {
@@ -487,7 +486,30 @@ enum BackfillCommand {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // 26UpdatePlan.md M8: `--version` co-presents the compiler number
+    // (CARGO_PKG_VERSION, moves every release) and the language number
+    // (ciac_syntax::LANGUAGE_VERSION) — the two-version discipline
+    // docs/language.md's own stability section commits to. Built at
+    // runtime because `concat!` cannot take a cross-crate const; leaked
+    // because clap's `.version()` only accepts `&'static str`.
+    let version: &'static str = Box::leak(
+        format!(
+            "{} (language {})",
+            env!("CARGO_PKG_VERSION"),
+            ciac_syntax::LANGUAGE_VERSION
+        )
+        .into_boxed_str(),
+    );
+    let matches = match Cli::command().version(version).try_get_matches() {
+        Ok(m) => m,
+        Err(err) => {
+            err.exit();
+        }
+    };
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
+    };
     match run(cli) {
         Ok(code) => code,
         Err(err) => {

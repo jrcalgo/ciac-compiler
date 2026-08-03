@@ -49,9 +49,9 @@ crossbeam-channel = "0.5"
 heck = "0.5"
 include_dir = "0.7"
 insta = { version = "1", features = ["json"] }
-logos = "0.15"
+logos = "0.16"
 ctrlc = "3"
-lsp-server = "0.7"
+lsp-server = "0.10"
 lsp-types = "0.95"
 notify = "8"
 minijinja = { version = "2", features = ["loader"] }
@@ -59,8 +59,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 schemars = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-similar = "2"
+sha2 = "0.11"
+similar = "3"
 thiserror = "2"
 ureq = "2"
 

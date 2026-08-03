@@ -4,7 +4,16 @@
 //! Every template body is `include_str!`ed from a real checked-in
 //! example, so a scaffold can never drift from a shape the golden and
 //! CI suites already compile and verify — there is no separate
-//! "starter" dialect to keep in sync.
+//! "starter" dialect to keep in sync. That guarantee is now enforced
+//! rather than structural: the four bodies below read from `vendor/
+//! examples/`, a physical copy checked into this crate's own
+//! directory (`cargo package`/`publish` never bundles files outside
+//! it — found live via a real `cargo publish` failure, same root cause
+//! as `ciac-backend-rust/vendor/ciac-sim/`'s identical fix), and this
+//! module's own `vendored_examples_match_source` test is what keeps
+//! that copy byte-identical to the real `examples/*.ciac` files it's
+//! never allowed to drift from. Run `scripts/sync-vendored-ciac-
+//! assets.sh` after changing any of the four source examples.
 
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -23,14 +32,14 @@ struct Template {
 const TEMPLATES: &[Template] = &[
     Template {
         name: "crud",
-        source: include_str!("../../../examples/crud-notes.ciac"),
+        source: include_str!("../vendor/examples/crud-notes.ciac"),
         summary: "a single service whose `crud Note;` expands into \
                   REST API -> JWT auth -> service -> Postgres (+ Redis cache)",
         note: None,
     },
     Template {
         name: "multi-service",
-        source: include_str!("../../../examples/inventory-system.ciac"),
+        source: include_str!("../vendor/examples/inventory-system.ciac"),
         summary: "two services joined by a cross-service `call` edge, with a \
                   typed CRUD resource whose Postgres/Redis round-trips are \
                   system-verifiable",
@@ -42,14 +51,14 @@ const TEMPLATES: &[Template] = &[
     },
     Template {
         name: "kafka",
-        source: include_str!("../../../examples/kafka-pipeline.ciac"),
+        source: include_str!("../vendor/examples/kafka-pipeline.ciac"),
         summary: "an event-ingestion shape on Kafka: an api publishing to a \
                   stream, a worker consuming it in a consumer group",
         note: None,
     },
     Template {
         name: "minimal",
-        source: include_str!("../../../examples/ping.ciac"),
+        source: include_str!("../vendor/examples/ping.ciac"),
         summary: "the smallest useful program: one record, one api, one \
                   pipeline, no capabilities",
         note: None,
@@ -187,4 +196,47 @@ fn readme(tpl: &Template) -> String {
          and the provider support table per target.\n",
     );
     doc
+}
+
+#[cfg(test)]
+mod tests {
+    /// Guards `vendor/examples/`'s own reason for existing: every
+    /// template body already vendored there must stay byte-identical
+    /// to its real `examples/*.ciac` original, the promise this
+    /// module's own doc comment makes when it says a scaffold "can
+    /// never drift." The file list itself is *derived* from
+    /// `vendor/examples/`'s own directory listing, not hardcoded here
+    /// -- `scripts/sync-vendored-ciac-assets.sh` derives its list the
+    /// same way, so the two can never independently drift out of sync
+    /// with each other. Runs only inside the workspace, where the
+    /// repo-root `examples/` directory is reachable relative to
+    /// `CARGO_MANIFEST_DIR` -- never true when building from a
+    /// published crate's own package tarball, which contains only the
+    /// vendored copy this test would have nothing to compare it
+    /// against. If this fails, run `scripts/sync-vendored-
+    /// ciac-assets.sh` and re-vendor.
+    #[test]
+    fn vendored_examples_match_source() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let examples_src = std::path::Path::new(manifest_dir).join("../../examples");
+        if !examples_src.is_dir() {
+            return;
+        }
+        let vendor_dir = std::path::Path::new(manifest_dir).join("vendor/examples");
+        for entry in std::fs::read_dir(&vendor_dir)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", vendor_dir.display()))
+        {
+            let entry = entry.expect("reading vendor/examples entry");
+            let name = entry.file_name();
+            let source = std::fs::read_to_string(examples_src.join(&name))
+                .unwrap_or_else(|e| panic!("reading examples/{name:?}: {e}"));
+            let vendored = std::fs::read_to_string(entry.path())
+                .unwrap_or_else(|e| panic!("reading vendor/examples/{name:?}: {e}"));
+            assert_eq!(
+                source, vendored,
+                "vendor/examples/{name:?} has drifted from examples/{name:?} -- \
+                 run scripts/sync-vendored-ciac-assets.sh"
+            );
+        }
+    }
 }

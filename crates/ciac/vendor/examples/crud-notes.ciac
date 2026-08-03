@@ -1,0 +1,11 @@
+// A minimal CRUD service: `crud Note;` expands into
+// REST API -> Auth -> Service -> Database (+ Cache).
+service Notes;
+
+use {
+    auth JWT;
+    db Postgres;
+    cache Redis;
+}
+
+crud Note;

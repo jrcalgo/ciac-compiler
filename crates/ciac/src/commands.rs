@@ -1046,18 +1046,31 @@ fn materialize_generated(
 /// because `auto_driver.py` imports its siblings as ordinary top-level
 /// modules (`from cron import CronSchedule`, ...) -- writing them out
 /// under those same names is what makes that resolve unchanged.
-const PYRUNNER_WORLD: &str = include_str!("../../../sim/pyrunner/world.py");
-const PYRUNNER_CRON: &str = include_str!("../../../sim/pyrunner/cron.py");
-const PYRUNNER_SCENARIO_RUNNER: &str = include_str!("../../../sim/pyrunner/scenario_runner.py");
-const PYRUNNER_REPLAY: &str = include_str!("../../../sim/pyrunner/replay.py");
-const PYRUNNER_AUTO_DRIVER: &str = include_str!("../../../sim/pyrunner/auto_driver.py");
+///
+/// Read from `vendor/pyrunner/`, a physical copy checked into this
+/// crate's own directory, not from the repo-root `sim/pyrunner/`
+/// directly -- found live via a real `cargo publish` failure:
+/// `cargo package`/`publish` only bundles files inside a crate's own
+/// directory, so a `../../../sim/pyrunner/...` `include_str!` doesn't
+/// exist in the package tarball. Mirrors `ciac-backend-rust/vendor/
+/// ciac-sim/`'s identical fix for the identical reason. Run
+/// `scripts/sync-vendored-ciac-assets.sh` after changing any of the
+/// real `sim/pyrunner/*.py` files, and see this module's own
+/// `vendored_pyrunner_matches_source` test, which fails loudly in a
+/// normal workspace build (never from a published crate, where
+/// `sim/pyrunner/` isn't reachable) if the two fall out of sync.
+const PYRUNNER_WORLD: &str = include_str!("../vendor/pyrunner/world.py");
+const PYRUNNER_CRON: &str = include_str!("../vendor/pyrunner/cron.py");
+const PYRUNNER_SCENARIO_RUNNER: &str = include_str!("../vendor/pyrunner/scenario_runner.py");
+const PYRUNNER_REPLAY: &str = include_str!("../vendor/pyrunner/replay.py");
+const PYRUNNER_AUTO_DRIVER: &str = include_str!("../vendor/pyrunner/auto_driver.py");
 // 28UpdatePlan.md M3c: the multi-service counterpart to
 // `auto_driver.py`/its own package-aliasing seam -- written out
 // alongside the single-service files always (harmless, unused dead
 // weight for a single-service run) rather than conditionally, so
 // `write_pyrunner` stays one unconditional list.
-const PYRUNNER_MULTI_SERVICE: &str = include_str!("../../../sim/pyrunner/multi_service.py");
-const PYRUNNER_MULTI_DRIVER: &str = include_str!("../../../sim/pyrunner/multi_driver.py");
+const PYRUNNER_MULTI_SERVICE: &str = include_str!("../vendor/pyrunner/multi_service.py");
+const PYRUNNER_MULTI_DRIVER: &str = include_str!("../vendor/pyrunner/multi_driver.py");
 
 fn write_pyrunner(sim_dir: &Path) -> Result<()> {
     for (name, content) in [
@@ -3714,6 +3727,44 @@ mod tests {
                 );
             }
             assert_eq!(target["kind"], "internal");
+        }
+    }
+
+    /// Guards `vendor/pyrunner/`'s own reason for existing: every file
+    /// already vendored there must stay byte-identical to its
+    /// `sim/pyrunner/*.py` original. The file list itself is *derived*
+    /// from `vendor/pyrunner/`'s own directory listing, not hardcoded
+    /// here -- `scripts/sync-vendored-ciac-assets.sh` derives its list
+    /// the same way, so the two can never independently drift out of
+    /// sync with each other. Runs only inside the workspace, where the
+    /// repo-root `sim/` directory is reachable relative to
+    /// `CARGO_MANIFEST_DIR` -- never true when building from a
+    /// published crate's own package tarball, which contains only the
+    /// vendored copy this test would have nothing to compare it
+    /// against. If this fails, run `scripts/sync-vendored-ciac-
+    /// assets.sh` and re-vendor.
+    #[test]
+    fn vendored_pyrunner_matches_source() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let pyrunner_src = std::path::Path::new(manifest_dir).join("../../sim/pyrunner");
+        if !pyrunner_src.is_dir() {
+            return;
+        }
+        let vendor_dir = std::path::Path::new(manifest_dir).join("vendor/pyrunner");
+        for entry in std::fs::read_dir(&vendor_dir)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", vendor_dir.display()))
+        {
+            let entry = entry.expect("reading vendor/pyrunner entry");
+            let name = entry.file_name();
+            let source = std::fs::read_to_string(pyrunner_src.join(&name))
+                .unwrap_or_else(|e| panic!("reading sim/pyrunner/{name:?}: {e}"));
+            let vendored = std::fs::read_to_string(entry.path())
+                .unwrap_or_else(|e| panic!("reading vendor/pyrunner/{name:?}: {e}"));
+            assert_eq!(
+                source, vendored,
+                "vendor/pyrunner/{name:?} has drifted from sim/pyrunner/{name:?} -- \
+                 run scripts/sync-vendored-ciac-assets.sh"
+            );
         }
     }
 }

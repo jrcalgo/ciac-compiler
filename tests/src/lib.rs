@@ -35,6 +35,16 @@ pub fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples")
 }
 
+/// Categorized example entrypoints, excluding imported fragments.
+pub fn example_files() -> Vec<PathBuf> {
+    let root = examples_dir();
+    let mut files = Vec::new();
+    files.extend(ciac_files(&root.join("single-service")));
+    files.extend(ciac_files(&root.join("multi-service")));
+    files.sort();
+    files
+}
+
 /// This crate's `ui/` directory of intentionally-invalid programs.
 pub fn ui_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("ui")

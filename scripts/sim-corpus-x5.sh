@@ -46,16 +46,16 @@ CIAC="./target/debug/ciac"
 # router and per-service table namespacing this arc's own M2 built,
 # not just single-service depth the way every other row here does.
 declare -A PROGRAM_SCENARIOS=(
-    [examples/sim-peripherals.ciac]="sim/cache-ttl.ciac-sim.json sim/auth-scopes.ciac-sim.json sim/http-fixtures.ciac-sim.json sim/peripherals.ciac-sim.json"
-    [examples/sim-vertical-slice.ciac]="sim/vertical-slice.ciac-sim.json sim/virtual-week.ciac-sim.json"
-    [examples/sim-broker-slice.ciac]="sim/fanout.ciac-sim.json"
-    [examples/domain-orders.ciac]="sim/relational-depth.ciac-sim.json sim/atomic-batch.ciac-sim.json"
-    [examples/query-verbs.ciac]="sim/query-verbs.ciac-sim.json"
-    [examples/order-system.ciac]="sim/order-system.ciac-sim.json"
-    [examples/sim-three-service.ciac]="sim/sim-three-service.ciac-sim.json"
-    [examples/multi-service-media.ciac]="sim/multi-service-media.ciac-sim.json"
-    [examples/inventory-system.ciac]="sim/inventory-system.ciac-sim.json"
-    [examples/quickstart.ciac]="sim/quickstart.ciac-sim.json"
+    [examples/single-service/sim-peripherals.ciac]="sim/cache-ttl.ciac-sim.json sim/auth-scopes.ciac-sim.json sim/http-fixtures.ciac-sim.json sim/peripherals.ciac-sim.json"
+    [examples/single-service/sim-vertical-slice.ciac]="sim/vertical-slice.ciac-sim.json sim/virtual-week.ciac-sim.json"
+    [examples/single-service/sim-broker-slice.ciac]="sim/fanout.ciac-sim.json"
+    [examples/single-service/domain-orders.ciac]="sim/relational-depth.ciac-sim.json sim/atomic-batch.ciac-sim.json"
+    [examples/single-service/query-verbs.ciac]="sim/query-verbs.ciac-sim.json"
+    [examples/single-service/order-system.ciac]="sim/order-system.ciac-sim.json"
+    [examples/multi-service/sim-three-service.ciac]="sim/sim-three-service.ciac-sim.json"
+    [examples/multi-service/multi-service-media.ciac]="sim/multi-service-media.ciac-sim.json"
+    [examples/multi-service/inventory-system.ciac]="sim/inventory-system.ciac-sim.json"
+    [examples/single-service/quickstart.ciac]="sim/quickstart.ciac-sim.json"
 )
 
 FAILED=0

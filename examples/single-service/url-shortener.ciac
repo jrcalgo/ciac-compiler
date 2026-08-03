@@ -1,0 +1,61 @@
+service UrlShortener;
+
+use {
+    db SQLite;
+    queue NATS;
+    scheduler Cron;
+}
+
+record Link {
+    id: Uuid;
+    slug: String;
+    url: String;
+    active: Bool;
+}
+table Links: Link;
+
+record Click {
+    id: Uuid;
+    link_id: Uuid;
+    slug: String;
+}
+table Clicks: Click;
+
+stream LinkCreated: Link;
+
+handler CreateLink(link: Link) -> Link {
+    return db.insert(Links, link);
+}
+
+handler RecordClick(link: Link) -> Link {
+    db.insert(Clicks, Click { id: Uuid.new(), link_id: link.id, slug: link.slug });
+    return link;
+}
+
+handler IndexLink(link: Link) -> Link {
+    return link;
+}
+
+api CreateLinkApi: Link {
+    method: POST;
+    path: "/links";
+}
+pipeline CreateLinkApi: CreateLink -> publish LinkCreated -> Return;
+
+api ResolveLinkApi: Link {
+    method: POST;
+    path: "/links/resolve";
+}
+pipeline ResolveLinkApi: RecordClick -> Return;
+
+worker LinkIndexer on LinkCreated;
+pipeline LinkIndexer: IndexLink;
+
+job PruneInactive {
+    schedule: "0 2 * * *";
+}
+
+handler PruneInactiveLinks {
+    db: default;
+}
+pipeline PruneInactive: PruneInactiveLinks;

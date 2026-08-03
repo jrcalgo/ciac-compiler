@@ -289,7 +289,7 @@ impl Backend for GoBackend {
         // `crud <Name>[: <Record>];` does NOT expand into Api+Database
         // alone -- `ciac_sema::build::crud` also synthesizes a
         // `Component::Service { name: "<Name>Store", signature: None }`
-        // marker node (found empirically: `examples/sqlite-notes.ciac`
+        // marker node (found empirically: `examples/single-service/sqlite-notes.ciac`
         // refused on it once `Database` alone was un-gated). `signature:
         // None` is the documented "classic binding-only handler"
         // discriminant (pre-v0.7, no typed body) -- exactly the shape
@@ -773,7 +773,7 @@ fn emit_service(
     }
 
     // `crud <Name>;` expands into `Api`/`Database` components only
-    // (verified empirically against `examples/sqlite-notes.ciac` — no
+    // (verified empirically against `examples/single-service/sqlite-notes.ciac` — no
     // `Service` node), so a resource-only program still needs a
     // router even when `ctx.apis` itself is empty. A jobs-only program
     // (e.g. `scheduled-cleanup.ciac`, found live: M3's first example

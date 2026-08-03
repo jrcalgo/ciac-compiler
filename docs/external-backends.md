@@ -67,7 +67,7 @@ full third backend:
 ```sh
 # from the repo root
 go build -C backends/go -o /tmp/bin/ciac-backend-go-external-demo .
-PATH="/tmp/bin:$PATH" ciac build --target go-external-demo -o ./out examples/ping.ciac
+PATH="/tmp/bin:$PATH" ciac build --target go-external-demo -o ./out examples/single-service/ping.ciac
 ```
 
 Its `main.go` shows the whole authoring pattern in ~350 lines: declare

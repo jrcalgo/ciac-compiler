@@ -8,7 +8,7 @@ so.*
 Every guide so far built one service. This guide is the one place
 in the series that deliberately steps away from your own `Ping`
 service to use a different, already-checked-in example —
-[`examples/sim-three-service.ciac`](../../examples/sim-three-service.ciac) —
+[`examples/multi-service/sim-three-service.ciac`](../../examples/multi-service/sim-three-service.ciac) —
 because a multi-service topology needs enough services to be worth
 simulating (two can't distinguish "ordered" from "happened"; three
 can), and this repository already has one, proven, in CI, since
@@ -58,7 +58,7 @@ not a string URL you assemble by hand.
 
 <!-- ciac-verify:start id=check -->
 ```sh
-ciac check examples/sim-three-service.ciac
+ciac check examples/multi-service/sim-three-service.ciac
 ```
 <!-- ciac-verify:end -->
 
@@ -66,7 +66,7 @@ ciac check examples/sim-three-service.ciac
 
 <!-- ciac-verify:start id=build -->
 ```sh
-ciac build examples/sim-three-service.ciac --target python --out ./build
+ciac build examples/multi-service/sim-three-service.ciac --target python --out ./build
 ```
 <!-- ciac-verify:end -->
 
@@ -83,7 +83,7 @@ one file at the top.
 
 <!-- ciac-verify:start id=sim -->
 ```sh
-ciac sim examples/sim-three-service.ciac --target python --out ./build \
+ciac sim examples/multi-service/sim-three-service.ciac --target python --out ./build \
     --scenario sim/sim-three-service.ciac-sim.json
 # [PASS] 28-m4-three-service-n3-global-ordering-and-call-seam-failure
 ```
@@ -104,7 +104,7 @@ what's still refused).
 
 <!-- ciac-verify:start id=verify -->
 ```sh
-ciac verify examples/sim-three-service.ciac --target python --out ./build
+ciac verify examples/multi-service/sim-three-service.ciac --target python --out ./build
 ```
 <!-- ciac-verify:end -->
 
@@ -112,7 +112,7 @@ ciac verify examples/sim-three-service.ciac --target python --out ./build
 
 <!-- ciac-verify:skip id=system reason="requires Docker; the compose-backed system suite (call reachability, broker delivery, per-service capability round-trips) is covered by the generated-system CI job instead" -->
 ```sh
-ciac verify examples/sim-three-service.ciac --target python --out ./build --system
+ciac verify examples/multi-service/sim-three-service.ciac --target python --out ./build --system
 ```
 <!-- ciac-verify:end -->
 

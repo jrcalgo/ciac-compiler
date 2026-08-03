@@ -46,8 +46,8 @@ CI runs `ciac verify` over every example for both bundled backends. To
 reproduce locally:
 
 ```sh
-cargo run -p ciac -- verify examples/video-platform.ciac --target python --out /tmp/gen-py
-cargo run -p ciac -- verify examples/video-platform.ciac --target rust --out /tmp/gen-rs
+cargo run -p ciac -- verify examples/single-service/video-platform.ciac --target python --out /tmp/gen-py
+cargo run -p ciac -- verify examples/single-service/video-platform.ciac --target rust --out /tmp/gen-rs
 ```
 
 ## Commit hygiene

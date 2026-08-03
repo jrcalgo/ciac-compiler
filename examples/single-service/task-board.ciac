@@ -1,0 +1,85 @@
+service TaskBoard;
+
+use {
+    auth JWT;
+    db SQLite;
+}
+
+record Task {
+    id: Uuid;
+    title: String;
+    assignee: String;
+    done: Bool;
+}
+table Tasks: Task;
+
+record TaskFilter {
+    assignee: String;
+    done: Bool;
+}
+
+record DeleteResult {
+    deleted: Bool;
+}
+
+record CountResult {
+    count: Int;
+}
+
+handler CreateTask(task: Task) -> Task {
+    return db.insert(Tasks, task);
+}
+
+handler ListTasks(filter: TaskFilter) -> [Task] {
+    return db.query(Tasks) where assignee contains filter.assignee && done == filter.done;
+}
+
+handler CountTasks(filter: TaskFilter) -> CountResult {
+    let count = db.count(Tasks) where assignee contains filter.assignee && done == filter.done;
+    return CountResult { count: count };
+}
+
+handler UpdateTask(task: Task) -> Task {
+    db.update(Tasks, task.id, task);
+    return task;
+}
+
+handler DeleteTask(task: Task) -> DeleteResult {
+    let deleted = db.delete(Tasks, task.id);
+    return DeleteResult { deleted: deleted };
+}
+
+api CreateTaskApi: Task {
+    method: POST;
+    path: "/tasks";
+    scope: "tasks:write";
+}
+pipeline CreateTaskApi: Auth -> CreateTask -> Return;
+
+api ListTasksApi: TaskFilter {
+    method: POST;
+    path: "/tasks/search";
+    scope: "tasks:read";
+}
+pipeline ListTasksApi: Auth -> ListTasks -> Return;
+
+api CountTasksApi: TaskFilter {
+    method: POST;
+    path: "/tasks/count";
+    scope: "tasks:read";
+}
+pipeline CountTasksApi: Auth -> CountTasks -> Return;
+
+api UpdateTaskApi: Task {
+    method: POST;
+    path: "/tasks/update";
+    scope: "tasks:write";
+}
+pipeline UpdateTaskApi: Auth -> UpdateTask -> Return;
+
+api DeleteTaskApi: Task {
+    method: POST;
+    path: "/tasks/delete";
+    scope: "tasks:write";
+}
+pipeline DeleteTaskApi: Auth -> DeleteTask -> Return;

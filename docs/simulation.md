@@ -214,7 +214,7 @@ backend reads from, so the finding transfers without needing to be
 re-proven. One Go-specific wrinkle worth naming: `cmd/sim_runner/
 main.go`'s worker-dispatch table for the orphan-subject detection
 sweep cannot be a Go `switch` on the subject string (two workers
-sharing one subject — `examples/sim-broker-slice.ciac`'s own shape —
+sharing one subject — `examples/single-service/sim-broker-slice.ciac`'s own shape —
 would be two `case` arms with the same constant value, a compile
 error, not merely dead code the way it would be in Rust's `match`
 guards or TypeScript's `if`/`else` chain), so it lowers to an

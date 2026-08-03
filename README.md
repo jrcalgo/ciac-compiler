@@ -38,10 +38,10 @@ ciac new my-app && cd my-app && ciac check main.ciac
 The rest of this walkthrough uses a slightly bigger program — a
 record, free CRUD, one handler with a `transaction`, one stream, one
 worker — checked into this repository as
-[`examples/quickstart.ciac`](examples/quickstart.ciac) so it can never
+[`examples/single-service/quickstart.ciac`](examples/single-service/quickstart.ciac) so it can never
 drift from what actually compiles. Paste it into your own `main.ciac`
 to follow along in `my-app`, or clone this repository and point the
-commands below at `examples/quickstart.ciac` directly:
+commands below at `examples/single-service/quickstart.ciac` directly:
 
 ```text
 service Notes;
@@ -71,7 +71,7 @@ Build it for a target — any of the five:
 
 <!-- ciac-verify:start id=build -->
 ```sh
-ciac build examples/quickstart.ciac --target python --out ./build
+ciac build examples/single-service/quickstart.ciac --target python --out ./build
 ```
 <!-- ciac-verify:end -->
 
@@ -86,7 +86,7 @@ no Docker — and inject a real failure into it:
 
 <!-- ciac-verify:start id=sim -->
 ```sh
-ciac sim examples/quickstart.ciac --target python --out ./build \
+ciac sim examples/single-service/quickstart.ciac --target python --out ./build \
     --scenario sim/quickstart.ciac-sim.json
 # [PASS] 29-m3-quickstart
 ```
@@ -101,13 +101,13 @@ and start it:
 
 <!-- ciac-verify:start id=verify -->
 ```sh
-ciac verify examples/quickstart.ciac --target python --out ./build
+ciac verify examples/single-service/quickstart.ciac --target python --out ./build
 ```
 <!-- ciac-verify:end -->
 
 <!-- ciac-verify:skip id=dev reason="a watch loop that never exits; not something an exit-code harness can check" -->
 ```sh
-ciac dev examples/quickstart.ciac --target python --out ./build
+ciac dev examples/single-service/quickstart.ciac --target python --out ./build
 ```
 <!-- ciac-verify:end -->
 
@@ -190,7 +190,7 @@ project. See [docs/agents.md](docs/agents.md).
 ```sh
 cargo build --release            # the compiler
 cargo test --workspace           # unit, golden, negative, determinism tests
-cargo run -p ciac -- check examples/video-platform.ciac
+cargo run -p ciac -- check examples/single-service/video-platform.ciac
 ```
 
 ## Repository layout

@@ -41,9 +41,9 @@ README.md docs/guide/01-first-service.md docs/guide/05-simulation.md`:
 ### New finding (F8) — spurious orphan-migration warning on the README's own two-step walkthrough, found and fixed live
 
 Running the README's exact documented sequence —
-`ciac build examples/quickstart.ciac --target python --out ./build`
+`ciac build examples/single-service/quickstart.ciac --target python --out ./build`
 immediately followed by
-`ciac sim examples/quickstart.ciac --target python --out ./build
+`ciac sim examples/single-service/quickstart.ciac --target python --out ./build
 --scenario sim/quickstart.ciac-sim.json` (both `--out ./build`, per
 the README's own text) — printed, before this transcript's fix:
 

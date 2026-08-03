@@ -1,0 +1,60 @@
+service Newsletter;
+
+use {
+    db SQLite;
+    email SMTP;
+    scheduler Cron;
+}
+
+record Subscriber {
+    id: Uuid;
+    email: String;
+    topic: String;
+    active: Bool;
+}
+table Subscribers: Subscriber;
+
+record Delivery {
+    id: Uuid;
+    subscriber_id: Uuid;
+    subject: String;
+}
+table Deliveries: Delivery;
+
+handler Subscribe(subscriber: Subscriber) -> Subscriber {
+    return db.insert(Subscribers, subscriber);
+}
+
+handler SendWelcome(subscriber: Subscriber) -> Subscriber {
+    email.send(subscriber.email, "Welcome", "Thanks for subscribing.");
+    db.insert(Deliveries, Delivery { id: Uuid.new(), subscriber_id: subscriber.id, subject: "Welcome" });
+    return subscriber;
+}
+
+handler Unsubscribe(subscriber: Subscriber) -> Subscriber {
+    let inactive = subscriber { active: false };
+    db.update(Subscribers, subscriber.id, inactive);
+    return inactive;
+}
+
+api SubscribeApi: Subscriber {
+    method: POST;
+    path: "/subscribers";
+}
+pipeline SubscribeApi: Subscribe -> SendWelcome -> Return;
+
+api UnsubscribeApi: Subscriber {
+    method: POST;
+    path: "/subscribers/unsubscribe";
+}
+pipeline UnsubscribeApi: Unsubscribe -> Return;
+
+job WeeklyDigest {
+    schedule: "0 9 * * 1";
+}
+
+handler SendWeeklyDigest {
+    db: default;
+    email: default;
+}
+pipeline WeeklyDigest: SendWeeklyDigest;

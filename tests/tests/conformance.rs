@@ -29,7 +29,7 @@
 //!   a missing field, an explicit `null`, and a legitimate zero value
 //!   each got a real HTTP round-trip and the right status code); the
 //!   nil-slice-normalization row got the same treatment at v0.24 M9
-//!   (`examples/query-verbs.ciac`'s zero-row response), plus a
+//!   (`examples/single-service/query-verbs.ciac`'s zero-row response), plus a
 //!   structural regression test,
 //!   `go_db_query_result_initializes_as_a_non_nil_empty_slice` in
 //!   `typed_handler_equivalence.rs`. Neither Rust's nor TypeScript's
@@ -42,7 +42,7 @@
 
 use ciac_codegen::model::build_system;
 use ciac_codegen::GenOptions;
-use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir, project_dump};
+use ciac_integration_tests::{backends, compile_file, example_files, project_dump};
 use std::collections::BTreeMap;
 
 /// Every registered target that accepts `ir`, generated once.
@@ -67,7 +67,7 @@ fn supported_projects(
 /// system-level index) — must be byte-identical across targets.
 #[test]
 fn c3_openapi_is_byte_identical_across_targets() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         let projects = supported_projects(&ir);
@@ -109,7 +109,7 @@ fn c3_openapi_is_byte_identical_across_targets() {
 /// duplicate the differ's own tests).
 #[test]
 fn c4a_migration_sql_is_byte_identical_across_targets() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         let projects = supported_projects(&ir);
@@ -158,7 +158,7 @@ fn c4a_migration_sql_is_byte_identical_across_targets() {
 /// backends render from; this checks the render kept faith with it).
 #[test]
 fn c4b_declared_topology_appears_in_every_target() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         let projects = supported_projects(&ir);

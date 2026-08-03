@@ -6,7 +6,7 @@
 //! index shape by accident.
 
 use ciac_codegen::GenOptions;
-use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir};
+use ciac_integration_tests::{backends, compile_file, example_files};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -31,7 +31,7 @@ fn collect_refs(value: &Value, out: &mut BTreeSet<String>) {
 
 #[test]
 fn every_example_openapi_doc_is_well_formed() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         for backend in backends() {

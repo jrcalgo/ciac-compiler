@@ -13,7 +13,7 @@
 use ciac_codegen::lower::{
     lower_body_expr, lower_body_stmt, IdentitySyntax, IdentitySyntaxStatement,
 };
-use ciac_integration_tests::{ciac_files, compile_file, examples_dir};
+use ciac_integration_tests::{compile_file, example_files};
 use ciac_ir::Component;
 
 /// Every typed inline handler (`Component::Service` with a `Some`
@@ -37,7 +37,7 @@ fn typed_inline_handlers(ir: &ciac_ir::NormalizedIr) -> Vec<(String, &ciac_ir::H
 
 #[test]
 fn identity_expression_orientation_renders_every_typed_handler_in_the_corpus() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         let syntax = IdentitySyntax::new(&ir);
@@ -50,7 +50,7 @@ fn identity_expression_orientation_renders_every_typed_handler_in_the_corpus() {
 
 #[test]
 fn identity_statement_orientation_renders_every_typed_handler_in_the_corpus() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         let syntax = IdentitySyntaxStatement::new(&ir);

@@ -514,7 +514,7 @@ Both checked-in scenarios reproduce their canonical outcomes
 byte-exact against the real toolchain — `{"ProcessOrder":3}`/
 `{"Reconcile":1}` for `sim/vertical-slice.ciac-sim.json`,
 `{"ProcessOrder":100}`/`{"Reconcile":7}` for `sim/virtual-week.ciac-
-sim.json` — and `examples/order-system.ciac` is refused with both
+sim.json` — and `examples/single-service/order-system.ciac` is refused with both
 reasons named (`auth`, and the four unguarded verbs `cache.delete`/
 `cache.set`/`db.count`/`db.update`), matching Rust's/TS's/Go's own
 refusal shape exactly. One design choice proactively avoided rather
@@ -523,6 +523,6 @@ if/else-if chain over the message subject from the start (never a
 `switch`), specifically because Go's own M9 had already discovered
 live that a Java-equivalent `switch` construct (Go's own, in that
 case) rejects two `case` arms sharing one constant at compile time —
-exactly the shape `examples/sim-broker-slice.ciac`'s two workers on
+exactly the shape `examples/single-service/sim-broker-slice.ciac`'s two workers on
 one stream produce — so Java's own runner never risked repeating that
 defect class at all.

@@ -1,0 +1,69 @@
+service KnowledgeBase;
+
+use {
+    db Postgres;
+    cache Redis;
+    object_store files S3 { bucket: "kb-files"; }
+    search index OpenSearch;
+}
+
+record Article {
+    id: Uuid;
+    title: String;
+    body: String;
+    published: Bool;
+}
+crud Article: Article {
+    cache_ttl: 120;
+    page_size: 25;
+}
+
+record Attachment {
+    id: Uuid;
+    article_id: Uuid;
+    key: String;
+    title: String;
+}
+table Attachments: Attachment;
+
+record SearchRequest {
+    query: String;
+}
+
+record Ack {
+    ok: Bool;
+}
+
+handler StoreAttachment(file: Attachment) -> Attachment {
+    object_store.put(file.key, file);
+    return db.insert(Attachments, file);
+}
+
+handler IndexArticle(article: Article) -> Article {
+    search.index(article.title, article);
+    cache.delete("article/" + article.id);
+    return article;
+}
+
+handler SearchArticles(request: SearchRequest) -> Ack {
+    search.query(request.query);
+    return Ack { ok: true };
+}
+
+api UploadAttachment: Attachment {
+    method: POST;
+    path: "/attachments";
+}
+pipeline UploadAttachment: StoreAttachment -> Return;
+
+api PublishArticle: Article {
+    method: POST;
+    path: "/articles/publish";
+}
+pipeline PublishArticle: IndexArticle -> Return;
+
+api SearchArticlesApi: SearchRequest {
+    method: POST;
+    path: "/articles/search";
+}
+pipeline SearchArticlesApi: SearchArticles -> Return;

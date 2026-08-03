@@ -4,11 +4,11 @@
 
 use ciac_codegen::model::build_system;
 use ciac_codegen::GenOptions;
-use ciac_integration_tests::{ciac_files, compile_file, examples_dir};
+use ciac_integration_tests::{compile_file, example_files};
 
 #[test]
 fn example_ts_client_snapshots() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         let system = build_system(&ir, &GenOptions::default());

@@ -821,7 +821,7 @@ pub fn render_test(ir: &NormalizedIr, hir: &HandlerBody, ctx: &LogicFileCtx) -> 
     // the build. Nothing had generated this shape before this arc's
     // simulation corpus needed record-returning handlers throughout
     // (to dodge a separate, out-of-scope route-wrapper bug -- see
-    // `examples/sim-peripherals.ciac`'s header comment).
+    // `examples/single-service/sim-peripherals.ciac`'s header comment).
     if !test_schema_imports.is_empty() {
         lines.push(format!(
             "from app.schemas import {}",

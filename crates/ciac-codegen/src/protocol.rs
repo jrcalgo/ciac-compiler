@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn typed_handler_ids_survive_the_round_trip_even_though_theyre_opaque() {
-        // examples/typed-handlers.ciac's shape: a program with an
+        // examples/single-service/typed-handlers.ciac's shape: a program with an
         // inline typed handler body. `Ctx::typed_handlers` carries raw
         // `NodeId`s pointing back into the IR (see the note on
         // `ciac_ir::graph::NodeId`) — this test only proves the ID

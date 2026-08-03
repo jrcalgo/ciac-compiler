@@ -1,0 +1,71 @@
+project ObservabilityDemo;
+
+record Probe {
+    id: Uuid;
+    message: String;
+}
+
+record ProbeRecord {
+    id: Uuid;
+    probe_id: Uuid;
+    message: String;
+}
+
+stream WorkQueued: Probe;
+
+service Gateway {
+    use {
+        queue NATS;
+        logging Structured;
+        metrics Prometheus;
+        tracing OpenTelemetry;
+    }
+
+    api Ping: Probe {
+        method: POST;
+        path: "/ping";
+    }
+
+    pipeline Ping:
+        call Downstream.Handle
+        -> publish WorkQueued
+        -> Return;
+}
+
+service Downstream {
+    use {
+        db SQLite;
+        logging Structured;
+        metrics Prometheus;
+        tracing OpenTelemetry;
+    }
+
+    table Probes: ProbeRecord;
+
+    api Handle: Probe {
+        method: POST;
+        path: "/handle";
+    }
+
+    handler RecordProbe(probe: Probe) -> Probe {
+        db.insert(Probes, ProbeRecord { id: Uuid.new(), probe_id: probe.id, message: probe.message });
+        return probe;
+    }
+
+    pipeline Handle:
+        RecordProbe
+        -> Return;
+}
+
+service Worker {
+    use {
+        queue NATS;
+        logging Structured;
+        metrics Prometheus;
+        tracing OpenTelemetry;
+    }
+
+    worker Process on WorkQueued;
+
+    pipeline Process: ObserveWork;
+}

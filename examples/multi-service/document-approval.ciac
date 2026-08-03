@@ -1,0 +1,84 @@
+project DocumentApproval;
+
+record Document {
+    id: Uuid;
+    title: String;
+    status: enum { Pending, Approved, Rejected };
+}
+
+record AuditEntry {
+    id: Uuid;
+    document_id: Uuid;
+    status: String;
+}
+
+stream ReviewCompleted: Document;
+
+service Files {
+    use { object_store documents S3 { bucket: "documents"; } }
+
+    api Upload: Document {
+        method: POST;
+        path: "/documents";
+    }
+
+    handler StoreDocument(document: Document) -> Document {
+        object_store.put(document.id, document);
+        return document;
+    }
+
+    pipeline Upload:
+        StoreDocument
+        -> call Review.Submit
+        -> Return;
+}
+
+service Review {
+    use { queue NATS; }
+
+    api Submit: Document {
+        method: POST;
+        path: "/review";
+    }
+
+    pipeline Submit:
+        match status {
+            Pending -> Return;
+            Approved -> publish ReviewCompleted -> Return;
+            Rejected -> publish ReviewCompleted -> Return;
+        };
+}
+
+service Audit {
+    use {
+        db Postgres;
+        queue NATS;
+    }
+
+    table AuditEntries: AuditEntry;
+
+    worker RecordReview on ReviewCompleted;
+
+    handler RecordAudit(document: Document) -> Document {
+        db.insert(AuditEntries, AuditEntry { id: Uuid.new(), document_id: document.id, status: document.title });
+        return document;
+    }
+
+    pipeline RecordReview: RecordAudit;
+}
+
+service Notify {
+    use {
+        queue NATS;
+        email SMTP;
+    }
+
+    worker SendReviewEmail on ReviewCompleted;
+
+    handler SendNotification(document: Document) -> Document {
+        email.send("reviewers@example.com", "Document reviewed", document.title);
+        return document;
+    }
+
+    pipeline SendReviewEmail: SendNotification;
+}

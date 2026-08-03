@@ -29,7 +29,7 @@ change moves through them:
    the per-row conversion.
 
 Everything below is a real, live-run transcript against
-[`examples/order-system.ciac`](../examples/order-system.ciac) (with a
+[`examples/single-service/order-system.ciac`](../examples/single-service/order-system.ciac) (with a
 required `priority: Int;` field added to `Order` and its constructing
 handler updated to set it, and later a handler renamed) — not
 hypothetical output.

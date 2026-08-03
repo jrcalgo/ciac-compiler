@@ -117,7 +117,7 @@ fn mcp_round_trip_initialize_tools_list_and_tool_calls() {
 
     // `check`: the same envelope `ciac check --json` prints, on a
     // program known to compile clean.
-    let ping = fixture("examples/ping.ciac");
+    let ping = fixture("examples/single-service/ping.ciac");
     server.send(json!({
         "jsonrpc": "2.0", "id": 4, "method": "tools/call",
         "params": { "name": "check", "arguments": { "file": ping.to_str().unwrap() } }

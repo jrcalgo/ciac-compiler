@@ -53,7 +53,7 @@ fn check_json_reports_a_resolved_diagnostic_on_a_bad_fixture() {
 #[test]
 fn check_json_on_a_valid_program_is_a_clean_success_envelope() {
     let output = ciac()
-        .args(["check", &fixture("examples/ping.ciac"), "--json"])
+        .args(["check", &fixture("examples/single-service/ping.ciac"), "--json"])
         .output()
         .expect("ciac runs");
     assert!(output.status.success());

@@ -159,6 +159,6 @@ series (and the reference docs) can use them without re-explaining:
   (e.g. CIAC0007, "unreachable component") — any node in the graph,
   not only a capability.
 - **example** vs **program** — *example* names a specific checked-in
-  `.ciac` file in this repository (`examples/quickstart.ciac`);
+  `.ciac` file in this repository (`examples/single-service/quickstart.ciac`);
   *program* is the general term for whatever a `.ciac` file
   describes, whether or not it's checked in anywhere.

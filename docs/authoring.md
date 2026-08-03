@@ -22,9 +22,9 @@ cd my-app && ciac check main.ciac
 ```
 
 Each template is a **checked-in example embedded verbatim at compile
-time** — `crud` is `examples/crud-notes.ciac`, `multi-service` is
-`examples/inventory-system.ciac`, `kafka` is
-`examples/kafka-pipeline.ciac`, `minimal` is `examples/ping.ciac` —
+time** — `crud` is `examples/single-service/crud-notes.ciac`, `multi-service` is
+`examples/multi-service/inventory-system.ciac`, `kafka` is
+`examples/single-service/kafka-pipeline.ciac`, `minimal` is `examples/single-service/ping.ciac` —
 so a scaffold can never drift from a shape the test suite already
 compiles, generates, and (for the multi-service one) system-verifies
 in CI. The scaffold is `main.ciac` plus a README with the next

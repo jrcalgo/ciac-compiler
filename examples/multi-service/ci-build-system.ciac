@@ -1,0 +1,75 @@
+project CiBuildSystem;
+
+record Build {
+    id: Uuid;
+    repo: String;
+    commit: String;
+    status: enum { Queued, Running, Passed, Failed };
+}
+
+stream BuildRequested: Build;
+stream BuildProgress: Build;
+
+service BuildApi {
+    use { queue NATS; }
+
+    api StartBuild: Build {
+        method: POST;
+        path: "/builds";
+    }
+
+    pipeline StartBuild:
+        publish BuildRequested
+        -> Return;
+}
+
+service Scheduler {
+    use {
+        scheduler Cron;
+        queue NATS;
+    }
+
+    job Nightly {
+        schedule: "0 1 * * *";
+    }
+
+    worker NightlyDispatch;
+
+    pipeline Nightly: Queue;
+    pipeline NightlyDispatch: MarkNightly;
+}
+
+service Runner {
+    use {
+        queue NATS;
+        db SQLite;
+    }
+
+    table Builds: Build;
+
+    worker RunBuild on BuildRequested {
+        concurrency: 2;
+        max_retries: 2;
+    }
+
+    handler ExecuteBuild(build: Build) -> Build {
+        let running = build { status: Running };
+        db.insert(Builds, running);
+        return running;
+    }
+
+    pipeline RunBuild:
+        ExecuteBuild
+        -> publish BuildProgress;
+}
+
+service Feed {
+    use {
+        queue NATS;
+        realtime live SSE;
+    }
+
+    channel BuildFeed on BuildProgress {
+        path: "/builds/feed";
+    }
+}

@@ -11,8 +11,8 @@
 //! it — found live via a real `cargo publish` failure, same root cause
 //! as `ciac-backend-rust/vendor/ciac-sim/`'s identical fix), and this
 //! module's own `vendored_examples_match_source` test is what keeps
-//! that copy byte-identical to the real `examples/*.ciac` files it's
-//! never allowed to drift from. Run `scripts/sync-vendored-ciac-
+//! that copy byte-identical to the real categorized `examples/*/*.ciac`
+//! files it's never allowed to drift from. Run `scripts/sync-vendored-ciac-
 //! assets.sh` after changing any of the four source examples.
 
 use anyhow::{bail, Context, Result};
@@ -202,7 +202,7 @@ fn readme(tpl: &Template) -> String {
 mod tests {
     /// Guards `vendor/examples/`'s own reason for existing: every
     /// template body already vendored there must stay byte-identical
-    /// to its real `examples/*.ciac` original, the promise this
+    /// to its real categorized `examples/*/*.ciac` original, the promise this
     /// module's own doc comment makes when it says a scaffold "can
     /// never drift." The file list itself is *derived* from
     /// `vendor/examples/`'s own directory listing, not hardcoded here
@@ -228,14 +228,21 @@ mod tests {
         {
             let entry = entry.expect("reading vendor/examples entry");
             let name = entry.file_name();
-            let source = std::fs::read_to_string(examples_src.join(&name))
-                .unwrap_or_else(|e| panic!("reading examples/{name:?}: {e}"));
+            let source_path = ["single-service", "multi-service"]
+                .into_iter()
+                .map(|category| examples_src.join(category).join(&name))
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| panic!("cannot find categorized source example {name:?}"));
+            let source = std::fs::read_to_string(&source_path)
+                .unwrap_or_else(|e| panic!("reading {}: {e}", source_path.display()));
             let vendored = std::fs::read_to_string(entry.path())
                 .unwrap_or_else(|e| panic!("reading vendor/examples/{name:?}: {e}"));
             assert_eq!(
                 source, vendored,
-                "vendor/examples/{name:?} has drifted from examples/{name:?} -- \
+                "vendor/examples/{name:?} has drifted from {} -- \
                  run scripts/sync-vendored-ciac-assets.sh"
+                ,
+                source_path.display()
             );
         }
     }

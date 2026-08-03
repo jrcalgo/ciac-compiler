@@ -18,7 +18,7 @@
 //! catastrophe floor so a real regression reliably does.
 
 use ciac_codegen::{BackendError, GenOptions};
-use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir};
+use ciac_integration_tests::{backends, compile_file, example_files};
 use std::time::{Duration, Instant};
 
 const BUDGET_MULTIPLIER: u32 = 1000;
@@ -37,7 +37,7 @@ fn no_backend_exceeds_the_budget() {
 /// example to their own total — this measures generation cost, not
 /// coverage.
 fn measure_all() -> Vec<(&'static str, Duration)> {
-    let files = ciac_files(&examples_dir());
+    let files = example_files();
     backends()
         .into_iter()
         .map(|backend| {

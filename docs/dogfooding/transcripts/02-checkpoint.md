@@ -42,7 +42,7 @@ the harness's own re-check.
 ### F5 — silent gap before `ciac dev` reports anything — fixed, confirmed live
 
 ```
-$ ciac dev examples/quickstart.ciac --target python --out ./build
+$ ciac dev examples/single-service/quickstart.ciac --target python --out ./build
 generated 34 files in ./build (python backend)
 note: run the API with `uv sync && uv run uvicorn app.main:app`, or `docker compose up` for the full stack
 note: start workers/jobs with `uv run python -m app.workers`

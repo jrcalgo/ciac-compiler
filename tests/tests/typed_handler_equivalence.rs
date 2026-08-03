@@ -409,7 +409,7 @@ fn python_rust_typescript_go_and_java_lower_the_same_handler_body_to_equivalent_
 /// lowering avoids it by initializing the result with an empty *slice
 /// literal* (`[]T{}`, never left as a bare `var`) before the scan loop
 /// runs. Confirmed structurally here and, separately, live at v0.24
-/// M9 against `examples/query-verbs.ciac`: a zero-row `POST
+/// M9 against `examples/single-service/query-verbs.ciac`: a zero-row `POST
 /// /list-active-api` over a real SQLite file returned
 /// `{"data":[],"status":"accepted"}`, never `{"data":null,...}`.
 #[test]

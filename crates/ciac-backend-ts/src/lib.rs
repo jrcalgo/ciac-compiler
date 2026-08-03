@@ -3,7 +3,7 @@
 //! `23UpdatePlan.md` M1 — skeleton to ping-parity: `TargetInfo` and
 //! enough of the generated-project shape (config/state/observability/
 //! main + one route per plain `api`) to build, type-check, lint, and
-//! test `examples/ping.ciac` through the real npm toolchain. Every
+//! test `examples/single-service/ping.ciac` through the real npm toolchain. Every
 //! other construct (`db`, `cache`, `queue`, typed handlers, auth, ...)
 //! stays refused by [`TsBackend::supports`] until its own milestone
 //! lands — see `23UpdatePlan.md`'s milestone list for the order.

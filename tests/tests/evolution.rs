@@ -1,6 +1,6 @@
 //! v0.8 M5: record evolution checks (`ciac-codegen/src/evolution.rs`),
 //! exercised against a realistic multi-service shape (adapted from
-//! `examples/multi-service-media.ciac`) that has both boundary kinds:
+//! `examples/multi-service/multi-service-media.ciac`) that has both boundary kinds:
 //! a `call` payload (`Billing.Charge`) and a shared stream
 //! (`Uploaded`, published by `UploadApi`, consumed by `Transcoder`).
 

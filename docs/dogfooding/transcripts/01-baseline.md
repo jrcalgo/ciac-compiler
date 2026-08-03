@@ -132,7 +132,7 @@ error: `uv run ruff check .` failed in ./build (lints)
 
 **Wall clock: 0.4s to fail.** This is not scaffold-specific or
 provider-specific — the same 18 errors, at the same lines, reproduce
-against the checked-in `examples/crud-notes.ciac` (the exact program
+against the checked-in `examples/single-service/crud-notes.ciac` (the exact program
 `ciac new --template crud` embeds verbatim, confirmed against
 `docs/authoring.md`'s own claim) run through `ciac verify` directly
 in this repo. Root cause, confirmed by inspection:

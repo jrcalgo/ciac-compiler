@@ -3,11 +3,11 @@
 //! behavior changed — review it deliberately (`cargo insta review`).
 
 use ciac_codegen::GenOptions;
-use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir, project_dump};
+use ciac_integration_tests::{backends, compile_file, example_files, project_dump};
 
 #[test]
 fn example_ir_snapshots() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         let json = serde_json::to_string_pretty(&ir).expect("IR serializes");
@@ -17,7 +17,7 @@ fn example_ir_snapshots() {
 
 #[test]
 fn example_graph_dot_snapshots() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         insta::assert_snapshot!(format!("dot__{name}"), ir.to_dot());
@@ -26,7 +26,7 @@ fn example_graph_dot_snapshots() {
 
 #[test]
 fn example_generated_project_snapshots() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         for backend in backends() {

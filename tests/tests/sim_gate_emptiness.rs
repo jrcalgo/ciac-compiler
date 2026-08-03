@@ -10,7 +10,7 @@
 //! coverage). A regression here means some future verb/capability
 //! addition to the language outran its own world-guard.
 
-use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir};
+use ciac_integration_tests::{backends, compile_file, example_files};
 
 #[test]
 fn rust_gate_is_empty_for_the_whole_corpus() {
@@ -18,7 +18,7 @@ fn rust_gate_is_empty_for_the_whole_corpus() {
         .into_iter()
         .find(|b| b.id() == "rust")
         .expect("rust backend registered");
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         if ciac_codegen::check_support(rust.as_ref(), &ir).is_err() {
@@ -38,7 +38,7 @@ fn typescript_gate_is_empty_for_the_whole_corpus() {
         .into_iter()
         .find(|b| b.id() == "typescript")
         .expect("typescript backend registered");
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         if ciac_codegen::check_support(ts.as_ref(), &ir).is_err() {
@@ -58,7 +58,7 @@ fn go_gate_is_empty_for_the_whole_corpus() {
         .into_iter()
         .find(|b| b.id() == "go")
         .expect("go backend registered");
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         if ciac_codegen::check_support(go.as_ref(), &ir).is_err() {
@@ -78,7 +78,7 @@ fn java_gate_is_empty_for_the_whole_corpus() {
         .into_iter()
         .find(|b| b.id() == "java")
         .expect("java backend registered");
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let name = path.file_stem().expect("file name").to_string_lossy();
         let ir = compile_file(&path);
         if ciac_codegen::check_support(java.as_ref(), &ir).is_err() {

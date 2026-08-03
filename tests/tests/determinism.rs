@@ -3,11 +3,11 @@
 
 use ciac_codegen::manifest::build_manifest;
 use ciac_codegen::GenOptions;
-use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir, project_dump};
+use ciac_integration_tests::{backends, compile_file, example_files, project_dump};
 
 #[test]
 fn generation_is_byte_deterministic() {
-    for path in ciac_files(&examples_dir()) {
+    for path in example_files() {
         let ir = compile_file(&path);
         for backend in backends() {
             if ciac_codegen::check_support(backend.as_ref(), &ir).is_err() {

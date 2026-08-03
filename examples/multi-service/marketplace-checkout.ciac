@@ -1,0 +1,103 @@
+project MarketplaceCheckout;
+
+record Order {
+    id: Uuid;
+    sku: String;
+    quantity: Int;
+    total: Float;
+}
+
+record Reservation {
+    id: Uuid;
+    order_id: Uuid;
+    sku: String;
+    quantity: Int;
+}
+
+record StoredOrder {
+    id: Uuid;
+    order_id: Uuid;
+    total: Float;
+}
+
+record Shipment {
+    id: Uuid;
+    order_id: Uuid;
+}
+
+stream OrderPlaced: Order;
+
+service Catalog {
+    use { db Postgres; }
+
+    table Reservations: Reservation;
+
+    api Reserve: Order {
+        method: POST;
+        path: "/reserve";
+    }
+
+    handler ReserveStock(order: Order) -> Order {
+        db.insert(Reservations, Reservation { id: Uuid.new(), order_id: order.id, sku: order.sku, quantity: order.quantity });
+        return order;
+    }
+
+    pipeline Reserve: ReserveStock -> Return;
+}
+
+service Payments {
+    api Charge: Order {
+        method: POST;
+        path: "/charge";
+    }
+
+    pipeline Charge: Return;
+}
+
+service Checkout {
+    use {
+        db Postgres;
+        queue NATS;
+    }
+
+    table Orders: StoredOrder;
+
+    api Submit: Order {
+        method: POST;
+        path: "/checkout";
+    }
+
+    handler StoreOrder(order: Order) -> Order {
+        transaction {
+            db.insert(Orders, StoredOrder { id: Uuid.new(), order_id: order.id, total: order.total });
+        }
+        return order;
+    }
+
+    pipeline Submit:
+        StoreOrder
+        -> call Catalog.Reserve
+        -> call Payments.Charge
+        -> publish OrderPlaced
+        -> Return;
+}
+
+service Fulfillment {
+    use {
+        db Postgres;
+        queue NATS;
+    }
+
+    table Shipments: Shipment;
+
+    worker ShipOrder on OrderPlaced {
+        max_retries: 2;
+    }
+
+    handler CreateShipment(order: Order) -> Order {
+        db.insert(Shipments, Shipment { id: Uuid.new(), order_id: order.id });
+        return order;
+    }
+
+    pipeline ShipOrder: CreateShipment;
+}

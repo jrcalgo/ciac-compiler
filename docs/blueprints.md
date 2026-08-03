@@ -204,9 +204,9 @@ boundary live in [authoring.md](authoring.md).
 
 ## Worked example
 
-`examples/audited-crud.ciac` is the M2 flagship: one blueprint,
+`examples/multi-service/audited-crud.ciac` is the M2 flagship: one blueprint,
 expanded for two different records in two different services, each
 expansion's names hygienically suffixed so they never collide.
-`examples/multi-service-media.ciac` alongside `import
+`examples/multi-service/multi-service-media.ciac` alongside `import
 "std/crud.ciac";` (see `tests/tests/blueprints.rs`) is the M3 proof
 that a blueprint can faithfully stand in for hand-written `crud`.

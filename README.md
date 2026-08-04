@@ -1,4 +1,4 @@
-# CIaC — Code as Infrastructure Compiler
+# CIaC — Code-Infrastructure-as-Code Compiler
 
 One `.ciac` source file. Five production-quality backends — Python,
 Rust, TypeScript, Go, Java — generated at parity, each idiomatic in

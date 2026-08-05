@@ -295,6 +295,27 @@ impl TsSyntax<'_> {
             .collect::<Vec<_>>()
             .join(" && ")
     }
+
+    /// The `.filter((__r) => ..)` a world-branch query chains onto its
+    /// `findWhere(..)`, or the empty string when the predicate is
+    /// trivially true.
+    ///
+    /// An unfiltered verb (`db.count(T)` with no `where`) used to emit
+    /// `.filter((__r) => true)`: a no-op whose bound `__r` is never
+    /// read, which `@typescript-eslint/no-unused-vars` rejects — so
+    /// `ciac verify --target typescript` failed its own lint step on
+    /// any program containing one. Dropping the call entirely is both
+    /// the fix and the more faithful lowering; the production branch's
+    /// SQL has no `WHERE` clause in exactly this case either.
+    fn world_filter_suffix(&self, predicate: Option<&LoweredPredicate>, row_var: &str) -> String {
+        match predicate {
+            Some(predicate) if !predicate.terms.is_empty() => {
+                let expr = self.world_predicate_expr(Some(predicate), row_var);
+                format!(".filter(({row_var}) => {expr})")
+            }
+            _ => String::new(),
+        }
+    }
     fn world_predicate_term_expr(&self, term: &LoweredPredTerm, row_var: &str) -> String {
         let field = &term.field;
         let value_expr = match &term.value {
@@ -846,7 +867,7 @@ impl HostSyntax for TsSyntax<'_> {
                     ),
                     self.db_engine,
                 );
-                let world_pred = self.world_predicate_expr(predicate, "__r");
+                let world_filter = self.world_filter_suffix(predicate, "__r");
                 let cast_ty = self.row_cast_type(&record);
                 let record_name = record_class_name(self.ir, self.ir.table(table).record);
                 let world_key = self.world_table_key(&table_snake);
@@ -858,7 +879,7 @@ impl HostSyntax for TsSyntax<'_> {
                 let mut out = vec![format!("{indent}let {out_var}: {record_name}[];")];
                 out.push(format!("{indent}if (this.state.world) {{"));
                 out.push(format!(
-                    "{indent}  const {rows} = this.state.world.db.findWhere({world_key:?}, {{}}).filter((__r) => {world_pred});"
+                    "{indent}  const {rows} = this.state.world.db.findWhere({world_key:?}, {{}}){world_filter};"
                 ));
                 // World rows are already in the record's own in-memory
                 // shape (the same object `dbInsertChecked`'s own `row`
@@ -904,12 +925,12 @@ impl HostSyntax for TsSyntax<'_> {
                     &format!("SELECT COUNT(*) as count FROM {table_snake}{where_sql}"),
                     self.db_engine,
                 );
-                let world_pred = self.world_predicate_expr(predicate, "__r");
+                let world_filter = self.world_filter_suffix(predicate, "__r");
                 let world_key = self.world_table_key(&table_snake);
                 let mut out = vec![format!("{indent}let {out_var}: number;")];
                 out.push(format!("{indent}if (this.state.world) {{"));
                 out.push(format!(
-                    "{indent}  {out_var} = this.state.world.db.findWhere({world_key:?}, {{}}).filter((__r) => {world_pred}).length;"
+                    "{indent}  {out_var} = this.state.world.db.findWhere({world_key:?}, {{}}){world_filter}.length;"
                 ));
                 out.push(format!("{indent}}} else {{"));
                 match self.db_engine {
@@ -961,7 +982,7 @@ impl HostSyntax for TsSyntax<'_> {
                     &format!("DELETE FROM {table_snake}{where_sql}"),
                     self.db_engine,
                 );
-                let world_pred = self.world_predicate_expr(predicate, "__r");
+                let world_filter = self.world_filter_suffix(predicate, "__r");
                 let world_key = self.world_table_key(&table_snake);
                 let matching = self.fresh("__matching");
                 let pk = self.fresh("__pk");
@@ -985,7 +1006,7 @@ impl HostSyntax for TsSyntax<'_> {
                 // to persist across an intervening method call.
                 out.push(format!("{indent}  const {world} = this.state.world;"));
                 out.push(format!(
-                    "{indent}  const {matching} = {world}.db.findWhere({world_key:?}, {{}}).filter((__r) => {world_pred}).map((__r) => __r.id as string);"
+                    "{indent}  const {matching} = {world}.db.findWhere({world_key:?}, {{}}){world_filter}.map((__r) => __r.id as string);"
                 ));
                 out.push(format!("{indent}  {out_var} = 0;"));
                 out.push(format!("{indent}  for (const {pk} of {matching}) {{"));

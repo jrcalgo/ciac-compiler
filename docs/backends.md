@@ -187,9 +187,9 @@ pub trait Backend {
 
 Both bundled backends hold the line the next target should match:
 
-- generated projects build/lint clean (`ruff` for Python, zero-warning
-  `cargo check` for Rust) with **no infrastructure running** — clients
-  connect lazily;
+- generated projects build/lint clean (`ruff` for Python, a
+  zero-warning `cargo test` for Rust) with **no infrastructure
+  running** — clients connect lazily;
 - business logic lives in stub handler files marked as `Seeded`
   user-owned files; everything else is compiler-owned and regenerable;
 - a `docker-compose.yml` provisions exactly the declared capabilities;
@@ -248,8 +248,8 @@ owns closing it, or an explicit "no plan yet" (which a row is always
 allowed to say; what it may not do is hide among the permanent rows).
 `tests/tests/ledger_integrity.rs` enforces both rules mechanically:
 every "Closes in" reference (other than an explicit "no plan yet") must
-name a plan file that exists in the repo root, and no divergence string
-may appear in both tables.
+name a plan file that exists in `plans/`, and no divergence string may
+appear in both tables.
 
 **Raised, not decided (`30UpdatePlan.md` M8):** both tables above
 answer "what differs" for *capability* — what a target can or can't

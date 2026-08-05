@@ -1,5 +1,6 @@
 ---
 source: tests/tests/golden.rs
+assertion_line: 42
 expression: project_dump(&project)
 ---
 ============================================================
@@ -6428,7 +6429,7 @@ export class CheckLimitOrder {
   async handle(payload: Order): Promise<Order> {
     let __out0: number;
     if (this.state.world) {
-      __out0 = this.state.world.db.findWhere("tickets_order", {}).filter((__r) => true).length;
+      __out0 = this.state.world.db.findWhere("tickets_order", {}).length;
     } else {
       const __result1 = await this.state.db.$client.query("SELECT COUNT(*) as count FROM tickets_order", []);
       __out0 = Number(__result1.rows[0].count);

@@ -55,12 +55,13 @@ pass, adding a language construct, adding a backend) lives in
 
 ## The plan-file arc
 
-Root-level `NNUpdatePlan.md` files (`06UpdatePlan.md`, `07UpdatePlan.md`,
-…) are forward-looking roadmap notes for a version, written before that
-version's work starts. They record intent, not history — once a
-version ships, its plan file becomes historical color, not a spec to
-re-validate against. `docs/language.md`'s provider support table and
-`docs/errors.md` are the live, authoritative surface.
+`plans/NNUpdatePlan.md` files (`plans/06UpdatePlan.md`,
+`plans/07UpdatePlan.md`, …) are forward-looking roadmap notes for a
+version, written before that version's work starts. They record
+intent, not history — once a version ships, its plan file becomes
+historical color, not a spec to re-validate against.
+`docs/language.md`'s provider support table and `docs/errors.md` are
+the live, authoritative surface.
 
 ## Machine-readable front door
 

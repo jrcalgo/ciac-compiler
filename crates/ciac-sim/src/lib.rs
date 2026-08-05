@@ -31,8 +31,9 @@ pub use codes::SimCode;
 pub use cron::{CronError, CronSchedule};
 pub use failure::{FailureAction, FailureEngine, FailurePhase, FailureRule, FailureSelector};
 pub use plan::{
-    ScenarioPlanError, SimApi, SimCallEdge, SimCardinality, SimColumn, SimFieldType, SimJob,
-    SimPlan, SimRefAction, SimService, SimStream, SimTable, SimWorker, PLAN_VERSION,
+    sha256_prefixed, ScenarioPlanError, SimApi, SimCallEdge, SimCardinality, SimColumn,
+    SimFieldType, SimJob, SimPlan, SimRefAction, SimService, SimStream, SimTable, SimWorker,
+    PLAN_VERSION,
 };
 pub use replay::{Replay, ReplayError, REPLAY_VERSION};
 pub use scenario::{

@@ -20,12 +20,12 @@
 //! (`ciac-codegen::semantic_diff`, not yet written). `SemanticModel` is
 //! the thing both sides of that future comparison serialize into.
 
+use crate::manifest::hash_bytes;
 use ciac_ir::{
     Cardinality, Component, FieldType, HirType, NodeKind, NormalizedIr, RecordKind, RefAction,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// Bumped whenever `SemanticModel`'s shape changes in a way that isn't
 /// simply additive-with-defaults — a reader must refuse a baseline
@@ -618,9 +618,7 @@ impl SemanticModel {
     /// order, formatting, or comments) produce the same hash.
     pub fn semantic_hash(&self) -> String {
         let json = serde_json::to_vec(self).expect("SemanticModel serializes");
-        let mut hasher = Sha256::new();
-        hasher.update(&json);
-        format!("sha256:{:x}", hasher.finalize())
+        format!("sha256:{}", hash_bytes(&json))
     }
 }
 
@@ -698,9 +696,7 @@ fn component_config_json(component: &Component) -> serde_json::Value {
 
 fn digest_of(stmts: &[ciac_ir::HirStmt]) -> String {
     let json = serde_json::to_vec(stmts).expect("HirStmt serializes");
-    let mut hasher = Sha256::new();
-    hasher.update(&json);
-    format!("sha256:{:x}", hasher.finalize())
+    format!("sha256:{}", hash_bytes(&json))
 }
 
 /// The checked-in baseline wrapper (18UpdatePlan.md Pillar 2):

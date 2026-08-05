@@ -344,9 +344,7 @@ impl SimPlan {
     /// serializer reordering an unsorted one.
     pub fn plan_hash(&self) -> String {
         let json = serde_json::to_vec(self).expect("SimPlan serializes");
-        let mut hasher = Sha256::new();
-        hasher.update(&json);
-        format!("sha256:{:x}", hasher.finalize())
+        sha256_prefixed(&json)
     }
 
     /// 28UpdatePlan.md M1: the "every named service resolves" preflight
@@ -500,6 +498,25 @@ fn snake_case(name: &str) -> String {
         } else {
             out.push(c);
         }
+    }
+    out
+}
+
+/// `sha256:<hex>` over `bytes`.
+///
+/// Hand-rolled hex rather than `format!("{:x}", ..)`: `sha2` 0.11's
+/// digest type no longer implements `LowerHex`, and this keeps the
+/// wire format byte-identical to every hash written before that bump
+/// (`ciac_codegen::manifest::hash_bytes` does the same, unprefixed).
+pub fn sha256_prefixed(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity("sha256:".len() + digest.len() * 2);
+    out.push_str("sha256:");
+    for byte in digest {
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
     }
     out
 }

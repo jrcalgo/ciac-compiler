@@ -198,8 +198,18 @@ information in the job summary rather than as a second gate.
 |---|---|---|---|---|
 | M1 (this document) | pre-optimization | 2497.85s | 15.837s | 1186.04x |
 | M5 (checkpoint) | post M2 (Java batch fmt) + M3 (Go seam) + M4 (template memo) | 253.23s | 1.277s | 90.00x |
-| M9 (arc close) | pending | — | — | — |
+| M9 (arc close) | no separate pass — M5's readings stood | 253.23s | 1.277s | 90.00x |
 
 This table is the arc's headline metric, filled in as each milestone's
 own measurement pass completes — the M1→M5→M9 delta is the thing this
 whole arc is answerable to.
+
+M9's row says what actually happened rather than what was planned. M5
+stopped the arc early on the grounds that M2–M4 had already beaten the
+target, and M6/M7 were both conditional on M5 choosing to continue; no
+optimization landed between M5 and M9, so M9 closed the arc citing
+M5's numbers as the M1→M9 delta rather than re-running the sweep. The
+row read "pending" until long after the arc shipped, which is its own
+small lesson about a metric a document promises to carry: nothing
+failed, but the table stopped describing reality the moment the last
+milestone declined to measure and no one updated it.

@@ -1027,7 +1027,26 @@ fn format_all_java(project: &mut GeneratedProject) -> Result<(), BackendError> {
 
             let jar_path = vendored_jar_path()?;
             let mut cmd = std::process::Command::new("java");
-            cmd.arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
+            // A formatter run is a few hundred milliseconds of
+            // classloading plus one short burst of work, then exit —
+            // the JVM never lives long enough for C2 to repay its own
+            // compilation, so capping at C1 removes work that never
+            // pays off. Measured on `sim-three-service`'s 55 generated
+            // `.java` files, best of three: 2142ms with the defaults,
+            // 1413ms with this flag. `-XX:+UseSerialGC` was tried
+            // alongside it and measured *slower* (1559ms), so it is
+            // deliberately absent — the obvious second startup flag is
+            // not a win here and should not be re-added without a
+            // measurement saying otherwise.
+            //
+            // This is a startup-shape flag only: it cannot change a
+            // byte google-java-format emits, which the golden
+            // snapshots enforce. It is HotSpot-specific, but this
+            // invocation already requires a modular OpenJDK for its
+            // `--add-exports`/`--add-opens`, so it narrows nothing that
+            // was not already narrow.
+            cmd.arg("-XX:TieredStopAtLevel=1")
+                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
                 .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
                 .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
                 .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")

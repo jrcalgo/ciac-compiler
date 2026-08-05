@@ -81,11 +81,7 @@
       "validate": [
         {
           "program": "cargo",
-          "purpose": "type-checks (deny warnings)"
-        },
-        {
-          "program": "cargo",
-          "purpose": "unit and generated tests pass"
+          "purpose": "type-checks (deny warnings), unit and generated tests pass"
         }
       ],
       "sim": {

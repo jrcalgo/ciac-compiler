@@ -34,7 +34,7 @@ ciac-syntax.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-cron = "0.12"
+cron = "0.17"
 insta.workspace = true
 
 [lints]

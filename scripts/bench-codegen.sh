@@ -18,9 +18,25 @@
 # cold-start transcripts made the front-door delta a reviewable
 # artifact instead of an assertion.
 #
+# `31UpdatePlan.md` M3 extended the original per-example table (columns
+# marked "31UpdatePlan.md M3" below) rather than replacing it: nothing
+# parses this script's output programmatically (the CI step just
+# `tee`s it into `$GITHUB_STEP_SUMMARY`; `docs/perf/codegen-baseline.md`'s
+# own tables are pasted in by hand), so extending the columns is safe.
+# Two coverage gaps this milestone closes, both previously measured by
+# nothing in the repo: a build always went into a fresh, empty
+# directory and was `rm -rf`'d immediately, so a *warm* rebuild --
+# the operation a working developer actually performs on every save --
+# had never been timed; and `--deploy`/`--client` were never exercised
+# by any instrument, despite each adding its own `build_system` call
+# and its own generator. `ciac` binary size is also reported once, for
+# the same "collected and never looked at again" reason file counts
+# were before this milestone.
+#
 # Usage:
 #   scripts/bench-codegen.sh [--targets python,rust,typescript,go,java]
 #                            [--examples ping,order-system]
+#                            [--skip-deploy-sweep]
 #
 # Exits non-zero only if a `ciac build` itself fails -- this is a
 # measuring instrument, not a gate (the gate is 30UpdatePlan.md M8's
@@ -30,6 +46,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 TARGETS="python,rust,typescript,go,java"
 EXAMPLES=""
+SKIP_DEPLOY_SWEEP=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,6 +57,10 @@ while [[ $# -gt 0 ]]; do
         --examples)
             EXAMPLES="$2"
             shift 2
+            ;;
+        --skip-deploy-sweep)
+            SKIP_DEPLOY_SWEEP=1
+            shift
             ;;
         *)
             echo "unknown argument: $1" >&2
@@ -99,9 +120,30 @@ for example in "${EXAMPLE_FILES[@]}"; do
         end=$(now)
         elapsed=$(echo "$end - $start" | bc)
         files=$(find "$out" -type f | wc -l | tr -d ' ')
+        bytes=$(du -sb "$out" 2>/dev/null | cut -f1)
+
+        # `31UpdatePlan.md` M3: the warm rebuild -- the same `ciac
+        # build` again, into the *same* directory this cold build just
+        # populated, with its manifest already written. Nothing else
+        # in the repo has ever timed this: `bench-codegen.sh` always
+        # built into a fresh directory and removed it immediately. The
+        # cold build above already proved this (example, target) pair
+        # is supported, so unlike the cold build's own failure
+        # handling, a warm-rebuild failure here is never an expected
+        # `check_support` refusal -- it is a real regeneration defect
+        # and fails the script exactly like a cold-build failure does.
+        warm_start=$(now)
+        if ! "$CIAC" build "$example" --target "$target" --out "$out" >"$WORKDIR/warm-log" 2>&1; then
+            echo "WARM REBUILD FAILED: $example --target $target" >&2
+            cat "$WORKDIR/warm-log" >&2
+            exit 1
+        fi
+        warm_end=$(now)
+        warm_elapsed=$(echo "$warm_end - $warm_start" | bc)
+
         rm -rf "$out"
 
-        ROWS+=("$name|$target|$elapsed|$files")
+        ROWS+=("$name|$target|$elapsed|$files|$bytes|$warm_elapsed")
         FILE_COUNTS["${target}:${name}"]=$files
 
         TARGET_TOTAL[$target]=$(echo "${TARGET_TOTAL[$target]:-0} + $elapsed" | bc)
@@ -118,11 +160,11 @@ done
 echo ""
 echo "## Per-example wall time (seconds)"
 echo ""
-echo "| Example | Target | Seconds | Files |"
-echo "|---|---|---|---|"
+echo "| Example | Target | Cold (s) | Warm (s) | Files | Bytes |"
+echo "|---|---|---|---|---|---|"
 for row in "${ROWS[@]}"; do
-    IFS='|' read -r name target elapsed files <<<"$row"
-    printf '| %s | %s | %.3f | %s |\n' "$name" "$target" "$elapsed" "$files"
+    IFS='|' read -r name target elapsed files bytes warm_elapsed <<<"$row"
+    printf '| %s | %s | %.3f | %.3f | %s | %s |\n' "$name" "$target" "$elapsed" "$warm_elapsed" "$files" "$bytes"
 done
 
 echo ""
@@ -151,6 +193,57 @@ for target in "${TARGET_LIST[@]}"; do
     printf '| %s | %s | %.3f | %.3f | %.3f | %.3f | %.2fx |\n' \
         "$target" "$count" "$total" "$avg" "${TARGET_MIN[$target]}" "${TARGET_MAX[$target]}" "$ratio"
 done
+
+if [[ "$SKIP_DEPLOY_SWEEP" -eq 0 ]]; then
+    echo ""
+    echo "## Deploy/client flag coverage"
+    echo ""
+    echo "\`31UpdatePlan.md\` M3: \`--deploy\`/\`--client\` were never exercised by"
+    echo "any instrument before this milestone, despite each adding its own"
+    echo "\`build_system\` call and its own generator. A deliberately small,"
+    echo "fixed subset (not the full corpus, to keep this affordable every"
+    echo "run) -- \`order-system\` on the fastest target, every flag alone and"
+    echo "all together."
+    echo ""
+    echo "| Flags | Seconds | Files | Bytes |"
+    echo "|---|---|---|---|"
+
+    DEPLOY_TARGET="python"
+    DEPLOY_EXAMPLE="examples/order-system.ciac"
+    declare -a DEPLOY_CASES=(
+        "--deploy k8s"
+        "--deploy terraform"
+        "--deploy ci"
+        "--client ts"
+        "--deploy k8s --deploy terraform --deploy ci --client ts"
+    )
+    for flags in "${DEPLOY_CASES[@]}"; do
+        out="$WORKDIR/deploy-sweep"
+        rm -rf "$out"
+        start=$(now)
+        # shellcheck disable=SC2086 -- $flags is a fixed, script-defined
+        # word list (never user input), intentionally unquoted so each
+        # `--deploy k8s --deploy terraform` case splits into separate args.
+        if ! "$CIAC" build "$DEPLOY_EXAMPLE" --target "$DEPLOY_TARGET" --out "$out" $flags \
+            >"$WORKDIR/deploy-log" 2>&1; then
+            echo "DEPLOY SWEEP FAILED: $DEPLOY_EXAMPLE --target $DEPLOY_TARGET $flags" >&2
+            cat "$WORKDIR/deploy-log" >&2
+            exit 1
+        fi
+        end=$(now)
+        elapsed=$(echo "$end - $start" | bc)
+        files=$(find "$out" -type f | wc -l | tr -d ' ')
+        bytes=$(du -sb "$out" 2>/dev/null | cut -f1)
+        rm -rf "$out"
+        printf '| `%s` | %.3f | %s | %s |\n' "$flags" "$elapsed" "$files" "$bytes"
+    done
+fi
+
+echo ""
+echo "## Binary size"
+echo ""
+bin_bytes=$(stat -c%s "$CIAC" 2>/dev/null || stat -f%z "$CIAC" 2>/dev/null)
+echo "\`$CIAC\`: ${bin_bytes} bytes"
 
 echo ""
 echo "(generated by scripts/bench-codegen.sh; targets=$TARGETS; $(date -u +%Y-%m-%dT%H:%M:%SZ))"

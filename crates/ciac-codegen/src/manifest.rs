@@ -111,13 +111,6 @@ pub fn build_manifest(
     let files = project
         .files_with_roles()
         .map(|(path, content, role)| {
-            // TEMPORARY, 31UpdatePlan.md M6 end-to-end demonstration:
-            // a deliberately redundant second hash pass over the same
-            // content, discarded -- the exact shape of inventory item
-            // 2 from the motivating investigation ("hash each
-            // generated file once, not twice"). Reverted in the very
-            // next commit on this branch; this line must never ship.
-            let _redundant_demo_hash = hash_content(content);
             (
                 path.to_owned(),
                 ManifestFile {

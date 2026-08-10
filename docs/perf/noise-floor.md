@@ -296,3 +296,115 @@ run this milestone's own commit triggers — captured by the workflow
 job itself, not hand-transcribed, and not independently pinned by this
 document (the whole point of running the job is to observe whatever
 GitHub actually gives us, not to assume it).
+
+## Gate decisions (M5 checkpoint)
+
+`31UpdatePlan.md` M5: a hard stop before M6/M7 write a line of gate
+code. For each proposed gate, three numbers — measured noise, the band
+derived from it, the smallest regression that band would reliably
+catch — and one of the plan's four pre-registered outcomes. Nothing
+below re-derives a number already established above; this section
+only decides what to build from numbers already in hand.
+
+### A deviation from the pre-registered rule's literal text, stated plainly
+
+The rule as pre-registered in Pillar 1 reads `max(3σ, 10%)`. Applied
+literally to callgrind, the `10%` floor term would win outright —
+callgrind's own measured noise (0.00079% local, 0.00214% on
+`ubuntu-latest`, 0.00653% across every perturbed condition combined)
+is so far below 10% that `3σ` never approaches it. A 10%-wide gate on
+a metric this stable would only fire on a tenfold regression, which
+defeats the purpose of building a dedicated instruction-count gate at
+all — the existing `perf_budget.rs` already catches damage that large.
+
+The `10%` floor exists to guard against an *under-sampled* noise
+estimate producing false confidence — a real risk for wall-clock
+metrics, where this document's own 40-repetition local sample still
+carries real sampling uncertainty. That risk does not transfer
+unchanged to callgrind: its determinism was independently confirmed on
+two unrelated machines (this sandbox and a real `ubuntu-latest` VM,
+different CPU microarchitecture, glibc build, and kernel), which is a
+stronger cross-check than any single environment's repetition count
+alone could provide. Given that, the floor is re-expressed for
+instruction-count metrics as a fixed multiplier over observed drift
+(150×) rather than a flat 10% — the same "comfortably above ordinary
+variance, comfortably below a real regression" philosophy
+`perf_budget.rs`'s own `BUDGET_MULTIPLIER` doc comment already states,
+scaled to callgrind's actual noise floor instead of copying a band
+calibrated for wall clock. This is the deviation, stated once here so
+it is never silently rediscovered three commits later: **the
+pre-registered rule's floor term applies to wall-clock metrics as
+written; for instruction-count metrics it is replaced by this
+150× multiplier, and that replacement — not the literal `10%` — is
+what M6 implements.**
+
+### Gate 1 — the uniform-regression gate (M6, callgrind)
+
+| | |
+|---|---|
+| Measured noise | 0.00079% (local baseline) / 0.00214% (`ubuntu-latest`) / 0.00653% (worst case, all perturbed conditions) |
+| Derived band | 1% of measured instruction count, per gated example |
+| Smallest regression reliably caught | ≥1% instruction-count growth on `ping` or `order-system` — by design, not the tightest theoretically detectable value (which the noise floor alone would put closer to 0.05–0.1%), for the same wide-headroom reason `perf_budget.rs` chose 1000× over a tighter multiplier |
+| Outcome | **(a) proceeds** |
+
+A 1% band sitting ~150× above the worst observed drift is not a
+timid choice — every inventory item this arc exists to eventually gate
+(lazy template loading, hash deduplication, `build_system`
+deduplication) is expected to move generation cost by double-digit
+percentages when it lands, per the phase-level numbers already in
+`docs/perf/baseline.json`. A 1% band catches all of them with room to
+spare and essentially zero false-positive risk given the measured
+drift.
+
+### Gate 2 — the asymptotic guard (M7, ratio-based)
+
+| | |
+|---|---|
+| Measured noise | N/A directly — runner-independent by construction (a ratio computed within one run), but see reasoning below |
+| Derived band | Ceiling set above today's measured ~3.7×/doubling for `sema::analyze` (this session's own synthetic-corpus finding, to be reproduced by M7's own generator, shared with `ciac-bench` per open question 4) |
+| Smallest regression reliably caught | Any exponent increase distinguishable from measurement noise on the *mean* of repeated calls — see below |
+| Outcome | **(a) proceeds** |
+
+This gate does not sidestep wall-clock noise by ignoring it — it
+survives the noise this document found by a mechanism worth stating
+explicitly: `measure()` (`tests/src/bench.rs`) reports the **mean**
+over `reps` repetitions, and a mean's own uncertainty shrinks with
+`1/√reps`, not with the raw per-sample relative standard deviation.
+`sema::analyze` on `ping` measured 50.4% relative standard deviation
+per sample at 40 repetitions — but the *mean's* relative standard
+error is closer to `50.4% / √40 ≈ 8%`. An 8% wobble in a mean estimate
+does not threaten detecting a multi-fold change in a growth exponent.
+This is also why the "Provisional bands" section above already steers
+M7's own corpus toward operations of at least low-hundreds-of-
+microseconds: it is not about avoiding noise outright, it is about
+keeping the per-sample noise low enough that averaging over a
+practical repetition count converges quickly instead of needing
+thousands of reps to be trustworthy.
+
+### Gate 3 — `perf_budget.rs` (existing, kept)
+
+Not a decision this checkpoint makes — it already exists, already
+gates, and already works on any runner because it compares backends to
+each other on the same run rather than to an absolute number. M9
+revisits its multiplier once M6's own instruction-count data is
+available to inform that revisit; this checkpoint changes nothing
+about it now.
+
+### Overall outcome
+
+**Pre-registered outcome (b): the callgrind gate proceeds, and every
+wall-clock portion of this arc's measurements — the full phase table,
+every `generate()` figure, the whole-process build timings — stays
+reporting-only, permanently, never a pass/fail condition.** M1's own
+finding forced this rather than leaving it a judgment call: every
+metric measured failed the 25% wall-clock-gateable ceiling across the
+full four-example corpus, and even narrowed to the two examples M6/M7
+actually gate, only a handful of metrics sit at the ragged edge of
+gateable. The asymptotic guard (M7) is the one gate that operates in
+wall-clock space at all, and it does so by ratio-of-means, not by
+raw-sample thresholding — a different enough mechanism that M1's
+"wall clock is not wall-clock-gateable" finding does not disqualify
+it.
+
+This is a hard serialization point: M6 and M7 both proceed as designed
+below, and neither starts before this section is committed.

@@ -125,6 +125,32 @@ jobs:
           done
           cat /tmp/nf-ir.txt | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # 31UpdatePlan.md M6: the uniform-regression gate --
+  # tests/tests/perf_baseline.rs, compared against docs/perf/baseline.json's
+  # own committed instruction counts. Non-blocking by M5's own checkpoint
+  # decision (outcome (b) -- see docs/perf/noise-floor.md's "Gate
+  # decisions" section and docs/perf/README.md's "Promotion status"):
+  # `continue-on-error: true` on the test-running step means a real
+  # regression shows up as a visibly failed (but allowed) step in this
+  # job's own log, without blocking the merge. Promotion to blocking is
+  # a named, mechanically-checkable follow-up, not something this arc
+  # flips on its own say-so.
+  perf-gate:
+    name: Perf gate (uniform-regression, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y valgrind
+      - run: cargo build --release -p ciac
+      - name: Callgrind instruction-count gate (ping, order-system)
+        continue-on-error: true
+        run: |
+          cargo test -p ciac-integration-tests --test perf_baseline -- --ignored --nocapture \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
   # 26UpdatePlan.md M6: the compiler's own dependency tree, scanned
   # against RustSec (advisories) and cargo-deny's broader policy
   # (licenses/bans/sources). Runs on every push (fast: no example

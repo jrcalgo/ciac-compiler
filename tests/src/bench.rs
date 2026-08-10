@@ -551,12 +551,21 @@ fn command_stderr_first_line(program: &str, args: &[&str]) -> Option<String> {
 /// every phase/backend measurement `ciac-bench` produced. `docs/perf/baseline.json`
 /// holds one of these; `--update-baseline` is the only path that
 /// writes it (`tests/bin/ciac-bench.rs`).
+///
+/// `instruction_counts` is additive (`31UpdatePlan.md` M6) — present
+/// only when `--update-baseline` ran with `--with-callgrind`, absent
+/// (empty) otherwise, and `#[serde(default)]` so a `baseline.json`
+/// written before M6 still deserializes. No `baseline_version` bump:
+/// adding a field is exactly the "purely additive" case the version
+/// field's own doc comment carves out.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Baseline {
     pub baseline_version: u32,
     pub environment: Environment,
     pub template_setup: Vec<TemplateSetup>,
     pub examples: Vec<ExampleReport>,
+    #[serde(default)]
+    pub instruction_counts: Vec<InstructionCount>,
 }
 
 /// One metric's delta between two baselines, e.g.
@@ -665,6 +674,7 @@ mod baseline_tests {
             environment: capture_environment(),
             template_setup: Vec::new(),
             examples,
+            instruction_counts: Vec::new(),
         }
     }
 
@@ -744,5 +754,256 @@ mod baseline_tests {
         ]);
         let deltas = compare_baselines(&old, &new);
         assert!(!deltas.iter().any(|d| d.example == "brand-new-example"));
+    }
+}
+
+// ---------------------------------------------------------------------
+// `31UpdatePlan.md` M6: the uniform-regression gate. Callgrind
+// instruction counts, not wall clock — `docs/perf/noise-floor.md`'s
+// own M1 finding is that every wall-clock phase metric this arc
+// measured fails the 25% wall-clock-gateable ceiling, so the gate that
+// actually catches a shared-path regression (item 1/9 on the
+// motivating investigation's inventory: lazy template loading,
+// `build_system` deduplication) has to be instruction counts instead.
+// ---------------------------------------------------------------------
+
+/// One example's measured instruction count for the gated corpus.
+/// Always the python target — the corpus `31UpdatePlan.md` M5's
+/// checkpoint fixed (`ping`, `order-system`), on the one target M1's
+/// own callgrind determinism study measured.
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
+pub struct InstructionCount {
+    pub example: String,
+    pub instructions: u64,
+}
+
+/// The band `31UpdatePlan.md` M5's checkpoint set: 1% of the measured
+/// instruction count, ~150x the worst drift M1 observed across two
+/// unrelated machines (0.00653%) — see `docs/perf/noise-floor.md`'s
+/// own "Gate decisions" section for the full reasoning, including why
+/// this replaces the pre-registered `max(3sigma, 10%)` rule's floor
+/// term for instruction-count metrics specifically rather than
+/// applying it literally.
+pub const INSTRUCTION_COUNT_BAND_PCT: f64 = 1.0;
+
+/// Locates the sibling `ciac` release binary, relative to this crate's
+/// own manifest directory (mirroring `examples_dir`'s and
+/// `baseline_path`'s own `CARGO_MANIFEST_DIR`-relative resolution).
+/// Panics with an actionable message rather than a bare "file not
+/// found" — this is meant to be run by a human or a CI job that just
+/// forgot the build step, not silently skipped.
+pub fn resolve_ciac_release_binary() -> PathBuf {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/ciac");
+    if !path.is_file() {
+        panic!(
+            "{} does not exist -- run `cargo build --release -p ciac` first",
+            path.display()
+        );
+    }
+    path
+}
+
+/// Runs `ciac_binary build <example> --target python --out <scratch>`
+/// once under `valgrind --tool=callgrind --cache-sim=no` and returns
+/// the reported instruction count. `--cache-sim=no` matches M1's own
+/// study: instruction count only, no cache simulation, since cache
+/// behavior is itself a source of run-to-run variance this gate does
+/// not need for a pass/fail count. Returns `Err` with the actual
+/// stderr on any failure (valgrind missing, the build itself failing)
+/// rather than panicking, so a caller measuring several examples can
+/// report all of their failures rather than stopping at the first.
+pub fn measure_instructions(ciac_binary: &Path, example_path: &Path) -> Result<u64, String> {
+    let scratch = std::env::temp_dir().join(format!(
+        "ciac-callgrind-{}-{}",
+        example_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("example"),
+        std::process::id()
+    ));
+    let cg_out = scratch.with_extension("callgrind");
+    std::fs::create_dir_all(&scratch)
+        .map_err(|e| format!("creating scratch dir {}: {e}", scratch.display()))?;
+
+    let output = std::process::Command::new("valgrind")
+        .arg("--tool=callgrind")
+        .arg(format!("--callgrind-out-file={}", cg_out.display()))
+        .arg("--cache-sim=no")
+        .arg("-q")
+        .arg(ciac_binary)
+        .arg("build")
+        .arg(example_path)
+        .arg("--target")
+        .arg("python")
+        .arg("--out")
+        .arg(&scratch)
+        .output()
+        .map_err(|e| format!("running valgrind (is it on PATH?): {e}"))?;
+
+    let result = if !output.status.success() {
+        Err(format!(
+            "ciac build under valgrind failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    } else {
+        let cg_text = std::fs::read_to_string(&cg_out)
+            .map_err(|e| format!("reading callgrind output {}: {e}", cg_out.display()))?;
+        cg_text
+            .lines()
+            .find(|l| l.starts_with("summary:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|n| n.parse::<u64>().ok())
+            .ok_or_else(|| format!("no `summary:` line found in {}", cg_out.display()))
+    };
+
+    std::fs::remove_dir_all(&scratch).ok();
+    std::fs::remove_file(&cg_out).ok();
+    result
+}
+
+/// Measures every example in `examples` (by name, under `examples/`)
+/// and returns one [`InstructionCount`] per example that measured
+/// successfully. A single example's failure is logged to stderr and
+/// skipped rather than aborting the whole sweep — matching
+/// `perf_budget.rs`'s own "one backend's refusal doesn't invalidate
+/// the others" posture, applied here to one example's measurement
+/// instead of one backend's support.
+pub fn measure_instruction_counts(examples: &[&str]) -> Vec<InstructionCount> {
+    let binary = resolve_ciac_release_binary();
+    examples
+        .iter()
+        .filter_map(|name| {
+            let path = examples_path(name);
+            match measure_instructions(&binary, &path) {
+                Ok(instructions) => Some(InstructionCount {
+                    example: (*name).to_owned(),
+                    instructions,
+                }),
+                Err(e) => {
+                    eprintln!("measuring {name}: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+fn examples_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../examples")
+        .join(format!("{name}.ciac"))
+}
+
+/// Pure comparison, mirroring `tests/tests/perf_budget.rs`'s own
+/// `check_budget`: kept separate from measurement so it can be
+/// exercised with synthetic data — the harness-can-fail proof M6's own
+/// exit checklist requires — without paying for a real valgrind run
+/// every time the comparison arithmetic itself needs proving. A
+/// current example absent from `baseline` (a corpus addition) is
+/// skipped, not reported as a fabricated regression, mirroring
+/// `compare_baselines`'s own M4 convention.
+pub fn check_instruction_budget(
+    current: &[InstructionCount],
+    baseline: &[InstructionCount],
+    band_pct: f64,
+) -> Result<(), String> {
+    let mut offenders = Vec::new();
+    for c in current {
+        let Some(b) = baseline.iter().find(|b| b.example == c.example) else {
+            continue;
+        };
+        let pct_change = if b.instructions > 0 {
+            (c.instructions as f64 - b.instructions as f64) / b.instructions as f64 * 100.0
+        } else {
+            0.0
+        };
+        if pct_change > band_pct {
+            offenders.push((
+                c.example.clone(),
+                b.instructions,
+                c.instructions,
+                pct_change,
+            ));
+        }
+    }
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    let mut report = format!(
+        "instruction-count budget exceeded (band +{band_pct}% over the committed baseline):\n"
+    );
+    for (example, baseline_ir, current_ir, pct) in &offenders {
+        report.push_str(&format!(
+            "  {example:<20} {baseline_ir:>12} -> {current_ir:>12}  {pct:>+7.2}%\n"
+        ));
+    }
+    Err(report)
+}
+
+#[cfg(test)]
+mod instruction_budget_tests {
+    use super::*;
+
+    fn counts(pairs: &[(&str, u64)]) -> Vec<InstructionCount> {
+        pairs
+            .iter()
+            .map(|(example, instructions)| InstructionCount {
+                example: (*example).to_owned(),
+                instructions: *instructions,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn passes_when_unchanged() {
+        let baseline = counts(&[("ping", 12_972_120), ("order-system", 45_000_000)]);
+        let current = baseline.clone();
+        assert!(check_instruction_budget(&current, &baseline, INSTRUCTION_COUNT_BAND_PCT).is_ok());
+    }
+
+    #[test]
+    fn passes_within_the_band() {
+        let baseline = counts(&[("ping", 12_972_120)]);
+        // +0.5%: well inside the 1% band, the kind of drift M1's own
+        // cross-machine callgrind study actually observed (0.00653%
+        // worst case) with a wide margin still to spare.
+        let current = counts(&[("ping", 12_972_120 + 64_860)]);
+        assert!(check_instruction_budget(&current, &baseline, INSTRUCTION_COUNT_BAND_PCT).is_ok());
+    }
+
+    /// The harness-can-fail proof this milestone's own exit checklist
+    /// requires: a synthetically regressed instruction count must
+    /// actually fail the check, by construction.
+    #[test]
+    fn fails_when_a_shared_path_regresses() {
+        let baseline = counts(&[("ping", 12_972_120), ("order-system", 45_000_000)]);
+        // +5%: the shape of a real regression (e.g. eager template
+        // parsing reintroduced), not noise -- M1 measured worst-case
+        // drift of 0.00653%, three orders of magnitude smaller.
+        let current = counts(&[("ping", 12_972_120 + 648_606), ("order-system", 45_000_000)]);
+        let err = check_instruction_budget(&current, &baseline, INSTRUCTION_COUNT_BAND_PCT)
+            .expect_err("a +5% regression must trip the budget");
+        assert!(
+            err.contains("ping"),
+            "report should name the offending example: {err}"
+        );
+        assert!(
+            !err.contains("order-system"),
+            "an unregressed example must not be reported: {err}"
+        );
+    }
+
+    #[test]
+    fn an_example_only_in_current_is_skipped_not_reported() {
+        let baseline = counts(&[("ping", 12_972_120)]);
+        let current = counts(&[("ping", 12_972_120), ("brand-new-example", 999_999_999)]);
+        assert!(check_instruction_budget(&current, &baseline, INSTRUCTION_COUNT_BAND_PCT).is_ok());
+    }
+
+    #[test]
+    fn an_improvement_never_fails_the_budget() {
+        let baseline = counts(&[("ping", 12_972_120)]);
+        let current = counts(&[("ping", 10_000_000)]);
+        assert!(check_instruction_budget(&current, &baseline, INSTRUCTION_COUNT_BAND_PCT).is_ok());
     }
 }

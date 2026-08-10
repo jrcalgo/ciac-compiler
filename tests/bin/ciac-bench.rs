@@ -26,13 +26,19 @@
 //! duplicated here.
 
 use ciac_integration_tests::bench::{
-    capture_environment, compare_baselines, measure_example, measure_template_setup, Baseline,
-    ExampleReport, TemplateSetup, BASELINE_VERSION,
+    capture_environment, compare_baselines, measure_example, measure_instruction_counts,
+    measure_template_setup, Baseline, ExampleReport, TemplateSetup, BASELINE_VERSION,
 };
 use ciac_integration_tests::{backends, compile_file, examples_dir};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_EXAMPLES: &[&str] = &["ping", "order-system", "domain-orders", "sim-three-service"];
+
+/// `31UpdatePlan.md` M5's checkpoint: the corpus M6's callgrind gate
+/// actually covers. Deliberately narrower than [`DEFAULT_EXAMPLES`] —
+/// callgrind's own 10-50x slowdown means the gated corpus stays small
+/// and fixed, not the full sweep (`docs/perf/noise-floor.md`).
+const CALLGRIND_EXAMPLES: &[&str] = &["ping", "order-system"];
 
 /// `docs/perf/baseline.json`, resolved relative to this crate's own
 /// manifest directory the same way `ciac_integration_tests::examples_dir`
@@ -48,6 +54,7 @@ fn main() {
     let mut format = "table".to_owned();
     let mut reps: u32 = 40;
     let mut update_baseline = false;
+    let mut with_callgrind = false;
     let mut compare_path: Option<PathBuf> = None;
     let mut names: Vec<String> = Vec::new();
     for arg in args {
@@ -59,6 +66,8 @@ fn main() {
                 .unwrap_or_else(|_| panic!("--reps expects an integer, got {v}"));
         } else if arg == "--update-baseline" {
             update_baseline = true;
+        } else if arg == "--with-callgrind" {
+            with_callgrind = true;
         } else if let Some(v) = arg.strip_prefix("--compare=") {
             compare_path = Some(PathBuf::from(v));
         } else if arg.starts_with("--") {
@@ -100,11 +109,26 @@ fn main() {
     }
 
     if update_baseline || compare_path.is_some() {
+        // `--with-callgrind` measures fresh; otherwise carry forward
+        // whatever instruction counts the existing baseline.json
+        // already has (if any) rather than silently erasing M6's own
+        // data on every routine wall-clock-only `--update-baseline`
+        // run from a later milestone.
+        let instruction_counts = if with_callgrind {
+            eprintln!("measuring instruction counts under valgrind (this is slow)...");
+            measure_instruction_counts(CALLGRIND_EXAMPLES)
+        } else {
+            existing_baseline(&baseline_path())
+                .map(|b| b.instruction_counts)
+                .unwrap_or_default()
+        };
+
         let current = Baseline {
             baseline_version: BASELINE_VERSION,
             environment: capture_environment(),
             template_setup: setup,
             examples: reports,
+            instruction_counts,
         };
 
         if let Some(path) = &compare_path {
@@ -123,6 +147,11 @@ fn main() {
             eprintln!("wrote {}", path.display());
         }
     }
+}
+
+fn existing_baseline(path: &Path) -> Option<Baseline> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 fn print_comparison(previous: &Baseline, current: &Baseline) {

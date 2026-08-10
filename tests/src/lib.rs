@@ -1,5 +1,7 @@
 //! Shared helpers for the workspace-level integration tests.
 
+pub mod bench;
+
 use ciac_diagnostics::{Diagnostics, SourceMap};
 use ciac_ir::NormalizedIr;
 use std::path::{Path, PathBuf};

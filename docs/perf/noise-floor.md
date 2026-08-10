@@ -100,12 +100,43 @@ measurement run; environment is stamped in "Environment" below.
 | `generate()` typescript | 1773.3 | 199.7 | 11.3% | 1529.2 | 2245.9 | 2216.2 |
 | `generate()` go | 33250.0 | 2763.5 | 8.3% | 29194.2 | 38074.8 | 38074.8 |
 
-### `ubuntu-latest`, one diagnostic job (20 reps, `ping`/python, `generate` only)
+### Whole-process `ciac build`, local vs. `ubuntu-latest` (20 reps, `ping`/python)
 
-<!-- ci-data:pending — filled in by the perf-noise-floor CI job's own
-     run, from this milestone's own push, before M1 is considered
-     closed. See "How this was measured" for why this is a same-
-     milestone follow-up rather than a second draft. -->
+The phase table above times individual functions in-process; this row
+times the real `./target/release/ciac build examples/ping.ciac
+--target python --out <dir>` subprocess end to end — process startup,
+front end, `generate()`, hashing, regen plan, manifest, and the actual
+file writes together — on both environments, so the two are directly
+comparable on the same metric for once.
+
+| Environment | mean (µs) | σ | rel σ | min | max | p95 |
+|---|---|---|---|---|---|---|
+| Local sandbox | 11721.5 | 7977.4 | **68.1%** | 9054 | 46383 | 46383 |
+| `ubuntu-latest` (one job, 20 reps) | 3586.1 | 414.8 | **11.6%** | 3241 | 4859 | 4859 |
+
+**The local sandbox is the noisier of the two environments for this
+metric** — the opposite of the naive assumption that a shared CI
+runner is always noisier than a dedicated sandbox. The most credible
+explanation: this measurement ran inside the same long-lived agent
+session that was doing other work concurrently (background tasks, tool
+calls) during the sweep, while the CI job is a freshly provisioned,
+single-purpose VM running nothing else. The Pillar-1 rule exists
+precisely so a case like this doesn't get judged by intuition — it
+says "the noisier of the two environments," not "assume CI," and here
+that means the **local 68.1% figure is what actually sets this
+metric's band** (3σ = 204.3%, nowhere close to wall-clock-gateable,
+consistent with every other metric in this document). Recorded here
+undisguised, including the outlier that drove it (one 46.4ms sample
+against a ~9-12ms median), because a noise-floor document exists to
+report what was actually observed, not what was expected.
+
+The CI run also confirms, independently, that a shared runner alone
+isn't disqualifying: `ubuntu-latest`'s own 11.6% for the identical
+operation is *tighter* than several of the local per-phase figures
+above (e.g. `sema::analyze` at 50.4% on the same machine class this
+document's phase table used). Noise is a property of what's being
+measured and what else is running, not simply a property of which
+machine it runs on.
 
 ## Applying the rule
 
@@ -175,6 +206,21 @@ condition that moved the needle at all (inflated environment block,
 any instability in the measured program's own logic — reassuring
 rather than concerning, since it means the small drift that does exist
 has a mechanistic explanation rather than being unexplained jitter.
+
+**Confirmed independently on real `ubuntu-latest` hardware.** The same
+5-rep callgrind sample, taken by the `perf-noise-floor` CI job on a
+completely different machine (different CPU microarchitecture, glibc
+build, kernel): 12,954,681 / 12,954,676 / 12,954,676 / 12,954,953 /
+12,954,757 instructions — drift **0.00214%**, same order of magnitude
+as the local baseline's 0.00079%. The absolute count differs from the
+local baseline by **−0.134%** (12,954,749 mean vs. 12,972,120 mean),
+which is exactly the kind of small, expected, machine-specific offset
+`docs/perf/codegen-baseline.md`'s own standing disclosure already
+anticipates — different glibc/kernel syscall paths taking marginally
+different instruction counts for the same logical work — and is
+irrelevant to gating, since M6's gate compares a build against its own
+prior build on the same machine class, never against a number from a
+different one.
 
 ## Provisional bands for M6/M7
 

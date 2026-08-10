@@ -1,7 +1,7 @@
-//! `31UpdatePlan.md` M2: the CLI over `ciac_integration_tests::bench`.
+//! `31UpdatePlan.md` M2/M4: the CLI over `ciac_integration_tests::bench`.
 //!
 //! ```text
-//! cargo run -q -p ciac-integration-tests --bin ciac-bench -- [--format=table|json] [--reps N] [EXAMPLE...]
+//! cargo run -q -p ciac-integration-tests --bin ciac-bench -- [--format=table|json] [--reps=N] [--update-baseline] [--compare=PATH] [EXAMPLE...]
 //! ```
 //!
 //! `EXAMPLE...` names files under `examples/` without the `.ciac`
@@ -9,21 +9,46 @@
 //! `docs/perf/noise-floor.md`'s M1 sweep used
 //! (`ping`, `order-system`, `domain-orders`, `sim-three-service`), so
 //! this binary's own output is directly comparable to that document
-//! without extra flags. No gate, no baseline read or write here —
-//! `31UpdatePlan.md` M4 builds `--update-baseline` on top of this
-//! binary's own measurement calls, not by duplicating them.
+//! without extra flags.
+//!
+//! `--update-baseline` writes the current run to `docs/perf/baseline.json`
+//! (with a `baseline_version`/environment stamp — see
+//! `ciac_integration_tests::bench::Baseline`), overwriting whatever was
+//! there. Per `31UpdatePlan.md`'s own discipline ("`--update-baseline`
+//! requires a justification in the commit message"), this binary does
+//! not enforce that itself — it is a commit-review discipline, not
+//! something a CLI flag can check.
+//!
+//! `--compare=PATH` reads a previously-written baseline from `PATH` and
+//! prints a per-metric delta table against the current run, via
+//! `ciac_integration_tests::bench::compare_baselines` — a pure function,
+//! unit-tested against synthetic regressions in `bench.rs` itself, not
+//! duplicated here.
 
 use ciac_integration_tests::bench::{
-    measure_example, measure_template_setup, ExampleReport, TemplateSetup,
+    capture_environment, compare_baselines, measure_example, measure_template_setup, Baseline,
+    ExampleReport, TemplateSetup, BASELINE_VERSION,
 };
 use ciac_integration_tests::{backends, compile_file, examples_dir};
+use std::path::{Path, PathBuf};
 
 const DEFAULT_EXAMPLES: &[&str] = &["ping", "order-system", "domain-orders", "sim-three-service"];
+
+/// `docs/perf/baseline.json`, resolved relative to this crate's own
+/// manifest directory the same way `ciac_integration_tests::examples_dir`
+/// resolves `examples/` — works regardless of the caller's own working
+/// directory (`cargo run` from the repo root, from `tests/`, or from
+/// CI's checkout root all resolve the same file).
+fn baseline_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/perf/baseline.json")
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut format = "table".to_owned();
     let mut reps: u32 = 40;
+    let mut update_baseline = false;
+    let mut compare_path: Option<PathBuf> = None;
     let mut names: Vec<String> = Vec::new();
     for arg in args {
         if let Some(v) = arg.strip_prefix("--format=") {
@@ -32,6 +57,10 @@ fn main() {
             reps = v
                 .parse()
                 .unwrap_or_else(|_| panic!("--reps expects an integer, got {v}"));
+        } else if arg == "--update-baseline" {
+            update_baseline = true;
+        } else if let Some(v) = arg.strip_prefix("--compare=") {
+            compare_path = Some(PathBuf::from(v));
         } else if arg.starts_with("--") {
             panic!("unknown flag {arg}");
         } else {
@@ -42,7 +71,7 @@ fn main() {
         names = DEFAULT_EXAMPLES.iter().map(|s| s.to_string()).collect();
     }
 
-    let paths: Vec<std::path::PathBuf> = names
+    let paths: Vec<PathBuf> = names
         .iter()
         .map(|n| examples_dir().join(format!("{n}.ciac")))
         .collect();
@@ -69,6 +98,48 @@ fn main() {
         "table" => print_table(&setup, &reports),
         other => panic!("unknown --format {other}; expected table or json"),
     }
+
+    if update_baseline || compare_path.is_some() {
+        let current = Baseline {
+            baseline_version: BASELINE_VERSION,
+            environment: capture_environment(),
+            template_setup: setup,
+            examples: reports,
+        };
+
+        if let Some(path) = &compare_path {
+            let text = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("reading baseline {}: {e}", path.display()));
+            let previous: Baseline = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("parsing baseline {}: {e}", path.display()));
+            print_comparison(&previous, &current);
+        }
+
+        if update_baseline {
+            let path = baseline_path();
+            let json = serde_json::to_string_pretty(&current).expect("Baseline serializes");
+            std::fs::write(&path, format!("{json}\n"))
+                .unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
+            eprintln!("wrote {}", path.display());
+        }
+    }
+}
+
+fn print_comparison(previous: &Baseline, current: &Baseline) {
+    let deltas = compare_baselines(previous, current);
+    println!(
+        "### Comparison against baseline (git {})\n",
+        previous.environment.git_sha
+    );
+    println!("| Example | Metric | Old (us) | New (us) | Change |");
+    println!("|---|---|---|---|---|");
+    for d in &deltas {
+        println!(
+            "| {} | {} | {:.1} | {:.1} | {:+.1}% |",
+            d.example, d.metric, d.old_mean_us, d.new_mean_us, d.pct_change
+        );
+    }
+    println!();
 }
 
 fn print_json(setup: &[TemplateSetup], reports: &[ExampleReport]) {

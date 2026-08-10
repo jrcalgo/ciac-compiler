@@ -53,6 +53,14 @@ Full detail (the append-only diagnostic registry, adding a validation
 pass, adding a language construct, adding a backend) lives in
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+If a change touches a hot path (`ciac-syntax`, `ciac-sema`,
+`ciac-codegen`, or any backend's `generate()`), name the metric you
+expect to move, and the direction, before making the change — then
+check it with `docs/perf/README.md`'s own instrument index. That
+document also explains what's a real gate (fails `cargo test
+--workspace`) versus reporting-only (informational, pending a 20-merge
+soak before promotion).
+
 ## The plan-file arc
 
 `plans/NNUpdatePlan.md` files (`plans/06UpdatePlan.md`,

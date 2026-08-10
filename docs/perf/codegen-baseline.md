@@ -192,7 +192,7 @@ comment for the exact multiplier and the measurement behind it. CI
 runs `scripts/bench-codegen.sh` on every push too, printed as
 information in the job summary rather than as a second gate.
 
-## Readings so far
+## Readings so far (retired at `31UpdatePlan.md` M9)
 
 | Reading | When | Combined slow-binary time | Java mean generation | Ratio to fastest |
 |---|---|---|---|---|
@@ -200,16 +200,34 @@ information in the job summary rather than as a second gate.
 | M5 (checkpoint) | post M2 (Java batch fmt) + M3 (Go seam) + M4 (template memo) | 253.23s | 1.277s | 90.00x |
 | M9 (arc close) | no separate pass — M5's readings stood | 253.23s | 1.277s | 90.00x |
 
-This table is the arc's headline metric, filled in as each milestone's
-own measurement pass completes — the M1→M5→M9 delta is the thing this
-whole arc is answerable to.
+This table was `30UpdatePlan.md`'s own headline metric, filled in by
+hand as each of that arc's milestones completed. It is frozen above as
+a historical record and is **not maintained past this point** —
+`31UpdatePlan.md` M9 retires it in favor of
+[`docs/perf/baseline.json`](baseline.json), a machine-readable
+baseline `ciac-bench --update-baseline` writes and
+`ciac-bench --compare=<old-baseline.json>` diffs against automatically,
+git-sha-stamped so a reader always knows which commit a given number
+came from.
 
-M9's row says what actually happened rather than what was planned. M5
-stopped the arc early on the grounds that M2–M4 had already beaten the
-target, and M6/M7 were both conditional on M5 choosing to continue; no
-optimization landed between M5 and M9, so M9 closed the arc citing
-M5's numbers as the M1→M9 delta rather than re-running the sweep. The
-row read "pending" until long after the arc shipped, which is its own
-small lesson about a metric a document promises to carry: nothing
-failed, but the table stopped describing reality the moment the last
-milestone declined to measure and no one updated it.
+The table's own last paragraph, kept verbatim below, is the specific
+reason a hand-maintained table stopped being an acceptable design for
+tracking these numbers going forward — and is worth reading as the
+rationale for why `31UpdatePlan.md` built the JSON baseline and its
+`--compare` machinery rather than asking a future contributor to keep
+this table honest by hand indefinitely:
+
+> M9's row says what actually happened rather than what was planned.
+> M5 stopped the arc early on the grounds that M2–M4 had already
+> beaten the target, and M6/M7 were both conditional on M5 choosing to
+> continue; no optimization landed between M5 and M9, so M9 closed the
+> arc citing M5's numbers as the M1→M9 delta rather than re-running the
+> sweep. The row read "pending" until long after the arc shipped,
+> which is its own small lesson about a metric a document promises to
+> carry: nothing failed, but the table stopped describing reality the
+> moment the last milestone declined to measure and no one updated it.
+
+For current numbers, see `docs/perf/baseline.json` directly, or run
+`cargo run --release -p ciac-integration-tests --bin ciac-bench` — see
+[`docs/perf/README.md`](README.md) for the full instrument index this
+document is now one entry in.

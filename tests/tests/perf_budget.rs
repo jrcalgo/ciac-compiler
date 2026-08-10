@@ -16,6 +16,37 @@
 //! headroom on both sides — comfortably above today's steady state so
 //! ordinary variance never trips it, comfortably below the
 //! catastrophe floor so a real regression reliably does.
+//!
+//! **`31UpdatePlan.md` M9 revisited this multiplier** (not merely
+//! asserted it in passing): this file's own premise changed once M6's
+//! callgrind gate and M7's asymptotic guard landed, since this test
+//! was originally the *only* gate and had to catch everything. It now
+//! answers one narrower question — has one backend become an outlier
+//! relative to its peers on the same run — while M6 catches a
+//! shared-path regression uniformly, at a much tighter 1% band, and M7
+//! catches a growth-shape regression. That narrower job argued for
+//! *considering* a smaller multiplier. It was kept at 1000, not
+//! lowered, for a reason found live during this revisit: this
+//! session's own debug-profile measurement of `measure_all()` (the
+//! profile `cargo test --workspace` actually runs this gate under —
+//! `--release` measurements are not representative here, since Java's
+//! JVM-spawn cost is release/debug-invariant while the cheap backends'
+//! own in-process cost is not, which briefly produced a misleadingly
+//! tight ~950-1010x ratio before this was caught) swung from
+//! java-at-131.7x-median to java-at-187.4x-median to java's own total
+//! moving 34.0s → 48.8s across two back-to-back runs with *no code
+//! change at all* — a ~43% run-to-run swing from JVM-spawn variance
+//! alone. Tightening the multiplier into that noise band would trade
+//! "never fires spuriously" for marginal extra sensitivity M6's own
+//! instruction-count gate already provides, more precisely, on exactly
+//! the shared-path case this test structurally cannot isolate a cause
+//! for. Per this arc's own Pillar 7 discipline ("a gate that fires
+//! spuriously twice is fixed or removed — never widened silently"),
+//! shrinking a coarse safety net into a source of flakiness is the
+//! same mistake in the opposite direction. "Revisited" and "changed"
+//! are two different facts; this multiplier's value is the same one
+//! `30UpdatePlan.md` M8 chose, re-confirmed against real M9 data
+//! rather than left standing by default.
 
 use ciac_codegen::{BackendError, GenOptions};
 use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir};

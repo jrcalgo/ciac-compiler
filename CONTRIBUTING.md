@@ -40,6 +40,21 @@ the compiler's observable behavior.
   templates.
 - **New backend**: see `docs/backends.md`.
 
+## Performance
+
+`docs/perf/README.md` is the index: what's measured, what's a real gate
+versus reporting-only, and how to reproduce any number in
+`docs/perf/baseline.json`. The short version:
+
+```sh
+cargo run --release -p ciac-integration-tests --bin ciac-bench   # phase-level timing
+cargo test -p ciac-integration-tests --test perf_budget          # the one blocking gate
+```
+
+`--update-baseline` requires a stated reason in the commit message —
+a baseline that moves without one is a regression that was normalised,
+not a refresh.
+
 ## Generated-output validation
 
 CI runs `ciac verify` over every example for both bundled backends. To

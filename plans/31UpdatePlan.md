@@ -987,3 +987,151 @@ against a named metric with a stated expected direction — the table in
 written in advance. The next arc opens by running `ciac-bench
 --compare` and closes by running it again, and the difference between
 those two runs is its entire claim.
+
+## Retrospective
+
+Executed in one continuous session (M1 through M9, commits `f7ec595`
+through the version-bump commit closing this one), with the three
+tensions between the plan's literal text and single-session execution
+resolved up front and honored throughout: no gate soaked through a
+real 20-merge history and none was promoted; CI noise sampling stayed
+local-heavy plus one diagnostic job rather than a dedicated polling
+campaign; every milestone ran inline with its own review checklist
+rather than through subagent delegation. All nine milestones shipped;
+none was cut.
+
+**What the instrument found that the motivating investigation missed.**
+Four findings this session's own measurement work surfaced that the
+earlier informal assessment did not:
+
+1. `perf_budget.rs`'s own doc comment quoted Java at "~200-230x the
+   median backend" as its calibration figure. M9's revisit measured
+   this live and found that figure only holds in the debug profile
+   `cargo test --workspace` actually runs the gate under
+   (131.7x-187.4x observed across three runs) — under `--release`, the
+   same backends produce a misleadingly tight ~950-1010x ratio, because
+   Java's JVM-spawn cost is profile-invariant while the cheap backends'
+   own in-process cost collapses under optimization. A naive revisit
+   that measured with `--release` (the profile every other wall-clock
+   number in this arc uses) would have concluded the gate needed
+   tightening; it does not, because that is not the profile it runs
+   under. This was caught only because the revisit measured the actual
+   gating condition rather than trusting the doc comment's own
+   arithmetic.
+2. Local sandbox wall-clock noise measured *higher* than real
+   `ubuntu-latest` noise (68.1% vs. 11.6% relative standard deviation,
+   `noise-floor.md`'s own whole-process comparison) — the opposite of
+   the usual assumption that a shared CI runner is the noisier
+   environment. Session-level contention in this sandbox dominates
+   over CI's own scheduling variance.
+3. Callgrind's determinism (0.00079%-0.00653% drift across two
+   unrelated machines and every perturbed condition tried) is far
+   tighter than the pre-registered `max(3σ, 10%)` rule's `10%` floor
+   would have allowed for — applied literally, that floor would have
+   produced a gate that only fires on a tenfold regression, redundant
+   with `perf_budget.rs`. The 150x-multiplier deviation
+   (`noise-floor.md`'s own "Gate decisions" section) exists because
+   this was measured rather than assumed.
+4. `sema::analyze`'s growth on this session's own synthetic corpus
+   (1.93x-2.80x per doubling, trending upward with N) came in
+   measurably below the ~3.7x/doubling the motivating investigation
+   found on a differently-shaped corpus — same underlying quadratic,
+   a different exponent depending on what the corpus actually
+   exercises. "How bad is the quadratic" turned out not to be a single
+   portable number, which is itself the reason
+   `SEMA_ANALYZE_GROWTH_CEILING`'s own doc comment states the specific
+   corpus and reps it was calibrated against rather than citing the
+   motivating investigation's figure as if it travels.
+
+**What the arc cost.** In CI minutes: the one real-CI sample this arc
+captured directly, `perf-gate`'s own run (`31364165785`, job
+`93378885978`), completed in 3m04s (07:00:55-07:03:59), non-blocking
+via step-level `continue-on-error`. `perf-noise-floor` runs one
+20-repetition wall-clock sweep plus a 5-repetition callgrind sample
+per push, also non-blocking. Neither adds to the required-to-merge
+critical path; both print into the job summary. In session time: nine
+milestones, each with a full review checklist (fmt, clippy, the full
+test suite, an instrument-only diff check, snapshot stability), plus
+the M6 CI round-trip demonstration and the M9 second-contract timing
+(which needed three attempts before landing a clean, uncontaminated
+number — see below).
+
+**Which gates were dropped, and which weren't.** None. M5's checkpoint
+reached pre-registered outcome (a) — "proceeds" — for both new gates
+individually: the uniform-regression gate (M6, callgrind) and the
+asymptotic guard (M7, ratio-based) both shipped. The checkpoint's
+*overall* character is closer to outcome (b) in a different sense than
+"a gate got dropped": every wall-clock measurement this arc produces
+(the phase table, every `generate()` figure, whole-process build
+timings) is declared **permanently** reporting-only, not merely
+pending a soak — M1's own noise-floor numbers make every wall-clock
+metric fail the pre-registered 25% gateability ceiling outright, so
+there is no threshold at which those numbers were ever going to become
+a pass/fail gate. That is a stronger, permanent statement than "not
+yet promoted," and it is the correct one: `perf_budget.rs`'s own
+relative-ratio design was already the answer to wall-clock noise this
+arc could not improve on, not a gap this arc left unfilled.
+
+**Whether the pre-registered thresholds survived contact with real
+data.** Mostly yes, with one named exception. The Pillar-1 rule
+(`max(3σ, 10%)`) survived for wall-clock metrics exactly as written —
+every one of them failed the 25% ceiling, precisely the outcome the
+rule was designed to detect and refuse to gate on. It did **not**
+survive unmodified for instruction-count metrics: the `10%` floor was
+replaced by a 150x multiplier over observed drift, disclosed as a
+deviation rather than silently applied (`noise-floor.md`'s own
+section, referenced above). The asymptotic guard's ceilings
+(`SEMA_ANALYZE_GROWTH_CEILING = 4.5`, `GENERATE_GROWTH_CEILING = 3.0`)
+were set from this session's own measurement rather than the
+motivating investigation's figures, for the reason in finding 4 above,
+and both were proven capable of failing before being proven capable of
+passing (the harness-can-fail discipline this arc inherited from
+`perf_budget.rs` and extended to every new gate, including one live,
+real, CI-confirmed regression-and-revert cycle for the M6 gate
+specifically — not only the unit-test-level synthetic proof).
+
+**The second contract, measured honestly.** Pre-arc baseline: **6m34.0s**
+real, `cargo test --workspace --release`, captured before M1. Getting
+a trustworthy post-arc number took three attempts, and the reason each
+attempt failed is itself worth recording rather than smoothing over:
+the first run rebuilt several crates from scratch because a mid-session
+container restart had reset the build cache, and the second run also
+rebuilt from scratch because this same milestone's own version bump
+(0.28.0 → 0.29.0) invalidated every crate's cached artifact — both
+runs measured cold-build time, not this arc's actual effect, and both
+were discarded rather than reported as the answer. The third run
+finally had a warm build cache, so its 41s was genuine run time rather
+than build time — but it was still not a trustworthy completion,
+because a self-inflicted `docs/targets.json` staleness (from the
+still-incomplete version bump) tripped `targets_cli.rs` and stopped
+the run early on cargo's default fail-fast behavior. Fixed by
+regenerating `docs/targets.json` via
+`ciac targets --json` (one line moved: the version string, confirming
+nothing else in the targets registry drifted), then re-run with
+`--no-fail-fast` to also get past one unrelated, real, and disclosed
+environmental flake (`crates/ciac/tests/backfill_cli.rs`'s `uv sync`
+failing once on a `greenlet` wheel unavailable for this sandbox's
+platform tag — reproduced on the two cold runs, absent on this run,
+consistent with a transient package-index condition rather than
+anything this arc's own diff touched, and not `determinism.rs` or a
+golden-snapshot move, so not a halt condition). That run completed all
+73 test binaries clean: **5m21.136s** real, zero failures. **This
+arc made `cargo test --workspace` faster, not slower** —
+321.136s against the pre-arc 394.0s, roughly 18.5% down. That
+delta is not claimed as an optimization result (nothing in this arc
+touched a hot path on purpose, and a single before/after sample is not
+a controlled measurement) — it is reported as what the second contract
+asked for: confirmation that an instrument-only arc did not cost the
+suite it instruments anything, with the actual number rather than an
+assumption standing in for it.
+
+**Promotion status**, in full in `docs/perf/README.md`'s own section
+of that name: neither new gate has promoted, by design — a single
+session cannot manufacture a real 20-merge history without fitting the
+soak count to convenience, which the pre-registered rule exists
+specifically to prevent. Both gates ship reporting-only. The one real
+CI failure the `perf-gate` job produced (the M6 demonstration) is
+recorded there explicitly as *not* a strike against the soak counter,
+since it was an intentional, disclosed proof exercise reverted in the
+next commit — a future reader auditing CI history for spurious fires
+should exclude it, not double-count it.

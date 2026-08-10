@@ -24,13 +24,30 @@
 //! `ciac_integration_tests::bench::compare_baselines` — a pure function,
 //! unit-tested against synthetic regressions in `bench.rs` itself, not
 //! duplicated here.
+//!
+//! `--with-scaling` (`31UpdatePlan.md` M7) runs the asymptotic-guard
+//! corpus at N=100/200/400 and prints `sema::analyze`/`generate()`
+//! timings plus the growth ratio each doubling produced, via
+//! `ciac_integration_tests::bench::{measure_scaling, growth_ratio}` —
+//! the same functions `tests/tests/perf_scaling.rs`'s own gate calls,
+//! per that milestone's "one generator, shared" rule (open question 4).
+//! This data is not written to `docs/perf/baseline.json`: the guard
+//! compares two measurements from the same run, so unlike M6's
+//! instruction counts it has no cross-run baseline to store.
 
 use ciac_integration_tests::bench::{
-    capture_environment, compare_baselines, measure_example, measure_instruction_counts,
-    measure_template_setup, Baseline, ExampleReport, TemplateSetup, BASELINE_VERSION,
+    capture_environment, compare_baselines, growth_ratio, measure_example,
+    measure_instruction_counts, measure_scaling, measure_template_setup, Baseline, ExampleReport,
+    ScalingPoint, TemplateSetup, BASELINE_VERSION,
 };
 use ciac_integration_tests::{backends, compile_file, examples_dir};
 use std::path::{Path, PathBuf};
+
+/// `31UpdatePlan.md` M7's own corpus sizes, matching
+/// `tests/tests/perf_scaling.rs`'s gate exactly, so `--with-scaling`'s
+/// output is directly comparable to that test's own.
+const SCALING_SIZES: &[usize] = &[100, 200, 400];
+const SCALING_REPS: u32 = 20;
 
 const DEFAULT_EXAMPLES: &[&str] = &["ping", "order-system", "domain-orders", "sim-three-service"];
 
@@ -55,6 +72,7 @@ fn main() {
     let mut reps: u32 = 40;
     let mut update_baseline = false;
     let mut with_callgrind = false;
+    let mut with_scaling = false;
     let mut compare_path: Option<PathBuf> = None;
     let mut names: Vec<String> = Vec::new();
     for arg in args {
@@ -68,6 +86,8 @@ fn main() {
             update_baseline = true;
         } else if arg == "--with-callgrind" {
             with_callgrind = true;
+        } else if arg == "--with-scaling" {
+            with_scaling = true;
         } else if let Some(v) = arg.strip_prefix("--compare=") {
             compare_path = Some(PathBuf::from(v));
         } else if arg.starts_with("--") {
@@ -106,6 +126,15 @@ fn main() {
         "json" => print_json(&setup, &reports),
         "table" => print_table(&setup, &reports),
         other => panic!("unknown --format {other}; expected table or json"),
+    }
+
+    if with_scaling {
+        eprintln!("measuring the asymptotic-guard corpus at N=100/200/400 (this takes a while)...");
+        let points: Vec<ScalingPoint> = SCALING_SIZES
+            .iter()
+            .map(|&n| measure_scaling(n, SCALING_REPS))
+            .collect();
+        print_scaling(&points);
     }
 
     if update_baseline || compare_path.is_some() {
@@ -237,4 +266,31 @@ fn print_table(setup: &[TemplateSetup], reports: &[ExampleReport]) {
         }
         println!();
     }
+}
+
+fn print_scaling(points: &[ScalingPoint]) {
+    println!("### Asymptotic guard (synthetic corpus, 31UpdatePlan.md M7)\n");
+    println!("| N | sema::analyze (us) | growth | generate() [python] (us) | growth |");
+    println!("|---|---|---|---|---|");
+    for (i, p) in points.iter().enumerate() {
+        let (analyze_growth, generate_growth) = match points.get(i.wrapping_sub(1)) {
+            Some(prev) if i > 0 => (
+                growth_ratio(prev.analyze.mean_us, p.analyze.mean_us),
+                growth_ratio(prev.generate.mean_us, p.generate.mean_us),
+            ),
+            _ => (0.0, 0.0),
+        };
+        if i == 0 {
+            println!(
+                "| {:<5} | {:>18.1} | {:<6} | {:>24.1} | {:<6} |",
+                p.n, p.analyze.mean_us, "--", p.generate.mean_us, "--"
+            );
+        } else {
+            println!(
+                "| {:<5} | {:>18.1} | {:>5.2}x | {:>24.1} | {:>5.2}x |",
+                p.n, p.analyze.mean_us, analyze_growth, p.generate.mean_us, generate_growth
+            );
+        }
+    }
+    println!();
 }

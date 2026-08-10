@@ -1007,3 +1007,249 @@ mod instruction_budget_tests {
         assert!(check_instruction_budget(&current, &baseline, INSTRUCTION_COUNT_BAND_PCT).is_ok());
     }
 }
+
+// ---------------------------------------------------------------------
+// `31UpdatePlan.md` M7: the asymptotic guard. A synthetic corpus at N,
+// 2N and 4N, shared here between `ciac-bench` and
+// `tests/tests/perf_scaling.rs` (open question 4: the corpus generator
+// lives in exactly one place so a gate can never grow a private copy
+// that quietly drifts from what a human inspects by hand). Unlike the
+// M6 gate, this one is runner-independent by construction -- it
+// compares two measurements from the *same* run on the *same*
+// machine, so it needs no noise-floor calibration at all.
+// ---------------------------------------------------------------------
+
+/// One "unit" of synthetic load: a `crud`-managed record, a
+/// `table`-managed record, a stream, two handlers, one api and one
+/// worker, wired into two pipelines -- the same crud/table split
+/// `examples/order-system.ciac` itself documents as forced (a `crud`
+/// resource and a handler-addressed `table` can never be the same
+/// record), repeated `n` times under a distinct numeric suffix so
+/// every declared name in the corpus stays unique. `ciac check`
+/// reports one benign `CIAC0007` ("stream has no publisher") per
+/// unit -- each unit's worker only *consumes* its own stream, nothing
+/// in this corpus ever publishes to it -- the same disclosed-benign
+/// warning shape `order-system.ciac`'s own comments already carry for
+/// an unrelated stream in that file.
+pub fn synthetic_corpus(n: usize) -> String {
+    let mut src =
+        String::from("service SyntheticScale;\n\nuse {\n    db Postgres;\n    queue NATS;\n}\n");
+    for i in 0..n {
+        src.push_str(&format!(
+            r#"
+record Entity{i} {{
+    id: Uuid;
+    name: String;
+    value: Int;
+}}
+crud Entity{i}: Entity{i};
+
+record Widget{i} {{
+    id: Uuid;
+    entity_id: Uuid;
+    status: enum {{ Pending, Done }};
+}}
+table Widgets{i}: Widget{i};
+stream Events{i}: Widget{i};
+
+handler Compute{i}(payload: Widget{i}) -> Widget{i} {{
+    let updated = Widget{i} {{
+        id: payload.id,
+        entity_id: payload.entity_id,
+        status: Done
+    }};
+    db.update(Widgets{i}, updated.id, updated);
+    return updated;
+}}
+
+handler Notify{i}(payload: Widget{i}) -> Widget{i} {{
+    return payload;
+}}
+
+api ComputeApi{i}: Widget{i} {{
+    method: POST;
+    path: "/widgets{i}/compute";
+}}
+pipeline ComputeApi{i}: Compute{i} -> Return;
+
+worker EventWorker{i} on Events{i};
+pipeline EventWorker{i}: Notify{i};
+"#
+        ));
+    }
+    src
+}
+
+/// `sema::analyze` and (python target) `generate()` timings for one
+/// synthetic corpus size.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct ScalingPoint {
+    pub n: usize,
+    pub analyze: Stats,
+    pub generate: Stats,
+}
+
+/// Measures the front end and python-target generation cost against
+/// [`synthetic_corpus`]`(n)`. Writes the corpus to its own scratch
+/// file first -- [`load`]'s own doc comment explains why
+/// `ciac_syntax::load` needs a real path rather than an in-memory
+/// buffer -- and reuses [`measure`] for the timing itself, so this
+/// reports the same shape of numbers `measure_example`'s own
+/// `sema::analyze` phase does, just against a corpus whose size is a
+/// parameter instead of whatever one committed example happens to
+/// contain.
+pub fn measure_scaling(n: usize, reps: u32) -> ScalingPoint {
+    let src = synthetic_corpus(n);
+    let dir = scratch_dir(&format!("scaling-n{n}"));
+    std::fs::create_dir_all(&dir).expect("creating scratch dir");
+    let path = dir.join("synthetic.ciac");
+    std::fs::write(&path, &src).expect("writing synthetic corpus");
+
+    let (_, ir) = load(&path);
+    let opts = GenOptions::default();
+    let backend = ciac_backend_python::PythonBackend;
+
+    let analyze = measure(reps, || {
+        let mut sources = SourceMap::new();
+        let mut diags = Diagnostics::new();
+        let program = ciac_syntax::load(&path, &mut sources, &mut diags)
+            .expect("synthetic corpus is well-formed by construction");
+        ciac_sema::analyze(&program, &mut diags)
+            .expect("synthetic corpus is well-formed by construction")
+    });
+
+    let generate = measure(reps, || {
+        backend
+            .generate(&ir, &opts)
+            .expect("python backend supports any corpus this generator can produce")
+    });
+
+    std::fs::remove_dir_all(&dir).ok();
+
+    ScalingPoint {
+        n,
+        analyze,
+        generate,
+    }
+}
+
+/// Ratio of two mean timings, e.g. the cost of a 2N corpus over an N
+/// corpus. Pure and separate from [`measure_scaling`] for the same
+/// reason `check_instruction_budget` is separate from
+/// `measure_instruction_counts`: the arithmetic can be unit-tested
+/// with synthetic data, without paying for two real front-end runs
+/// every time the comparison itself needs proving.
+pub fn growth_ratio(from_mean_us: f64, to_mean_us: f64) -> f64 {
+    if from_mean_us > 0.0 {
+        to_mean_us / from_mean_us
+    } else {
+        0.0
+    }
+}
+
+/// `sema::analyze` measured on this session's own machine
+/// (`31UpdatePlan.md` M7, N=50/100/200/400, 15 reps each): per-doubling
+/// ratios of 1.93x, 2.80x, 2.72x -- noisy at these sample counts but
+/// trending toward the higher end as N grows, consistent with a real
+/// quadratic term dominating a smaller linear one. Smaller than the
+/// ~3.7x/doubling the motivating investigation found on a
+/// differently-shaped corpus (`docs/perf/noise-floor.md` quotes it),
+/// which is expected -- a different corpus shape exercises the same
+/// underlying quadratic to a different degree, not a different fact
+/// about the codebase. This ceiling is set at 4.5x -- comfortably
+/// above the worst doubling this measurement observed (2.80x), not a
+/// pass mark and not an endorsement of the current exponent. It exists
+/// to catch a *further* regression (e.g. an accidentally-quadratic
+/// lookup added on top of the existing one), and is meant to be
+/// ratcheted down once inventory item 10 (IR indexes) lands and the
+/// known quadratic itself is fixed.
+pub const SEMA_ANALYZE_GROWTH_CEILING: f64 = 4.5;
+
+/// python `generate()` measured the same session, same corpus:
+/// per-doubling ratios of 2.13x, 2.17x, 1.96x -- close to linear,
+/// matching the motivating investigation's own "`generate()` is
+/// linear" finding on a different corpus. Ceiling set at 3.0x --
+/// enough margin for legitimate per-file overhead to grow somewhat
+/// without false-firing on noise, tight enough that a regression to
+/// the `sema::analyze` shape (list-in-a-loop, `O(n^2)` string
+/// building) would still trip it.
+pub const GENERATE_GROWTH_CEILING: f64 = 3.0;
+
+/// Pure comparison: does `to`'s cost, relative to `from`'s, stay under
+/// `ceiling`? Mirrors `check_instruction_budget`'s and `check_budget`'s
+/// own shape.
+pub fn check_growth_ceiling(
+    from_mean_us: f64,
+    to_mean_us: f64,
+    ceiling: f64,
+    label: &str,
+) -> Result<(), String> {
+    let ratio = growth_ratio(from_mean_us, to_mean_us);
+    if ratio > ceiling {
+        Err(format!(
+            "{label}: growth ratio {ratio:.3}x exceeds the {ceiling:.3}x ceiling ({from_mean_us:.1}us -> {to_mean_us:.1}us)"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod scaling_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_corpus_is_empty_but_valid_shape_at_n_zero() {
+        let src = synthetic_corpus(0);
+        assert!(src.contains("service SyntheticScale;"));
+        assert!(!src.contains("record Entity0"));
+    }
+
+    #[test]
+    fn synthetic_corpus_grows_one_unit_per_n() {
+        let src = synthetic_corpus(3);
+        for i in 0..3 {
+            assert!(src.contains(&format!("record Entity{i} ")));
+            assert!(src.contains(&format!("record Widget{i} ")));
+            assert!(src.contains(&format!("crud Entity{i}: Entity{i};")));
+            assert!(src.contains(&format!("table Widgets{i}: Widget{i};")));
+        }
+        assert!(!src.contains("Entity3"));
+    }
+
+    #[test]
+    fn growth_ratio_of_equal_costs_is_one() {
+        assert_eq!(growth_ratio(1000.0, 1000.0), 1.0);
+    }
+
+    #[test]
+    fn passes_when_growth_stays_under_the_ceiling() {
+        // A 2x cost increase for a 2x-larger corpus: linear, well
+        // under any of this milestone's ceilings.
+        assert!(check_growth_ceiling(1000.0, 2000.0, SEMA_ANALYZE_GROWTH_CEILING, "test").is_ok());
+    }
+
+    /// The harness-can-fail proof this milestone's own exit checklist
+    /// requires: a synthetically superlinear growth must actually fail
+    /// the check, by construction.
+    #[test]
+    fn fails_when_growth_exceeds_the_ceiling() {
+        // 10x the cost for a 2x-larger corpus -- the shape of an
+        // accidentally-introduced O(n^2) lookup on top of the existing
+        // one, not measurement noise.
+        let err = check_growth_ceiling(
+            1000.0,
+            10_000.0,
+            SEMA_ANALYZE_GROWTH_CEILING,
+            "sema::analyze",
+        )
+        .expect_err("a 10x ratio must trip a 4.5x ceiling");
+        assert!(err.contains("sema::analyze"));
+        assert!(err.contains("10.000x"));
+    }
+
+    #[test]
+    fn an_improvement_never_fails_the_ceiling() {
+        assert!(check_growth_ceiling(1000.0, 500.0, SEMA_ANALYZE_GROWTH_CEILING, "test").is_ok());
+    }
+}

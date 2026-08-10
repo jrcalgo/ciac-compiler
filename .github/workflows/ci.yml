@@ -68,6 +68,63 @@ jobs:
         continue-on-error: true
         run: scripts/bench-codegen.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # 31UpdatePlan.md M1: the noise-floor sweep, run once on real
+  # ubuntu-latest hardware rather than only in a local sandbox --
+  # local repetition alone can't see the between-run scheduling
+  # variance a shared CI runner exhibits and this machine's own CPU
+  # never will. Measures noise; gates nothing (that's `perf-gate`,
+  # added at M6). `continue-on-error` for the same reason the `test`
+  # job's own "Codegen speed" step already carries it: a measurement
+  # job must never be able to block a merge. No new committed source
+  # here by design -- M1's own job is to decide *whether* a callgrind
+  # gate is viable, not to build one; wrapping the existing `ciac`
+  # binary directly keeps this job's diff to CI config only, matching
+  # the arc's instrument-only contract for this milestone specifically
+  # (M2 is where a real harness gets checked in).
+  perf-noise-floor:
+    name: Perf noise floor (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y valgrind
+      - run: cargo build --release -p ciac
+      - name: Wall-clock repetition sweep (20 reps, ping/python)
+        run: |
+          echo "### Wall-clock: 20 reps, ciac build --target python examples/ping.ciac" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          : > /tmp/nf-samples.txt
+          for i in $(seq 1 20); do
+            rm -rf /tmp/nf-out
+            t0=$(date +%s%N)
+            ./target/release/ciac build examples/ping.ciac --target python --out /tmp/nf-out >/dev/null 2>&1
+            t1=$(date +%s%N)
+            echo $(( (t1-t0)/1000 )) >> /tmp/nf-samples.txt
+          done
+          python3 -c "
+          import statistics
+          vals = [int(l) for l in open('/tmp/nf-samples.txt')]
+          mean = statistics.mean(vals)
+          stdev = statistics.pstdev(vals)
+          print(f'mean={mean:.1f}us stdev={stdev:.1f}us relstdev={stdev/mean*100:.1f}% min={min(vals)} max={max(vals)} p95={sorted(vals)[int(len(vals)*0.95)]}us')
+          " | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Callgrind instruction-count sample (5 reps, same build)
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Callgrind: 5 reps, same build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          : > /tmp/nf-ir.txt
+          for i in $(seq 1 5); do
+            rm -rf /tmp/nf-out
+            valgrind --tool=callgrind --callgrind-out-file=/tmp/cg-$i.out --cache-sim=no -q \
+              ./target/release/ciac build examples/ping.ciac --target python --out /tmp/nf-out >/dev/null 2>&1
+            grep "^summary:" /tmp/cg-$i.out | awk '{print $2}' >> /tmp/nf-ir.txt
+          done
+          cat /tmp/nf-ir.txt | tee -a "$GITHUB_STEP_SUMMARY"
+
   # 26UpdatePlan.md M6: the compiler's own dependency tree, scanned
   # against RustSec (advisories) and cargo-deny's broader policy
   # (licenses/bans/sources). Runs on every push (fast: no example

@@ -25,11 +25,21 @@
 # already asks of its own two vendored-copy call sites.
 #
 # Usage:
-#   scripts/bench-verify.sh --target python [--example order-system]
+#   scripts/bench-verify.sh --target python [--example order-system] [--format table|json]
 #   scripts/bench-verify.sh --target rust
 #   scripts/bench-verify.sh --target typescript
 #   scripts/bench-verify.sh --target go
 #   scripts/bench-verify.sh --target java
+#
+# `31UpdatePlan.md` M8 adds `--format json`: a `[{"step","purpose",
+# "seconds"}, ...]` array on stdout (everything else this script prints
+# moves to stderr in that mode), consumed by
+# `ciac_integration_tests::bench::measure_verify_steps` to wire this
+# script's own numbers into `docs/perf/baseline.json` -- the
+# already-disclosed step-list duplication against each backend's
+# `TARGET_INFO.validate` stays in exactly one place (this script), and
+# the Rust side reuses it by shelling out rather than adding a second,
+# competing implementation of "what are Python's validate steps."
 #
 # Exits non-zero if any validate step itself fails -- this is a
 # measuring instrument, not a gate.
@@ -38,6 +48,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 TARGET=""
 EXAMPLE="order-system"
+FORMAT="table"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             EXAMPLE="$2"
             shift 2
             ;;
+        --format)
+            FORMAT="$2"
+            shift 2
+            ;;
         *)
             echo "unknown argument: $1" >&2
             exit 1
@@ -57,9 +72,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$TARGET" ]]; then
-    echo "usage: $0 --target <python|rust|typescript|go|java> [--example NAME]" >&2
+    echo "usage: $0 --target <python|rust|typescript|go|java> [--example NAME] [--format table|json]" >&2
     exit 1
 fi
+case "$FORMAT" in
+    table|json) ;;
+    *)
+        echo "unknown --format '$FORMAT' -- expected 'table' or 'json'" >&2
+        exit 1
+        ;;
+esac
 
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
@@ -145,6 +167,17 @@ case "$TARGET" in
 esac
 
 cd "$ORIG_DIR"
+
+if [[ "$FORMAT" == "json" ]]; then
+    json_rows=()
+    for row in "${ROWS[@]}"; do
+        IFS='|' read -r step purpose elapsed <<<"$row"
+        json_rows+=("$(jq -n --arg step "$step" --arg purpose "$purpose" --argjson seconds "$elapsed" \
+            '{step: $step, purpose: $purpose, seconds: $seconds}')")
+    done
+    printf '%s\n' "${json_rows[@]}" | jq -s '.'
+    exit 0
+fi
 
 echo ""
 echo "## Per-step timing: $TARGET / $EXAMPLE"

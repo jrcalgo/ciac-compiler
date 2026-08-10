@@ -558,6 +558,17 @@ fn command_stderr_first_line(program: &str, args: &[&str]) -> Option<String> {
 /// written before M6 still deserializes. No `baseline_version` bump:
 /// adding a field is exactly the "purely additive" case the version
 /// field's own doc comment carves out.
+///
+/// `verify`, `slow_test_binaries` and `sim` are the same additive
+/// shape, added at `31UpdatePlan.md` M8: present only when
+/// `--update-baseline` ran with the matching `--with-*` flag, empty
+/// otherwise, `#[serde(default)]` for the same backward-compatibility
+/// reason. All three are reporting-only -- nothing in this repository
+/// gates on them (Pillar 6: validation cost is downstream toolchain,
+/// not CIaC's own; the slow test binaries are already the enforcement
+/// mechanism themselves, not something to gate a second time; `ciac
+/// sim`'s cost is a different hot path with its own profile, per that
+/// pillar's own text).
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Baseline {
     pub baseline_version: u32,
@@ -566,6 +577,12 @@ pub struct Baseline {
     pub examples: Vec<ExampleReport>,
     #[serde(default)]
     pub instruction_counts: Vec<InstructionCount>,
+    #[serde(default)]
+    pub verify: Vec<ValidateStepTiming>,
+    #[serde(default)]
+    pub slow_test_binaries: Vec<SlowTestBinary>,
+    #[serde(default)]
+    pub sim: Vec<SimTiming>,
 }
 
 /// One metric's delta between two baselines, e.g.
@@ -675,6 +692,9 @@ mod baseline_tests {
             template_setup: Vec::new(),
             examples,
             instruction_counts: Vec::new(),
+            verify: Vec::new(),
+            slow_test_binaries: Vec::new(),
+            sim: Vec::new(),
         }
     }
 
@@ -1252,4 +1272,234 @@ mod scaling_tests {
     fn an_improvement_never_fails_the_ceiling() {
         assert!(check_growth_ceiling(1000.0, 500.0, SEMA_ANALYZE_GROWTH_CEILING, "test").is_ok());
     }
+}
+
+// ---------------------------------------------------------------------
+// `31UpdatePlan.md` M8: validation, the test suite's own cost, and
+// `ciac sim`, closing Pillar 6's "three cost centres with no
+// instrument whatsoever" gap. All three are reporting-only -- none of
+// them is a threshold anything fails against, matching that pillar's
+// own reasoning for each: validation cost is downstream toolchain, not
+// CIaC's own; the slow test binaries already are an enforcement
+// mechanism (they hold the golden/negative/equivalence assertions
+// themselves); `ciac sim`'s cost is a different hot path with its own
+// profile that a wall-clock or instruction-count gate would not
+// characterize correctly. The LSP front-end latency row this pillar
+// also names is *not* re-added here -- `measure_example`'s own
+// `lsp::load_with_overlay+analyze` phase (added at M2) already
+// measures it, with the `harvest`/`to_lsp_diagnostics` exclusion
+// already disclosed in that function's own doc comment.
+// ---------------------------------------------------------------------
+
+/// One validate step's timing for one target, sourced from
+/// `scripts/bench-verify.sh --format json` (`31UpdatePlan.md` M8).
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct ValidateStepTiming {
+    pub target: String,
+    pub step: String,
+    pub purpose: String,
+    pub duration_s: f64,
+}
+
+/// Shells out to `scripts/bench-verify.sh --target <target> --example
+/// <example> --format json` and tags its own JSON rows with `target`.
+/// The script stays the single place that knows each backend's
+/// validate step list (already disclosed there as a duplication
+/// against `TARGET_INFO.validate`, accepted for the same reason
+/// `sync-vendored-ciac-assets.sh` accepts its own two-copy problem) --
+/// this function shells out to it rather than adding a second,
+/// competing copy of "what are Python's validate steps" in Rust.
+pub fn measure_verify_steps(
+    target: &str,
+    example: &str,
+) -> Result<Vec<ValidateStepTiming>, String> {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/bench-verify.sh");
+    let output = std::process::Command::new("bash")
+        .arg(&script)
+        .args(["--target", target, "--example", example, "--format", "json"])
+        .output()
+        .map_err(|e| format!("running {}: {e}", script.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} --target {target} failed:\n{}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    #[derive(serde::Deserialize)]
+    struct Row {
+        step: String,
+        purpose: String,
+        seconds: f64,
+    }
+    let rows: Vec<Row> = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("parsing {} --format json output: {e}", script.display()))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ValidateStepTiming {
+            target: target.to_owned(),
+            step: r.step,
+            purpose: r.purpose,
+            duration_s: r.seconds,
+        })
+        .collect())
+}
+
+/// Measures every target's validate steps for one example, skipping
+/// (and logging) any target whose measurement fails rather than
+/// aborting the whole sweep -- matching `measure_instruction_counts`'s
+/// own "one failure doesn't invalidate the others" posture.
+pub fn measure_verify(example: &str, targets: &[&str]) -> Vec<ValidateStepTiming> {
+    targets
+        .iter()
+        .flat_map(|target| match measure_verify_steps(target, example) {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("measuring verify for {target}: {e}");
+                Vec::new()
+            }
+        })
+        .collect()
+}
+
+/// One of the four slow test binaries `docs/perf/codegen-baseline.md`'s
+/// own "M1 -- Baseline: the four slow test binaries" section names.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct SlowTestBinary {
+    pub name: String,
+    pub wall_time_s: f64,
+}
+
+/// The fixed corpus: `determinism` and `openapi` each hold exactly one
+/// `#[test]` fn (nothing for libtest to parallelize within either);
+/// `conformance` and `golden` hold three apiece. Same four
+/// `docs/perf/codegen-baseline.md` already names by hand.
+pub const SLOW_TEST_BINARIES: &[&str] = &["determinism", "conformance", "golden", "openapi"];
+
+/// Times one slow test binary via `cargo test -p ciac-integration-tests
+/// --test <name>`, debug profile -- matching
+/// `docs/perf/codegen-baseline.md`'s own established convention
+/// ("directly comparable to what a developer sees ... today"), not the
+/// release profile the rest of this arc's wall-clock numbers use.
+/// Returns `Err` with the real output on failure rather than panicking
+/// -- though in practice a failure here means a real regression, not
+/// measurement noise, since these are the exact `#[test]` functions
+/// `cargo test --workspace` already runs and already passed before
+/// this function is ever called.
+pub fn measure_slow_test_binary(name: &str) -> Result<f64, String> {
+    let t0 = Instant::now();
+    let output = std::process::Command::new("cargo")
+        .args(["test", "-p", "ciac-integration-tests", "--test", name])
+        .output()
+        .map_err(|e| format!("running cargo test --test {name}: {e}"))?;
+    let elapsed = t0.elapsed().as_secs_f64();
+    if !output.status.success() {
+        return Err(format!(
+            "cargo test --test {name} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(elapsed)
+}
+
+/// Times every binary in [`SLOW_TEST_BINARIES`], skipping (and
+/// logging) any that fails rather than aborting the sweep.
+pub fn measure_slow_test_binaries() -> Vec<SlowTestBinary> {
+    SLOW_TEST_BINARIES
+        .iter()
+        .filter_map(|name| match measure_slow_test_binary(name) {
+            Ok(wall_time_s) => Some(SlowTestBinary {
+                name: (*name).to_owned(),
+                wall_time_s,
+            }),
+            Err(e) => {
+                eprintln!("measuring {name}: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// One `ciac sim` scenario's wall-clock cost for one (example, target)
+/// pair. A different hot path from generation with its own cost
+/// profile (virtual-clock scheduling, fake I/O, and for four of five
+/// targets a real compile of the generated project) -- per Pillar 6,
+/// deliberately not a callgrind candidate: instrumenting a Python
+/// interpreter running a generated runner would measure the
+/// interpreter, not CIaC.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct SimTiming {
+    pub example: String,
+    pub scenario: String,
+    pub target: String,
+    pub duration_s: f64,
+}
+
+fn sim_scenario_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../sim")
+        .join(name)
+}
+
+/// Runs `ciac_binary sim <example> --target <target> --out <scratch>
+/// --scenario <scenario>` once and times it wall-clock.
+pub fn measure_sim(
+    ciac_binary: &Path,
+    example: &str,
+    scenario: &Path,
+    target: &str,
+) -> Result<f64, String> {
+    let scratch = std::env::temp_dir().join(format!(
+        "ciac-sim-bench-{example}-{target}-{}",
+        std::process::id()
+    ));
+    let example_path = examples_path(example);
+    let t0 = Instant::now();
+    let output = std::process::Command::new(ciac_binary)
+        .arg("sim")
+        .arg(&example_path)
+        .args(["--target", target])
+        .arg("--out")
+        .arg(&scratch)
+        .arg("--scenario")
+        .arg(scenario)
+        .output()
+        .map_err(|e| format!("running ciac sim: {e}"))?;
+    let elapsed = t0.elapsed().as_secs_f64();
+    std::fs::remove_dir_all(&scratch).ok();
+    if !output.status.success() {
+        return Err(format!(
+            "ciac sim {example} --target {target} failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(elapsed)
+}
+
+/// Measures one (example, scenario) pair across every target in
+/// `targets`, skipping (and logging) any target whose run fails.
+pub fn measure_sim_timings(
+    ciac_binary: &Path,
+    example: &str,
+    scenario_name: &str,
+    targets: &[&str],
+) -> Vec<SimTiming> {
+    let scenario = sim_scenario_path(scenario_name);
+    targets
+        .iter()
+        .filter_map(
+            |target| match measure_sim(ciac_binary, example, &scenario, target) {
+                Ok(duration_s) => Some(SimTiming {
+                    example: example.to_owned(),
+                    scenario: scenario_name.to_owned(),
+                    target: (*target).to_owned(),
+                    duration_s,
+                }),
+                Err(e) => {
+                    eprintln!("measuring sim for {target}: {e}");
+                    None
+                }
+            },
+        )
+        .collect()
 }

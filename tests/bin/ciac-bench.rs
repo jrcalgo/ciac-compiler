@@ -34,14 +34,42 @@
 //! This data is not written to `docs/perf/baseline.json`: the guard
 //! compares two measurements from the same run, so unlike M6's
 //! instruction counts it has no cross-run baseline to store.
+//!
+//! `31UpdatePlan.md` M8 adds three more `--with-*` flags, each real
+//! wall-clock minutes rather than the microsecond-scale phase table
+//! above, so each stays opt-in:
+//!
+//! - `--with-verify` runs `scripts/bench-verify.sh --format json`
+//!   across all five targets on `order-system`, folded into
+//!   `docs/perf/baseline.json`'s `verify` field on `--update-baseline`.
+//! - `--with-slow-tests` times the four slow test binaries
+//!   (`determinism`, `conformance`, `golden`, `openapi`) via a real
+//!   `cargo test -p ciac-integration-tests --test <name>` each,
+//!   folded into the `slow_test_binaries` field.
+//! - `--with-sim` runs `ciac sim` on `order-system`'s own flagship
+//!   scenario across all five targets, folded into the `sim` field.
+//!
+//! All three carry forward the existing baseline's own data on a
+//! routine run that omits the matching flag, exactly like
+//! `--with-callgrind`/`instruction_counts` already does — see
+//! `existing_baseline`.
 
 use ciac_integration_tests::bench::{
     capture_environment, compare_baselines, growth_ratio, measure_example,
-    measure_instruction_counts, measure_scaling, measure_template_setup, Baseline, ExampleReport,
+    measure_instruction_counts, measure_scaling, measure_sim_timings, measure_slow_test_binaries,
+    measure_template_setup, measure_verify, resolve_ciac_release_binary, Baseline, ExampleReport,
     ScalingPoint, TemplateSetup, BASELINE_VERSION,
 };
 use ciac_integration_tests::{backends, compile_file, examples_dir};
 use std::path::{Path, PathBuf};
+
+/// `31UpdatePlan.md` M8's own fixed corpus for `--with-verify` and
+/// `--with-sim`: `order-system`, the flagship example M6's gate and
+/// M7's calibration doc comments both already anchor on.
+const VERIFY_SIM_TARGETS: &[&str] = &["python", "rust", "typescript", "go", "java"];
+const VERIFY_EXAMPLE: &str = "order-system";
+const SIM_EXAMPLE: &str = "order-system";
+const SIM_SCENARIO: &str = "order-system.ciac-sim.json";
 
 /// `31UpdatePlan.md` M7's own corpus sizes, matching
 /// `tests/tests/perf_scaling.rs`'s gate exactly, so `--with-scaling`'s
@@ -73,6 +101,9 @@ fn main() {
     let mut update_baseline = false;
     let mut with_callgrind = false;
     let mut with_scaling = false;
+    let mut with_verify = false;
+    let mut with_slow_tests = false;
+    let mut with_sim = false;
     let mut compare_path: Option<PathBuf> = None;
     let mut names: Vec<String> = Vec::new();
     for arg in args {
@@ -88,6 +119,12 @@ fn main() {
             with_callgrind = true;
         } else if arg == "--with-scaling" {
             with_scaling = true;
+        } else if arg == "--with-verify" {
+            with_verify = true;
+        } else if arg == "--with-slow-tests" {
+            with_slow_tests = true;
+        } else if arg == "--with-sim" {
+            with_sim = true;
         } else if let Some(v) = arg.strip_prefix("--compare=") {
             compare_path = Some(PathBuf::from(v));
         } else if arg.starts_with("--") {
@@ -138,18 +175,52 @@ fn main() {
     }
 
     if update_baseline || compare_path.is_some() {
-        // `--with-callgrind` measures fresh; otherwise carry forward
-        // whatever instruction counts the existing baseline.json
-        // already has (if any) rather than silently erasing M6's own
-        // data on every routine wall-clock-only `--update-baseline`
-        // run from a later milestone.
+        // `--with-callgrind`/`--with-verify`/`--with-slow-tests`/
+        // `--with-sim` each measure fresh only when asked; otherwise
+        // this carries forward whatever the existing baseline.json
+        // already has (if any) rather than silently erasing an earlier
+        // milestone's own data on every routine, narrower
+        // `--update-baseline` run.
+        let existing = existing_baseline(&baseline_path());
+
         let instruction_counts = if with_callgrind {
             eprintln!("measuring instruction counts under valgrind (this is slow)...");
             measure_instruction_counts(CALLGRIND_EXAMPLES)
         } else {
-            existing_baseline(&baseline_path())
-                .map(|b| b.instruction_counts)
+            existing
+                .as_ref()
+                .map(|b| b.instruction_counts.clone())
                 .unwrap_or_default()
+        };
+
+        let verify = if with_verify {
+            eprintln!("measuring validate-step timings across all five targets (real minutes)...");
+            measure_verify(VERIFY_EXAMPLE, VERIFY_SIM_TARGETS)
+        } else {
+            existing
+                .as_ref()
+                .map(|b| b.verify.clone())
+                .unwrap_or_default()
+        };
+
+        let slow_test_binaries = if with_slow_tests {
+            eprintln!(
+                "timing the four slow test binaries (determinism, conformance, golden, openapi; real minutes)..."
+            );
+            measure_slow_test_binaries()
+        } else {
+            existing
+                .as_ref()
+                .map(|b| b.slow_test_binaries.clone())
+                .unwrap_or_default()
+        };
+
+        let sim = if with_sim {
+            eprintln!("running ciac sim across all five targets (real minutes)...");
+            let ciac_binary = resolve_ciac_release_binary();
+            measure_sim_timings(&ciac_binary, SIM_EXAMPLE, SIM_SCENARIO, VERIFY_SIM_TARGETS)
+        } else {
+            existing.as_ref().map(|b| b.sim.clone()).unwrap_or_default()
         };
 
         let current = Baseline {
@@ -158,6 +229,9 @@ fn main() {
             template_setup: setup,
             examples: reports,
             instruction_counts,
+            verify,
+            slow_test_binaries,
+            sim,
         };
 
         if let Some(path) = &compare_path {

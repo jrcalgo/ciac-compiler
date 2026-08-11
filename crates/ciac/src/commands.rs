@@ -65,6 +65,92 @@ pub(crate) fn front_end_quiet(
     Ok((ir, has_errors, sources, diags))
 }
 
+/// The manifest's own `source_hash` formula: the whole resolved source
+/// set (entry file plus every transitively `import`ed file, v0.8 M1),
+/// not just the entry file's bytes -- so the hash changes when an
+/// imported file changes too, even if the entry file itself didn't.
+/// Shared by [`generate`] (which needs the loud, diagnostic-printing
+/// [`front_end`]) and [`compute_source_hash`] (`32UpdatePlan.md` M3's
+/// up-to-date check, which needs the quiet one) so the formula itself
+/// lives in one place.
+fn hash_sources(sources: &SourceMap) -> String {
+    let mut buf = String::new();
+    for file in sources.files() {
+        buf.push_str(&file.name);
+        buf.push('\0');
+        buf.push_str(&file.src);
+        buf.push('\0');
+    }
+    hash_bytes(buf.as_bytes())
+}
+
+/// `32UpdatePlan.md` M3: the fresh half of `build_inner`'s up-to-date
+/// check -- computes exactly the hash [`generate`] would embed in a
+/// new manifest, without running codegen or any of semantic analysis's
+/// downstream consumers. `None` (rather than an error) on a parse
+/// failure: that just means "not provably up to date," and the normal
+/// build path's own `front_end` call reports the failure once, the
+/// usual way -- using the quiet front end here avoids printing the
+/// same diagnostics twice when the caller falls through to a real
+/// build.
+fn compute_source_hash(file: &Path) -> Result<Option<String>> {
+    let (ir, has_errors, sources, _diags) = front_end_quiet(file)?;
+    if ir.is_none() || has_errors {
+        return Ok(None);
+    }
+    Ok(Some(hash_sources(&sources)))
+}
+
+/// `32UpdatePlan.md` M3: every path the manifest tracks still exists on
+/// disk with the hash the manifest recorded. Fail-closed by
+/// construction -- a missing file or a read error both fall through
+/// `Result::is_ok_and`'s `false` default, same as a genuine hash
+/// mismatch.
+fn manifest_files_match_disk(out: &Path, manifest: &ciac_codegen::manifest::Manifest) -> bool {
+    manifest.files.iter().all(|(rel, file)| {
+        std::fs::read(out.join(rel)).is_ok_and(|bytes| hash_bytes(&bytes) == file.hash)
+    })
+}
+
+/// `32UpdatePlan.md` M3: is `out` already exactly what a fresh
+/// `ciac build` with this `recipe` would produce? A no-op rebuild
+/// previously cost nearly as much as a cold one -- full generation,
+/// regeneration planning, and a manifest write, all to conclude
+/// nothing changed -- even though the manifest already records
+/// everything needed to answer that question directly: `source_hash`,
+/// the full `files` map with per-file hashes, and (since v0.18 M5) the
+/// exact [`ciac_codegen::manifest::BuildRecipe`] that produced the
+/// tree. Pillar 5's fail-closed rule is the whole design: a missing
+/// manifest, a `None` recipe (a legacy manifest predating v0.18 M5), a
+/// differing recipe (any of `--deploy`/`--client`/`--profile`/...), a
+/// changed source hash, a single mismatched file hash, or a deleted
+/// file all mean "not up to date, do the real build" -- every check
+/// below returns `false` rather than propagating uncertainty, since a
+/// false negative here just costs the speedup, while a false positive
+/// would skip a build that should have happened.
+fn is_up_to_date(
+    file: &Path,
+    out: &Path,
+    recipe: &ciac_codegen::manifest::BuildRecipe,
+) -> Result<bool> {
+    if !manifest_path(out).exists() {
+        return Ok(false);
+    }
+    let Ok(manifest) = load_manifest(out) else {
+        return Ok(false);
+    };
+    if manifest.recipe.as_ref() != Some(recipe) {
+        return Ok(false);
+    }
+    let Some(fresh_source_hash) = compute_source_hash(file)? else {
+        return Ok(false);
+    };
+    if manifest.source_hash != fresh_source_hash {
+        return Ok(false);
+    }
+    Ok(manifest_files_match_disk(out, &manifest))
+}
+
 pub fn check(file: &Path, json: bool) -> Result<ExitCode> {
     if json {
         let (envelope, code) = check_envelope(file)?;
@@ -291,6 +377,15 @@ pub(crate) fn build_inner(
             .as_ref()
             .map(|p| p.display().to_string()),
     };
+
+    // `32UpdatePlan.md` M3: skip generation, regeneration planning and
+    // the manifest write entirely when `out` already matches what this
+    // exact invocation would produce -- `--force` is the only way
+    // around it, matching this milestone's own pre-registered design.
+    if !force && is_up_to_date(file, out, &recipe)? {
+        eprintln!("up to date: {} ({} backend)", out.display(), target);
+        return Ok(ExitCode::SUCCESS);
+    }
 
     let Generated {
         backend,
@@ -3103,20 +3198,7 @@ fn generate(
     let Some(ir) = ir.filter(|_| !has_errors) else {
         bail!("front-end failed");
     };
-    // Hashes the whole resolved source set (entry file plus every
-    // transitively `import`ed file, v0.8 M1), not just the entry file's
-    // bytes — so the manifest's `source_hash` changes when an imported
-    // file changes too, even if the entry file itself didn't.
-    let source_hash = {
-        let mut buf = String::new();
-        for file in sources.files() {
-            buf.push_str(&file.name);
-            buf.push('\0');
-            buf.push_str(&file.src);
-            buf.push('\0');
-        }
-        hash_bytes(buf.as_bytes())
-    };
+    let source_hash = hash_sources(&sources);
 
     if let Err(err) = ciac_codegen::check_support(backend.as_ref(), &ir) {
         eprintln!("error[{}]: {err}", ErrorCode::UnsupportedConstruct);

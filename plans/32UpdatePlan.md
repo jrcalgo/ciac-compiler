@@ -1058,9 +1058,90 @@ person.*
 | M4 | ≥40% `template_setup` (py/rs/ts) | 3-run avg via `ciac-bench`: python 1990.7→807.3µs (**59.4%**), rust 2205.3→644.2µs (**70.8%**), typescript 2493.7→1199.4µs (**51.9%**) — all comfortably clear 40%. go tracked (not gated, per pre-registration): 10610.4→~767µs setup, also a large drop — the lazy loader helps it too, `gofmt` subprocess cost just made its absolute number too noisy to pre-register a threshold against. java tracked: setup stays ~0µs both before and after (JVM dominates entirely), as expected. Neither regressed. | **Met** |
 | M5 | — (checkpoint) | Cumulative M2+M3+M4 vs `baseline-v0.29.0.json`: every `ciac-bench --compare` row improved, no regressions. Full metric sweep (instruction counts, verify, slow test binaries, sim) also clean except `determinism` slow-test-binary +8.56%, root-caused to a measurement artifact (single-shot reading taken right after two heavy phases in the same process; 3 isolated re-runs measured 56-59s, *faster* than the old baseline). One spurious `perf_budget.rs` gate fire under self-inflicted concurrent load (two release builds + valgrind at once), resolved clean on 2 isolated re-runs. Full writeup in `docs/perf/README.md`'s new "M5 checkpoint" section. | **Outcome (a): M6-M8 proceed as planned** |
 | M6 | ≤2.5×/doubling; ≥25% `ciac check` | `sema::analyze` growth (`perf_scaling.rs`): 2.15× (N=100→200), 2.46× (N=200→400) — both clear ≤2.5×. `ciac check` instructions on N=400 (`ciac check --json`, avoids an unrelated confound — see note below): 247.9M → 149.1M, **39.85%** reduction, clears ≥25%. `find_named_in_service` dropped from 10.90%→outside the top 15 functions, `Vec::from_iter` from 23.46%→12.70% (both closely matching this milestone's own cited 12.28%/31.75% derivation figures, confirming the measurement methodology matches). | **Met** |
-| M7 | ≥20% DHAT bytes | — | — |
+| M7 | ≥20% DHAT bytes | Half one (regen allocation reduction): implemented, tested, **reverted** — see note below. Measured gain 4.36% bytes / 0.47% blocks, under half threshold. Half two (Java formatter): **cut**, reason recorded below. | **Reverted (half one); cut (half two)** |
 | M8 | ≥30% validation; ≥30% slow binaries | — | — |
 | M9 | — (close-out) | — | — |
+
+**M7's measurement note — the pre-registered instrument measured the
+wrong scenario.** `scripts/bench-callgrind.sh --metric allocations`
+always builds into a fresh, empty `--out` directory
+(`rm -rf "$out"` before every invocation), so every file in the
+project resolves to `RegenStatus::New` — `plan_regeneration`'s
+`(_, _, None, _)` arm, matched whenever `read_optional` finds nothing
+on disk. The optimization this half of the milestone implements only
+removes cloning for entries that resolve to `RegenStatus::Unchanged`,
+which never occurs in that scenario. This means the plan's own cited
+baseline — "2,756,891 bytes / 16,594 blocks today" — was itself a
+cold-build reading, against which the fix could only ever measure a
+0% delta; the 20% threshold was set without the mismatch being
+visible at pre-registration time. Caught before committing to that
+number: a git-stash-based before/after on the cold-build scenario
+came back byte-for-byte identical (2,487,614 / 14,502, both states),
+which is what a code path that never executes looks like, not
+measurement noise.
+
+The corrected instrument (`m7-warm-dhat.sh`, written for this
+measurement): build `order-system` cold into a scratch dir to
+establish a manifest, append a single `// comment` line to the
+*source* (changes `source_hash`, defeating M3's up-to-date early-out,
+without changing a single byte of generated output), then rebuild
+under DHAT. Every file's generated content still matches disk, so
+`plan_regeneration`'s `Normal`-mode comparison resolves nearly every
+entry to `Unchanged` — the exact scenario this half targets, and the
+most favorable case obtainable (100% Unchanged; a partial edit would
+show a smaller percentage still, since `New`/`Update` entries were
+never touched by this change). Before: 2,980,223 bytes / 17,070
+blocks. After: 2,850,201 bytes / 16,990 blocks. **4.36% bytes, 0.47%
+blocks** — both reproduced identically on a repeat run (DHAT counts
+allocator calls; it is not a timing measurement and carries no
+run-to-run noise). `order-system`'s entire generated output is ~88KB
+across 42 files (`du -sb`), so the ~130KB measured saving is almost
+exactly twice that — the removed `generated.to_owned()` +
+`disk_content()` clones, at their real size, with nothing left over
+to explain. The optimization does precisely what it was designed to
+do; the shortfall is that regen.rs's content cloning was never a
+large share of a `ciac build`'s total allocations to begin with —
+front-end parsing, semantic analysis, and template-rendered codegen
+dominate the DHAT total, leaving a small, bounded, already-fully-
+captured amount for this specific fix to reclaim. Unlike M3's
+`ping`/`sim-three-service` split, there is no second, more favorable
+data point for this metric to point to: `order-system` is M7's only
+pre-registered target, the measurement above is already the most
+favorable scenario the mechanism can produce, and Contract 3's own
+table is unambiguous at this shortfall — **reverted** (implementation
+commit `2c8422d`, revert commit `11d02a5`), not kept-with-disclosure,
+because there is no working comparison case to disclose *against*,
+only a smaller-than-hoped ceiling on the one case that exists.
+
+**M7's half two — the Java formatter, cut in advance of
+implementation.** Item 11's own pre-registered preference order names
+option (i) — "skip invoking the formatter when template output is
+already canonically formatted... verifiable against the existing
+goldens" — as the only option that could remove the JVM-startup cost
+rather than amortize it. Checked directly against
+`crates/ciac-backend-java/templates/Application.java.j2` (the
+simplest template in the backend) and its golden snapshot
+(`tests/tests/snapshots/golden__gen__java__scheduled-cleanup.snap`):
+the raw template emits 4-space indentation
+(`    public static void main`); the golden's post-format output uses
+2-space indentation (`  public static void main`) — a difference in
+the *first* file checked, before reaching import ordering or line-
+wrap rules. Raw Jinja output is not canonically formatted, so option
+(i) is disqualified outright; making it true would mean hand-
+rewriting every Java template to emit `google-java-format`'s exact
+canonical text, which is both a large rewrite and a direct risk to
+Contract 1 (the formatter is the thing currently guaranteeing
+canonical output; matching it by hand removes that guarantee rather
+than proving it unnecessary). Option (ii), reusing one JVM across the
+whole compiler process, is already moot: `30UpdatePlan.md` M2
+collapsed per-file JVM spawns to one JVM invocation per `generate()`
+call, and a `ciac build` CLI process calls `generate()` exactly once
+before exiting, so there is no second invocation within a process to
+amortize against outside the test suite. Option (iii), a persistent
+formatter daemon, was rejected in the plan's own text in advance. Cut
+per the pre-registration ("item 11 may be cut at M7 with the reason
+recorded, and cutting it does not fail the milestone") — no code
+written, no measurement needed to reach this conclusion.
 
 **M6's measurement note — an unrelated bug found along the way.**
 `ciac check <file>` (no `--json`) renders every diagnostic through

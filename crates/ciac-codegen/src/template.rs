@@ -7,6 +7,7 @@
 
 use heck::{ToKebabCase, ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use minijinja::Environment;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// Builds a strict environment from `(name, source)` template pairs.
@@ -14,9 +15,25 @@ use std::sync::OnceLock;
 /// The environment is configured to fail on undefined variables rather
 /// than silently emitting empty strings — template bugs should fail
 /// generation, not corrupt output.
-pub fn environment<'a>(
-    templates: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> Result<Environment<'a>, minijinja::Error> {
+///
+/// `32UpdatePlan.md` M4: `templates` is registered as a [`set_loader`]
+/// lookup rather than parsed eagerly here — minijinja parses and caches
+/// a template on its first `get_template`, so a program exercising a
+/// fraction of a backend's 32-47 templates never pays to parse the
+/// rest. `add_template`'s own per-template `Result` is why this
+/// function used to return one too; a loader has nothing left that can
+/// fail, so this now returns `Environment<'static>` directly. One
+/// behavioral difference is real: a malformed template used to fail
+/// right here, at construction, and now fails at that template's first
+/// `get_template` instead. [`cached_environment`]'s `.expect()` already
+/// assumed valid embedded templates, and the golden/conformance corpora
+/// reach every template a backend owns, so this moves the failure point
+/// without weakening it.
+///
+/// [`set_loader`]: minijinja::Environment::set_loader
+pub fn environment(
+    templates: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> Environment<'static> {
     let mut env = Environment::new();
     env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
     env.set_keep_trailing_newline(true);
@@ -36,10 +53,9 @@ pub fn environment<'a>(
             format!("${n}")
         }
     });
-    for (name, source) in templates {
-        env.add_template(name, source)?;
-    }
-    Ok(env)
+    let sources: HashMap<&'static str, &'static str> = templates.into_iter().collect();
+    env.set_loader(move |name| Ok(sources.get(name).map(|source| (*source).to_owned())));
+    env
 }
 
 /// Fetches (or builds once and caches) a backend's full template
@@ -72,10 +88,7 @@ pub fn cached_environment(
     add_filters: impl FnOnce(&mut Environment<'static>),
 ) -> &'static Environment<'static> {
     cache.get_or_init(|| {
-        let mut env = environment(templates).expect(
-            "backend's own embedded templates are valid minijinja sources, \
-             already exercised by every golden/conformance test",
-        );
+        let mut env = environment(templates);
         add_filters(&mut env);
         env
     })
@@ -133,8 +146,7 @@ mod tests {
         let env = environment([(
             "t",
             "{{ name | snake_case }} {{ name | pascal_case }} {{ name | kebab_case }}",
-        )])
-        .expect("valid template");
+        )]);
         let out = env
             .get_template("t")
             .expect("registered")
@@ -145,11 +157,17 @@ mod tests {
 
     #[test]
     fn undefined_variables_fail() {
-        let env = environment([("t", "{{ missing }}")]).expect("valid template");
+        let env = environment([("t", "{{ missing }}")]);
         assert!(env
             .get_template("t")
             .expect("registered")
             .render(())
             .is_err());
+    }
+
+    #[test]
+    fn a_template_the_loader_never_saw_is_reported_as_missing() {
+        let env = environment([("t", "{{ 1 }}")]);
+        assert!(env.get_template("nonexistent").is_err());
     }
 }

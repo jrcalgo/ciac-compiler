@@ -44,7 +44,7 @@ pub struct BackendComposeOpts {
 const SERVICE_COMPOSE: &str = include_str!("../templates/docker-compose.yml.j2");
 const SYSTEM_COMPOSE: &str = include_str!("../templates/system-compose.yml.j2");
 
-fn environment() -> Result<minijinja::Environment<'static>, minijinja::Error> {
+fn environment() -> minijinja::Environment<'static> {
     crate::template::environment([
         ("docker-compose.yml.j2", SERVICE_COMPOSE),
         ("system-compose.yml.j2", SYSTEM_COMPOSE),
@@ -67,7 +67,7 @@ pub fn render_service_compose(
     ctx: &Ctx,
     opts: &BackendComposeOpts,
 ) -> Result<String, minijinja::Error> {
-    environment()?
+    environment()
         .get_template("docker-compose.yml.j2")?
         .render(minijinja::context! {
             c => minijinja::Value::from_serialize(ctx),
@@ -81,7 +81,7 @@ pub fn render_system_compose(
     model: &SystemModel,
     opts: &BackendComposeOpts,
 ) -> Result<String, minijinja::Error> {
-    environment()?
+    environment()
         .get_template("system-compose.yml.j2")?
         .render(minijinja::context! {
             m => minijinja::Value::from_serialize(model),

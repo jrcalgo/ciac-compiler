@@ -110,7 +110,7 @@ impl Backend for SkeletonBackend {
                 f.path().to_str().expect("template names are utf-8"),
                 f.contents_utf8().expect("templates are utf-8"),
             )
-        }))?;
+        }));
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {

@@ -1052,7 +1052,7 @@ person.*
 
 | Milestone | Threshold | Measured | Verdict |
 |---|---|---|---|
-| M1 | — (baseline freeze) | — | — |
+| M1 | — (baseline freeze) | `baseline-v0.29.0.json` frozen at `git_sha 76be418`; `baseline.json` regenerated at current HEAD (`effb1be`, full `--with-callgrind --with-scaling --with-verify --with-slow-tests --with-sim`). `cargo test --workspace --release`: **4m54.832s**, 0 failures (this arc's own reference time). `perf_baseline.rs`/`perf_scaling.rs` (`--ignored`), `bench-codegen.sh`, `bench-verify.sh` (all 5 targets), `bench-callgrind.sh`, `sim-corpus-x5.sh` (50 program×target combinations) all confirmed green. | Clean start — no code changed |
 | M2 | ≥8% instructions, `order-system` | — | — |
 | M3 | ≥5× warm no-op rebuild | — | — |
 | M4 | ≥40% `template_setup` (py/rs/ts) | — | — |

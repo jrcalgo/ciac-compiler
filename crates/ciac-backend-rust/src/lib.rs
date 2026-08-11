@@ -186,6 +186,9 @@ static TARGET_INFO: TargetInfo = TargetInfo {
         env: &[("RUSTFLAGS", "-D warnings")],
         purpose: "type-checks (deny warnings), unit and generated tests pass",
     }],
+    // `32UpdatePlan.md` M8 item 5: a single step -- nothing to
+    // parallelize within one project regardless of this field.
+    validate_parallel_from: None,
     ci_test_steps: CI_TEST_STEPS,
     compose: COMPOSE_OPTS,
     dev: DevCommands {

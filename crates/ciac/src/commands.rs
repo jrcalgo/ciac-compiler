@@ -8,7 +8,7 @@ use ciac_codegen::migrations::{diff_schema, snapshot_schema, TableSchema};
 use ciac_codegen::regen::{
     apply_regeneration, plan_regeneration, ApplyMode, RegenMode, RegenPlan, RegenStatus,
 };
-use ciac_codegen::{Backend, GenOptions, GeneratedProject, SimSupport, ValidateStep};
+use ciac_codegen::{Backend, GenOptions, GeneratedProject, SimSupport, TargetInfo, ValidateStep};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
 use ciac_ir::{FieldType, NormalizedIr};
@@ -3620,6 +3620,16 @@ fn list_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 /// as before this milestone — an external target still refuses here
 /// with the same message, since `ExternalBackend` was never a member
 /// of `backends()`.
+///
+/// `32UpdatePlan.md` M8 item 5: independent projects (a multi-service
+/// system generates one per service) validate concurrently via
+/// `std::thread::scope` — not `rayon`, per "Determinism and supply
+/// chain" — rather than the old nested serial loop. A single project
+/// keeps the exact pre-milestone behavior (each step's output streams
+/// live to the terminal as it runs); two or more projects switch every
+/// step to captured output, printed as one block per project once that
+/// project finishes, so concurrent subprocesses never interleave their
+/// raw output on the shared terminal.
 fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
     let target_info = backends()
         .into_iter()
@@ -3633,12 +3643,117 @@ fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
             root.display()
         );
     }
-    for project in projects {
-        for step in target_info.validate {
-            run_validate_step(&project, step)?;
+
+    if projects.len() == 1 {
+        run_project_validate(&projects[0], target_info, false)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let results: Vec<(PathBuf, Result<()>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = projects
+            .into_iter()
+            .map(|project| {
+                let target_info = &target_info;
+                scope.spawn(move || {
+                    let result = run_project_validate(&project, target_info, true);
+                    (project, result)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let failed: Vec<(PathBuf, anyhow::Error)> = results
+        .into_iter()
+        .filter_map(|(project, result)| result.err().map(|err| (project, err)))
+        .collect();
+    match failed.len() {
+        0 => Ok(ExitCode::SUCCESS),
+        1 => {
+            let (_, err) = failed.into_iter().next().expect("len checked above");
+            Err(err)
+        }
+        n => {
+            let mut msg = format!("{n} generated projects failed validation:");
+            for (project, err) in &failed {
+                msg.push_str(&format!("\n  {}: {err:#}", project.display()));
+            }
+            Err(anyhow!(msg))
         }
     }
-    Ok(ExitCode::SUCCESS)
+}
+
+/// Runs one project's whole `validate` list, honoring
+/// `target_info.validate_parallel_from` (`32UpdatePlan.md` M8 item 5):
+/// the serial prefix runs in order first, then the order-independent
+/// suffix (if any) runs concurrently within this project too — so a
+/// single Python or TypeScript project still gets its own step-level
+/// speedup even when there's only one project to validate.
+///
+/// `concurrent` is true whenever this call is one of several running
+/// at once (or, for the parallel suffix, whenever there's more than
+/// one concurrent step regardless): every step's output is then
+/// captured and printed as a whole block under `VALIDATE_PRINT_LOCK`
+/// instead of streaming live, so it can't interleave with a sibling's.
+fn run_project_validate(project: &Path, target_info: &TargetInfo, concurrent: bool) -> Result<()> {
+    let steps = target_info.validate;
+    let split = target_info
+        .validate_parallel_from
+        .unwrap_or(steps.len())
+        .min(steps.len());
+    let (prefix, suffix) = steps.split_at(split);
+
+    for step in prefix {
+        if concurrent {
+            run_validate_step_captured(project, step)?;
+        } else {
+            run_validate_step(project, step)?;
+        }
+    }
+
+    if suffix.is_empty() {
+        return Ok(());
+    }
+
+    let results: Vec<Result<()>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = suffix
+            .iter()
+            .map(|step| scope.spawn(|| run_validate_step_captured(project, step)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for result in results {
+        result?;
+    }
+    Ok(())
+}
+
+/// `32UpdatePlan.md` M8 item 6: generated Rust projects' `cargo test`
+/// step is essentially all cold dependency compilation the first time
+/// (each generated project starts with no build cache at all), and
+/// every generated project's `Cargo.toml` pins the same dependency
+/// versions (they come from the same fixed template) — so pointing
+/// repeat `cargo` invocations at one shared, persistent target dir
+/// lets them reuse already-built dependency crates, across both repeat
+/// runs of the same project and different generated projects alike.
+/// Cargo's own target-dir locking makes concurrent use from more than
+/// one `cargo test` invocation at once safe, not only fast run one at
+/// a time. A caller-set `CARGO_TARGET_DIR` is always respected, never
+/// overridden.
+fn shared_cargo_target_dir() -> PathBuf {
+    std::env::temp_dir().join("ciac-verify-cargo-target")
+}
+
+/// Applies a `ValidateStep`'s own declared env vars, plus the shared
+/// `CARGO_TARGET_DIR` (item 6) for `cargo` steps specifically, when the
+/// caller hasn't already set one.
+fn apply_validate_env(cmd: &mut Command, step: &ValidateStep) {
+    for (key, value) in step.env {
+        cmd.env(key, value);
+    }
+    if step.program == "cargo" && std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        cmd.env("CARGO_TARGET_DIR", shared_cargo_target_dir());
+    }
 }
 
 /// Runs one `TargetInfo::validate` step, streaming through the same
@@ -3651,9 +3766,7 @@ fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
 fn run_validate_step(project: &Path, step: &ValidateStep) -> Result<()> {
     let mut cmd = Command::new(step.program);
     cmd.args(step.args).current_dir(project);
-    for (key, value) in step.env {
-        cmd.env(key, value);
-    }
+    apply_validate_env(&mut cmd, step);
     let status = run_streamed(&mut cmd).with_context(|| {
         format!(
             "failed to run `{} {}` in {}",
@@ -3663,6 +3776,52 @@ fn run_validate_step(project: &Path, step: &ValidateStep) -> Result<()> {
         )
     })?;
     if !status.success() {
+        bail!(
+            "`{} {}` failed in {} ({})",
+            step.program,
+            step.args.join(" "),
+            project.display(),
+            step.purpose
+        );
+    }
+    Ok(())
+}
+
+/// Serializes printing captured subprocess output across threads
+/// (`32UpdatePlan.md` M8 item 5) so two concurrent validate steps'
+/// output never interleaves mid-write.
+static VALIDATE_PRINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `run_validate_step`'s concurrent-safe sibling: captures the child's
+/// stdout/stderr instead of inheriting the terminal's, then prints the
+/// captured bytes under `VALIDATE_PRINT_LOCK` as one block — otherwise
+/// identical, including the JSON-mode convention (both streams merged
+/// into ciac's own stderr) `run_streamed` already established.
+fn run_validate_step_captured(project: &Path, step: &ValidateStep) -> Result<()> {
+    let mut cmd = Command::new(step.program);
+    cmd.args(step.args).current_dir(project);
+    apply_validate_env(&mut cmd, step);
+    let output = cmd.output().with_context(|| {
+        format!(
+            "failed to run `{} {}` in {}",
+            step.program,
+            step.args.join(" "),
+            project.display()
+        )
+    })?;
+    {
+        use std::io::Write;
+        let _guard = VALIDATE_PRINT_LOCK.lock().unwrap();
+        if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut err = std::io::stderr().lock();
+            err.write_all(&output.stdout).ok();
+            err.write_all(&output.stderr).ok();
+        } else {
+            std::io::stdout().lock().write_all(&output.stdout).ok();
+            std::io::stderr().lock().write_all(&output.stderr).ok();
+        }
+    }
+    if !output.status.success() {
         bail!(
             "`{} {}` failed in {} ({})",
             step.program,

@@ -87,6 +87,14 @@ static TARGET_INFO: TargetInfo = TargetInfo {
             purpose: "test",
         },
     ],
+    // `32UpdatePlan.md` M8 item 5: `npm ci` must land first (installs
+    // node_modules both later steps need). `tsc --noEmit` (the `--
+    // noEmit` is load-bearing here: it type-checks without writing any
+    // output for `eslint`/`vitest` to depend on), `eslint`, and
+    // `vitest` then neither write into the project tree nor read
+    // output another of the three writes, so all three run
+    // concurrently.
+    validate_parallel_from: Some(1),
     ci_test_steps: CI_TEST_STEPS,
     compose: COMPOSE_OPTS,
     dev: DevCommands {

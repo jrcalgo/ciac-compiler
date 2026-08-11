@@ -74,3 +74,20 @@ dbg_macro = "warn"
 
 [profile.release]
 lto = "thin"
+
+# `32UpdatePlan.md` M8 item 8: tuned for test throughput. `cargo test`
+# builds against the `test` profile, which inherits any field left
+# unset here from `dev` -- a separate `[profile.test]` stanza would
+# just repeat these two settings, so it's omitted rather than kept as
+# dead duplication. `line-tables-only` keeps panic/assert backtraces
+# readable (still has line numbers) while dropping the variable-level
+# debug info that's most of a `dev`-profile link's size; `opt-level = 2`
+# on dependencies only (not this workspace's own crates, which stay at
+# `dev`'s default 0 so incremental recompiles of `ciac`'s own code stay
+# fast) trades their one-time compile cost for materially faster
+# generated-code execution inside every test that calls into them.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2

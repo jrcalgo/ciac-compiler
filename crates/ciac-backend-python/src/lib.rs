@@ -81,6 +81,11 @@ static TARGET_INFO: TargetInfo = TargetInfo {
             purpose: "unit tests pass",
         },
     ],
+    // `32UpdatePlan.md` M8 item 5: `uv sync` must land first (installs
+    // the dependencies both later steps need); `ruff check` and
+    // `pytest` then neither write into the project tree nor read
+    // output the other writes, so they run concurrently.
+    validate_parallel_from: Some(1),
     ci_test_steps: CI_TEST_STEPS,
     compose: COMPOSE_OPTS,
     dev: DevCommands {

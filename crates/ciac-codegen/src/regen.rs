@@ -43,6 +43,17 @@ pub struct RegenEntry {
     pub old_content: Option<String>,
     pub new_content: Option<String>,
     pub sidecar_path: Option<String>,
+    /// The freshly generated content's hash -- for `New`/`Unchanged`/
+    /// `Update`/`Conflict`/`SeededDrift` this is `plan_regeneration`'s
+    /// own `new_hash` local, computed once from the same
+    /// `GeneratedProject` a caller like `commands::build_inner` is
+    /// about to write to disk; for `OrphanDelete`/`OrphanLeft` (no
+    /// generated content at all) it is the manifest's already-recorded
+    /// hash for that path instead. Lets `manifest::build_manifest_from_hashes`
+    /// build the post-build manifest from this plan directly, rather
+    /// than re-hashing every file's content a second time
+    /// (`32UpdatePlan.md` M2).
+    pub new_hash: String,
 }
 
 impl RegenEntry {
@@ -88,6 +99,25 @@ impl RegenPlan {
             })
             .count()
     }
+
+    /// The `(path, role, hash)` triples for this plan's current
+    /// generated project -- every entry except the orphan arms
+    /// (`OrphanDelete`/`OrphanLeft`), which describe files absent from
+    /// the project just generated, not present in it. Feeds
+    /// `manifest::build_manifest_from_hashes` directly, so a caller
+    /// that already ran `plan_regeneration` never re-hashes the same
+    /// `GeneratedProject` a second time (`32UpdatePlan.md` M2).
+    pub fn manifest_files(&self) -> impl Iterator<Item = (String, FileRole, String)> + '_ {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                !matches!(
+                    entry.status,
+                    RegenStatus::OrphanDelete | RegenStatus::OrphanLeft
+                )
+            })
+            .map(|entry| (entry.path.clone(), entry.role, entry.new_hash.clone()))
+    }
 }
 
 pub fn plan_regeneration(
@@ -119,6 +149,7 @@ pub fn plan_regeneration(
                 old_content: None,
                 new_content: Some(generated_content),
                 sidecar_path: None,
+                new_hash,
             },
             (RegenMode::Adopt, FileRole::Owned, Some(disk_hash), _) => {
                 if disk_hash == new_hash {
@@ -129,6 +160,7 @@ pub fn plan_regeneration(
                         old_content: disk_content,
                         new_content: Some(generated_content),
                         sidecar_path: None,
+                        new_hash,
                     }
                 } else {
                     sidecar_entry(
@@ -137,6 +169,7 @@ pub fn plan_regeneration(
                         RegenStatus::Conflict,
                         disk_content,
                         generated_content,
+                        new_hash,
                     )
                 }
             }
@@ -149,6 +182,7 @@ pub fn plan_regeneration(
                         old_content: disk_content,
                         new_content: Some(generated_content),
                         sidecar_path: None,
+                        new_hash,
                     }
                 } else {
                     sidecar_entry(
@@ -157,13 +191,14 @@ pub fn plan_regeneration(
                         RegenStatus::SeededDrift,
                         disk_content,
                         generated_content,
+                        new_hash,
                     )
                 }
             }
             (RegenMode::Normal, FileRole::Owned, Some(disk_hash), Some(base_hash)) => {
                 if disk_hash == base_hash {
                     if disk_hash == new_hash {
-                        unchanged_entry(rel, role, disk_content, generated_content)
+                        unchanged_entry(rel, role, disk_content, generated_content, new_hash)
                     } else {
                         RegenEntry {
                             path: rel.to_owned(),
@@ -172,10 +207,11 @@ pub fn plan_regeneration(
                             old_content: disk_content,
                             new_content: Some(generated_content),
                             sidecar_path: None,
+                            new_hash,
                         }
                     }
                 } else if disk_hash == new_hash {
-                    unchanged_entry(rel, role, disk_content, generated_content)
+                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
@@ -183,12 +219,13 @@ pub fn plan_regeneration(
                         RegenStatus::Conflict,
                         disk_content,
                         generated_content,
+                        new_hash,
                     )
                 }
             }
             (RegenMode::Normal, FileRole::Owned, Some(disk_hash), None) => {
                 if disk_hash == new_hash {
-                    unchanged_entry(rel, role, disk_content, generated_content)
+                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
@@ -196,6 +233,7 @@ pub fn plan_regeneration(
                         RegenStatus::Conflict,
                         disk_content,
                         generated_content,
+                        new_hash,
                     )
                 }
             }
@@ -212,14 +250,15 @@ pub fn plan_regeneration(
                         RegenStatus::SeededDrift,
                         disk_content,
                         generated_content,
+                        new_hash,
                     )
                 } else {
-                    unchanged_entry(rel, role, disk_content, generated_content)
+                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
                 }
             }
             (RegenMode::Normal, FileRole::Seeded | FileRole::Migration, Some(disk_hash), None) => {
                 if disk_hash == new_hash {
-                    unchanged_entry(rel, role, disk_content, generated_content)
+                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
@@ -227,6 +266,7 @@ pub fn plan_regeneration(
                         RegenStatus::SeededDrift,
                         disk_content,
                         generated_content,
+                        new_hash,
                     )
                 }
             }
@@ -259,6 +299,7 @@ pub fn plan_regeneration(
                     old_content,
                     new_content: None,
                     sidecar_path: None,
+                    new_hash: entry.hash.clone(),
                 });
             }
         }
@@ -316,6 +357,7 @@ fn unchanged_entry(
     role: FileRole,
     disk_content: Option<String>,
     generated_content: String,
+    new_hash: String,
 ) -> RegenEntry {
     RegenEntry {
         path: rel.to_owned(),
@@ -324,6 +366,7 @@ fn unchanged_entry(
         old_content: disk_content,
         new_content: Some(generated_content),
         sidecar_path: None,
+        new_hash,
     }
 }
 
@@ -333,6 +376,7 @@ fn sidecar_entry(
     status: RegenStatus,
     disk_content: Option<String>,
     generated_content: String,
+    new_hash: String,
 ) -> RegenEntry {
     RegenEntry {
         path: rel.to_owned(),
@@ -341,6 +385,7 @@ fn sidecar_entry(
         old_content: disk_content,
         new_content: Some(generated_content),
         sidecar_path: Some(format!("{rel}.ciac-new")),
+        new_hash,
     }
 }
 

@@ -1,7 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use ciac_codegen::evolution::{diff_records, snapshot_boundary_records, RecordSchema};
 use ciac_codegen::manifest::{
-    build_manifest, hash_bytes, load_manifest, manifest_path, write_manifest,
+    build_manifest, build_manifest_from_hashes, hash_bytes, load_manifest, manifest_path,
+    write_manifest,
 };
 use ciac_codegen::migrations::{diff_schema, snapshot_schema, TableSchema};
 use ciac_codegen::regen::{
@@ -379,8 +380,8 @@ pub(crate) fn build_inner(
         apply_regeneration(&plan, out, ApplyMode::Full)
             .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
         report_regen_plan(&plan, adopt, true);
-        let mut manifest = build_manifest(
-            &project,
+        let mut manifest = build_manifest_from_hashes(
+            plan.manifest_files(),
             env!("CARGO_PKG_VERSION"),
             ciac_syntax::LANGUAGE_VERSION,
             source_hash,
@@ -484,8 +485,8 @@ pub(crate) fn replay_recipe(
     if commit {
         apply_regeneration(&plan, out, ApplyMode::Full)
             .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
-        let mut manifest = build_manifest(
-            &project,
+        let mut manifest = build_manifest_from_hashes(
+            plan.manifest_files(),
             env!("CARGO_PKG_VERSION"),
             ciac_syntax::LANGUAGE_VERSION,
             source_hash,

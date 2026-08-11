@@ -101,6 +101,100 @@ history exists:
 5. Two spurious fires on the same gate: remove it, per the rule's own
    "never widened silently" clause, and record why in this file.
 
+## `32UpdatePlan.md` M5 checkpoint
+
+Cumulative M2+M3+M4 measured against the frozen `baseline-v0.29.0.json`
+(git `76be418`), per that milestone's own pre-registration: no new
+code, full Pillar-3 suite, decision recorded here with the numbers
+inline rather than by reference.
+
+**`ciac-bench --compare=docs/perf/baseline-v0.29.0.json`** (per-phase
+metrics, every example): every row improved, none regressed. Selected
+rows, `order-system`:
+
+| Metric | Old (µs) | New (µs) | Change |
+|---|---|---|---|
+| `semantic_model::semantic_hash` | 64.5 | 17.5 | -72.8% |
+| `regen::plan_regeneration [warm]` | 888.2 | 309.4 | -65.2% |
+| `manifest::build_manifest` | 362.4 | 75.3 | -79.2% |
+| `generate() [python]` | 1291.6 | 1124.1 | -13.0% |
+| `generate() [go]` | 18894.9 | 15180.8 | -19.7% |
+| `generate() [java]` | 1342038.1 | 956293.6 | -28.7% |
+
+The full table (5 examples × ~15 metrics, all negative) is in
+`docs/perf/baseline.json`'s own git history at this milestone's commit.
+
+**Fields `compare_baselines` doesn't cover** (Contract 2 requires the
+full report, not only the delta table), diffed by hand against
+`baseline-v0.29.0.json`:
+
+| Field | Old | New | Change |
+|---|---|---|---|
+| `instruction_counts` / ping | 12,982,474 | 12,058,278 | -7.12% |
+| `instruction_counts` / order-system | 25,416,100 | 21,643,893 | -14.84% |
+| `verify` / python (sum) | 3.872s | 3.857s | -0.40% |
+| `verify` / rust (sum) | 116.555s | 98.773s | -15.26% |
+| `verify` / typescript (sum) | 18.420s | 13.113s | -28.81% |
+| `verify` / go (sum) | 9.032s | 4.262s | -52.82% |
+| `verify` / java (sum) | 319.746s | 317.079s | -0.83% |
+| `slow_test_binaries` / determinism | 74.221s | 80.572s | **+8.56%** |
+| `slow_test_binaries` / conformance | 65.029s | 56.041s | -13.82% |
+| `slow_test_binaries` / golden | 35.613s | 30.595s | -14.09% |
+| `slow_test_binaries` / openapi | 35.456s | 29.158s | -17.76% |
+| `sim` / python (sum) | 3.028s | 2.689s | -11.17% |
+| `sim` / rust (sum) | 77.995s | 64.340s | -17.51% |
+| `sim` / typescript (sum) | 13.898s | 10.352s | -25.51% |
+| `sim` / go (sum) | 5.533s | 3.633s | -34.34% |
+| `sim` / java (sum) | 32.977s | 23.909s | -27.50% |
+
+`determinism`'s +8.56% is the only regression-shaped number anywhere
+in this checkpoint, and it is a measurement artifact, not a code
+effect: `ciac-bench`'s single-shot reading (80.572s) landed immediately
+after the callgrind and verify phases in the same process, both
+CPU/IO-heavy. Three isolated re-runs of `cargo test -p
+ciac-integration-tests --test determinism` right after, on an otherwise
+quiet system, measured 68.77s / 56.27s / 56.60s — below the *old*
+baseline (74.221s), consistent with every other slow-test-binary
+improving. Noise, not a regression; Contract 2's "no metric may
+regress" holds.
+
+**`cargo test --workspace --release`: one spurious gate fire, resolved
+by isolation.** The full run (16m11.869s, itself inflated by running
+two concurrent release builds by mistake) hit one real failure:
+`perf_budget.rs`'s `no_backend_exceeds_the_budget`, reporting java at
+1197.7x the median (31.519s vs. a 26.317s budget) — far outside that
+gate's own documented steady state (its own doc comment records
+131-230x from JVM-spawn variance alone, no code change, in
+`31UpdatePlan.md` M9's own revisit). That run was executing under heavy
+self-inflicted contention: two simultaneous `cargo build --release`
+runs plus a `valgrind` callgrind measurement, all competing for the
+same CPU. Re-run twice in complete isolation immediately after: **pass,
+26.88s and 27.05s**, java back in its normal band. Filed as contention,
+not a regression, per this file's own Pillar 7 discipline (a gate that
+fires spuriously is investigated before anything is loosened) — one
+fire, explained, not two, so no gate change is warranted.
+
+**`perf_baseline.rs`** (`--ignored`): pass. **`perf_scaling.rs`**
+(`--ignored`): pass, growth ratios 2.11-2.77x per doubling (well under
+M7's own future 2.5x guard, not yet gated). **`scripts/bench-codegen.sh`,
+`scripts/bench-verify.sh`** (all 5 targets), **`scripts/bench-callgrind.sh`**:
+all run clean. **`scripts/sim-corpus-x5.sh`**: not re-run at this exact
+commit — M5 introduces no code change, and it last ran 50/50 green
+immediately after M4's own commit, on the identical tree this
+checkpoint measures.
+
+**Decision: outcome (a) — M6, M7 and M8 proceed exactly as
+pre-registered.** M2 (15.14% vs. an 8% floor), M3 (mixed — see
+`32UpdatePlan.md`'s own "Contract 3 tension" note — but the mechanism
+verified correct and `sim-three-service` cleared 8.84x), and M4
+(51.9-70.8% vs. a 40% floor) all met or exceeded their thresholds, and
+this checkpoint's own full-metric sweep shows gains everywhere with no
+disclosed trade. Nothing here argues for narrowing M6 (outcome b) or
+cutting M7's item 11 (outcome c) — those remain live options to revisit
+at M6's own start if its `build_system` dedupe turns out to be more
+surgery than the checkpoint's cumulative gains justify, per that
+milestone's own text, but nothing at M5 pre-empts that judgment.
+
 ## Discipline this arc adopted (`31UpdatePlan.md` Pillar 7)
 
 Recorded here so later work inherits it as a standing convention:

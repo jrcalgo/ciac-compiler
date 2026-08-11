@@ -19,27 +19,31 @@
 //! a deploying team either names their own Services to match or
 //! overrides the ConfigMap. See `docs/deployment.md`.
 
-use crate::model::{build_system, Ctx, SystemModel};
-use crate::GenOptions;
-use ciac_ir::NormalizedIr;
+use crate::model::{Ctx, SystemModel};
 
 /// Builds every k8s manifest file for the program, keyed by path
 /// under `k8s/`. Empty for a program with no services (never actually
 /// happens — every valid program has at least one). `image_prefix`
 /// defaults to the program's own project name when `None`.
+///
+/// `32UpdatePlan.md` M6: takes an already-built [`SystemModel`] rather
+/// than a [`NormalizedIr`] and building its own — `ciac/src/
+/// commands.rs`'s `generate` builds one `GenOptions::default()`-keyed
+/// model and shares it across this, [`crate::terraform::build`] and
+/// [`crate::ci::build`], which all three called `build_system` on
+/// identical inputs independently before this milestone.
 pub fn build(
-    ir: &NormalizedIr,
+    system: &SystemModel,
     image_prefix: Option<&str>,
     tag: &str,
     profile: crate::Profile,
     secrets: bool,
 ) -> Vec<(String, String)> {
-    let system = build_system(ir, &GenOptions::default());
     let image_prefix = image_prefix.unwrap_or(&system.project_name);
     let mut files = Vec::new();
 
     for ctx in &system.services {
-        let name = resource_name(&system, ctx);
+        let name = resource_name(system, ctx);
         let image = if system.multi {
             format!("{image_prefix}-{name}:{tag}")
         } else {
@@ -341,6 +345,9 @@ fn render_broker_manifest(queue_engine: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::build_system;
+    use crate::GenOptions;
+    use ciac_ir::NormalizedIr;
 
     fn compile(src: &str) -> NormalizedIr {
         let mut sources = ciac_diagnostics::SourceMap::new();
@@ -356,7 +363,8 @@ mod tests {
         let ir = compile(
             "service Notes;\nuse { db Postgres; }\nrecord Note { id: Uuid; }\ncrud Note;\n",
         );
-        let files = build(&ir, Some("notes"), "latest", crate::Profile::Dev, false);
+        let system = build_system(&ir, &GenOptions::default());
+        let files = build(&system, Some("notes"), "latest", crate::Profile::Dev, false);
         let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"k8s/notes.yaml"));
         assert!(!paths.iter().any(|p| p.contains("queue")));
@@ -391,7 +399,8 @@ service Transcoder {
 }
 "#;
         let ir = compile(src);
-        let files = build(&ir, Some("media"), "v1", crate::Profile::Dev, false);
+        let system = build_system(&ir, &GenOptions::default());
+        let files = build(&system, Some("media"), "v1", crate::Profile::Dev, false);
         let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
         assert!(paths.contains(&"k8s/billing.yaml"));
         assert!(paths.contains(&"k8s/upload-api.yaml"));

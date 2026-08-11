@@ -14,14 +14,15 @@
 //! not run `terraform apply`, manage state, or pick your VPC. Sizing
 //! defaults follow the build's `--profile` (dev/staging/prod).
 
-use crate::model::build_system;
-use crate::{GenOptions, Profile};
-use ciac_ir::NormalizedIr;
+use crate::model::SystemModel;
+use crate::Profile;
 
 /// Builds `terraform/*.tf` for the program's stateful capability
 /// instances. Empty when the program has none.
-pub fn build(ir: &NormalizedIr, profile: Profile) -> Vec<(String, String)> {
-    let system = build_system(ir, &GenOptions::default());
+///
+/// `32UpdatePlan.md` M6: takes an already-built [`SystemModel`] — see
+/// [`crate::k8s::build`]'s own doc comment for why.
+pub fn build(system: &SystemModel, profile: Profile) -> Vec<(String, String)> {
     let mut body = String::new();
 
     body.push_str(
@@ -162,6 +163,9 @@ fn tf_name(container: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::build_system;
+    use crate::GenOptions;
+    use ciac_ir::NormalizedIr;
 
     fn compile(src: &str) -> NormalizedIr {
         let mut sources = ciac_diagnostics::SourceMap::new();
@@ -172,12 +176,16 @@ mod tests {
             .unwrap_or_else(|| panic!("compiles: {:?}", diags.codes()))
     }
 
+    fn system(src: &str) -> SystemModel {
+        build_system(&compile(src), &GenOptions::default())
+    }
+
     #[test]
     fn stateful_capabilities_get_aws_resources_with_matching_outputs() {
-        let ir = compile(
+        let system = system(
             "service Notes;\nuse { db Postgres; cache Redis; }\nrecord Note { id: Uuid; title: String; }\ncrud Note: Note;\n",
         );
-        let files = build(&ir, Profile::Dev);
+        let files = build(&system, Profile::Dev);
         assert_eq!(files.len(), 1);
         let (path, tf) = &files[0];
         assert_eq!(path, "terraform/main.tf");
@@ -191,10 +199,10 @@ mod tests {
 
     #[test]
     fn mysql_instances_use_the_mysql_engine() {
-        let ir = compile(
+        let system = system(
             "service Notes;\nuse { db MySQL; }\nrecord Note { id: Uuid; title: String; }\ncrud Note: Note;\n",
         );
-        let (_, tf) = &build(&ir, Profile::Prod)[0];
+        let (_, tf) = &build(&system, Profile::Prod)[0];
         assert!(tf.contains("engine              = \"mysql\""), "{tf}");
         // Prod sizing differs from dev.
         assert!(tf.contains(Profile::Prod.db_instance_class()), "{tf}");
@@ -202,19 +210,19 @@ mod tests {
 
     #[test]
     fn kafka_queue_gets_an_msk_cluster() {
-        let ir = compile(
+        let system = system(
             "service X;\nuse { queue Kafka; }\nrecord E { id: Uuid; }\nstream S: E;\napi In: E;\nworker W on S;\npipeline In: publish S -> Return;\npipeline W: Work;\n",
         );
-        let (_, tf) = &build(&ir, Profile::Dev)[0];
+        let (_, tf) = &build(&system, Profile::Dev)[0];
         assert!(tf.contains("aws_msk_cluster"), "{tf}");
         assert!(tf.contains("output \"kafka_url\""), "{tf}");
     }
 
     #[test]
     fn capability_free_programs_emit_nothing() {
-        let ir = compile(
+        let system = system(
             "service Ping;\nrecord M { id: Uuid; }\napi Echo: M { method: POST; path: \"/e\"; }\npipeline Echo: Return;\n",
         );
-        assert!(build(&ir, Profile::Dev).is_empty());
+        assert!(build(&system, Profile::Dev).is_empty());
     }
 }

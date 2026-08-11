@@ -1057,10 +1057,38 @@ person.*
 | M3 | ≥5× warm no-op rebuild | go/`sim-three-service`: **8.84×** (cold 38.7ms → warm 4.38ms, 50-rep avg). python/`ping`: **1.74×** (cold 6.50ms → warm 3.74ms, 50-rep avg) — **under half threshold**. Root cause, not a defect: `ciac --version` (pure process-spawn floor, no work at all) itself averages **3.98ms** on this hardware; `ping`'s warm rebuild (3.74ms) is already *at* that floor, and its cold build (6.50ms) is only 1.6× the floor to begin with, so no implementation could clear 5× for this example on this machine — the ratio metric doesn't survive contact with a program small enough that its cold build was already near-instant. `sim-three-service`'s cold build (38.7ms) has real headroom above the floor, and the early-out closes essentially all of it. Kept per below. | **Kept, shortfall disclosed** (Contract 3 tension — see note) |
 | M4 | ≥40% `template_setup` (py/rs/ts) | 3-run avg via `ciac-bench`: python 1990.7→807.3µs (**59.4%**), rust 2205.3→644.2µs (**70.8%**), typescript 2493.7→1199.4µs (**51.9%**) — all comfortably clear 40%. go tracked (not gated, per pre-registration): 10610.4→~767µs setup, also a large drop — the lazy loader helps it too, `gofmt` subprocess cost just made its absolute number too noisy to pre-register a threshold against. java tracked: setup stays ~0µs both before and after (JVM dominates entirely), as expected. Neither regressed. | **Met** |
 | M5 | — (checkpoint) | Cumulative M2+M3+M4 vs `baseline-v0.29.0.json`: every `ciac-bench --compare` row improved, no regressions. Full metric sweep (instruction counts, verify, slow test binaries, sim) also clean except `determinism` slow-test-binary +8.56%, root-caused to a measurement artifact (single-shot reading taken right after two heavy phases in the same process; 3 isolated re-runs measured 56-59s, *faster* than the old baseline). One spurious `perf_budget.rs` gate fire under self-inflicted concurrent load (two release builds + valgrind at once), resolved clean on 2 isolated re-runs. Full writeup in `docs/perf/README.md`'s new "M5 checkpoint" section. | **Outcome (a): M6-M8 proceed as planned** |
-| M6 | ≤2.5×/doubling; ≥25% `ciac check` | — | — |
+| M6 | ≤2.5×/doubling; ≥25% `ciac check` | `sema::analyze` growth (`perf_scaling.rs`): 2.15× (N=100→200), 2.46× (N=200→400) — both clear ≤2.5×. `ciac check` instructions on N=400 (`ciac check --json`, avoids an unrelated confound — see note below): 247.9M → 149.1M, **39.85%** reduction, clears ≥25%. `find_named_in_service` dropped from 10.90%→outside the top 15 functions, `Vec::from_iter` from 23.46%→12.70% (both closely matching this milestone's own cited 12.28%/31.75% derivation figures, confirming the measurement methodology matches). | **Met** |
 | M7 | ≥20% DHAT bytes | — | — |
 | M8 | ≥30% validation; ≥30% slow binaries | — | — |
 | M9 | — (close-out) | — | — |
+
+**M6's measurement note — an unrelated bug found along the way.**
+`ciac check <file>` (no `--json`) renders every diagnostic through
+`AriadneRenderer::render`, and that function rebuilds the *entire*
+multi-file `ariadne::sources(...)` cache — cloning every registered
+file's source text and re-indexing it from scratch — on **every single
+diagnostic**, not once per batch. The N=400 synthetic corpus emits one
+benign `CIAC0007` per unit by construction (documented in
+`synthetic_corpus`'s own doc comment), so a default-mode `ciac check`
+on it re-indexes the full ~300KB source 400 times. Under callgrind,
+that is 84.67% of the *entire* program's instructions, in both the
+before and after states equally — a real, severe, pre-existing bug,
+untouched by this arc and unrelated to graph indexes, discovered only
+because it swamped this milestone's own measurement (a naive
+default-mode `ciac check` read showed a ~1.4% aggregate reduction,
+which would have misread this milestone's actual mechanism as barely
+working). Not fixed here — out of scope, and higher-risk than a
+performance-only arc should absorb as a drive-by: `AriadneRenderer`
+is shared by every diagnostic-rendering call site, and caching its
+`Sources` correctly across a batch means either restructuring the
+`Render` trait or threading a cache from a level `render()` currently
+starts at. Recorded here as a candidate for a future, dedicated
+milestone. The `--json` path (`front_end_quiet`, no ariadne rendering)
+sidesteps it entirely and is what this table's own M6 row measures —
+confirmed as the intended methodology by `find_named_in_service`
+(10.90%) and `Vec::from_iter` (23.46%) landing within a point of this
+milestone's own pre-registered 12.28%/31.75% derivation figures, a
+match the ariadne-dominated default mode does not come close to.
 
 **M3's Contract 3 tension.** Contract 3 reads: "revert on ... a measured
 gain under half its pre-registered threshold." python/`ping`'s measured

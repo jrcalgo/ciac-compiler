@@ -3258,18 +3258,36 @@ fn generate(
         }
     }
 
+    // `32UpdatePlan.md` M6: k8s::build/terraform::build/ci::build each
+    // independently recomputed an identical `GenOptions::default()`-keyed
+    // SystemModel; shared here since all three that run in this build
+    // want the same value. `opts` (the caller's real `--name`, if any)
+    // deliberately stays out of this -- k8s/terraform/ci have never used
+    // it (each always called `build_system` with `GenOptions::default()`
+    // on its own), and folding it in now would be a behavior change,
+    // not a pure dedup, whenever `--name` is combined with a `--deploy`
+    // flag.
+    let deploy_system = (k8s_image.is_some() || terraform.is_some() || ci)
+        .then(|| ciac_codegen::model::build_system(&ir, &GenOptions::default()));
+
     // v0.8 M6: opt-in Kubernetes manifests (`ciac build --deploy k8s`).
     // Compose remains the dev default and is always emitted by each
     // backend above; this is additive production deployment posture.
     if let Some((image_prefix, image_tag)) = k8s_image {
+        let system = deploy_system
+            .as_ref()
+            .expect("k8s_image implies deploy_system");
         for (path, content) in
-            ciac_codegen::k8s::build(&ir, image_prefix, image_tag, profile, secrets)
+            ciac_codegen::k8s::build(system, image_prefix, image_tag, profile, secrets)
         {
             project.add_file(path, content);
         }
     }
     if let Some(tf_profile) = terraform {
-        for (path, content) in ciac_codegen::terraform::build(&ir, tf_profile) {
+        let system = deploy_system
+            .as_ref()
+            .expect("terraform implies deploy_system");
+        for (path, content) in ciac_codegen::terraform::build(system, tf_profile) {
             project.add_file(path, content);
         }
     }
@@ -3277,6 +3295,7 @@ fn generate(
     // ci`) — mirrors what `ciac verify` runs locally, plus an image
     // build/push and a compose smoke job.
     if ci {
+        let system = deploy_system.as_ref().expect("ci implies deploy_system");
         let gate =
             semantic_gate
                 .as_ref()
@@ -3285,7 +3304,7 @@ fn generate(
                     baseline,
                 });
         for (path, content) in ciac_codegen::ci::build(
-            &ir,
+            system,
             backend.target_info().ci_test_steps,
             image_prefix.as_deref(),
             gate,

@@ -3,6 +3,7 @@ use crate::hir::{Table, TableId};
 use crate::record::{Record, RecordId};
 use ciac_diagnostics::Span;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Index of a node in a [`SystemGraph`]. Stable for the life of the graph;
 /// nodes are never removed.
@@ -179,9 +180,34 @@ pub struct SystemGraph {
     edges: Vec<Edge>,
     records: Vec<Record>,
     tables: Vec<Table>,
+    /// Mutate only through [`SystemGraph::add_pipeline`] — a direct
+    /// `push` bypasses `pipeline_owner_index` and desyncs
+    /// [`SystemGraph::pipeline_of`]. `32UpdatePlan.md` M6 found exactly
+    /// one such site (`ciac-sema`'s own builder) and moved it; this
+    /// field stays `pub` for the many read-only iterators elsewhere
+    /// that never needed to change.
     pub pipelines: Vec<Pipeline>,
     pub resources: Vec<Resource>,
     pub event_streams: Vec<EventStream>,
+    /// `32UpdatePlan.md` M6: lookup-only indexes behind
+    /// `find_named_in_service`/`edges_from`/`edges_to`/`pipeline_of`,
+    /// maintained incrementally by `add_node_owned`/`add_edge`/
+    /// `add_pipeline`. Never iterated for output -- every public
+    /// iterator (`nodes()`, `edges()`, `nodes_of_kind()`,
+    /// `nodes_in_service()`) still walks the `Vec`s above in insertion
+    /// order, and the `Vec<EdgeId>` values here are themselves
+    /// insertion-ordered, so these add lookup speed without touching
+    /// this type's determinism guarantee. `#[serde(skip)]`: derived
+    /// state, not part of the wire format `SystemGraph`'s `Serialize`
+    /// impl produces.
+    #[serde(skip)]
+    named_in_service_index: HashMap<(ServiceId, NodeKind, String), NodeId>,
+    #[serde(skip)]
+    edges_from_index: HashMap<NodeId, Vec<EdgeId>>,
+    #[serde(skip)]
+    edges_to_index: HashMap<NodeId, Vec<EdgeId>>,
+    #[serde(skip)]
+    pipeline_owner_index: HashMap<NodeId, usize>,
 }
 
 impl SystemGraph {
@@ -203,6 +229,16 @@ impl SystemGraph {
         span: Option<Span>,
     ) -> NodeId {
         let id = NodeId(self.nodes.len() as u32);
+        // `find_named_in_service` returns the *first* matching node in
+        // insertion order, so the index must preserve that: `entry`
+        // without overwriting, not `insert`, or a later node with the
+        // same (service, kind, name) would silently shadow an earlier
+        // one that a linear scan would have found instead.
+        if let (Some(service), Some(name)) = (service, component.name()) {
+            self.named_in_service_index
+                .entry((service, component.kind(), name.to_owned()))
+                .or_insert(id);
+        }
         self.nodes.push(Node {
             id,
             service,
@@ -233,16 +269,29 @@ impl SystemGraph {
     /// Adds an edge, reusing an existing identical edge if present so
     /// repeated wiring (e.g. two pipelines using the same handler) does not
     /// produce duplicates.
+    ///
+    /// `32UpdatePlan.md` M6: the dedupe-on-insert scan is now bounded by
+    /// `from`'s own out-degree (`edges_from_index`) rather than the
+    /// whole graph's edge count -- same result as the old full scan,
+    /// since every candidate it could ever match already has `e.from
+    /// == from` by construction, just cheaper to find.
     pub fn add_edge(&mut self, from: NodeId, to: NodeId, kind: EdgeKind) -> EdgeId {
         if let Some(existing) = self
-            .edges
-            .iter()
-            .find(|e| e.from == from && e.to == to && e.kind == kind)
+            .edges_from_index
+            .get(&from)
+            .into_iter()
+            .flatten()
+            .find_map(|&eid| {
+                let e = &self.edges[eid.0 as usize];
+                (e.to == to && e.kind == kind).then_some(e.id)
+            })
         {
-            return existing.id;
+            return existing;
         }
         let id = EdgeId(self.edges.len() as u32);
         self.edges.push(Edge { id, from, to, kind });
+        self.edges_from_index.entry(from).or_default().push(id);
+        self.edges_to_index.entry(to).or_default().push(id);
         id
     }
 
@@ -356,21 +405,50 @@ impl SystemGraph {
         kind: NodeKind,
         name: &str,
     ) -> Option<&Node> {
-        self.nodes_in_service(service)
-            .find(|n| n.component.kind() == kind && n.component.name() == Some(name))
+        // `32UpdatePlan.md` M6: `name.to_owned()` builds the same key
+        // `add_node_owned` inserted under -- `HashMap::get` needs an
+        // owned/borrowed key of the exact stored type, and `(ServiceId,
+        // NodeKind, String)` has no borrowed-tuple lookup shorthand.
+        let id = *self
+            .named_in_service_index
+            .get(&(service, kind, name.to_owned()))?;
+        Some(self.node(id))
     }
 
+    /// `32UpdatePlan.md` M6: backed by `edges_from_index` rather than a
+    /// full scan of every edge in the graph. The index's `Vec<EdgeId>`
+    /// is itself insertion-ordered (`add_edge` only ever appends), so
+    /// this returns edges in the same order the old linear scan did.
     pub fn edges_from(&self, node: NodeId) -> impl Iterator<Item = &Edge> {
-        self.edges.iter().filter(move |e| e.from == node)
+        self.edges_from_index
+            .get(&node)
+            .into_iter()
+            .flatten()
+            .map(move |&eid| &self.edges[eid.0 as usize])
     }
 
+    /// See [`Self::edges_from`] — same index-backed shape, `edges_to_index`.
     pub fn edges_to(&self, node: NodeId) -> impl Iterator<Item = &Edge> {
-        self.edges.iter().filter(move |e| e.to == node)
+        self.edges_to_index
+            .get(&node)
+            .into_iter()
+            .flatten()
+            .map(move |&eid| &self.edges[eid.0 as usize])
+    }
+
+    /// Registers a pipeline, keeping `pipeline_owner_index` in sync.
+    /// The only way `pipelines` should ever be mutated -- see that
+    /// field's own doc comment.
+    pub fn add_pipeline(&mut self, pipeline: Pipeline) {
+        self.pipeline_owner_index
+            .insert(pipeline.owner, self.pipelines.len());
+        self.pipelines.push(pipeline);
     }
 
     /// The pipeline owned by the given api/worker node, if any.
     pub fn pipeline_of(&self, owner: NodeId) -> Option<&Pipeline> {
-        self.pipelines.iter().find(|p| p.owner == owner)
+        let &index = self.pipeline_owner_index.get(&owner)?;
+        self.pipelines.get(index)
     }
 
     /// Renders the graph in Graphviz DOT format.
@@ -511,5 +589,130 @@ mod tests {
         assert!(dot.contains("digraph Test"));
         assert!(dot.contains("api Upload"));
         assert!(dot.contains("n1 -> n2"));
+    }
+
+    #[test]
+    fn find_named_in_service_matches_kind_name_and_service() {
+        let mut g = SystemGraph::new("Test");
+        let svc_a = g.add_service("A", None);
+        let svc_b = g.add_service("B", None);
+        let db_a = g.add_node_owned(
+            Some(svc_a),
+            Component::Database {
+                name: "default".into(),
+                engine: DbEngine::Postgres,
+            },
+            None,
+        );
+        g.add_node_owned(
+            Some(svc_b),
+            Component::Database {
+                name: "default".into(),
+                engine: DbEngine::Postgres,
+            },
+            None,
+        );
+
+        let found = g
+            .find_named_in_service(svc_a, NodeKind::Database, "default")
+            .expect("db exists in service A");
+        assert_eq!(found.id, db_a);
+        assert!(g
+            .find_named_in_service(svc_a, NodeKind::Queue, "default")
+            .is_none());
+        assert!(g
+            .find_named_in_service(svc_a, NodeKind::Database, "nonexistent")
+            .is_none());
+    }
+
+    #[test]
+    fn find_named_in_service_returns_the_first_match_on_a_duplicate_key() {
+        // A linear scan over `nodes_in_service` would return the first
+        // node with a matching (kind, name); the index must preserve
+        // that even though a HashMap has no inherent insertion order --
+        // `32UpdatePlan.md` M6 requires `entry().or_insert()`, not
+        // `insert()`, for exactly this reason.
+        let mut g = SystemGraph::new("Test");
+        let svc = g.add_service("A", None);
+        let first = g.add_node_owned(
+            Some(svc),
+            Component::Queue {
+                name: "default".into(),
+                engine: QueueEngine::Nats,
+            },
+            None,
+        );
+        g.add_node_owned(
+            Some(svc),
+            Component::Queue {
+                name: "default".into(),
+                engine: QueueEngine::Nats,
+            },
+            None,
+        );
+
+        let found = g
+            .find_named_in_service(svc, NodeKind::Queue, "default")
+            .expect("queue exists");
+        assert_eq!(found.id, first);
+    }
+
+    #[test]
+    fn edges_from_and_edges_to_are_scoped_and_insertion_ordered() {
+        let g = sample();
+        let (api, svc, db) = (NodeId(0), NodeId(1), NodeId(2));
+
+        let from_api: Vec<_> = g.edges_from(api).map(|e| e.id).collect();
+        assert_eq!(from_api, vec![EdgeId(0)]);
+        let from_svc: Vec<_> = g.edges_from(svc).map(|e| e.id).collect();
+        assert_eq!(from_svc, vec![EdgeId(1)]);
+        assert_eq!(g.edges_from(db).count(), 0);
+
+        let to_svc: Vec<_> = g.edges_to(svc).map(|e| e.id).collect();
+        assert_eq!(to_svc, vec![EdgeId(0)]);
+        let to_db: Vec<_> = g.edges_to(db).map(|e| e.id).collect();
+        assert_eq!(to_db, vec![EdgeId(1)]);
+        assert_eq!(g.edges_to(api).count(), 0);
+    }
+
+    #[test]
+    fn pipeline_of_finds_the_owning_pipeline_after_several_are_added() {
+        let mut g = SystemGraph::new("Test");
+        let owner_a = g.add_node(
+            Component::Api {
+                name: "A".into(),
+                request: None,
+                config: Default::default(),
+            },
+            None,
+        );
+        let owner_b = g.add_node(
+            Component::Api {
+                name: "B".into(),
+                request: None,
+                config: Default::default(),
+            },
+            None,
+        );
+        g.add_pipeline(Pipeline {
+            name: "A".into(),
+            service: None,
+            owner: owner_a,
+            payload: None,
+            steps: Vec::new(),
+            span: None,
+        });
+        g.add_pipeline(Pipeline {
+            name: "B".into(),
+            service: None,
+            owner: owner_b,
+            payload: None,
+            steps: Vec::new(),
+            span: None,
+        });
+
+        assert_eq!(g.pipeline_of(owner_a).map(|p| &p.name), Some(&"A".into()));
+        assert_eq!(g.pipeline_of(owner_b).map(|p| &p.name), Some(&"B".into()));
+        assert!(g.pipeline_of(NodeId(99)).is_none());
     }
 }

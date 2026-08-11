@@ -136,10 +136,13 @@ pub fn plan_regeneration(
         let new_hash = hash_content(generated);
         let base = manifest.and_then(|m| m.files.get(rel));
         let base_hash = base.map(|entry| entry.hash.as_str());
-        let generated_content = generated.to_owned();
-        let disk_content = disk
-            .as_deref()
-            .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+        // `32UpdatePlan.md` M7: `generated`/`disk` stay borrowed here --
+        // `disk_content(disk.as_deref())`/`generated.to_owned()` below are called
+        // only inside the match arms that actually keep the content
+        // (`New`, `Update`, `Conflict`, `SeededDrift`), not for every
+        // file regardless of outcome. `Unchanged` -- the common case on
+        // a warm rebuild -- is exactly what `apply_regeneration` and
+        // every diff renderer ignore, so it allocates neither.
 
         let entry = match (mode, role, disk_hash.as_deref(), base_hash) {
             (_, _, None, _) => RegenEntry {
@@ -147,50 +150,34 @@ pub fn plan_regeneration(
                 role,
                 status: RegenStatus::New,
                 old_content: None,
-                new_content: Some(generated_content),
+                new_content: Some(generated.to_owned()),
                 sidecar_path: None,
                 new_hash,
             },
             (RegenMode::Adopt, FileRole::Owned, Some(disk_hash), _) => {
                 if disk_hash == new_hash {
-                    RegenEntry {
-                        path: rel.to_owned(),
-                        role,
-                        status: RegenStatus::Unchanged,
-                        old_content: disk_content,
-                        new_content: Some(generated_content),
-                        sidecar_path: None,
-                        new_hash,
-                    }
+                    unchanged_entry(rel, role, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
                         role,
                         RegenStatus::Conflict,
-                        disk_content,
-                        generated_content,
+                        disk_content(disk.as_deref()),
+                        generated.to_owned(),
                         new_hash,
                     )
                 }
             }
             (RegenMode::Adopt, FileRole::Seeded | FileRole::Migration, Some(disk_hash), _) => {
                 if disk_hash == new_hash {
-                    RegenEntry {
-                        path: rel.to_owned(),
-                        role,
-                        status: RegenStatus::Unchanged,
-                        old_content: disk_content,
-                        new_content: Some(generated_content),
-                        sidecar_path: None,
-                        new_hash,
-                    }
+                    unchanged_entry(rel, role, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
                         role,
                         RegenStatus::SeededDrift,
-                        disk_content,
-                        generated_content,
+                        disk_content(disk.as_deref()),
+                        generated.to_owned(),
                         new_hash,
                     )
                 }
@@ -198,41 +185,41 @@ pub fn plan_regeneration(
             (RegenMode::Normal, FileRole::Owned, Some(disk_hash), Some(base_hash)) => {
                 if disk_hash == base_hash {
                     if disk_hash == new_hash {
-                        unchanged_entry(rel, role, disk_content, generated_content, new_hash)
+                        unchanged_entry(rel, role, new_hash)
                     } else {
                         RegenEntry {
                             path: rel.to_owned(),
                             role,
                             status: RegenStatus::Update,
-                            old_content: disk_content,
-                            new_content: Some(generated_content),
+                            old_content: disk_content(disk.as_deref()),
+                            new_content: Some(generated.to_owned()),
                             sidecar_path: None,
                             new_hash,
                         }
                     }
                 } else if disk_hash == new_hash {
-                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
+                    unchanged_entry(rel, role, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
                         role,
                         RegenStatus::Conflict,
-                        disk_content,
-                        generated_content,
+                        disk_content(disk.as_deref()),
+                        generated.to_owned(),
                         new_hash,
                     )
                 }
             }
             (RegenMode::Normal, FileRole::Owned, Some(disk_hash), None) => {
                 if disk_hash == new_hash {
-                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
+                    unchanged_entry(rel, role, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
                         role,
                         RegenStatus::Conflict,
-                        disk_content,
-                        generated_content,
+                        disk_content(disk.as_deref()),
+                        generated.to_owned(),
                         new_hash,
                     )
                 }
@@ -248,24 +235,24 @@ pub fn plan_regeneration(
                         rel,
                         role,
                         RegenStatus::SeededDrift,
-                        disk_content,
-                        generated_content,
+                        disk_content(disk.as_deref()),
+                        generated.to_owned(),
                         new_hash,
                     )
                 } else {
-                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
+                    unchanged_entry(rel, role, new_hash)
                 }
             }
             (RegenMode::Normal, FileRole::Seeded | FileRole::Migration, Some(disk_hash), None) => {
                 if disk_hash == new_hash {
-                    unchanged_entry(rel, role, disk_content, generated_content, new_hash)
+                    unchanged_entry(rel, role, new_hash)
                 } else {
                     sidecar_entry(
                         rel,
                         role,
                         RegenStatus::SeededDrift,
-                        disk_content,
-                        generated_content,
+                        disk_content(disk.as_deref()),
+                        generated.to_owned(),
                         new_hash,
                     )
                 }
@@ -352,22 +339,28 @@ pub fn apply_regeneration(plan: &RegenPlan, root: &Path, mode: ApplyMode) -> io:
     Ok(())
 }
 
-fn unchanged_entry(
-    rel: &str,
-    role: FileRole,
-    disk_content: Option<String>,
-    generated_content: String,
-    new_hash: String,
-) -> RegenEntry {
+/// `32UpdatePlan.md` M7: unlike `sidecar_entry`, this never populates
+/// `old_content`/`new_content` -- `Unchanged` is the common case on a
+/// warm rebuild, nothing reads its content (`apply_regeneration` and
+/// every diff renderer both skip this status), so cloning either side
+/// here would be pure waste on every no-op file.
+fn unchanged_entry(rel: &str, role: FileRole, new_hash: String) -> RegenEntry {
     RegenEntry {
         path: rel.to_owned(),
         role,
         status: RegenStatus::Unchanged,
-        old_content: disk_content,
-        new_content: Some(generated_content),
+        old_content: None,
+        new_content: None,
         sidecar_path: None,
         new_hash,
     }
+}
+
+/// `disk`'s content as a lossily-decoded `String`, cloned only when a
+/// match arm actually needs to keep it (`sidecar_entry`/`Update`) --
+/// callers that resolve to `Unchanged` never call this.
+fn disk_content(disk: Option<&[u8]>) -> Option<String> {
+    disk.map(|bytes| String::from_utf8_lossy(bytes).into_owned())
 }
 
 fn sidecar_entry(
@@ -549,6 +542,25 @@ mod tests {
             "schemas.py was never touched by a user and must not be reported as a conflict"
         );
 
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unchanged_entry_carries_no_content() {
+        // `32UpdatePlan.md` M7: the common warm-rebuild case must not
+        // clone either side's content -- nothing reads it for `Unchanged`.
+        let dir = temp_dir("unchanged-entry-carries-no-content");
+        let mut old = GeneratedProject::new();
+        old.add_file("a.txt", "same");
+        old.write_to(&dir).unwrap();
+        let manifest = build_manifest(&old, "0.6.0", "1.0.0", "src", "python");
+
+        let mut new = GeneratedProject::new();
+        new.add_file("a.txt", "same");
+        let plan = plan_regeneration(&new, &dir, Some(&manifest), RegenMode::Normal).unwrap();
+        assert_eq!(plan.entries[0].status, RegenStatus::Unchanged);
+        assert!(plan.entries[0].old_content.is_none());
+        assert!(plan.entries[0].new_content.is_none());
         std::fs::remove_dir_all(dir).ok();
     }
 

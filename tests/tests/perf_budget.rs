@@ -47,6 +47,30 @@
 //! are two different facts; this multiplier's value is the same one
 //! `30UpdatePlan.md` M8 chose, re-confirmed against real M9 data
 //! rather than left standing by default.
+//!
+//! **`32UpdatePlan.md` M9 revisited it again**, for a reason this
+//! arc's own text predicted in advance: item 11 (the Java formatter)
+//! was cut at M7 rather than implemented (see `32UpdatePlan.md`'s own
+//! running log), so java's absolute `generate()` cost is unchanged by
+//! this arc — but M2 (hash once), M4 (lazy template loading) and M6
+//! (IR indexes) all cut the *cheap* backends' own in-process cost,
+//! which is the denominator this ratio is measured against. Three
+//! debug-profile reps of `measure_all()` read java at 415.6x, 493.3x,
+//! 506.5x median (mean ≈ 472x) — roughly 2.5-3x higher than
+//! `31UpdatePlan.md` M9's own 131.7x-187.4x reading, and genuinely
+//! tighter run-to-run here (≈18% spread across three reps, vs. that
+//! revisit's own documented ~43% swing) rather than noisier. Kept at
+//! 1000, unchanged, for the same reason as before with a fresh number
+//! behind it: even the highest of these three reps (506.5x) leaves
+//! very close to 2x headroom before the ceiling, comfortably clear of
+//! this session's own observed noise band, and orders of magnitude
+//! clear of the catastrophe floor (tens of thousands x) this gate
+//! exists to catch. Disclosed rather than left implicit: that
+//! headroom is real but has shrunk from v0.31's ~5-7x to ~2x, and a
+//! future arc that further cuts the cheap backends' cost without ever
+//! touching java's (item 11 remains open, cut here, not abandoned)
+//! should expect to revisit this multiplier again rather than assume
+//! today's 2x margin is permanent.
 
 use ciac_codegen::{BackendError, GenOptions};
 use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir};

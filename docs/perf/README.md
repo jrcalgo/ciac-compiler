@@ -101,6 +101,17 @@ history exists:
 5. Two spurious fires on the same gate: remove it, per the rule's own
    "never widened silently" clause, and record why in this file.
 
+**`32UpdatePlan.md` M9 applied this check, honestly, per its own
+pre-registration.** That milestone's text stated in advance: *"this arc
+is a single continuous session, so neither [gate] will have [accumulated
+real merge history], and the 'Promotion status' table gets the real
+count rather than a convenient one."* Running the mechanical check above
+against this arc's own commits confirms exactly that — zero merge
+commits to `main` observed by either gate across `32UpdatePlan.md`'s
+own run, for the identical structural reason `31UpdatePlan.md` M9 gave
+the first time this table was written. The table above is left
+unchanged because it was already accurate; neither gate promotes.
+
 ## `32UpdatePlan.md` M5 checkpoint
 
 Cumulative M2+M3+M4 measured against the frozen `baseline-v0.29.0.json`

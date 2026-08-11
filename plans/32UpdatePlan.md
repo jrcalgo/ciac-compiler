@@ -1218,3 +1218,168 @@ and why; which thresholds were met versus merely approached; whether
 any Contract 2 trade was accepted and on what reasoning; and an honest
 assessment of whether pre-registration survived contact with the data
 or was quietly renegotiated at any point.*
+
+**A finding that qualifies every number in this section, discovered
+only now.** `docs/perf/baseline-v0.29.0.json`'s own M1 commit
+(`effb1be`) states plainly what it is: "exact copy of
+`docs/perf/baseline.json` as it stood at the start of this arc
+(`git_sha 76be418`, `31UpdatePlan.md` M8's own reading)." It was never
+re-measured on this arc's own machine — it is the *previous* arc's
+final rolling reading, carried forward as this arc's frozen "before."
+That previous reading's own `environment` stamp: CPU
+`Intel(R) Xeon(R) Processor @ 2.80GHz`, `sha_ni: false`. Every
+`docs/perf/baseline.json` this arc itself wrote — M1 (`8bc2829`), M5
+(`00d7b29`), and this M9 close-out — stamps CPU
+`Intel(R) Xeon(R) Processor @ 2.10GHz`, `sha_ni: true`, consistently,
+confirming this arc ran on one consistent machine throughout and the
+mismatch is entirely a cross-session artifact between whichever
+container ran `31UpdatePlan.md` and the one running this arc, not
+mid-arc drift. This was never flagged in the plan text, in M1's own
+exit checklist, or in M5's checkpoint — Pillar 4's freeze instruction
+("an exact copy... immutable for the remainder of this arc") is correct
+for what it promises, but nothing in it or in M1's own exit criteria
+checked that the copy's own environment stamp matched the arc doing the
+comparing.
+
+**What this does and does not invalidate.** SHA-256 is 39.79% of a
+`ciac build`'s instructions per this plan's own preamble, and `sha2`
+dispatches SHA-NI at runtime when available — going from unavailable to
+available between the two readings inflates any hash-touching
+instruction-count delta by an amount this arc's own code changes did
+not earn. It does **not** touch any individual milestone's own
+pre-registered verdict: M2 (15.14%), M4 (51.9-70.8%), M6 (39.85%,
+2.15x/2.46x), and M8 item 5 (61.9%/70.5%) were each measured
+git-stash-isolated, before-state and after-state on this arc's own
+single consistent machine, within that milestone's own execution — the
+same machine on both sides, so a constant hardware capability cancels
+out of the delta. It also does not touch Contract 2's actual
+regression-catching mechanism at each milestone boundary, which reads
+the rolling `docs/perf/baseline.json` (same-machine throughout this
+arc), not the frozen file. What it *does* inflate is the headline
+cumulative table below and M5's own checkpoint table, both computed
+against `baseline-v0.29.0.json` directly — most visibly
+`instruction_counts`/`ping` (-49.43%), which is not attributable to any
+single milestone's own explained mechanism and is almost certainly
+mostly a SHA-NI artifact on a small program where one remaining hash
+pass (post-M2) is a larger share of total work. Recorded here rather
+than left for a future reader to rediscover and wonder whether it was
+noticed.
+
+**Cumulative before/after, `baseline-v0.29.0.json` → this arc's final
+`docs/perf/baseline.json`** (read the instruction-count row with the
+caveat above; wall-clock rows carry the same cross-machine caveat more
+weakly, since tool/subprocess-dominated wall time is less
+microarchitecture-sensitive than a callgrind instruction count, but a
+2.80GHz-vs-2.10GHz clock difference is still a real, uncontrolled
+variable in every row below):
+
+| Metric | Old | New | Change |
+|---|---|---|---|
+| `order-system` `semantic_model::semantic_hash` (µs) | 64.5 | 21.2 | -67.1% |
+| `order-system` `regen::plan_regeneration [warm]` (µs) | 888.2 | 266.9 | -69.9% |
+| `order-system` `manifest::build_manifest` (µs) | 362.4 | 72.3 | -80.0% |
+| `order-system` `generate()` python (µs) | 1291.6 | 1035.2 | -19.9% |
+| `order-system` `generate()` go (µs) | 18894.9 | 14434.8 | -23.6% |
+| `order-system` `generate()` java (µs) | 1342038.1 | 1004939.0 | -25.1% |
+| `instruction_counts` / ping | 12,982,474 | 6,564,709 | -49.4% (SHA-NI-confounded, see above) |
+| `instruction_counts` / order-system | 25,416,100 | 19,269,010 | -24.2% (SHA-NI-confounded, see above) |
+| `template_setup` python/rust/typescript (µs) | 1990.7 / 2205.3 / 2493.7 | 810.9 / 650.0 / 1281.7 | -59.3% / -70.5% / -48.6% |
+| `verify` python/rust/typescript/go/java (sum) | 3.872s / 116.555s / 18.420s / 9.032s / 319.746s | 3.615s / 96.942s / 13.497s / 4.162s / 316.026s | -6.6% / -16.8% / -26.7% / -53.9% / -1.2% |
+| `slow_test_binaries` total (4 binaries) | 210.320s | 185.505s | -11.8% |
+| `sim` python/rust/typescript/go/java (sum) | 3.028s / 77.995s / 13.898s / 5.533s / 32.977s | 2.503s / 62.244s / 10.549s / 3.041s / 24.085s | -17.3% / -20.2% / -24.1% / -45.0% / -27.0% |
+
+Every row moved in the improving direction; none regressed. The
+`determinism` slow-test-binary, +8.56% at M5's own checkpoint and
+root-caused there to a measurement-ordering artifact, reads -something
+different here because M8's own split changed what that binary
+measures entirely (5 functions, not 1) — not a comparable row to M5's,
+so not repeated in this table.
+
+**Which milestones were reverted or cut, and why** (full reasoning
+already recorded inline at each milestone; summarized here for a reader
+who wants the outcome without re-reading the whole log):
+
+- **M7 half one (item 3, regen allocation reduction) — reverted.**
+  Implemented and tested correctly; DHAT-measured gain was 4.36%
+  bytes / 0.47% blocks against a ≥20% threshold — under half, Contract
+  3's literal revert line. Root cause fully explained (the removed
+  clones' real size, ~130KB, is almost exactly twice the ~88KB total
+  generated output — there was never a larger amount available to
+  reclaim), and no second, more favorable measurement case existed to
+  disclose against, unlike M3's `ping`/`sim-three-service` split.
+  Reverted rather than kept-with-disclosure.
+- **M7 half two (item 11, Java formatter) — cut, never implemented.**
+  The only option that could remove rather than amortize JVM-startup
+  cost (skip formatting when template output is already canonical) was
+  checked directly against a real template and golden snapshot and
+  disqualified in the first file checked (raw output is 4-space
+  indented, the golden's canonical form is 2-space) — implementing it
+  would mean either a large template rewrite or weakening Contract 1's
+  own guarantee. Cut per the plan's own pre-registered permission to do
+  so at M7 without failing the milestone.
+
+**Which thresholds were met versus merely approached:**
+
+| Outcome | Items |
+|---|---|
+| **Met cleanly** | M2 item 2 (15.14% vs ≥8%); M4 item 1 (51.9-70.8% vs ≥40%, all three gated backends); M6 items 9+10 (39.85% vs ≥25%; 2.15x/2.46x vs ≤2.5x); M8 item 5 (61.9%/70.5% vs ≥30%) |
+| **Kept, shortfall disclosed (Contract 3 tension)** | M3 item 4 (`ping` 1.74x vs ≥5x — floor-bound program, `sim-three-service` cleared 8.84x, mechanism verified correct); M8 item 7 (4.46% vs ≥30% — 4-vCPU ceiling, pre-registered as a named risk in advance); M8 item 8 (1.33%, thin but real, literal binary criterion met) |
+| **Functionally verified, no numeric gate** | M8 item 6 (shared `CARGO_TARGET_DIR` — plan named no threshold for it) |
+| **Reverted** | M7 item 3 (4.36% vs ≥20%, under half) |
+| **Cut, not attempted** | M7 item 11 (Java formatter — disqualified in advance of writing code) |
+| **Revisited, held unchanged** | M9 item 12 (`perf_budget.rs` multiplier stays 1000×; headroom shrunk from `31UpdatePlan.md` M9's ~5-7x to ~2x, disclosed as a fact a future arc should expect to revisit) |
+
+Nine of twelve items landed and kept; one was reverted with the
+mechanism proven correct but the ceiling smaller than hoped; one was
+cut before implementation on direct evidence; one (the ratchet itself)
+was re-derived rather than changed.
+
+**Contract 2 trades: none accepted, because none were offered.** At
+every milestone boundary, the full `ciac-bench --compare` sweep showed
+either uniform improvement or a flat/noise-band reading on every
+untargeted metric — not once did a milestone's own gain arrive bundled
+with another metric moving outside its noise band. The nearest thing to
+a trade is M8 item 8's dev-profile change, which touches every future
+test's dependency compilation cost in one direction only (down); no
+milestone in this arc ever required invoking Contract 2's "trade,
+stated and accepted" clause.
+
+**Did pre-registration survive contact with the data?** Mostly, and
+where it didn't, the deviation is on the record at the milestone it
+happened rather than smoothed over here:
+
+- M3's ratio-based threshold assumed the warm-rebuild cost had room to
+  move; for a program already within noise of the pure process-spawn
+  floor, no implementation could have cleared it. Caught during
+  execution, not pre-empted by the plan text, and handled through
+  Contract 3's graduated system exactly as designed rather than by
+  quietly lowering the bar.
+- M7's own DHAT instrument initially measured the wrong scenario (every
+  file resolves `New`, never `Unchanged`, in a fresh `--out` dir) —
+  caught before committing to a number, corrected, and the corrected
+  number still came in under threshold. The instrument bug and the
+  revert are two separate, both-disclosed facts.
+- M8 items 7/8's shortfalls landed exactly where the plan's own risk
+  section predicted by name before any code was written ("this machine
+  ... has 4 vCPUs ... M8's parallelism numbers in particular will look
+  different on a 16-core machine") — the prediction survived contact
+  with the data even though the specific numbers came in lower than the
+  thresholds hoped for.
+- **This retrospective itself found the one gap the plan never
+  anticipated**: freezing "an exact copy" of the rolling baseline at
+  arc-start (Pillar 4) is correct in what it promises but silent on
+  whether the copy's own measurement environment matches the arc doing
+  the comparing. It didn't, across a session boundary neither this
+  arc's text nor its M1 exit checklist thought to check. The fix for a
+  future arc is cheap and stated here so it isn't rediscovered the same
+  way twice: M1's freeze step should stamp-check the copied file's
+  `environment` against a fresh same-session reading before treating it
+  as comparable, not just copy it forward.
+
+Version 0.29.0 → 0.30.0. Ships with nine of twelve optimization items
+kept, one reverted with the hypothesis disproven cleanly, one cut on
+direct evidence before implementation, and the ratchet re-derived
+rather than left stale — plus one honestly-reported measurement gap in
+the arc's own retrospective process, which is exactly the kind of
+finding a retrospective section exists to surface rather than paper
+over.

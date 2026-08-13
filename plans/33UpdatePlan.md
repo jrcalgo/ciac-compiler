@@ -1519,11 +1519,119 @@ readings, not just whichever one it beats.
 
 ## Retrospective
 
-*Written at M9, against `docs/perf/baseline-v0.30.0.json`. Must state,
-at minimum: the cumulative slow-binary delta per binary and in total;
-which thresholds were met, missed, or reverted; whether the ≥5-run
-Contract D check ever caught something a single run did not; whether
-M6's first-run penalty justified shipping default-on; and — since this
-arc exists to correct a prior arc's explanation — whether any
-explanation offered in this document's own running log was itself
-reached before its measurement.*
+**Cumulative slow-binary delta**, this arc's own settled M1 reference
+(135.30s — the rigorous 3-rep isolated median, not `baseline-v0.30.0.
+json`'s own stale 185.50s figure; see M1's running-log entry for the
+full reconciliation) against the M7 checkpoint's re-measurement
+(93.62s):
+
+| Binary | M1 | M7 checkpoint | Ratio | Change |
+|---|---|---|---|---|
+| `determinism` | 46.86s | 26.16s | 1.79× | -44.2% |
+| `conformance` | 42.87s | 39.96s | 1.07× | -6.8% |
+| `golden` | 23.10s | 13.70s | 1.69× | -40.7% |
+| `openapi` | 22.47s | 13.80s | 1.63× | -38.6% |
+| **total** | **135.30s** | **93.62s** | **1.45×** | **-30.8%** |
+
+Against the stale committed `baseline.json` this arc inherited
+(185.50s), the same total is a **49.5%** reduction. Both numbers are
+recorded rather than only the more favorable one — the discipline this
+arc exists to enforce on its predecessor applies to itself with equal
+force.
+
+**Which thresholds were met, missed-but-kept, or reverted:**
+
+- **Met outright:** M5 (`golden.rs`, 1.61× vs ≥1.5×), M6 (AppCDS, both
+  thresholds — 54.4% vs ≥25% fixed-cost reduction, ~0.27s vs ≤1.5s
+  first-run penalty).
+- **Kept, shortfall disclosed** (cleared the corrected half-threshold
+  but missed the full one — see Pillar 5's ratio-threshold note, added
+  mid-arc to fix a drafting error in M3's own original "0.9×" wording):
+  M3 (`determinism.rs`, 1.66× vs ≥1.8×, half-point 1.4×) and M4's
+  `openapi.rs` half (1.55× vs ≥1.6×, half-point 1.3×).
+- **Reverted:** M4's `conformance.rs` half. Measured, not assumed, to
+  have a structural ceiling near 1.05× on this hardware — its three
+  outer test fns are each independently java-heavy, so libtest's own
+  external concurrency already consumes the available headroom before
+  any internal chunking is added. Recorded as this arc's own
+  highest-value finding for whoever picks up the next one, alongside
+  the `conformance.rs` 3× redundant-generation opportunity that was
+  identified but deliberately not taken (see "Explicit cuts").
+
+**Did the ≥5-run Contract D check ever catch something a single run
+would not have?** Yes, and the two instances differ in kind, which is
+itself worth recording. The narrower instance: M6's cold-archive
+concurrency stress test (`concurrent_generate_calls_are_byte_identical_
+and_do_not_race`, re-run 5× with the AppCDS archive deleted before each
+rep) exists specifically because Contract D's discipline demanded a
+test for exactly the race window a single green run cannot exercise —
+it passed every time, which is a real confirmation, not a null result.
+The more important instance is not a Contract D catch at all, but the
+same underlying discipline applied one level up: M6's `jdk_version_
+string()` bug (taking `JAVA_TOOL_OPTIONS`'s noise line instead of the
+real version banner, silently failing every archive mint) passed a
+fully green unit-test suite, repeatedly, because the design is
+deliberately fail-soft. **A green test suite was not evidence the
+feature engaged.** It was only caught by adding a throwaway debug test
+that printed the actual return values and reading them, rather than
+trusting "tests pass" as a proxy for "the code does what it says." This
+is the same discipline Pillar 1 states for a missed threshold's root
+cause — verify, don't infer — applied to a *success* condition instead
+of a shortfall, which the pre-registered contracts did not explicitly
+anticipate but should have.
+
+**Did M6's first-run penalty justify shipping default-on?** Yes,
+unambiguously: ~0.27s measured against a ≤1.5s reversal-rule threshold,
+roughly 5.5× margin. The opt-in-env-var fallback open question 1
+pre-registered was never triggered.
+
+**The arc's own founding question, turned on itself: was any root
+cause offered in this document's own running log itself reached before
+its measurement?** This is the direct test of whether the discipline
+this arc exists to enforce on `32UpdatePlan.md` was actually practiced
+here, not merely preached. Audited specifically against the two
+milestones that had a shortfall to explain:
+
+- **M3.** The first implementation (contiguous `.chunks(ceil(29/4))`,
+  sizes 8/8/8/5) measured 1.62× against ≥1.8×. The root cause — chunk
+  imbalance leaving the fourth worker idle for the run's tail — was
+  proposed, then *tested* by fixing it (round-robin chunking) and
+  re-measuring before being written down, rather than recorded as a
+  plausible story. The fix moved the number to 1.66×, a real but
+  partial confirmation — and the residual gap was investigated further
+  rather than left unexplained: the formatter-only concurrency figure
+  was re-measured live (2.21×, confirming the earlier 2.26× was not
+  stale) to isolate whether the shortfall was in the JVM mechanism or
+  elsewhere, positively identifying the remainder as front-end/
+  template-render CPU contention the isolated formatter benchmark
+  never exercised.
+- **M4.** `openapi.rs` cleared its half-threshold cleanly. `conformance.
+  rs` measured flat (no meaningful gain), and the explanation — three
+  independently java-heavy outer fns exhausting available concurrency
+  before internal chunking gets a turn — was *not* accepted on
+  plausibility. The internal worker count was swept directly (1, 2, 4)
+  and the results measured (43.22s / 41.83s / 43.94s) before any
+  explanation was written into the log, which is what turned "probably
+  a structural ceiling" into a demonstrated one and is why the
+  milestone was reverted rather than kept on a guess.
+
+Both audits land the same way: the root cause in this document's own
+running log was measured before it was recorded, not the other way
+around. That is not a small thing to be able to say, given the arc's
+entire premise is that `32UpdatePlan.md` reached a plausible-sounding
+explanation without doing exactly this. The corrected paragraph in
+`plans/32UpdatePlan.md`'s own M8 note exists because that check was
+skipped once; this arc's own log survives the same check applied to
+itself.
+
+**Handoff.** Two things for the next arc, beyond the `conformance.rs`
+finding already flagged: `perf_budget.rs`'s java/median ratio now
+carries 2.7× headroom (up from ~2×), created by this arc but explicitly
+not spent — tightening the multiplier to reclaim it is a ratchet
+decision for whoever owns the next arc, taken with a soak behind it,
+not a side effect of a test-suite optimization. And the `conformance.rs`
+3× redundant-generation opportunity (three test fns, each independently
+generating all five backends via `supported_projects`) remains
+measured, un-taken, and worth an estimated further 2-3× on that
+binary's own cost — recorded in "Explicit cuts" with the reasoning for
+deferring it rather than taking it here.

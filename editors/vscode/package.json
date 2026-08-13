@@ -2,7 +2,7 @@
   "name": "ciac",
   "displayName": "CIaC",
   "description": "Syntax highlighting and Language Server Protocol support for .ciac files",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "publisher": "ciac",
   "license": "Apache-2.0",
   "repository": {

@@ -42,6 +42,25 @@
 //! `chunk_paths`/`worker_count` live in `ciac_integration_tests` (not
 //! here) -- `33UpdatePlan.md` M4 reuses them for `openapi.rs` and
 //! `conformance.rs`'s identical shape.
+//!
+//! Follow-up, tried and reverted: `chunk_paths`' round-robin balances
+//! item *count*, not item *cost*, and this corpus' `.ciac` sources
+//! span a 34x byte-size range -- so `chunk_by_weight` (LPT scheduling,
+//! keyed on source byte length) was tried here on the theory that a
+//! worker drawing several of the largest examples was finishing long
+//! after one holding only small ones. It balances source bytes across
+//! workers almost perfectly (measured: worker totals within 0.7% of
+//! each other, vs. round-robin's 74% spread) but moved this file's own
+//! measured time by nothing (26.45s vs. 26.16s, within noise) -- source
+//! byte size stopped predicting per-example `generate()` cost for java
+//! once M6's AppCDS archive made that cost dominated by a near-constant
+//! per-call JVM fee (~0.145s) rather than anything proportional to
+//! source size. The scheduler is correct; the weight proxy no longer
+//! matches what it needs to balance. Reverted rather than kept on
+//! theoretical grounds alone -- `chunk_by_weight` itself stays (see
+//! `ciac_integration_tests`), used by `conformance.rs`'s own memoized
+//! generation pass, where it costs nothing extra since that code was
+//! being written from scratch anyway.
 
 use ciac_codegen::manifest::build_manifest;
 use ciac_codegen::{Backend, GenOptions};

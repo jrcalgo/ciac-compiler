@@ -39,11 +39,42 @@
 //!   so far, would be scope beyond what any of the three arcs actually
 //!   needed. Revisit if a fourth target's own boundary cases start
 //!   repeating this file's other C-number shape.
+//!
+//! Post-`33UpdatePlan.md` follow-up: `c3`/`c4a`/`c4b` each independently
+//! called `supported_projects` for every example -- three full,
+//! identical generation passes over the whole corpus, the exact
+//! redundancy `33UpdatePlan.md`'s own retrospective flagged as the
+//! highest-value item left on the table (measured there: each fn alone
+//! costs ~20s; libtest's 3-way concurrency claws back only a third of
+//! the tripled work). Fixed by memoizing the generation into a
+//! process-wide `LazyLock`, built once by whichever test fn reaches it
+//! first (the other two block briefly, then read the same data) and
+//! parallelized internally via `chunk_by_weight` (LPT scheduling on
+//! source byte size). This changes *when* generation happens, not what
+//! is asserted: each test fn's own logic, inputs, and assertion count
+//! are unchanged, just reading from `MEMO` instead of calling
+//! `supported_projects` (and `compile_file`, for C4b's `ir`) itself.
+//! `supported_projects` itself -- and therefore what "supported" means
+//! -- is untouched.
+//!
+//! `chunk_by_weight` was also tried in `determinism.rs` and reverted
+//! there: it balances source bytes well but that stopped predicting
+//! per-example java cost once M6's AppCDS archive made that cost
+//! dominated by a near-constant per-call JVM fee rather than anything
+//! proportional to source size (see that file's own note). Kept here
+//! regardless -- this build phase was written from scratch, so using
+//! it costs nothing extra, and it is at worst neutral rather than
+//! measurably harmful for the same reason it was neutral there.
 
 use ciac_codegen::model::build_system;
 use ciac_codegen::GenOptions;
-use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir, project_dump};
+use ciac_integration_tests::{
+    backends, chunk_by_weight, ciac_files, compile_file, examples_dir, file_weight, project_dump,
+    worker_count,
+};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::LazyLock;
 
 /// Every registered target that accepts `ir`, generated once.
 fn supported_projects(
@@ -61,16 +92,72 @@ fn supported_projects(
         .collect()
 }
 
+/// One example's memoized compile + generate result, shared read-only
+/// across `c3`/`c4a`/`c4b`. `ir` is kept (not just `projects`) because
+/// C4b needs `build_system(&ir, ..)`, which is cheap relative to
+/// generation but still needless to redo three times.
+struct MemoizedExample {
+    name: String,
+    ir: ciac_ir::NormalizedIr,
+    projects: Vec<(&'static str, ciac_codegen::GeneratedProject)>,
+}
+
+/// Built once, by whichever test fn reaches it first; the other two
+/// block on the same `LazyLock` and then read the completed result.
+/// Internal build is parallel (`chunk_by_weight`/`worker_count`,
+/// matching `determinism.rs`), then sorted back into `ciac_files`'
+/// own order so iteration order -- and therefore which example a
+/// failure names first -- is unchanged from before this fn existed.
+static MEMO: LazyLock<Vec<MemoizedExample>> = LazyLock::new(|| {
+    let weighted: Vec<((usize, PathBuf), u64)> = ciac_files(&examples_dir())
+        .into_iter()
+        .enumerate()
+        .map(|(idx, path)| {
+            let weight = file_weight(&path);
+            ((idx, path), weight)
+        })
+        .collect();
+    let chunks = chunk_by_weight(weighted, worker_count());
+
+    let mut results: Vec<(usize, MemoizedExample)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut local = Vec::new();
+                    for (idx, path) in chunk {
+                        let name = path
+                            .file_stem()
+                            .expect("file name")
+                            .to_string_lossy()
+                            .into_owned();
+                        let ir = compile_file(&path);
+                        let projects = supported_projects(&ir);
+                        local.push((idx, MemoizedExample { name, ir, projects }));
+                    }
+                    local
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect()
+    });
+
+    results.sort_by_key(|(idx, _)| *idx);
+    results.into_iter().map(|(_, ex)| ex).collect()
+});
+
 /// C3: every supporting target's `openapi.json` file(s) — keyed by
 /// path, so single- and multi-service systems both compare correctly
 /// (a multi-service system has one per service dir plus a root
 /// system-level index) — must be byte-identical across targets.
 #[test]
 fn c3_openapi_is_byte_identical_across_targets() {
-    for path in ciac_files(&examples_dir()) {
-        let name = path.file_stem().expect("file name").to_string_lossy();
-        let ir = compile_file(&path);
-        let projects = supported_projects(&ir);
+    for ex in MEMO.iter() {
+        let name = &ex.name;
+        let projects = &ex.projects;
         if projects.len() < 2 {
             continue; // nothing to compare an example generated for only one target against
         }
@@ -109,10 +196,9 @@ fn c3_openapi_is_byte_identical_across_targets() {
 /// duplicate the differ's own tests).
 #[test]
 fn c4a_migration_sql_is_byte_identical_across_targets() {
-    for path in ciac_files(&examples_dir()) {
-        let name = path.file_stem().expect("file name").to_string_lossy();
-        let ir = compile_file(&path);
-        let projects = supported_projects(&ir);
+    for ex in MEMO.iter() {
+        let name = &ex.name;
+        let projects = &ex.projects;
         if projects.len() < 2 {
             continue;
         }
@@ -158,14 +244,13 @@ fn c4a_migration_sql_is_byte_identical_across_targets() {
 /// backends render from; this checks the render kept faith with it).
 #[test]
 fn c4b_declared_topology_appears_in_every_target() {
-    for path in ciac_files(&examples_dir()) {
-        let name = path.file_stem().expect("file name").to_string_lossy();
-        let ir = compile_file(&path);
-        let projects = supported_projects(&ir);
+    for ex in MEMO.iter() {
+        let name = &ex.name;
+        let projects = &ex.projects;
         if projects.is_empty() {
             continue;
         }
-        let model = build_system(&ir, &GenOptions::default());
+        let model = build_system(&ex.ir, &GenOptions::default());
         let mut facts: Vec<String> = Vec::new();
         for ctx in &model.services {
             for worker in &ctx.workers {
@@ -182,7 +267,7 @@ fn c4b_declared_topology_appears_in_every_target() {
                 facts.push(table.class_name.clone());
             }
         }
-        for (target_id, project) in &projects {
+        for (target_id, project) in projects {
             let dump = project_dump(project);
             for fact in &facts {
                 assert!(

@@ -79,6 +79,42 @@ pub fn chunk_paths<T>(items: Vec<T>, worker_count: usize) -> Vec<Vec<T>> {
     chunks
 }
 
+/// Longest-Processing-Time-first scheduling: sorts `items` descending by
+/// `weight`, then greedily assigns each one to whichever worker bucket
+/// currently carries the least total weight. Follow-up to `chunk_paths`'
+/// own round-robin, which balances item *count*, not item *cost* --
+/// measured to matter on this corpus specifically: example source files
+/// span a 34x size range (191 bytes to 6,550 bytes), so a round-robin
+/// split can hand one worker several of the largest examples while
+/// another gets the smallest, leaving it idle for the run's tail.
+/// `weight` is the caller's cost proxy -- file byte size for `.ciac`
+/// sources, cheap to obtain and a reasonable zeroth-order stand-in for
+/// generation cost without requiring a compile first.
+pub fn chunk_by_weight<T>(mut items: Vec<(T, u64)>, worker_count: usize) -> Vec<Vec<T>> {
+    let worker_count = worker_count.max(1).min(items.len().max(1));
+    items.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut chunks: Vec<Vec<T>> = (0..worker_count).map(|_| Vec::new()).collect();
+    let mut totals = vec![0u64; worker_count];
+    for (item, weight) in items {
+        let (lightest, total) = totals
+            .iter_mut()
+            .enumerate()
+            .min_by_key(|(_, total)| **total)
+            .expect("worker_count clamped to at least 1");
+        chunks[lightest].push(item);
+        *total += weight;
+    }
+    chunks
+}
+
+/// A `.ciac` source file's byte length, used as `chunk_by_weight`'s cost
+/// proxy. `1` (never `0`) on a read failure so a missing/unreadable file
+/// still gets scheduled rather than panicking a worker-assignment pass
+/// over something a later `compile_file` call will report properly.
+pub fn file_weight(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(1).max(1)
+}
+
 /// This process's usable worker count for test-suite-internal
 /// parallelism (`33UpdatePlan.md` M3-M5): `available_parallelism()`
 /// capped at 4, since 8-way concurrent formatter invocations measured

@@ -989,14 +989,38 @@ const GOOGLE_JAVA_FORMAT_JAR: &[u8] =
 /// calls within a process (and across processes, since the path is
 /// content-addressed by a length check) rather than a fresh temp file
 /// per invocation.
+///
+/// `33UpdatePlan.md` M2: the write itself is a temp-file-plus-rename,
+/// not a direct write to the final path. This matters once callers can
+/// race — M3-M5 parallelize the test suite's `generate()` calls across
+/// worker threads, and `conformance.rs`'s three test fns already race
+/// here today via libtest's own function-level concurrency, just
+/// rarely enough to not have been observed. A direct write left a
+/// window where one thread's `stat` could pass the length check against
+/// a jar another thread was still mid-`write`, reading a torn file.
+/// `std::fs::rename` onto the same filesystem is atomic: every
+/// concurrent reader of the final path sees either the complete old
+/// jar or the complete new one, never a partial write. The existing
+/// length check stays as the fast path — the common case still costs
+/// one `stat` and no write at all.
 fn vendored_jar_path() -> Result<std::path::PathBuf, BackendError> {
     let path = std::env::temp_dir().join("ciac-google-java-format-1.19.2-all-deps.jar");
     let up_to_date = path
         .metadata()
         .is_ok_and(|m| m.len() == GOOGLE_JAVA_FORMAT_JAR.len() as u64);
     if !up_to_date {
-        std::fs::write(&path, GOOGLE_JAVA_FORMAT_JAR)
-            .map_err(|e| BackendError::Other(format!("writing vendored jar to {path:?}: {e}")))?;
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = std::env::temp_dir().join(format!(
+            "ciac-google-java-format-1.19.2-all-deps.jar.tmp-{}-{n}",
+            std::process::id(),
+        ));
+        std::fs::write(&tmp_path, GOOGLE_JAVA_FORMAT_JAR).map_err(|e| {
+            BackendError::Other(format!("writing vendored jar to {tmp_path:?}: {e}"))
+        })?;
+        std::fs::rename(&tmp_path, &path).map_err(|e| {
+            BackendError::Other(format!("renaming vendored jar into place at {path:?}: {e}"))
+        })?;
     }
     Ok(path)
 }
@@ -1190,5 +1214,69 @@ mod tests {
             !message.contains("ciac-java-fmt"),
             "error should not leak the scratch directory: {message}"
         );
+    }
+
+    /// `33UpdatePlan.md` M2: pins, as an executable contract, what
+    /// `format_batch.rs`'s `scratch_dir()` doc comment already claims
+    /// in prose -- N threads calling `JavaBackend::generate()`
+    /// concurrently on the same IR must all succeed and produce
+    /// byte-identical output, with no panic and no torn vendored jar.
+    /// Exists specifically to catch the race `vendored_jar_path()`'s
+    /// old check-then-write pattern could hit (this milestone replaces
+    /// it with an atomic temp-file-plus-rename) and to stand as a
+    /// regression test against it recurring. Lands before
+    /// `33UpdatePlan.md` M3-M5 introduce the test suite's own worker
+    /// threads, per that document's Pillar 8 -- the race must be fixed
+    /// and pinned before anything exercises it in anger.
+    #[test]
+    fn concurrent_generate_calls_are_byte_identical_and_do_not_race() {
+        fn dump(project: &GeneratedProject) -> String {
+            let mut out = String::new();
+            for (path, content) in project.files() {
+                out.push_str("============================================================\n");
+                out.push_str(path);
+                out.push('\n');
+                out.push_str(content);
+            }
+            out
+        }
+
+        let ir = ping_ir();
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(4);
+
+        let reference = {
+            let backend = JavaBackend;
+            let project = backend
+                .generate(&ir, &GenOptions::default())
+                .expect("serial reference generates");
+            dump(&project)
+        };
+
+        let results: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..worker_count)
+                .map(|_| {
+                    let ir = &ir;
+                    scope.spawn(move || {
+                        let backend = JavaBackend;
+                        let project = backend
+                            .generate(ir, &GenOptions::default())
+                            .expect("concurrent generate succeeds");
+                        dump(&project)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        for (i, result) in results.iter().enumerate() {
+            assert_eq!(
+                &reference, result,
+                "worker {i} produced output differing from the serial reference -- \
+                 concurrent generate() calls raced"
+            );
+        }
     }
 }

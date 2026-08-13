@@ -243,23 +243,44 @@ Applied together to `determinism.rs`'s java test:
 
 **Target for the arc: ~167s → ~87s at thresholds, ~61s at measured
 ceilings (−48% to −64%)**, either of which clears the ≥30% bar item 7
-originally set and missed. The denominator is the freshly measured warm
-total rather than `baseline.json`'s 185.50s, for reasons set out under
-"The measured before" — and M1 is charged with settling which is right
-before M3 is measured against either.
+originally set and missed. The denominator here is the single warm run
+taken during this document's preparation, before M1 executed. **M1 has
+since run** — three independent 3-rep-median readings taken in
+isolation, nothing else running, per Pillar 4 — **and settled the true
+figure lower still: 135.30s** (determinism 46.86s, conformance 42.87s,
+golden 23.10s, openapi 22.47s; full detail and the fourth corroborating
+data point in the running log's M1 row). That is the number every
+milestone's own before/after is actually gated against, per Pillar 3 —
+each milestone takes a fresh isolated reading at its own boundary
+rather than trusting a document-wide constant, so this reconciliation
+does not propagate error into M3–M6's individual verdicts, only into
+how the arc-level prose target below should be read.
 
 That headline is an arc-level number, and an arc-level number is the
 easiest kind to arrive at by accident. Broken down per binary, using
 each milestone's own pre-registered threshold rather than the measured
-ceilings, it is auditable:
+ceilings, it is auditable — built during document preparation against
+the single-run figures above, and **retained here for the shape of the
+derivation rather than re-derived against M1's lower total**, since the
+worked arithmetic underneath it (java's 58 calls × ~0.63s fixed cost)
+was itself measured against an isolated java-only reading (52.82s) that
+sits between the two full-binary totals. Direction and rough proportion
+travel; the absolute "Implied after" column should be read as
+illustrative, with each milestone's own fresh measurement as the
+authority:
 
-| Binary | Before (warm) | Milestone | Threshold applied | Implied after | Delta |
+| Binary | Before (single-run) | Milestone | Threshold applied | Implied after | Delta |
 |---|---|---|---|---|---|
 | `determinism` | 54.74s | M6 then M3 | −25% of fixed, then ≥1.8× | ~26s | −52% |
 | `conformance` | 50.94s | M6 then M4 | −25% of fixed, then ≥1.6× | ~27s | −47% |
 | `golden` | 31.93s | M6 then M5 | −25% of fixed, then ≥1.5× | ~18s | −44% |
 | `openapi` | 29.74s | M6 then M4 | −25% of fixed, then ≥1.6× | ~16s | −46% |
 | **total** | **167.35s** | | | **~87s** | **−48%** |
+
+Applying the same threshold ratios to M1's lower, more rigorous
+135.30s total instead — the more honest arc-level number now that it
+exists — projects **~74s at thresholds, ~52s at measured ceilings**,
+still comfortably clearing ≥30% either way.
 
 Worked example for the top row, so the arithmetic is checkable rather
 than asserted: `determinism` makes 58 java `generate()` calls, each
@@ -1291,13 +1312,13 @@ head -c 1000 /dev/urandom > /tmp/ciac-gjf-*.jsa
 cargo test -p ciac-integration-tests --test determinism      # must still pass
 ```
 
-**Success for the arc:** slow-binary total against M1's reconciled
-baseline lands in the **~87s (every milestone at its threshold) to
-~61s (every milestone at its measured ceiling)** band, i.e. −48% to
-−64% against the 167.35s warm figure; `cargo test --workspace` down
-from ~3m53s; every golden unmoved; 520 tests still passing;
+**Success for the arc:** slow-binary total against M1's settled
+3-rep-median reference (135.30s) lands in the **~74s (every milestone
+at its threshold) to ~52s (every milestone at its measured ceiling)**
+band, i.e. −45% to −61%; `cargo test --workspace` down from its
+own measured baseline; every golden unmoved; 520 tests still passing;
 `sim-corpus-x5.sh` 50/50; and no binary intermittent across ≥5 runs.
-Anything at or below ~117s clears the ≥30% bar item 7 set, and is a
+Anything at or below ~95s clears the ≥30% bar item 7 set, and is a
 success by this arc's own stated standard even though it would sit
 above both projections.
 
@@ -1464,7 +1485,7 @@ carries a measurement or is labelled a hypothesis.*
 
 | Milestone | Threshold | Measured | Verdict |
 |---|---|---|---|
-| M1 | — (baseline freeze) | — | — |
+| M1 | — (baseline freeze) | `baseline-v0.30.0.json` frozen at `git_sha 03d4f3a`. **Four independent readings of the same four binaries, and the spread between them is itself the finding:** (a) stale committed baseline: 185.50s (det 75.24, conf 52.53, gold 28.52, openapi 29.21). (b) single warm run, this session: 167.35s (det 54.74, conf 50.94, gold 31.93, openapi 29.74). (c) **3-rep isolated median, this session — the arc's adopted reference:** det 46.86s / conf 42.87s / gold 23.10s / openapi 22.47s = **135.30s**, each binary run alone via `cargo test -p ciac-integration-tests --test <name>`, nothing else running. (d) `baseline.json` regenerated this session on current HEAD (`git_sha 7918192`) via `ciac-bench --update-baseline --with-slow-tests --with-verify --with-sim`: 165.79s (det 70.74, conf 44.59, gold 27.39, openapi 23.07) — measured immediately after several other heavy `ciac-bench` phases in the same process. Reading (d) reproduces the *exact* artifact `32UpdatePlan.md` M5 already documented on this identical binary (a `determinism` reading inflated by a preceding heavy phase in the same process; that arc's isolated re-runs came in at 56-59s against a single-shot 75.24s-adjacent figure) — this session's own regeneration inflates the same binary by 51% (70.74 vs the isolated 46.86) under the identical mechanism, on current code, independently confirming the root cause rather than merely repeating the old citation. **Decision: the 3-rep isolated median (135.30s) is adopted as this arc's working "before" for every per-binary threshold; `ciac-bench`'s own `--with-slow-tests` figure is retained in `baseline.json` for `--compare` continuity but is not the number milestones are measured against.** Full `cargo test --workspace` green (all listed suites 0 failures); `scripts/sim-corpus-x5.sh` 50/50 PASS; no snapshot movement. | Clean start — no code changed; instrument-noise finding recorded, methodology fixed for this arc |
 | M2 | — (correctness prerequisite) | — | — |
 | M3 | ≥1.8× on `determinism` java | — | — |
 | M4 | ≥1.6× each (`openapi`, `conformance`) | — | — |
@@ -1475,12 +1496,14 @@ carries a measurement or is labelled a hypothesis.*
 | M9 | — (close-out) | — | — |
 
 **Arc-level target, for the cumulative row at M7 and M9:** slow-binary
-total 167.35s (fresh warm; `baseline.json` records 185.50s and M1
-reconciles the two) → **~87s at thresholds / ~61s at measured
-ceilings** (−48% to −64%), against a v0.32 item-7 threshold of ≥30%
-that measured 4.46%. The per-binary derivation of both ends of that
-range is in "The gap this version closes"; record the actual figure
-against both, not just whichever one it beats.
+total **135.30s** — M1's settled 3-rep-median reference; `baseline.json`
+records 185.50s (stale) and a fresh single run measured 167.35s, both
+superseded by M1's isolated medians and its running-log entry — →
+**~74s at thresholds / ~52s at measured ceilings** (−45% to −61%),
+against a v0.32 item-7 threshold of ≥30% that measured 4.46%. The
+per-binary derivation of both ends of that range is in "The gap this
+version closes"; record the actual figure against all three historical
+readings, not just whichever one it beats.
 
 ## Retrospective
 

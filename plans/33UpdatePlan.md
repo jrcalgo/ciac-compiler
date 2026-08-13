@@ -686,6 +686,17 @@ number smaller than the noise on some of the metrics involved.
 | Gain ≥ ½ but < the threshold | **Keep**, and record the shortfall explicitly — **and measure the proposed root cause before recording it** (Pillar 1). |
 | Gain ≥ threshold | **Keep.** |
 
+**On ratio-shaped thresholds specifically** (M3–M5's `≥N×` speedups):
+"gain" means the *speedup achieved over baseline*, not the raw ratio
+number, since a ratio threshold's zero point is 1.0× (no change), not
+0. For a `≥T×` threshold the half-threshold point is `(T + 1) / 2` —
+for M3's `≥1.8×`, half is **1.4×**; for M4's `≥1.6×`, half is **1.3×**;
+for M5's `≥1.5×`, half is **1.25×**. (An earlier draft of M3 stated its
+own half-point as "0.9×," which is incoherent for a speedup ratio —
+below 1.0× is a slowdown, not half a gain — and is corrected here
+rather than left to propagate into M4/M5's identically-shaped
+thresholds.)
+
 The mechanics: each milestone is one commit where possible (M2 and M6
 are two — implementation, then the test or measurement proving it). A
 rollback is `git revert` of that milestone's commits, pushed, with the
@@ -992,7 +1003,8 @@ of the artifact.
    Derivation: the measured parallel ceiling is 2.26×; 1.8× is ~80% of
    it, leaving margin for scheduling overhead, chunk imbalance across
    29 items on 4 workers, and the serial front-end work each example
-   still does. Under 0.9× → revert per Pillar 5. **Exit:** the
+   still does. Under 1.4× (half the threshold's gain over 1.0×, per
+   Pillar 5's ratio-threshold note) → revert per Pillar 5. **Exit:** the
    per-milestone checklist, plus the java test's 3-rep median with
    spread, plus ≥5 consecutive clean runs of the binary.
 
@@ -1487,7 +1499,7 @@ carries a measurement or is labelled a hypothesis.*
 |---|---|---|---|
 | M1 | — (baseline freeze) | `baseline-v0.30.0.json` frozen at `git_sha 03d4f3a`. **Four independent readings of the same four binaries, and the spread between them is itself the finding:** (a) stale committed baseline: 185.50s (det 75.24, conf 52.53, gold 28.52, openapi 29.21). (b) single warm run, this session: 167.35s (det 54.74, conf 50.94, gold 31.93, openapi 29.74). (c) **3-rep isolated median, this session — the arc's adopted reference:** det 46.86s / conf 42.87s / gold 23.10s / openapi 22.47s = **135.30s**, each binary run alone via `cargo test -p ciac-integration-tests --test <name>`, nothing else running. (d) `baseline.json` regenerated this session on current HEAD (`git_sha 7918192`) via `ciac-bench --update-baseline --with-slow-tests --with-verify --with-sim`: 165.79s (det 70.74, conf 44.59, gold 27.39, openapi 23.07) — measured immediately after several other heavy `ciac-bench` phases in the same process. Reading (d) reproduces the *exact* artifact `32UpdatePlan.md` M5 already documented on this identical binary (a `determinism` reading inflated by a preceding heavy phase in the same process; that arc's isolated re-runs came in at 56-59s against a single-shot 75.24s-adjacent figure) — this session's own regeneration inflates the same binary by 51% (70.74 vs the isolated 46.86) under the identical mechanism, on current code, independently confirming the root cause rather than merely repeating the old citation. **Decision: the 3-rep isolated median (135.30s) is adopted as this arc's working "before" for every per-binary threshold; `ciac-bench`'s own `--with-slow-tests` figure is retained in `baseline.json` for `--compare` continuity but is not the number milestones are measured against.** Full `cargo test --workspace` green (all listed suites 0 failures); `scripts/sim-corpus-x5.sh` 50/50 PASS; no snapshot movement. | Clean start — no code changed; instrument-noise finding recorded, methodology fixed for this arc |
 | M2 | — (correctness prerequisite) | `vendored_jar_path()` (`crates/ciac-backend-java/src/lib.rs:992`) switched to temp-file-plus-`rename` (unique via the same `AtomicU64`+pid pattern `format_batch.rs::scratch_dir()` already uses), atomic on the same filesystem. New test `concurrent_generate_calls_are_byte_identical_and_do_not_race`: `available_parallelism().max(4)` worker threads under `std::thread::scope`, each calling `JavaBackend::generate()` on the same IR concurrently, asserted byte-identical to a serial reference dump. Run 5 consecutive times with the vendored jar deleted before each rep (forcing every run through the cold-mint race window): 5/5 clean, no panic, no torn jar. Full `cargo test --workspace` green (0 failures); Contract A clean (no snapshot movement, no stray `.snap.new`); `cargo fmt`/`clippy -D warnings` clean. `format_batch.rs::scratch_dir()` audited and confirmed needing no change (its own doc comment already claims the thread-safety this milestone pins as a test). Wall time not regressed: the rename path costs one extra syscall on the cold path only. | **Met** — correctness prerequisite satisfied, concurrency contract pinned before M3 introduces any test-suite threading |
-| M3 | ≥1.8× on `determinism` java | — | — |
+| M3 | ≥1.8× on `determinism` java | `tests/tests/determinism.rs` rewritten: backend factory (`fn() -> B`) + round-robin `chunk_paths` (worker_count `available_parallelism().min(4)`) + `std::thread::scope`, assertions in-thread, double-generate preserved verbatim. **Before** (3-rep isolated median, java fn alone): 44.07s (44.05/44.24/44.07). **First implementation** used contiguous `.chunks(ceil(29/4))` sizing (8/8/8/5) and measured only **1.62×** (27.27s median) — below threshold. Root cause investigated per Pillar 1 rather than recorded on guess: the 8/8/8/5 split leaves the 4th worker idle for the run's tail; re-verified the underlying formatter-only concurrency figure still holds on this machine right now (4 concurrent `google-java-format` invocations, fresh measurement: 1.455s serial / 0.658s parallel = **2.21×**, confirming the earlier 2.26× was not stale) — so the gap versus `generate()`'s ratio is real added contention from front-end parse/template-render/file-write CPU work each worker also performs, on top of imbalanced chunking. Fixed the chunking to round-robin (sizes differ by ≤1); re-measured: **1.66×** (26.53s median: 26.53/26.73/26.28 vs the same 44.07s before) — clears the corrected half-threshold (1.4×, see Pillar 5's ratio-threshold note) but still short of ≥1.8×. Full binary: 5/5 consecutive clean runs (27.4–27.9s each, no flakiness). Attribution check (open question 5): a deliberately corrupted assertion still surfaces the original `assert_eq!` panic naming the exact example (`crud-notes.ciac`) and backend (`python`) before `thread::scope`'s own re-panic — attribution survives; no fallback to M5's collect-then-assert shape needed. Full `cargo test --workspace` green (0 failures); Contract A clean (no snapshot movement, `sim-corpus-x5.sh` 50/50); `fmt`/`clippy -D warnings` clean. | **Kept, shortfall disclosed** — 1.66× measured against ≥1.8×, root cause measured (JVM-plus-frontend CPU contention on 4 vCPUs beyond what the isolated formatter benchmark exercises) rather than assumed, per Pillar 1 |
 | M4 | ≥1.6× each (`openapi`, `conformance`) | — | — |
 | M5 | ≥1.5× (`golden`) | — | — |
 | M6 | ≥25% formatter fixed cost; ≤1.5s first-run penalty | — | — |

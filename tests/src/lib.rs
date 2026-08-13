@@ -55,7 +55,7 @@ pub fn ciac_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Splits `paths` into up to `worker_count` round-robin buckets, sizes
+/// Splits `items` into up to `worker_count` round-robin buckets, sizes
 /// differing by at most one -- `33UpdatePlan.md` M3's own fix, shared
 /// here so M4's `openapi.rs`/`conformance.rs` and M5's `golden.rs`
 /// don't each redefine it. Contiguous fixed-size chunks (`.chunks(len
@@ -65,11 +65,16 @@ pub fn ciac_files(dir: &Path) -> Vec<PathBuf> {
 /// Failure messages that use this already carry the full example path
 /// and backend id, so round-robin costs no attribution -- there is no
 /// per-worker grouping anyone reads.
-pub fn chunk_paths(paths: Vec<PathBuf>, worker_count: usize) -> Vec<Vec<PathBuf>> {
-    let worker_count = worker_count.max(1).min(paths.len().max(1));
-    let mut chunks: Vec<Vec<PathBuf>> = (0..worker_count).map(|_| Vec::new()).collect();
-    for (i, path) in paths.into_iter().enumerate() {
-        chunks[i % worker_count].push(path);
+///
+/// Generic over the item type (not just `PathBuf`, despite the name
+/// kept for call-site continuity with M3/M4): M5's `golden.rs` chunks
+/// `(usize, PathBuf)` pairs so each worker's output can be sorted back
+/// into original example order afterward.
+pub fn chunk_paths<T>(items: Vec<T>, worker_count: usize) -> Vec<Vec<T>> {
+    let worker_count = worker_count.max(1).min(items.len().max(1));
+    let mut chunks: Vec<Vec<T>> = (0..worker_count).map(|_| Vec::new()).collect();
+    for (i, item) in items.into_iter().enumerate() {
+        chunks[i % worker_count].push(item);
     }
     chunks
 }

@@ -3313,6 +3313,24 @@ src/main/java/com/ciac/routedmedia/state/DataSources.java
 // construction never attempt a connection, restoring the same
 // "constructing this never dials" contract every other provider
 // client bean already keeps.
+//
+// `connectionTimeout(2000)` (32UpdatePlan.md follow-up, found live):
+// construction not dialing doesn't mean nothing ever does -- the same
+// `CommandLineRunner` that forces construction also requests a real
+// connection right after, and this config is built by hand rather
+// than through Spring's own `DataSourceProperties` autoconfiguration,
+// so `spring.datasource.hikari.*` was never reaching it; HikariCP's
+// own 30s `connectionTimeout` default applied silently instead, paid
+// once per genuinely-unreachable attempt. 2s is not a test-only
+// number: the generated `docker-compose.yml`'s own `depends_on`
+// already gates this service's start on its database's `healthcheck`
+// (`condition: service_healthy`), so by the time this constructor
+// runs against a compose-managed database, it is already accepting
+// connections -- this timeout is on the genuinely-unreachable path
+// (a bad `DATABASE_URL`, a database that crashed after startup, a
+// non-compose deployment with no such gate), where failing in
+// seconds rather than half a minute is strictly better, not a
+// reliability trade.
 package com.ciac.routedmedia.state;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -3329,6 +3347,7 @@ final class DataSources {
   static DataSource open(String rawUrl) throws Exception {
     HikariConfig config = new HikariConfig();
     config.setInitializationFailTimeout(-1);
+    config.setConnectionTimeout(2000);
     if (rawUrl.startsWith("jdbc:sqlite:")) {
       // The sqlite driver creates the database *file* itself but
       // not missing parent directories (mirrors every other

@@ -1370,10 +1370,21 @@ pub struct SlowTestBinary {
     pub wall_time_s: f64,
 }
 
-/// The fixed corpus: `determinism` and `openapi` each hold exactly one
-/// `#[test]` fn (nothing for libtest to parallelize within either);
-/// `conformance` and `golden` hold three apiece. Same four
-/// `docs/perf/codegen-baseline.md` already names by hand.
+/// The fixed corpus, same four `docs/perf/codegen-baseline.md` already
+/// names by hand. `32UpdatePlan.md` M8 item 7 split `determinism` and
+/// `openapi` into one `#[test]` fn per backend (5 apiece); `conformance`
+/// holds three (`c3`/`c4a`/`c4b`) and `golden` holds three
+/// (`example_ir_snapshots`, `example_graph_dot_snapshots`,
+/// `example_generated_project_snapshots`) -- unchanged counts, though
+/// `33UpdatePlan.md` M3-M5 additionally parallelize *within* each fn,
+/// across its own example corpus, for `determinism`/`openapi`/`golden`
+/// (that arc's correction to item 7's diagnosis: splitting by backend
+/// alone hit an Amdahl ceiling near 4.6% since java is ~95% of the
+/// cost, so the fix divides the 95% instead of the 4.7%).
+/// `conformance` was measured the same way and reverted -- its three
+/// outer fns are each independently java-heavy, so libtest's own
+/// external concurrency already consumes the available headroom before
+/// any internal chunking is added.
 pub const SLOW_TEST_BINARIES: &[&str] = &["determinism", "conformance", "golden", "openapi"];
 
 /// Times one slow test binary via `cargo test -p ciac-integration-tests

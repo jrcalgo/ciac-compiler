@@ -231,3 +231,13 @@ For current numbers, see `docs/perf/baseline.json` directly, or run
 `cargo run --release -p ciac-integration-tests --bin ciac-bench` — see
 [`docs/perf/README.md`](README.md) for the full instrument index this
 document is now one entry in.
+
+The four slow test binaries this table once tracked got a second,
+much later optimization pass at `33UpdatePlan.md` — that arc corrected
+a wrong diagnosis `32UpdatePlan.md` M8 left in its own running log
+(the shortfall it measured was attributed to core count; it was
+actually Amdahl's law on a split axis holding only 4.6% of the
+achievable win, unrelated to hardware) and cut the combined total a
+further 30.8% (135.30s → 93.62s). See that document's M7 checkpoint,
+mirrored in [`docs/perf/README.md`](README.md)'s own
+`33UpdatePlan.md` M7 section, for the full numbers.

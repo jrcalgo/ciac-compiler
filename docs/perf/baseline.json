@@ -13,38 +13,38 @@
     "go_version": "go version go1.24.7 linux/amd64",
     "python_version": "Python 3.11.15",
     "profile": "release",
-    "git_sha": "791819256272c162729c744019e856ef3499959a"
+    "git_sha": "f2202b3f12adaaeb06c7d40fa6c2c1bd0290651c"
   },
   "template_setup": [
     {
       "backend": "python",
-      "first_call_us": 5318.573,
-      "steady_state_us": 204.015575,
-      "setup_us": 5114.557425
+      "first_call_us": 1573.913,
+      "steady_state_us": 311.462125,
+      "setup_us": 1262.450875
     },
     {
       "backend": "rust",
-      "first_call_us": 2470.478,
-      "steady_state_us": 284.86230000000006,
-      "setup_us": 2185.6157
+      "first_call_us": 1437.697,
+      "steady_state_us": 309.79002499999996,
+      "setup_us": 1127.9069749999999
     },
     {
       "backend": "typescript",
-      "first_call_us": 3670.641,
-      "steady_state_us": 223.42672500000003,
-      "setup_us": 3447.2142750000003
+      "first_call_us": 3034.129,
+      "steady_state_us": 310.2387,
+      "setup_us": 2723.8903
     },
     {
       "backend": "go",
-      "first_call_us": 9929.703,
-      "steady_state_us": 5430.8817,
-      "setup_us": 4498.8213
+      "first_call_us": 16033.967,
+      "steady_state_us": 4725.9309,
+      "setup_us": 11308.036100000001
     },
     {
       "backend": "java",
-      "first_call_us": 453084.22599999997,
-      "steady_state_us": 435488.6346,
-      "setup_us": 17595.591399999976
+      "first_call_us": 531551.581,
+      "steady_state_us": 329435.70759999997,
+      "setup_us": 202115.87340000004
     }
   ],
   "examples": [
@@ -54,101 +54,101 @@
         {
           "metric": "syntax::load",
           "stats": {
-            "mean_us": 6.859125000000001,
-            "stddev_us": 5.097809913028829,
-            "min_us": 5.774,
-            "max_us": 38.573,
-            "p95_us": 7.126
+            "mean_us": 8.740824999999997,
+            "stddev_us": 9.246263371999252,
+            "min_us": 6.606,
+            "max_us": 65.898,
+            "p95_us": 10.055
           }
         },
         {
           "metric": "sema::analyze",
           "stats": {
-            "mean_us": 1.52165,
-            "stddev_us": 0.3170419964294951,
-            "min_us": 1.317,
-            "max_us": 2.631,
-            "p95_us": 2.384
+            "mean_us": 1.7153249999999995,
+            "stddev_us": 0.2509953572777791,
+            "min_us": 1.585,
+            "max_us": 3.1879999999999997,
+            "p95_us": 1.8739999999999999
           }
         },
         {
           "metric": "lsp::load_with_overlay+analyze",
           "stats": {
-            "mean_us": 6.605924999999999,
-            "stddev_us": 0.31540794120471977,
-            "min_us": 6.382,
-            "max_us": 8.171,
-            "p95_us": 6.763
+            "mean_us": 8.921050000000001,
+            "stddev_us": 5.395372929418318,
+            "min_us": 7.388,
+            "max_us": 40.219,
+            "p95_us": 15.367
           }
         },
         {
           "metric": "codegen::model::build_system",
           "stats": {
-            "mean_us": 2.10205,
-            "stddev_us": 0.7903479281303898,
-            "min_us": 1.8479999999999999,
-            "max_us": 6.983,
-            "p95_us": 2.393
+            "mean_us": 2.3947,
+            "stddev_us": 0.25028206088331617,
+            "min_us": 2.221,
+            "max_us": 3.679,
+            "p95_us": 2.816
           }
         },
         {
           "metric": "semantic_model::from_ir",
           "stats": {
-            "mean_us": 0.8186,
-            "stddev_us": 0.08275379145392672,
-            "min_us": 0.772,
-            "max_us": 1.1629999999999998,
-            "p95_us": 1.0270000000000001
+            "mean_us": 1.04185,
+            "stddev_us": 0.09194170707573363,
+            "min_us": 0.9730000000000001,
+            "max_us": 1.3760000000000001,
+            "p95_us": 1.2550000000000001
           }
         },
         {
           "metric": "semantic_model::semantic_hash",
           "stats": {
-            "mean_us": 2.0854000000000004,
-            "stddev_us": 0.03398808614794307,
-            "min_us": 2.056,
-            "max_us": 2.242,
-            "p95_us": 2.142
+            "mean_us": 2.3584000000000005,
+            "stddev_us": 0.04643156254101296,
+            "min_us": 2.301,
+            "max_us": 2.5349999999999997,
+            "p95_us": 2.418
           }
         },
         {
           "metric": "regen::plan_regeneration [cold]",
           "stats": {
-            "mean_us": 27.15574999999999,
-            "stddev_us": 3.2697266686223183,
-            "min_us": 25.775,
-            "max_us": 44.206,
-            "p95_us": 32.462
+            "mean_us": 32.362024999999996,
+            "stddev_us": 4.294158622404976,
+            "min_us": 30.078,
+            "max_us": 49.543000000000006,
+            "p95_us": 41.464
           }
         },
         {
           "metric": "regen::plan_regeneration [warm]",
           "stats": {
-            "mean_us": 66.342975,
-            "stddev_us": 10.834332777073769,
-            "min_us": 60.838,
-            "max_us": 121.602,
-            "p95_us": 82.297
+            "mean_us": 76.025925,
+            "stddev_us": 7.460045490436034,
+            "min_us": 71.27,
+            "max_us": 100.572,
+            "p95_us": 91.85900000000001
           }
         },
         {
           "metric": "manifest::build_manifest",
           "stats": {
-            "mean_us": 15.217324999999997,
-            "stddev_us": 0.6245498133655957,
-            "min_us": 14.874,
-            "max_us": 18.972,
-            "p95_us": 15.403000000000002
+            "mean_us": 19.635550000000002,
+            "stddev_us": 9.988352283910494,
+            "min_us": 17.66,
+            "max_us": 81.84299999999999,
+            "p95_us": 18.895
           }
         },
         {
           "metric": "GeneratedProject::write_to",
           "stats": {
-            "mean_us": 2429.3954500000004,
-            "stddev_us": 187.14150521770287,
-            "min_us": 2232.036,
-            "max_us": 3055.4649999999997,
-            "p95_us": 2778.305
+            "mean_us": 395.3763500000001,
+            "stddev_us": 87.9041293690319,
+            "min_us": 274.521,
+            "max_us": 666.752,
+            "p95_us": 532.351
           }
         }
       ],
@@ -156,11 +156,11 @@
         {
           "backend": "python",
           "steady_state": {
-            "mean_us": 239.45325000000003,
-            "stddev_us": 39.30133027376427,
-            "min_us": 206.07399999999998,
-            "max_us": 389.957,
-            "p95_us": 337.405
+            "mean_us": 281.45885,
+            "stddev_us": 54.91864811635024,
+            "min_us": 217.114,
+            "max_us": 415.872,
+            "p95_us": 367.572
           },
           "file_count": 15,
           "total_bytes": 12603,
@@ -170,11 +170,11 @@
         {
           "backend": "rust",
           "steady_state": {
-            "mean_us": 269.2045749999999,
-            "stddev_us": 81.82182170664727,
-            "min_us": 197.689,
-            "max_us": 582.1669999999999,
-            "p95_us": 484.381
+            "mean_us": 263.45402499999994,
+            "stddev_us": 44.26135324438663,
+            "min_us": 230.361,
+            "max_us": 445.139,
+            "p95_us": 342.16900000000004
           },
           "file_count": 16,
           "total_bytes": 8736,
@@ -184,11 +184,11 @@
         {
           "backend": "typescript",
           "steady_state": {
-            "mean_us": 224.2971,
-            "stddev_us": 23.699037974989615,
-            "min_us": 192.875,
-            "max_us": 297.263,
-            "p95_us": 265.03
+            "mean_us": 291.61267499999997,
+            "stddev_us": 90.663757812697,
+            "min_us": 233.371,
+            "max_us": 704.6850000000001,
+            "p95_us": 426.74199999999996
           },
           "file_count": 18,
           "total_bytes": 207939,
@@ -198,11 +198,11 @@
         {
           "backend": "go",
           "steady_state": {
-            "mean_us": 5170.917200000001,
-            "stddev_us": 81.41038045703993,
-            "min_us": 5038.428,
-            "max_us": 5306.919,
-            "p95_us": 5306.919
+            "mean_us": 3847.345,
+            "stddev_us": 212.73005907346513,
+            "min_us": 3595.027,
+            "max_us": 4271.401,
+            "p95_us": 4271.401
           },
           "file_count": 17,
           "total_bytes": 39506,
@@ -212,11 +212,11 @@
         {
           "backend": "java",
           "steady_state": {
-            "mean_us": 429362.0732,
-            "stddev_us": 7017.558407019693,
-            "min_us": 421725.80199999997,
-            "max_us": 439696.702,
-            "p95_us": 439696.702
+            "mean_us": 333216.9148,
+            "stddev_us": 17093.891822146034,
+            "min_us": 313457.701,
+            "max_us": 362111.232,
+            "p95_us": 362111.232
           },
           "file_count": 22,
           "total_bytes": 39655,
@@ -231,101 +231,101 @@
         {
           "metric": "syntax::load",
           "stats": {
-            "mean_us": 37.41525,
-            "stddev_us": 6.578048353235176,
-            "min_us": 30.532,
-            "max_us": 65.295,
-            "p95_us": 47.989
+            "mean_us": 44.827099999999994,
+            "stddev_us": 12.209460468833175,
+            "min_us": 35.519000000000005,
+            "max_us": 95.492,
+            "p95_us": 63.071999999999996
           }
         },
         {
           "metric": "sema::analyze",
           "stats": {
-            "mean_us": 70.79084999999999,
-            "stddev_us": 12.562561845718413,
-            "min_us": 62.413000000000004,
-            "max_us": 122.37700000000001,
-            "p95_us": 91.228
+            "mean_us": 91.25495,
+            "stddev_us": 20.764540415032066,
+            "min_us": 74.185,
+            "max_us": 186.31,
+            "p95_us": 111.826
           }
         },
         {
           "metric": "lsp::load_with_overlay+analyze",
           "stats": {
-            "mean_us": 129.96205,
-            "stddev_us": 19.80368969655655,
-            "min_us": 117.313,
-            "max_us": 223.84900000000002,
-            "p95_us": 165.512
+            "mean_us": 180.58315,
+            "stddev_us": 40.28821995729645,
+            "min_us": 140.49900000000002,
+            "max_us": 310.217,
+            "p95_us": 252.61599999999999
           }
         },
         {
           "metric": "codegen::model::build_system",
           "stats": {
-            "mean_us": 41.109024999999995,
-            "stddev_us": 8.568172023505074,
-            "min_us": 33.781,
-            "max_us": 77.644,
-            "p95_us": 48.176
+            "mean_us": 51.51379999999999,
+            "stddev_us": 19.23508734344609,
+            "min_us": 37.791,
+            "max_us": 125.65499999999999,
+            "p95_us": 73.119
           }
         },
         {
           "metric": "semantic_model::from_ir",
           "stats": {
-            "mean_us": 39.4003,
-            "stddev_us": 5.934580061807239,
-            "min_us": 35.206,
-            "max_us": 62.94100000000001,
-            "p95_us": 50.114999999999995
+            "mean_us": 47.22314999999999,
+            "stddev_us": 7.4821498767065595,
+            "min_us": 41.736000000000004,
+            "max_us": 76.338,
+            "p95_us": 64.982
           }
         },
         {
           "metric": "semantic_model::semantic_hash",
           "stats": {
-            "mean_us": 16.104874999999996,
-            "stddev_us": 0.3742753122702591,
-            "min_us": 15.744,
-            "max_us": 18.189,
-            "p95_us": 16.271
+            "mean_us": 19.829349999999998,
+            "stddev_us": 10.431851927030982,
+            "min_us": 16.537000000000003,
+            "max_us": 83.569,
+            "p95_us": 23.112000000000002
           }
         },
         {
           "metric": "regen::plan_regeneration [cold]",
           "stats": {
-            "mean_us": 92.4668,
-            "stddev_us": 7.787243277309373,
-            "min_us": 87.5,
-            "max_us": 129.988,
-            "p95_us": 105.94000000000001
+            "mean_us": 120.528175,
+            "stddev_us": 21.556415613324376,
+            "min_us": 102.00200000000001,
+            "max_us": 180.58599999999998,
+            "p95_us": 149.804
           }
         },
         {
           "metric": "regen::plan_regeneration [warm]",
           "stats": {
-            "mean_us": 251.26052500000006,
-            "stddev_us": 143.69408718193444,
-            "min_us": 216.176,
-            "max_us": 1144.23,
-            "p95_us": 264.263
+            "mean_us": 268.1183749999999,
+            "stddev_us": 22.316257207120884,
+            "min_us": 251.022,
+            "max_us": 338.832,
+            "p95_us": 321.969
           }
         },
         {
           "metric": "manifest::build_manifest",
           "stats": {
-            "mean_us": 65.15535000000001,
-            "stddev_us": 8.552495964775428,
-            "min_us": 58.034,
-            "max_us": 97.684,
-            "p95_us": 80.64399999999999
+            "mean_us": 70.77315,
+            "stddev_us": 4.676705563481627,
+            "min_us": 67.974,
+            "max_us": 85.98700000000001,
+            "p95_us": 84.249
           }
         },
         {
           "metric": "GeneratedProject::write_to",
           "stats": {
-            "mean_us": 7385.858374999999,
-            "stddev_us": 385.2233557660858,
-            "min_us": 6858.157,
-            "max_us": 8639.256,
-            "p95_us": 7909.371999999999
+            "mean_us": 1186.6694750000001,
+            "stddev_us": 216.54507790988782,
+            "min_us": 913.674,
+            "max_us": 1700.7910000000002,
+            "p95_us": 1638.493
           }
         }
       ],
@@ -333,11 +333,11 @@
         {
           "backend": "python",
           "steady_state": {
-            "mean_us": 865.004025,
-            "stddev_us": 56.88439481724645,
-            "min_us": 763.243,
-            "max_us": 993.3159999999999,
-            "p95_us": 976.464
+            "mean_us": 1040.1694999999997,
+            "stddev_us": 112.5437972322331,
+            "min_us": 913.946,
+            "max_us": 1488.442,
+            "p95_us": 1254.953
           },
           "file_count": 39,
           "total_bytes": 62390,
@@ -347,11 +347,11 @@
         {
           "backend": "rust",
           "steady_state": {
-            "mean_us": 942.9848999999997,
-            "stddev_us": 43.92427656991064,
-            "min_us": 865.92,
-            "max_us": 1056.814,
-            "p95_us": 1012.892
+            "mean_us": 1219.797975,
+            "stddev_us": 88.8704326749025,
+            "min_us": 1049.1299999999999,
+            "max_us": 1418.019,
+            "p95_us": 1357.461
           },
           "file_count": 41,
           "total_bytes": 214806,
@@ -361,11 +361,11 @@
         {
           "backend": "typescript",
           "steady_state": {
-            "mean_us": 1046.3707,
-            "stddev_us": 54.042888311599334,
-            "min_us": 948.625,
-            "max_us": 1198.863,
-            "p95_us": 1133.383
+            "mean_us": 1213.635175,
+            "stddev_us": 83.9990806580309,
+            "min_us": 1108.445,
+            "max_us": 1452.3470000000002,
+            "p95_us": 1393.7610000000002
           },
           "file_count": 37,
           "total_bytes": 315215,
@@ -375,11 +375,11 @@
         {
           "backend": "go",
           "steady_state": {
-            "mean_us": 19780.408799999997,
-            "stddev_us": 1431.692630287227,
-            "min_us": 17878.871000000003,
-            "max_us": 22400.916,
-            "p95_us": 22400.916
+            "mean_us": 14270.901300000001,
+            "stddev_us": 938.8478795495098,
+            "min_us": 12813.662999999999,
+            "max_us": 16073.809000000001,
+            "p95_us": 16073.809000000001
           },
           "file_count": 36,
           "total_bytes": 191611,
@@ -389,11 +389,11 @@
         {
           "backend": "java",
           "steady_state": {
-            "mean_us": 804837.9356,
-            "stddev_us": 27151.04781063739,
-            "min_us": 762655.5149999999,
-            "max_us": 829613.704,
-            "p95_us": 829613.704
+            "mean_us": 764711.8774,
+            "stddev_us": 63173.35444346168,
+            "min_us": 694791.593,
+            "max_us": 852628.512,
+            "p95_us": 852628.512
           },
           "file_count": 51,
           "total_bytes": 207168,
@@ -408,101 +408,101 @@
         {
           "metric": "syntax::load",
           "stats": {
-            "mean_us": 35.94492500000001,
-            "stddev_us": 8.802357103036378,
-            "min_us": 30.142,
-            "max_us": 73.042,
-            "p95_us": 48.007000000000005
+            "mean_us": 48.20382499999999,
+            "stddev_us": 14.287937539910194,
+            "min_us": 32.241,
+            "max_us": 123.535,
+            "p95_us": 55.238
           }
         },
         {
           "metric": "sema::analyze",
           "stats": {
-            "mean_us": 76.41922500000001,
-            "stddev_us": 17.69570625390168,
-            "min_us": 57.88,
-            "max_us": 129.885,
-            "p95_us": 103.309
+            "mean_us": 72.933275,
+            "stddev_us": 23.840768190210962,
+            "min_us": 62.189,
+            "max_us": 209.593,
+            "p95_us": 94.295
           }
         },
         {
           "metric": "lsp::load_with_overlay+analyze",
           "stats": {
-            "mean_us": 136.37297500000003,
-            "stddev_us": 27.176941093036486,
-            "min_us": 110.79899999999999,
-            "max_us": 208.99300000000002,
-            "p95_us": 203.656
+            "mean_us": 127.01295,
+            "stddev_us": 14.414105948601184,
+            "min_us": 114.686,
+            "max_us": 193.04500000000002,
+            "p95_us": 154.22
           }
         },
         {
           "metric": "codegen::model::build_system",
           "stats": {
-            "mean_us": 40.6407,
-            "stddev_us": 13.724756520973331,
-            "min_us": 32.424,
-            "max_us": 101.727,
-            "p95_us": 62.006
+            "mean_us": 40.1683,
+            "stddev_us": 8.525580359130984,
+            "min_us": 34.571,
+            "max_us": 81.262,
+            "p95_us": 49.858000000000004
           }
         },
         {
           "metric": "semantic_model::from_ir",
           "stats": {
-            "mean_us": 34.890325,
-            "stddev_us": 6.180493958364089,
-            "min_us": 31.384000000000004,
-            "max_us": 61.147000000000006,
-            "p95_us": 40.937
+            "mean_us": 34.50907500000001,
+            "stddev_us": 3.9415269210516626,
+            "min_us": 31.985,
+            "max_us": 56.037,
+            "p95_us": 39.336999999999996
           }
         },
         {
           "metric": "semantic_model::semantic_hash",
           "stats": {
-            "mean_us": 20.859500000000004,
-            "stddev_us": 4.60263504418936,
-            "min_us": 17.174,
-            "max_us": 40.046,
-            "p95_us": 25.115
+            "mean_us": 17.267825,
+            "stddev_us": 3.3081956402811183,
+            "min_us": 15.880999999999998,
+            "max_us": 35.03,
+            "p95_us": 21.153
           }
         },
         {
           "metric": "regen::plan_regeneration [cold]",
           "stats": {
-            "mean_us": 92.47230000000002,
-            "stddev_us": 25.399943138912732,
-            "min_us": 77.675,
-            "max_us": 221.556,
-            "p95_us": 119.213
+            "mean_us": 86.647875,
+            "stddev_us": 9.757197528459441,
+            "min_us": 80.15599999999999,
+            "max_us": 127.952,
+            "p95_us": 102.72500000000001
           }
         },
         {
           "metric": "regen::plan_regeneration [warm]",
           "stats": {
-            "mean_us": 214.16055,
-            "stddev_us": 31.190698670396927,
-            "min_us": 184.923,
-            "max_us": 299.60400000000004,
-            "p95_us": 288.07000000000005
+            "mean_us": 205.118075,
+            "stddev_us": 15.34916164386104,
+            "min_us": 189.82999999999998,
+            "max_us": 260.203,
+            "p95_us": 237.621
           }
         },
         {
           "metric": "manifest::build_manifest",
           "stats": {
-            "mean_us": 61.45784999999999,
-            "stddev_us": 12.463052075133923,
-            "min_us": 49.301,
-            "max_us": 106.321,
-            "p95_us": 86.845
+            "mean_us": 53.45777500000001,
+            "stddev_us": 5.2133900750255595,
+            "min_us": 50.309000000000005,
+            "max_us": 72.433,
+            "p95_us": 65.498
           }
         },
         {
           "metric": "GeneratedProject::write_to",
           "stats": {
-            "mean_us": 1696.40825,
-            "stddev_us": 128.85353073038976,
-            "min_us": 1493.55,
-            "max_us": 1989.963,
-            "p95_us": 1942.742
+            "mean_us": 1011.24035,
+            "stddev_us": 190.1887409797896,
+            "min_us": 771.9699999999999,
+            "max_us": 1558.483,
+            "p95_us": 1464.339
           }
         }
       ],
@@ -510,11 +510,11 @@
         {
           "backend": "python",
           "steady_state": {
-            "mean_us": 819.6917749999999,
-            "stddev_us": 121.05988941645523,
-            "min_us": 689.216,
-            "max_us": 1149.955,
-            "p95_us": 1065.656
+            "mean_us": 945.8165500000001,
+            "stddev_us": 117.46458550068402,
+            "min_us": 818.246,
+            "max_us": 1222.977,
+            "p95_us": 1178.1960000000001
           },
           "file_count": 35,
           "total_bytes": 42891,
@@ -524,11 +524,11 @@
         {
           "backend": "rust",
           "steady_state": {
-            "mean_us": 781.642975,
-            "stddev_us": 59.619373465966376,
-            "min_us": 697.335,
-            "max_us": 997.9290000000001,
-            "p95_us": 883.035
+            "mean_us": 996.6940749999998,
+            "stddev_us": 158.68525039404068,
+            "min_us": 836.289,
+            "max_us": 1352.8990000000001,
+            "p95_us": 1285.9499999999998
           },
           "file_count": 35,
           "total_bytes": 186249,
@@ -538,11 +538,11 @@
         {
           "backend": "typescript",
           "steady_state": {
-            "mean_us": 805.5307000000001,
-            "stddev_us": 40.982229883328706,
-            "min_us": 731.848,
-            "max_us": 911.204,
-            "p95_us": 880.762
+            "mean_us": 960.5772249999998,
+            "stddev_us": 55.37509509088337,
+            "min_us": 881.1379999999999,
+            "max_us": 1117.111,
+            "p95_us": 1073.3629999999998
           },
           "file_count": 33,
           "total_bytes": 292287,
@@ -552,11 +552,11 @@
         {
           "backend": "go",
           "steady_state": {
-            "mean_us": 12592.168,
-            "stddev_us": 1388.5376100484282,
-            "min_us": 10727.302,
-            "max_us": 16196.074,
-            "p95_us": 16196.074
+            "mean_us": 12785.778900000001,
+            "stddev_us": 613.2147446341208,
+            "min_us": 12132.001999999999,
+            "max_us": 14434.365,
+            "p95_us": 14434.365
           },
           "file_count": 32,
           "total_bytes": 154699,
@@ -566,11 +566,11 @@
         {
           "backend": "java",
           "steady_state": {
-            "mean_us": 744665.3581999999,
-            "stddev_us": 15775.711763164878,
-            "min_us": 728382.429,
-            "max_us": 771615.647,
-            "p95_us": 771615.647
+            "mean_us": 677947.4204,
+            "stddev_us": 11002.213746506628,
+            "min_us": 667277.573,
+            "max_us": 699238.96,
+            "p95_us": 699238.96
           },
           "file_count": 44,
           "total_bytes": 167145,
@@ -585,101 +585,101 @@
         {
           "metric": "syntax::load",
           "stats": {
-            "mean_us": 17.339975,
-            "stddev_us": 6.629616921389577,
-            "min_us": 15.125,
-            "max_us": 53.578,
-            "p95_us": 28.586000000000002
+            "mean_us": 17.251225000000005,
+            "stddev_us": 6.4180442639775395,
+            "min_us": 15.46,
+            "max_us": 55.245,
+            "p95_us": 20.027
           }
         },
         {
           "metric": "sema::analyze",
           "stats": {
-            "mean_us": 26.640175,
-            "stddev_us": 7.323036378058968,
-            "min_us": 21.183,
-            "max_us": 60.007000000000005,
-            "p95_us": 36.555
+            "mean_us": 28.86995,
+            "stddev_us": 11.503214902691335,
+            "min_us": 22.668,
+            "max_us": 93.97,
+            "p95_us": 40.175000000000004
           }
         },
         {
           "metric": "lsp::load_with_overlay+analyze",
           "stats": {
-            "mean_us": 49.30797500000001,
-            "stddev_us": 6.844318934296896,
-            "min_us": 43.823,
-            "max_us": 73.661,
-            "p95_us": 63.346
+            "mean_us": 56.388525,
+            "stddev_us": 10.901976524895613,
+            "min_us": 47.741,
+            "max_us": 95.654,
+            "p95_us": 88.391
           }
         },
         {
           "metric": "codegen::model::build_system",
           "stats": {
-            "mean_us": 40.936699999999995,
-            "stddev_us": 44.32037768972643,
-            "min_us": 27.178,
-            "max_us": 308.413,
-            "p95_us": 66.221
+            "mean_us": 34.809250000000006,
+            "stddev_us": 14.467383178636696,
+            "min_us": 28.89,
+            "max_us": 118.412,
+            "p95_us": 50.992999999999995
           }
         },
         {
           "metric": "semantic_model::from_ir",
           "stats": {
-            "mean_us": 17.597225,
-            "stddev_us": 3.057689245880785,
-            "min_us": 15.818,
-            "max_us": 34.736000000000004,
-            "p95_us": 21.373
+            "mean_us": 19.967325000000006,
+            "stddev_us": 5.751193256131722,
+            "min_us": 17.027,
+            "max_us": 51.046,
+            "p95_us": 28.394
           }
         },
         {
           "metric": "semantic_model::semantic_hash",
           "stats": {
-            "mean_us": 9.84695,
-            "stddev_us": 0.30530246887308343,
-            "min_us": 9.575999999999999,
-            "max_us": 11.538,
-            "p95_us": 10.114
+            "mean_us": 10.808825000000002,
+            "stddev_us": 3.282695492179407,
+            "min_us": 9.120000000000001,
+            "max_us": 28.192,
+            "p95_us": 14.606
           }
         },
         {
           "metric": "regen::plan_regeneration [cold]",
           "stats": {
-            "mean_us": 134.24130000000002,
-            "stddev_us": 16.665862016709486,
-            "min_us": 123.95,
-            "max_us": 203.143,
-            "p95_us": 167.28300000000002
+            "mean_us": 147.13995,
+            "stddev_us": 19.90840875478249,
+            "min_us": 133.04399999999998,
+            "max_us": 213.063,
+            "p95_us": 181.785
           }
         },
         {
           "metric": "regen::plan_regeneration [warm]",
           "stats": {
-            "mean_us": 314.598575,
-            "stddev_us": 15.685280740056104,
-            "min_us": 297.94100000000003,
-            "max_us": 359.122,
-            "p95_us": 351.28999999999996
+            "mean_us": 355.61614999999995,
+            "stddev_us": 35.82904050037484,
+            "min_us": 319.152,
+            "max_us": 456.442,
+            "p95_us": 423.79400000000004
           }
         },
         {
           "metric": "manifest::build_manifest",
           "stats": {
-            "mean_us": 80.03099999999999,
-            "stddev_us": 6.010151707735838,
-            "min_us": 75.95100000000001,
-            "max_us": 102.235,
-            "p95_us": 94.159
+            "mean_us": 86.64325,
+            "stddev_us": 11.390838645047165,
+            "min_us": 81.321,
+            "max_us": 147.021,
+            "p95_us": 104.633
           }
         },
         {
           "metric": "GeneratedProject::write_to",
           "stats": {
-            "mean_us": 7405.2510250000005,
-            "stddev_us": 618.0725464519713,
-            "min_us": 6303.647,
-            "max_us": 8670.213,
-            "p95_us": 8544.364
+            "mean_us": 2296.6843249999997,
+            "stddev_us": 301.64550591417634,
+            "min_us": 1957.294,
+            "max_us": 3275.754,
+            "p95_us": 2778.842
           }
         }
       ],
@@ -687,11 +687,11 @@
         {
           "backend": "python",
           "steady_state": {
-            "mean_us": 887.1075750000002,
-            "stddev_us": 118.9982668037412,
-            "min_us": 688.212,
-            "max_us": 1432.415,
-            "p95_us": 1032.31
+            "mean_us": 929.6988500000001,
+            "stddev_us": 106.70411815987941,
+            "min_us": 816.635,
+            "max_us": 1359.207,
+            "p95_us": 1152.7130000000002
           },
           "file_count": 60,
           "total_bytes": 63138,
@@ -701,11 +701,11 @@
         {
           "backend": "rust",
           "steady_state": {
-            "mean_us": 1210.026075,
-            "stddev_us": 146.80643408726806,
-            "min_us": 942.013,
-            "max_us": 1658.7869999999998,
-            "p95_us": 1499.305
+            "mean_us": 1112.8540249999999,
+            "stddev_us": 72.78508011347085,
+            "min_us": 1005.5400000000001,
+            "max_us": 1307.4779999999998,
+            "p95_us": 1255.505
           },
           "file_count": 74,
           "total_bytes": 282869,
@@ -715,11 +715,11 @@
         {
           "backend": "typescript",
           "steady_state": {
-            "mean_us": 1584.7944750000001,
-            "stddev_us": 131.05736470129935,
-            "min_us": 1357.757,
-            "max_us": 1957.646,
-            "p95_us": 1838.931
+            "mean_us": 1592.0365749999999,
+            "stddev_us": 158.3842280758863,
+            "min_us": 1321.49,
+            "max_us": 2101.698,
+            "p95_us": 1772.362
           },
           "file_count": 78,
           "total_bytes": 779911,
@@ -729,11 +729,11 @@
         {
           "backend": "go",
           "steady_state": {
-            "mean_us": 19792.034499999998,
-            "stddev_us": 1252.7945440488832,
-            "min_us": 17664.976,
-            "max_us": 21157.678,
-            "p95_us": 21157.678
+            "mean_us": 19013.2135,
+            "stddev_us": 936.1846993309867,
+            "min_us": 17670.466,
+            "max_us": 20664.205,
+            "p95_us": 20664.205
           },
           "file_count": 70,
           "total_bytes": 331129,
@@ -743,11 +743,11 @@
         {
           "backend": "java",
           "steady_state": {
-            "mean_us": 1008438.917,
-            "stddev_us": 20497.15935904992,
-            "min_us": 989236.588,
-            "max_us": 1043301.375,
-            "p95_us": 1043301.375
+            "mean_us": 935209.0877999999,
+            "stddev_us": 30646.356309212926,
+            "min_us": 898580.384,
+            "max_us": 971988.3470000001,
+            "p95_us": 971988.3470000001
           },
           "file_count": 87,
           "total_bytes": 436979,
@@ -772,97 +772,97 @@
       "target": "python",
       "step": "uv sync -q",
       "purpose": "dependencies installed",
-      "duration_s": 0.142010851
+      "duration_s": 0.278241395
     },
     {
       "target": "python",
       "step": "uv run ruff check .",
       "purpose": "lints",
-      "duration_s": 0.10565362
+      "duration_s": 0.147490889
     },
     {
       "target": "python",
       "step": "uv run pytest -q",
       "purpose": "unit tests pass",
-      "duration_s": 3.043367987
+      "duration_s": 2.95554584
     },
     {
       "target": "rust",
       "step": "cargo test -q --lib --tests",
       "purpose": "type-checks (deny warnings), unit and generated tests pass",
-      "duration_s": 77.953915544
+      "duration_s": 85.556266117
     },
     {
       "target": "typescript",
       "step": "npm ci",
       "purpose": "install dependencies from the checked-in lockfile",
-      "duration_s": 4.852702132
+      "duration_s": 6.81533908
     },
     {
       "target": "typescript",
       "step": "npx tsc --noEmit",
       "purpose": "type-checks",
-      "duration_s": 2.672990066
+      "duration_s": 3.196554444
     },
     {
       "target": "typescript",
       "step": "npx eslint .",
       "purpose": "lint",
-      "duration_s": 1.576314951
+      "duration_s": 2.098486329
     },
     {
       "target": "typescript",
       "step": "npx vitest run",
       "purpose": "test",
-      "duration_s": 1.65062017
+      "duration_s": 2.510263585
     },
     {
       "target": "go",
       "step": "go build ./...",
       "purpose": "compiles to a static binary",
-      "duration_s": 5.081057191
+      "duration_s": 2.745661813
     },
     {
       "target": "go",
       "step": "go vet ./...",
       "purpose": "lints",
-      "duration_s": 0.552354561
+      "duration_s": 0.511197952
     },
     {
       "target": "go",
       "step": "gofmt -l .",
       "purpose": "formatting is golden bytes, not a post-pass",
-      "duration_s": 0.011090092
+      "duration_s": 0.021119459
     },
     {
       "target": "go",
       "step": "go test ./...",
       "purpose": "unit tests pass",
-      "duration_s": 1.183120777
+      "duration_s": 1.377210056
     },
     {
       "target": "java",
       "step": "./mvnw -q -B verify",
       "purpose": "compiles, formats (Spotless), and tests in one invocation",
-      "duration_s": 33.537631077
+      "duration_s": 35.522024934
     }
   ],
   "slow_test_binaries": [
     {
       "name": "determinism",
-      "wall_time_s": 70.735377675
+      "wall_time_s": 45.940453471
     },
     {
       "name": "conformance",
-      "wall_time_s": 44.586587834
+      "wall_time_s": 43.380566639
     },
     {
       "name": "golden",
-      "wall_time_s": 27.392315881
+      "wall_time_s": 14.909289232
     },
     {
       "name": "openapi",
-      "wall_time_s": 23.07495223
+      "wall_time_s": 14.550145916
     }
   ],
   "sim": [
@@ -870,31 +870,31 @@
       "example": "order-system",
       "scenario": "order-system.ciac-sim.json",
       "target": "python",
-      "duration_s": 1.8836661380000002
+      "duration_s": 2.503731384
     },
     {
       "example": "order-system",
       "scenario": "order-system.ciac-sim.json",
       "target": "rust",
-      "duration_s": 45.479891217
+      "duration_s": 51.386635737
     },
     {
       "example": "order-system",
       "scenario": "order-system.ciac-sim.json",
       "target": "typescript",
-      "duration_s": 7.9323252669999995
+      "duration_s": 9.821224398
     },
     {
       "example": "order-system",
       "scenario": "order-system.ciac-sim.json",
       "target": "go",
-      "duration_s": 2.396241453
+      "duration_s": 3.736844305
     },
     {
       "example": "order-system",
       "scenario": "order-system.ciac-sim.json",
       "target": "java",
-      "duration_s": 22.446457947
+      "duration_s": 23.502920211
     }
   ]
 }

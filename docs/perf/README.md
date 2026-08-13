@@ -206,6 +206,81 @@ at M6's own start if its `build_system` dedupe turns out to be more
 surgery than the checkpoint's cumulative gains justify, per that
 milestone's own text, but nothing at M5 pre-empts that judgment.
 
+## `33UpdatePlan.md` M7 checkpoint
+
+Re-opens two rows `32UpdatePlan.md` left unfinished: item 7 (split
+`determinism.rs`/`openapi.rs` for libtest), kept at M8 with a disclosed
+4.46% shortfall against a ≥30% threshold and a root cause that turned
+out to be wrong; and item 11 (warm/eliminate the Java formatter), cut
+outright at M7. See `plans/32UpdatePlan.md`'s own M8 item 7 note for
+the original diagnosis and the dated correction appended beneath it —
+the shortfall was never a hardware limit (4 concurrent formatter
+invocations measured **2.21–2.26×** faster in parallel, so the JVM does
+not saturate this machine), it was Amdahl's law on a badly chosen split
+axis (java is 95.3% of `determinism.rs`, capping a by-backend split at
+~4.6% regardless of core count — almost exactly the 4.46% that was
+measured).
+
+**Cumulative slow-binary delta**, 3-rep isolated medians, against this
+arc's own settled M1 reference (135.30s, not the stale committed
+`baseline.json` figure of 185.50s — see that milestone's running-log
+entry for the reconciliation):
+
+| Binary | Before | After | Ratio | Change |
+|---|---|---|---|---|
+| `determinism` | 46.86s | 26.16s | 1.79× | -44.2% |
+| `conformance` | 42.87s | 39.96s | 1.07× | -6.8% |
+| `golden` | 23.10s | 13.70s | 1.69× | -40.7% |
+| `openapi` | 22.47s | 13.80s | 1.63× | -38.6% |
+| **total** | **135.30s** | **93.62s** | **1.45×** | **-30.8%** |
+
+Clears the ≥30% bar item 7 originally set and missed. `conformance`'s
+own parallelization was reverted mid-arc (M4) — its three outer test
+fns are each independently java-heavy, so libtest's own external
+concurrency already consumes this 4-vCPU box's headroom before any
+internal chunking is added, measured directly by sweeping worker counts
+rather than assumed. Its 6.8% improvement here is entirely passive:
+every `JavaBackend::generate()` call benefits from M6's AppCDS archive
+regardless of which test drives it.
+
+**`perf_baseline.rs`/`perf_scaling.rs`** (`--ignored`): both pass,
+confirmed flat, as required — no Rust codegen path was touched by any
+milestone in this arc; the only production-code change is one JVM
+startup flag in `ciac-backend-java`. **`perf_budget.rs`**: java sits at
+364.9× the median backend, **2.7× headroom** remaining under the 1000×
+multiplier — up from `31UpdatePlan.md` M9's recorded ~2×, confirming
+that AppCDS moves this gate's own headroom in the safe direction
+(lowering java's absolute cost lowers the ratio). Tightening the
+multiplier to reclaim that headroom is explicitly out of scope for this
+arc — a ratchet decision for whoever owns the next one, taken with a
+soak behind it.
+
+**Full `ciac-bench --compare`, reviewed in its entirety**, not only the
+targeted metric: scattered ±10–80% movement appears across every
+front-end metric and every non-java backend's `generate()` cost in the
+raw table. Investigated rather than waved past — this arc's diff
+touches zero code on any of those paths (no template, no context
+struct, no front-end pass, no non-java backend), so the movement is
+structurally impossible to attribute to it; traced to measurement noise
+on exactly the class of single-shot, microsecond-scale timing this
+session already caught once during M1 (`determinism`'s own baseline
+discrepancy). `generate() [java]` — the one metric this arc could
+plausibly move — shows a consistent, correctly-directioned decrease
+across every example (-27.7% to -3.3%), smaller than M6's own
+controlled 54.4% figure for larger multi-file projects, exactly as the
+fixed-vs-marginal cost model predicts (AppCDS's win is against the
+~0.63s *fixed* JVM-startup component, a shrinking share of total
+`generate()` time as a project's file count grows).
+
+**`scripts/sim-corpus-x5.sh`**: 50/50 green, confirmed independently at
+every milestone boundary in this arc (M3 through M6), not merely at
+this checkpoint.
+
+**Decision: outcome (a) — proceed.** No contract breached, cumulative
+gain clears the arc's own ≥30% headline, every apparent "other" metric
+movement traced to noise rather than this arc's code. M8 and M9 run as
+planned.
+
 ## Discipline this arc adopted (`31UpdatePlan.md` Pillar 7)
 
 Recorded here so later work inherits it as a standing convention:

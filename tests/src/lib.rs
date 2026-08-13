@@ -55,6 +55,38 @@ pub fn ciac_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Splits `paths` into up to `worker_count` round-robin buckets, sizes
+/// differing by at most one -- `33UpdatePlan.md` M3's own fix, shared
+/// here so M4's `openapi.rs`/`conformance.rs` and M5's `golden.rs`
+/// don't each redefine it. Contiguous fixed-size chunks (`.chunks(len
+/// / n)`) leave the last worker with fewer items and idle for the
+/// run's tail once the busier workers still have theirs; round-robin
+/// keeps every worker's item count within one of every other's.
+/// Failure messages that use this already carry the full example path
+/// and backend id, so round-robin costs no attribution -- there is no
+/// per-worker grouping anyone reads.
+pub fn chunk_paths(paths: Vec<PathBuf>, worker_count: usize) -> Vec<Vec<PathBuf>> {
+    let worker_count = worker_count.max(1).min(paths.len().max(1));
+    let mut chunks: Vec<Vec<PathBuf>> = (0..worker_count).map(|_| Vec::new()).collect();
+    for (i, path) in paths.into_iter().enumerate() {
+        chunks[i % worker_count].push(path);
+    }
+    chunks
+}
+
+/// This process's usable worker count for test-suite-internal
+/// parallelism (`33UpdatePlan.md` M3-M5): `available_parallelism()`
+/// capped at 4, since 8-way concurrent formatter invocations measured
+/// no better than 4-way on the reference machine, so a low cap costs
+/// nothing and bounds oversubscription against libtest's own
+/// function-level concurrency running on top of it.
+pub fn worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(4)
+}
+
 /// Renders a generated project as one stable string for snapshotting.
 pub fn project_dump(project: &ciac_codegen::GeneratedProject) -> String {
     let mut out = String::new();

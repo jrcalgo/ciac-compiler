@@ -38,35 +38,19 @@
 //! shared mutable state, so a failing assertion panics its worker and
 //! `std::thread::scope` propagates the panic (with the same
 //! example/backend-naming message) when the scope's block ends.
+//!
+//! `chunk_paths`/`worker_count` live in `ciac_integration_tests` (not
+//! here) -- `33UpdatePlan.md` M4 reuses them for `openapi.rs` and
+//! `conformance.rs`'s identical shape.
 
 use ciac_codegen::manifest::build_manifest;
 use ciac_codegen::{Backend, GenOptions};
-use ciac_integration_tests::{ciac_files, compile_file, examples_dir, project_dump};
-use std::path::PathBuf;
-
-/// Splits `paths` into up to `worker_count` round-robin buckets, sizes
-/// differing by at most one -- not contiguous fixed-size chunks, which
-/// on this corpus (29 examples, 4 workers) produced 8/8/8/5: the last
-/// worker finishes early and its capacity goes unused for the tail of
-/// the run, measured directly to cost real wall-clock speedup. Failure
-/// messages already carry the full example path and backend id, so
-/// round-robin loses no attribution -- there is no per-worker grouping
-/// anyone reads.
-fn chunk_paths(paths: Vec<PathBuf>, worker_count: usize) -> Vec<Vec<PathBuf>> {
-    let worker_count = worker_count.max(1).min(paths.len().max(1));
-    let mut chunks: Vec<Vec<PathBuf>> = (0..worker_count).map(|_| Vec::new()).collect();
-    for (i, path) in paths.into_iter().enumerate() {
-        chunks[i % worker_count].push(path);
-    }
-    chunks
-}
+use ciac_integration_tests::{
+    chunk_paths, ciac_files, compile_file, examples_dir, project_dump, worker_count,
+};
 
 fn generation_is_byte_deterministic_for<B: Backend>(new_backend: fn() -> B) {
-    let worker_count = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(4);
-    let chunks = chunk_paths(ciac_files(&examples_dir()), worker_count);
+    let chunks = chunk_paths(ciac_files(&examples_dir()), worker_count());
 
     std::thread::scope(|scope| {
         for chunk in chunks {

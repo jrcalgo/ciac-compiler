@@ -1784,11 +1784,7 @@ fn sim_drive_rust_single(
             project_dir.display()
         );
     }
-    run_in(
-        project_dir,
-        "cargo",
-        &["build", "-q", "--bin", "sim_runner"],
-    )?;
+    run_in_shared_cargo(project_dir, &["build", "-q", "--bin", "sim_runner"])?;
 
     let mut scenario_outcomes = Vec::new();
     for scenario_path in scenarios {
@@ -1801,6 +1797,7 @@ fn sim_drive_rust_single(
             .arg("--")
             .arg(&scenario_abs)
             .current_dir(project_dir);
+        apply_shared_cargo_target_dir(&mut cmd);
 
         let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
             format!(
@@ -1859,7 +1856,7 @@ fn sim_drive_rust_multi(
             projects.len()
         );
     }
-    run_in(&runner_dir, "cargo", &["build", "-q"])?;
+    run_in_shared_cargo(&runner_dir, &["build", "-q"])?;
 
     let mut scenario_outcomes = Vec::new();
     for scenario_path in scenarios {
@@ -1870,6 +1867,7 @@ fn sim_drive_rust_multi(
             .arg("--")
             .arg(&scenario_abs)
             .current_dir(&runner_dir);
+        apply_shared_cargo_target_dir(&mut cmd);
 
         let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
             format!(
@@ -3742,6 +3740,43 @@ fn run_project_validate(project: &Path, target_info: &TargetInfo, concurrent: bo
 /// overridden.
 fn shared_cargo_target_dir() -> PathBuf {
     std::env::temp_dir().join("ciac-verify-cargo-target")
+}
+
+/// `34UpdatePlan.md` M2: `ciac sim`'s two rust drivers
+/// (`sim_drive_rust_single`, `sim_drive_rust_multi`) reuse the same
+/// shared, persistent target dir `apply_validate_env` already gives
+/// `ciac verify` -- every generated project's `Cargo.toml` pins the
+/// same dependency versions (same fixed template), so a `sim` run and
+/// a `verify` run now reuse each other's already-built dependency
+/// crates, not only repeat runs within their own command. Mirrors
+/// `apply_validate_env`'s caller-set guard exactly: a developer with
+/// their own `CARGO_TARGET_DIR` is never overridden.
+fn apply_shared_cargo_target_dir(cmd: &mut Command) {
+    if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        cmd.env("CARGO_TARGET_DIR", shared_cargo_target_dir());
+    }
+}
+
+/// `34UpdatePlan.md` M2: identical to `run_in`, but for the rust sim
+/// drivers' own `cargo build` steps specifically, which apply the
+/// shared target dir above. Left as a separate function rather than
+/// widening `run_in`'s own signature, so every other `run_in` caller
+/// (uv, npm, go, mvnw) is untouched by this change.
+fn run_in_shared_cargo(project: &Path, args: &[&str]) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(args).current_dir(project);
+    apply_shared_cargo_target_dir(&mut cmd);
+    let status = run_streamed(&mut cmd).with_context(|| {
+        format!(
+            "failed to run `cargo {}` in {}",
+            args.join(" "),
+            project.display()
+        )
+    })?;
+    if !status.success() {
+        bail!("`cargo {}` failed in {}", args.join(" "), project.display());
+    }
+    Ok(())
 }
 
 /// Applies a `ValidateStep`'s own declared env vars, plus the shared

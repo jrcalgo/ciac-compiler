@@ -1382,8 +1382,9 @@ This is the direct analogue of `34UpdatePlan.md`'s FM1, and it earns
 the same "dangerous one" label for the same reason: it produces a
 confident wrong answer rather than an error.
 
-**Resolution — mitigated under the harness, honestly uncovered
-outside it.** Three layers, of decreasing strength:
+**Resolution — entirely, and by a stronger mechanism than this
+document originally credited.** Four layers, discovered in that order
+while writing the verification this entry itself promised:
 
 1. **Cargo and `go build` are content-addressed and correct.** Both
    fingerprint their inputs and rebuild when those change. A build that
@@ -1395,26 +1396,43 @@ outside it.** Three layers, of decreasing strength:
    (`sim-corpus-x5.sh:111`, `:116`), so under `sim-corpus-x5.sh` every
    build is cold with respect to the generated project and no stale
    artifact can exist.
-3. **The uncovered case is a developer re-running `ciac sim` against a
-   persistent `--out` directory** after editing the `.ciac` source. Here
-   the mitigation rests entirely on layer 1 — which is sound for cargo
-   and go, sound for `javac` output under Maven's incremental compile,
-   and weakest for the python path, where no compilation occurs at all
-   and the interpreter simply reads whatever `.py` files are present.
+3. **`ciac sim` itself refuses to run against a drifted project.**
+   Verified directly at M9, not assumed: edited `examples/
+   quickstart.ciac` after generating to a persistent `/tmp/...` `--out`,
+   re-ran `ciac sim` against that same `--out` without regenerating —
+   it printed `drift: update app/workers/log_archive.py` /
+   `error: generated project at ... has drifted from the current
+   program; run \`ciac build\` or \`ciac diff\` first` and exited
+   non-zero, **never reaching any `sim_drive_*` driver at all.**
+   `ciac build` on the same `--out` picked up the edit (confirmed the
+   regenerated file's changed constant), after which `ciac sim` ran
+   clean and reflected it. This guard is pre-existing (unrelated to
+   this arc) and target-agnostic — it fires before target dispatch, so
+   it protects python exactly as it protects the other four.
+4. What this document originally called "the uncovered case" — a
+   developer re-running `ciac sim` against a persistent `--out` after
+   editing source — **turns out to be covered by layer 3, not open at
+   all.** The scenario this entry worried about most (python, "no
+   compilation occurs at all") is caught by drift detection before
+   layer 1's per-target reasoning is even needed.
 
-**Completeness: mitigated, not eliminated.** The register keeps one
-entry honestly labelled below "entirely," and this is it.
-`34UpdatePlan.md`'s retrospective (`:1926-1942`) records that its own
-register was never adversarially exercised because the milestone that
-would have exercised it was reverted first; this document inherits that
-warning and responds to it by naming the uncovered case precisely
-rather than claiming coverage it has not tested.
+**Completeness: entirely — a correction from this document's own
+original "mitigated, not eliminated" claim.** Recorded as a correction
+rather than quietly upgraded, because `34UpdatePlan.md`'s retrospective
+(`:1926-1942`) warned that a register entry's completeness label is
+only as good as the verification actually run against it, and this
+one's original label was wrong in the conservative direction — still a
+finding worth stating plainly, not a failure to gloss over.
 
-**Verification.** M2–M6 each run the harness, where layer 2 holds
-absolutely. Additionally, at M7: generate a project to a persistent
-`--out`, run `ciac sim`, edit the source program materially, re-run
-against the same `--out`, and confirm the second run reflects the edit.
-Recorded with its result rather than asserted.
+**Verification.** M2–M6 each ran the harness, where layer 2 holds
+absolutely. At M9: the persistent-`--out` check this entry promised at
+M7 (and that M7's own note did not, in fact, run — see the
+retrospective's question 6) was executed for real: generate to a
+persistent `--out`, run `ciac sim`, edit `examples/quickstart.ciac`
+materially (`max_retries: 2` → `9`), re-run `ciac sim` against the same
+`--out` — drift refusal fires, non-zero exit, no driver reached; `ciac
+build` on the same `--out`, then `ciac sim` again — clean run,
+constant updated, `[PASS]`. Reproduced twice with two different edits.
 
 ### FM2 — Binary path derivation drift
 
@@ -1572,20 +1590,27 @@ comment. M7 re-confirms via a full workspace test run.
 
 | # | Failure mode | Completeness |
 |---|---|---|
-| 1 | Stale binary reuse | **Mitigated + measured** |
+| 1 | Stale binary reuse | **Entirely** (corrected at M9 — drift detection covers the case this document originally called "uncovered") |
 | 2 | Binary path derivation drift | **Dissolved / by precedent** |
 | 3 | `JSON_MODE` contamination | **Entirely** |
 | 4 | FQCN glob ambiguity | **Entirely** |
-| 5 | Venv layout assumption | **Entirely (with fallback)** |
+| 5 | Venv layout assumption | **Entirely on `_single`'s fallback (force-verified); judged correct by construction, not independently force-verified, on `_multi`'s fallback** |
 | 6 | Contract B over-reach | **Entirely** |
 
-Five of six are eliminated or structurally impossible. One — stale
-binary reuse outside the harness — is mitigated and measured, and is
-labelled as such. That is deliberate: `34UpdatePlan.md`'s retrospective
-concluded that a register whose entries were never adversarially
-exercised "stays a well-reasoned design document, not a verified one,"
-and this arc responds by giving every entry a verification that
-actually runs inside a milestone rather than in a hardening milestone
+Five of six are eliminated or structurally impossible; the sixth (FM5's
+`_multi` fallback) is judged correct by construction rather than by an
+independent adversarial run, and says so rather than rounding up.
+`34UpdatePlan.md`'s retrospective concluded that a register whose
+entries were never adversarially exercised "stays a well-reasoned
+design document, not a verified one," and this arc responds by giving
+every entry a verification that actually runs inside a milestone rather
+than in a hardening milestone — including, at M9, running the one
+verification (FM1's persistent-`--out` check) that M7's own note had
+promised but not actually executed, and finding the entry it verified
+was more conservative than reality: FM1 turned out to be **entirely**
+resolved, not merely mitigated, because a pre-existing drift guard this
+document had not accounted for covers the exact case it worried about
+most.
 that might never be reached.
 
 ## Open questions resolved at implementation (pre-registered)
@@ -2331,3 +2356,115 @@ reportable as a good one:
    arc stronger or weaker than `34UpdatePlan.md` left it?
 8. **What does this arc hand off**, and to whom — including anything it
    learned that invalidates a claim in this document.
+
+### Answers
+
+**1. Cumulative delta and per-lever contribution.** 563.5s → 462s,
+**1.220×, ≈18.0% faster**, measured at two identical reps. Per-lever
+attribution is not clean, because the arc's own investigation found the
+two shipped levers' contributions are not additive in the way the
+projection assumed — see answer 3. Cut levers, at their measured
+values: rust (lever A) 1.3s ideal, go (lever B) 1.2s ideal, neither
+implemented, neither contributing to the 100s actually observed.
+
+**2. Was the 60%-of-ideal threshold rule well-calibrated?** No —
+overwhelmed in one direction. Every surviving lever's *measured* gain
+(inferred from the cumulative result) came in far above its threshold,
+not narrowly above it. That is not evidence the 60% factor was
+generous; it is evidence the inputs to the formula (`m_t`) were
+themselves too low for java, for the reason in answer 3. A rule fixed
+before its inputs are known is only as good as those inputs, and this
+arc's `m_java` was measured on the wrong program to represent the
+corpus.
+
+**3. Was the marginal-cost model accurate?** No, and this is the arc's
+most important finding, stated plainly: **the model's mechanism was
+right, its choice of test program was wrong.** M1's controlled
+duplicate-scenario experiment correctly isolates per-invocation wrapper
+overhead from build cost — that design is sound and should be reused.
+But it measured that overhead on `quickstart`, the corpus's smallest
+program, and Maven's `exec:java` bootstrap cost is not a flat per-call
+constant — it scales with the size of the project's dependency graph,
+because Maven rebuilds its own model and resolves the plugin chain on
+every invocation. Measured directly at M7 on `sim-peripherals`: 18.6s/
+invocation old vs. quickstart's 3.162s/invocation marginal cost — 5.9×
+higher. The gap between the 5.3% projection and the observed 18.0% is
+explained by this, not by anything unmeasured. **Handoff for the next
+arc that measures a per-invocation cost via a controlled experiment:**
+run the controlled design against more than the corpus's simplest
+member when the mechanism's cost is plausibly non-uniform (anything
+touching a build tool's own model/dependency resolution almost always
+is).
+
+**4. Did the Contract B carve-out hold its bounds?** Yes, exactly.
+27 files (corrected from an initial mis-count of 29 while drafting —
+itself the pre-registration mechanism catching a real error before any
+code existed), every added and removed line verified by exact whitelist
+match against the three authored comment blocks, zero unmatched lines,
+zero non-java movement at any milestone. The carve-out was also
+indirectly what caught the arc's one real code defect: the first
+drafted comment text broke XML parsing (a literal `--` inside `<!--
+-->`), and it was Contract A/B verification — not the carve-out's own
+hunk-by-hunk check, which only verifies *where* a change is, not
+whether the resulting XML is valid — that caught it.
+
+**5. Did Contract D catch anything the timing numbers did not?** No —
+and unlike `34UpdatePlan.md`'s "twice, and both were real findings,"
+this arc's answer really is "no," recorded as the legitimate result
+this document said in advance it would be. Every injection at every
+boundary it ran matched its pre-registered expectation exactly. What
+Contract D's procedure *did* catch, though not through a fault
+injection: running it consistently is what surfaces whether it's being
+run at all, and its own log is what makes the M2/M5 process deviation
+(see answer 8) visible rather than silently absorbed.
+
+**6. Did the failure-mode register's completeness labels survive
+verification?** Mostly, with one correction worth stating plainly: FM1
+did not merely survive — the verification run against it (finally, at
+M9, after M7's own note promised it and did not deliver) showed the
+entry's original label was *too conservative*. "Mitigated, not
+eliminated," with python's persistent-`--out` case named as the
+specific gap, turned out to be wrong: `ciac sim` refuses to run at all
+against a drifted project, a guard that fires before target dispatch
+and this document had not accounted for. FM1 is now labelled
+**entirely**. FM5 is the opposite case, disclosed rather than
+smoothed over: its `_multi` fallback is judged correct by construction
+(same code path as `_single`'s force-verified fallback) but was not
+independently force-triggered, because the multi-service driver's own
+pre-existing PYTHONPATH assembly blocks the same forcing technique that
+worked for `_single`.
+
+**7. Was excluding concurrency correct?** Strengthened, not weakened.
+`34UpdatePlan.md`'s reverted lever 2 needed a `max(stream)` ≈ 205s
+target against a ≈489s serial-cached sum to justify concurrency's
+complexity; this arc's own M1 found the *current* serial baseline is
+warm-state-dependent in a way no prior arc had measured (a 43% spread
+between back-to-back reps before this arc's own cache-state discipline
+normalized it), and this arc's M7 checkpoint shows the serial number
+itself keeps moving as the wrapper-removal levers land. A concurrency
+arc now inherits a lower, more honestly-characterized serial
+denominator than it would have a session ago — exactly the outcome
+this document's own opening section predicted when it declined
+concurrency "so that arc gets a more honest denominator for having
+waited."
+
+**8. What does this arc hand off?**
+- **The corrected methodology finding** (answer 3) — the single most
+  reusable thing this arc produced, more valuable than its own
+  timing number.
+- **A materially lower, better-characterized serial baseline** for
+  whichever arc next considers concurrency.
+- **Two process corrections, both self-caught rather than found by a
+  later reviewer:** FM1's over-conservative label, and Contract D's
+  M2/M5 gap — the latter closed going forward starting at M6, the
+  former closed retroactively at M9 once the promised check was
+  finally run.
+- **`sim-corpus-selftest.sh`, deferred a third time.** This arc did not
+  change the harness's tally (`34UpdatePlan.md` M3's own subject), so
+  there was still no occasion to build it. The item is now three arcs
+  deep in deferral; whichever arc next touches the tally should either
+  take it or explicitly retire the idea rather than defer a fourth
+  time.
+- **The single-invocation multi-scenario runner idea and `npm ci` flag
+  tuning**, both still unclaimed, recorded under Explicit cuts with
+  their sizing.

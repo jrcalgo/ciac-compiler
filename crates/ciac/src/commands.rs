@@ -1585,6 +1585,115 @@ fn run_sim_scenarios(
     Ok(scenario_outcomes)
 }
 
+/// 35UpdatePlan.md M5 (lever C): after `uv sync` (which every caller of
+/// [`venv_launcher`] runs immediately beforehand), `uv run python`
+/// re-validates the venv it just synced -- reading `pyproject.toml`/
+/// `uv.lock` again and checking the interpreter is still current --
+/// before running anything, on every single scenario. Once `uv sync`
+/// has completed, `<project_dir>/.venv/bin/python`
+/// (`.venv\Scripts\python.exe` under `cfg!(windows)`) is exactly the
+/// interpreter `uv run` would have resolved to and validated, so
+/// exec'ing it directly skips that repeated validation without
+/// changing which interpreter runs. This is not a new assumption about
+/// venv layout: `sim_drive_python_multi`'s own `PYTHONPATH` assembly
+/// already globs inside `<project>/.venv/lib/*/site-packages` for the
+/// identical reason (a `uv`-managed venv lives at the project root) --
+/// this is a second use of the one layout assumption already made.
+enum VenvLauncher {
+    /// The venv's own interpreter, found where `uv sync` puts it.
+    Direct {
+        // target-literal-ok: the python interpreter's own binary path,
+        // not a target-id match -- see this enum's own doc comment.
+        python: PathBuf,
+        venv_root: PathBuf,
+        bin_dir: PathBuf,
+    },
+    /// `<project_dir>/.venv/bin/python` (or `Scripts\python.exe`) does
+    /// not exist -- e.g. `UV_PROJECT_ENVIRONMENT` pointed the sync
+    /// elsewhere. Falls back to `uv run --project <project_dir> python`:
+    /// the only lever in 35UpdatePlan.md with a fallback, because it is
+    /// the only one where the pre-lever mechanism remains available at
+    /// zero extra cost (35UpdatePlan.md's own open questions section,
+    /// resolved item 3). A non-standard environment gets today's
+    /// performance and today's correctness rather than an error. The
+    /// explicit `--project` (rather than relying on the command's own
+    /// `current_dir`, as the single-service driver's pre-lever call did)
+    /// is what lets one fallback arm serve both the single- and
+    /// multi-service drivers, whose scenario loop runs from different
+    /// working directories (`project_dir` vs. `sim_dir`).
+    Fallback { uv_project: PathBuf },
+}
+
+impl VenvLauncher {
+    /// A fresh [`Command`] for the interpreter this launcher resolved
+    /// to -- the venv's own `python`, or `uv run --project … python` on
+    /// fallback.
+    fn command(&self) -> Command {
+        match self {
+            VenvLauncher::Direct { python, .. } => Command::new(python),
+            VenvLauncher::Fallback { uv_project } => {
+                let mut cmd = Command::new("uv");
+                cmd.arg("run").arg("--project").arg(uv_project);
+                cmd.arg("python"); // target-literal-ok: the python interpreter's own name, not a target-id match
+                cmd
+            }
+        }
+    }
+
+    /// Sets `VIRTUAL_ENV` and prepends the venv's `bin`/`Scripts` to
+    /// `PATH` -- the part of `uv run`'s own environment setup that
+    /// generated driver scripts (or anything they import) could
+    /// plausibly depend on, so exec'ing the interpreter directly
+    /// reproduces it rather than merely running the right binary. A
+    /// no-op on [`VenvLauncher::Fallback`], where `uv run` sets this up
+    /// itself.
+    fn apply_env(&self, cmd: &mut Command) {
+        let VenvLauncher::Direct {
+            venv_root, bin_dir, ..
+        } = self
+        else {
+            return;
+        };
+        cmd.env("VIRTUAL_ENV", venv_root);
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![bin_dir.clone()];
+        dirs.extend(std::env::split_paths(&existing));
+        if let Ok(joined) = std::env::join_paths(dirs) {
+            cmd.env("PATH", joined);
+        }
+    }
+}
+
+/// Resolves [`VenvLauncher::Direct`] against `project_dir`'s `.venv` if
+/// the convention holds, [`VenvLauncher::Fallback`] otherwise. Callers
+/// run `uv sync` on `project_dir` before calling this.
+fn venv_launcher(project_dir: &Path) -> VenvLauncher {
+    let venv_root = project_dir.join(".venv");
+    let bin_dir = if cfg!(windows) {
+        venv_root.join("Scripts")
+    } else {
+        venv_root.join("bin")
+    };
+    // target-literal-ok: the venv's own interpreter filename, not a
+    // target-id match -- see `VenvLauncher`'s own doc comment.
+    let python = bin_dir.join(if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python"
+    });
+    if python.is_file() {
+        VenvLauncher::Direct {
+            python,
+            venv_root,
+            bin_dir,
+        }
+    } else {
+        VenvLauncher::Fallback {
+            uv_project: project_dir.to_path_buf(),
+        }
+    }
+}
+
 /// The single-service path, unchanged in shape from before 28's M3c
 /// (`sim_drive_python` used to be this function's own body directly) --
 /// factored out so `sim_drive_python` can dispatch to it or to
@@ -1605,12 +1714,11 @@ fn sim_drive_python_single(
 
     let pythonpath = std::env::join_paths([sim_dir.to_path_buf(), project_dir.to_path_buf()])
         .context("cannot build PYTHONPATH for the sim runner")?;
+    let venv = venv_launcher(project_dir);
 
     run_sim_scenarios(scenarios, wall_timeout, "auto_driver.py", |scenario_abs| {
-        let mut cmd = Command::new("uv");
-        cmd.arg("run")
-            .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
-            .arg(sim_dir.join("auto_driver.py"))
+        let mut cmd = venv.command();
+        cmd.arg(sim_dir.join("auto_driver.py"))
             .arg(plan_path)
             .arg(scenario_abs)
             .arg("--source-hash")
@@ -1619,6 +1727,7 @@ fn sim_drive_python_single(
             .arg(plan_hash)
             .current_dir(project_dir)
             .env("PYTHONPATH", &pythonpath);
+        venv.apply_env(&mut cmd);
         if let Some(record_path) = record {
             cmd.arg("--record").arg(resolve_path(record_path)?);
         }
@@ -1705,16 +1814,16 @@ fn sim_drive_python_multi(
     // `multi_driver.py` itself (only the third-party packages on
     // `PYTHONPATH` matter, not which `.venv`'s own `python` binary is
     // invoked) -- the first service's, arbitrarily but deterministically
-    // (declaration order), keeps this reproducible.
+    // (declaration order), keeps this reproducible. 35UpdatePlan.md M5:
+    // this is also why `venv_launcher`'s per-launch choice of
+    // interpreter is safe here -- the PYTHONPATH union above is what
+    // actually determines behavior, not which service's venv answers.
     let (_, driver_project) = &service_args[0];
+    let venv = venv_launcher(driver_project);
 
     run_sim_scenarios(scenarios, wall_timeout, "multi_driver.py", |scenario_abs| {
-        let mut cmd = Command::new("uv");
-        cmd.arg("run")
-            .arg("--project")
-            .arg(driver_project)
-            .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
-            .arg(sim_dir.join("multi_driver.py"))
+        let mut cmd = venv.command();
+        cmd.arg(sim_dir.join("multi_driver.py"))
             .arg(plan_path)
             .arg(scenario_abs)
             .arg("--source-hash")
@@ -1723,6 +1832,7 @@ fn sim_drive_python_multi(
             .arg(plan_hash)
             .current_dir(sim_dir)
             .env("PYTHONPATH", &pythonpath);
+        venv.apply_env(&mut cmd);
         for (name, dir) in &service_args {
             cmd.arg("--service")
                 .arg(format!("{name}={}", dir.display()));

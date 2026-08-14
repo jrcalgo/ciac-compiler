@@ -1497,19 +1497,49 @@ elsewhere (`UV_PROJECT_ENVIRONMENT`), or the platform uses
 
 **Resolution — entirely, by checking rather than assuming, with a
 documented fallback.** The lever probes for the interpreter at the
-conventional location and, if absent, **falls back to the existing `uv
-run` invocation** rather than failing. That fallback is the current
-behaviour, so a non-standard environment gets today's performance and
-today's correctness rather than an error. Windows uses
-`Scripts/python.exe` under `cfg!(windows)`, following `:2346`'s idiom.
+conventional location and, if absent, **falls back to `uv run --project
+<dir> python`** rather than failing. Windows uses `Scripts/python.exe`
+under `cfg!(windows)`, following `:2346`'s idiom.
 
-**Completeness: entirely**, and notably this is the only lever with a
-graceful degradation path — because it is the only one where the
-pre-lever mechanism remains available at zero cost.
+**The fallback's design changed once during implementation, and the
+change was load-bearing.** The first draft's fallback was bare `uv run
+python` — correct for `sim_drive_python_single`, where `current_dir` is
+already the project directory uv would auto-detect, but silently wrong
+for `sim_drive_python_multi`, whose scenario loop runs with
+`current_dir(sim_dir)`: `uv` would have looked for a project starting
+from `sim_dir`, not the driver service's own directory. Caught before
+any timing run, by re-reading the original multi driver's own
+`--project <driver_project>` argument (which the first draft dropped)
+and asking why it was there. Fixed by carrying an explicit
+`uv_project: PathBuf` on the `Fallback` variant and always passing
+`--project`, which is correctness-neutral for `_single` (project_dir
+already equals cwd) and required for `_multi`.
 
-**Verification.** M5 runs the full python stream. The fallback branch is
-exercised by temporarily pointing `UV_PROJECT_ENVIRONMENT` elsewhere
-and confirming the driver still succeeds, recorded in the running log.
+**Completeness: entirely on the direct path and on `_single`'s
+fallback; verified once, not adversarially, on `_multi`'s fallback.**
+This is the one place this register does not claim full verification
+and says so rather than rounding up.
+
+**Verification.** M5 ran the full 50-combination harness (Contract A
+byte-identical, zero snapshot movement, 520+ workspace tests green).
+The direct path was additionally exercised standalone against both a
+single-service program (`quickstart`) and a multi-service program
+(`sim-three-service`), both `[PASS]`. The fallback was genuinely forced
+for `_single` via `UV_PROJECT_ENVIRONMENT` pointed at a scratch
+directory — confirmed the project-local `.venv` was never created and
+the redirected one was used instead, `[PASS]`. **The same forcing
+technique does not reach `_multi`'s fallback**: `sim_drive_python_multi`'s
+own `PYTHONPATH` assembly (unchanged by this arc) unconditionally globs
+`dir.join(".venv").join("lib")` per service *before* `venv_launcher` is
+ever called, so under `UV_PROJECT_ENVIRONMENT` that pre-existing,
+unrelated code fails first with "cannot find a site-packages directory"
+-- a latent assumption this arc did not introduce and did not need to
+touch, surfaced only because this verification attempt went looking.
+`_multi`'s `Fallback` arm runs the identical `command()`/`apply_env()`
+implementation already exercised on `_single`, so it is judged correct
+by construction rather than by an independent adversarial run; a
+genuine trigger would require a corrupted venv (site-packages present,
+interpreter binary missing), which was not manufactured here.
 
 ### FM6 — Contract B over-reach
 
@@ -1941,7 +1971,7 @@ per Pillar 1's derivation rule; results stay `—` until measured.
 | M2 — shared runner helper (refactor) | None (correctness; no measurable regression) | **Done.** `run_sim_scenarios` introduced; all ten call sites (8 duplicated blocks) routed through it. `commands.rs`: 271 lines removed, 88 added, net −183. Full harness report byte-identical to M1's frozen Contract A baseline (sorted diff empty, 75/75 lines). Zero snapshot movement. `cargo test --workspace` green, 520+ tests, 0 failures. `cargo fmt`/`cargo clippy -D warnings` clean. | **Kept.** |
 | M3 — lever A, rust | *derived at M1, `N = 15`* | — | — |
 | M4 — lever B, go | *derived at M1, `N = 15`* | — | — |
-| M5 — lever C, python | *derived at M1, `N = 15`* | — | — |
+| M5 — lever C, python | 1.319× on python's own stream (half-point 1.159×) | **Implemented.** `VenvLauncher` (`Direct`/`Fallback{uv_project}`) resolves `<project>/.venv/bin/python` after `uv sync` and execs it directly per scenario, setting `VIRTUAL_ENV` and prepending `bin` to `PATH`; falls back to `uv run --project <dir> python` when the interpreter isn't there. Full harness: 533s, byte-identical Contract A (75/75 lines) against M1's frozen baseline; zero snapshot movement; 520+ workspace tests green. A precise per-lever timing isolation (repeated single-target reps) is deferred to M7's checkpoint, where all surviving levers are measured together against the frozen baseline — 533s alone, inside M1's own 544–583s warm-noise band, is not distinguishable from noise at n=1. | **Kept**, pending M7's isolated confirmation. |
 | M6 — lever D, java (gated) | *derived at M1, `N = 12`, +7 `build-classpath`* | — | — |
 | M7 — CHECKPOINT | None (output is a decision) | — | — |
 | M8 — documentation | None | — | — |

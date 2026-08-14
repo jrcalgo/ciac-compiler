@@ -1609,7 +1609,7 @@ carries a measurement or is labelled a hypothesis.*
 | M3 | — (correctness) | Green, run 3× (16m20s, 16m27s, 16m35s — noise-band consistent with M2), each sorted-diff-verified against M1's baseline set (75/75 lines identical). Contract D both paths run in full: Injection A now reports **"5 failing combination(s), 5 failing scenario(s)"** — correctly separated, correctly labelled, replacing the pre-M3 conflated "10" — exit 1; Injection B reproduces M1/M2 exactly (50/50, exit 1, <1.1s). Both reverted, final green reconfirmed (17m16s). `cargo clippy --workspace --all-targets -- -D warnings` clean; 521 workspace tests pass; zero snapshot movement (Contract B holds); Contract C not applicable (script-only milestone, no compiler code touched). | **PASS — correctness proven, FM9's fix verified against its own pre-registered two-shape test.** |
 | M4 | ≥2.5× vs M3 (half-point 1.75×) | M3 baseline (mean of its 3 reps): 987.5s. M4 measured at 2 reps: 613.3s (fresh shared cache) and 593.5s (warm), mean 603.4s — **ratio 1.64× (rep-level 1.61× and 1.66×)**. M4 would need to land under 564.3s to clear the 1.75× half-point and under 395.0s to clear the 2.5× threshold; both readings land 5-9% above the half-point line, consistently across two independent reps (agreeing within 3% of each other). Correctness was not in question — real concurrent execution was verified directly (a 2-target smoke test showed 37.2s wall against a ~65s serial-equivalent sum), Contract A held (75/75 sorted-diff match against M1's baseline on both full reps), and no job-control noise or scripting defect was found. **Root cause, measured not assumed:** rust's own stream, isolated, measured 380.89s at M2 (fresh shared cache, all 10 programs). Under M4's 5-way concurrent execution, the whole run's wall time (which rust's own stream dominates, since every other stream finishes well inside its runtime) lands at ~600s -- a ~1.58× slowdown for rust's own stream specifically, attributable to CPU oversubscription: 5 concurrent target streams (several themselves multi-threaded -- cargo's own parallel compilation, in particular) compete for 4 physical cores, so the streams measurably slow each other down rather than running at their isolated speeds as the pre-code arithmetic assumed. | **REVERT — Pillar 5's table, applied to the letter.** Gain (1.64×) is below the half-point (1.75×), which the table's third-from-last row governs with no graduated option: "the complexity is not paid for." See the note below for the full decision and what it means for the rest of the arc. |
 | M5 | — (adversarial evidence) | — | — |
-| M6 | — (checkpoint) | — | — |
+| M6 | — (checkpoint) | Full run (current, M3-equivalent, state): 929.4s, vs. M1's frozen mean 1305.4s = **1.40× cumulative** (M2's lever 1 alone; M4's lever 2 reverted at its own boundary). `perf_budget.rs` (3 tests), `perf_baseline.rs` (callgrind, deterministic, flat as expected), and `perf_scaling.rs` all pass. `cargo test --workspace`: 521 pass, 0 fail, zero snapshot movement. Contract C re-verified for the *cumulative* arc (not just M2 in isolation): same-session pre-arc-vs-current comparison shows the same noise pattern as M2's own check (`GeneratedProject::write_to` and `generate() [go]` swing both directions across examples, no coherent regression). Contract D run once more in full: green (75/75 sorted-diff match), Injection A reproduces M3's exact "5 failing combination(s), 5 failing scenario(s)", Injection B reproduces "50 failing combination(s)" — both exit 1, both reverted. | **Outcome (c) — Stop and ship what exists**, formally ratified (decided in substance at M4's own boundary; Pillar 5's table already rendered the verdict, so M6 confirms rather than re-decides). See the M6 note below. |
 | M7 | — (documentation) | — | — |
 | M8 | — (close-out) | — | — |
 
@@ -1841,6 +1841,23 @@ longer binds -- exactly the kind of "measured, un-taken opportunity"
 this document's own "Confidence and handoff" section already
 anticipated needing to record.
 
+**M6 note — ratifying, not re-deciding.** M6's own charter is "no new
+code... take, and write down, one of Pillar 7's four outcomes." No new
+code landed here because none was needed: the state at M6 is exactly
+M3's state (M4's revert brought the script back to the M3 commit, and
+`git diff` against it is empty), so the full sweep above measures the
+same code Contract A, B, C, and D already cleared at M3's own boundary
+-- M6's role is to confirm that a full re-measurement agrees, which it
+does (929.4s, within 6% of M3's own 987.5s mean, and Contract D's two
+injections reproduced M3's exact counts). Cumulative gain against M1's
+frozen baseline: **1.40× (1305.4s -> 929.4s)**, all of it attributable
+to M2's lever 1, none of it to lever 2. Outcome (c) is recorded here
+formally because M6 is this arc's designated checkpoint, but the
+decision itself was already made at M4 by Pillar 5's own table --
+this entry exists so a reader following the document's own structure
+finds the checkpoint's verdict where the structure promises it, not
+because the verdict was still open.
+
 **Arc-level target, for the cumulative row at M6 and M8 (pre-code
 estimate — superseded by M1's measured figure above, kept here for its
 derivation rather than deleted):** full-run wall time ~764s (12.7 min)
@@ -1858,8 +1875,8 @@ was actually run rather than asserted:
 | M2 | Not re-run at this boundary — see the M2 note above (script has zero diff; Contract A's full green run and the separate cold-vs-warm-shared byte-identity check jointly re-establish the same result M1 measured: 10 failing combinations, exit 1). | Re-run with M2's code live: pointed the global `$CIAC` at a nonexistent binary. Exit **1** in 0.94s. Report: `sim-corpus-x5: 50 failing combination(s) out of 50.` — matches M1 exactly. Reverted; `git diff scripts/sim-corpus-x5.sh` empty. |
 | M3 | Perturbed `sim/quickstart.ciac-sim.json` (200→404). Exit **1**. Report: `sim-corpus-x5: 5 failing combination(s), 5 failing scenario(s), 0 missing result(s), out of 50 combinations.` — FM9's fix verified directly: the two counts are now correctly separated (5 combinations errored, the same 5 scenario mismatches also parsed as `[FAIL]` lines) instead of the pre-M3 conflated `10`. All five `quickstart` rows named correctly. Reverted; re-verified against the M3 script backup that the script itself was untouched by this injection. | Re-run with M3's rewritten tally: pointed `$CIAC` at a nonexistent binary. Exit **1** in <1.1s. Report: `sim-corpus-x5: 50 failing combination(s), 0 failing scenario(s), 0 missing result(s), out of 50 combinations.` — matches M1/M2 exactly, now in the corrected two-counter format. Reverted. |
 | M4 | — | — |
-| M5 | — | — |
-| M6 | — | — |
+| M5 | Not applicable — M5's original scope (adversarial verification of concurrency-specific failure modes) does not apply to a state with lever 2 reverted; see the M4 note. | Not applicable, same reason. |
+| M6 | Perturbed `sim/quickstart.ciac-sim.json` again. Exit **1**. Report: `sim-corpus-x5: 5 failing combination(s), 5 failing scenario(s), 0 missing result(s), out of 50 combinations.` — identical to M3's result. Reverted; `git diff` empty. | Pointed `$CIAC` at a nonexistent binary again. Exit **1** in ~1.1s. Report: `sim-corpus-x5: 50 failing combination(s), 0 failing scenario(s), 0 missing result(s), out of 50 combinations.` — identical to M1/M2/M3. Reverted; `git diff` empty. |
 
 ## Retrospective
 

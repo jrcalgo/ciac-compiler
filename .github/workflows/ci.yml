@@ -53,7 +53,7 @@ jobs:
       # (see that crate's own `render_go` doc comment) -- `cargo test
       # --workspace` now needs Go on `PATH` for that reason alone, not
       # only for the dedicated `generated-go` job below.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
       - run: cargo test --workspace
@@ -194,7 +194,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
       - uses: actions/setup-java@v5
@@ -400,7 +400,7 @@ jobs:
       # repo has none) -- every generated project across every example
       # this job iterates shares the exact same dependency set, so one
       # cache entry keyed on that one file covers all of them.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
           cache-dependency-path: crates/ciac-backend-go/templates/go.sum.pin
@@ -614,7 +614,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.24"
       - uses: actions/setup-java@v5

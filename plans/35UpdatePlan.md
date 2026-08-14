@@ -1937,7 +1937,7 @@ per Pillar 1's derivation rule; results stay `—` until measured.
 
 | Milestone | Threshold (pre-registered) | Measured | Pillar 5 verdict |
 |---|---|---|---|
-| M1 — baseline + marginal-cost fit + java gate | None (establishes denominators) | — | — |
+| M1 — baseline + marginal-cost fit + java gate | None (establishes denominators) | **Done — see the M1 note below.** Warm steady state 544/583s; cold 952s. Combined ideal saving across all four levers **31.5s = 6.5%**. | **Narrowed**: levers A (rust) and B (go) cut pre-implementation; C and D retained; M2 retained on independent grounds. |
 | M2 — shared runner helper (refactor) | None (correctness; no measurable regression) | — | — |
 | M3 — lever A, rust | *derived at M1, `N = 15`* | — | — |
 | M4 — lever B, go | *derived at M1, `N = 15`* | — | — |
@@ -1950,12 +1950,200 @@ per Pillar 1's derivation rule; results stay `—` until measured.
 **M1 derived thresholds** (filled at M1, before any lever is
 implemented):
 
-| Target | `S_t` (stream) | `m_t` (per scenario) | `N_t` | Threshold | Half-point |
-|---|---|---|---|---|---|
-| rust | — | — | 15 | — | — |
-| go | — | — | 15 | — | — |
-| python | — | — | 15 | — | — |
-| java | — | — | 12 | — | — |
+| Target | `S_t` (stream) | `m_t` (per invocation) | `N_t` | Saving | Threshold | Half-point |
+|---|---|---|---|---|---|---|
+| java | 226.4s | **3.162s** | 12 | 22.8s | **1.112×** | 1.056× |
+| python | 25.9s | **0.697s** | 15 | 6.3s | **1.319×** | 1.159× |
+| go | 12.3s | **0.130s** | 15 | 1.2s | **1.106×** | 1.053× |
+| rust | 36.1s | **0.149s** | 15 | 1.3s | **1.038×** | 1.019× |
+
+(typescript, for reference and not a lever: `S_t` 186.1s, `m_t` 0.708s.)
+
+## M1 note — what the measurements actually said, and the narrowing they force
+
+**M1 ran in full and produced three findings, two of which were not
+anticipated by this document and one of which invalidates its sizing.**
+
+### Finding 1 — "the baseline" is not one number; it is a cache state
+
+Two full-harness reps taken back to back disagreed by **43%**: rep 1
+**952s**, rep 2 **544s**. Contract A's sorted diff between them was
+byte-identical, so this is timing spread, not a correctness problem —
+and it is far outside the ~3% agreement `34UpdatePlan.md`'s own reps
+achieved.
+
+The cause was measured, not hypothesised (Pillar 1). During rep 1 the
+shared cargo target directory grew **6.2 GB → 12 GB** and
+`~/.cache/go-build` reached **11 GB**; rep 2 reused all of it. The
+mechanism matters beyond this arc: the shared target dir caches **each
+generated project's own compiled crate**, not merely shared
+dependencies, because every program's `sim_runner` resolves to a
+distinct metadata hash via its distinct manifest path. All ten persist
+across runs.
+
+Two consequences:
+
+- **`34UpdatePlan.md`'s lever 1 is worth considerably more than its
+  reported 3.07×** on repeat corpus runs. This document's own opening
+  section claimed rust was ~40% of the run post-lever-1; **warm, rust
+  is 7.4%**. That claim is hereby corrected by measurement, and the
+  correction runs in the same direction as — but much further than —
+  the correction this document made to its predecessor.
+- **That arc's headline figures were semi-cold readings.** Rep 1's 952s
+  matches its M8 close-out (949.3s) to within 0.3%, while a genuinely
+  warm run is ~550s. Neither number is wrong; they measure different
+  situations, and no document in this series had previously noticed
+  that the situation is a variable.
+
+A warm steady state was adopted as the frozen baseline — it is
+reproducible, it is the harder test for these levers, and a cold run's
+magnitude depends on unknowable history.
+
+**Disk, separately: `34UpdatePlan.md`'s FM5 fired for real.** Two full
+runs took utilisation from 74% to **91% (3.8 GB free)**, breaching this
+document's own pre-flight rule mid-milestone. Reclaimed via `go clean
+-cache`; notably the go cache returned at only **801 MB** after a
+subsequent full run, so the 11 GB was accumulated cruft from the whole
+34 arc rather than one run's working set. Recorded because the rule was
+breached by the measurement procedure itself, which no prior arc
+anticipated.
+
+### Finding 2 — the first marginal-cost fit was contaminated, and the residual check caught it
+
+The pre-registered design fitted `T = b + m·n` across four
+single-service programs carrying 1, 2, 2, and 4 scenarios. Run as
+specified, it produced **`m_java` = 26.27 s/scenario and a negative
+intercept of −31.67s** — a physically impossible build cost, which is
+what exposed the problem.
+
+The four raw java points were 1 → 7.59s, 2 → 11.03s, 2 → 11.22s,
+4 → **79.90s**. That is not a line. `sim-peripherals` is a
+high-leverage outlier whose *build* is expensive (object store, email,
+search, cache, HTTP fixtures, auth scopes — roughly 67s of javac and
+Maven work), and a cross-program fit was measuring build-cost variation
+rather than per-scenario cost. This document's instruction to "record
+the residuals, not just the slope" is what surfaced it; the automated
+confidence heuristic did **not**, because it normalised residuals
+against an `m` the outlier had already inflated. That heuristic is
+noted here as inadequate rather than quietly fixed.
+
+**Corrected design, and the one now of record.** Hold the program *and
+the scenario content* fixed and vary only how many times the runner is
+invoked, by passing the same scenario file N times (N = 1, 2, 4, 8).
+Build cost, codegen, and scenario semantics are then identical across
+all four points, so the slope is exactly the per-invocation wrapper
+overhead these levers remove. Verified that the CLI accepts repeated
+`--scenario` arguments and emits one result per invocation.
+
+| Target | n=1 | n=2 | n=4 | n=8 | **m (s/invocation)** | intercept | max&#124;resid&#124;/m |
+|---|---|---|---|---|---|---|---|
+| java | 7.78 | 11.00 | 17.18 | 29.94 | **3.162** | 4.62 | 0.03 |
+| typescript | 10.09 | 12.05 | 13.45 | 15.49 | **0.708** | 10.11 | 1.03 |
+| python | 1.90 | 2.61 | 3.92 | 6.79 | **0.697** | 1.19 | 0.09 |
+| rust | 3.39 | 3.33 | 3.76 | 4.35 | **0.149** | 3.15 | 0.79 |
+| go | 1.16 | 1.24 | 1.54 | 2.05 | **0.130** | 1.01 | 0.23 |
+
+`m_java` falls from 26.27 to **3.162** — a Maven bootstrap costs about
+3.2 seconds, which is credible where 26 was not. The contaminated
+figure was **7.8× too high**, and had it gone unchallenged it would
+have produced a java threshold of 6.07× that no implementation could
+ever have met, followed by a "root cause" investigation of a shortfall
+that was an artefact of the measurement.
+
+### Finding 3 — the arc's ceiling is 6.5%, and the real cost is build, not wrapper
+
+Warm per-target decomposition, medians over 3 reps of all 50
+combinations timed individually:
+
+| Target | Stream | Share | Lever? |
+|---|---|---|---|
+| **java** | **226.4s** | **46.5%** | D |
+| **typescript** | **186.1s** | **38.2%** | **none — already correct** |
+| rust | 36.1s | 7.4% | A |
+| python | 25.9s | 5.3% | C |
+| go | 12.3s | 2.5% | B |
+| **sum** | **486.9s** | | |
+
+Applying this document's own pre-registered rule (`saving = 0.6 · m ·
+N`) to the corrected `m` values gives the threshold table above and a
+**combined ideal saving of 31.5s against a 486.9s stream-sum — 6.5%**.
+
+**The levers are wildly unequal, and two of them are not worth their
+code:**
+
+| Lever | Target | Ideal saving | % of its own stream | % of the run |
+|---|---|---|---|---|
+| **D** | java | **22.8s** | 10.1% | **4.7%** |
+| **C** | python | **6.3s** | **24.2%** | 1.3% |
+| B | go | 1.2s | 9.5% | 0.2% |
+| A | rust | 1.3s | 3.7% | 0.3% |
+
+**The deeper finding is that build cost dominates and no lever in this
+arc touches it.** Java's per-program build is ~4.6s for `quickstart`
+and ~67s for `sim-peripherals`; TypeScript's intercept is 10.1s of
+`npm ci` and `npm run build`, reaching 48.6s for
+`multi-service-media`'s four packages. Together java and typescript are
+**85% of the run**, and the overwhelming majority of that is
+compilation and dependency installation, not the wrapper this arc was
+written to remove. Pillar 6 ("the wrapper is not the work") is correct
+as a principle and correctly identified redundant work; the measurement
+says that redundant work is **6.5% of the problem**.
+
+### The narrowing, taken at M1 by Pillar 5's own logic
+
+Pillar 5's table reverts a lever whose gain falls below half its
+threshold. Applying that rule *before* implementation is strictly
+better than after, and this document's M1 was explicitly given the
+authority to decide a lever's fate on measurement — it simply expected
+to use it on java rather than on rust and go.
+
+- **Lever A (rust) — cut.** 1.3s. It is also the arc's single most
+  complex change: the only novel mechanism (cargo JSON artifact
+  parsing), the only one carrying a named contamination risk (FM3,
+  `JSON_MODE`), and the only one requiring an extra non-negotiable exit
+  criterion. Spending that on 1.3s is indefensible.
+- **Lever B (go) — cut.** 1.2s, against the arc's only API break
+  (`run_go_sim_runner`'s signature). Note the wasted `-o /dev/null`
+  build is real and remains genuinely wasteful; it is simply worth
+  ~1s across the whole corpus because go's total stream is 12.3s.
+- **Lever C (python) — retained.** 6.3s absolute is small, but it is
+  **24.2% of python's own stream** — the best ratio in the arc — and it
+  is the cheapest change of the four, with in-repo precedent
+  (`:1662-1672`) and a free fallback (FM5).
+- **Lever D (java) — retained, and it is now the arc's centrepiece
+  rather than its gated afterthought.** 22.8s, the strongest fit in the
+  measurement set (residual/m = 0.03), on the largest stream. **The
+  gate this document built for java opens.** Its arithmetic worry —
+  that +7 `build-classpath` calls might swamp 12 removed `exec:java`
+  calls — is resolved by measurement: at 3.16s per Maven bootstrap the
+  trade is 12 × 3.16s removed against 7 × ~3.16s added, netting
+  ~15.8s before the 0.6 factor.
+- **M2 (the shared helper) — retained on independent grounds**, exactly
+  as Pillar 8's outcome (c) anticipated: ten copies of one protocol
+  handler collapsing to one is worth doing at zero measured speedup.
+
+**Revised arc expectation: ~29s of ~550s, ≈5.3%**, from two levers and
+a refactor. Stated plainly because this document's Pillar 1 exists to
+make a disappointing number reportable rather than negotiable.
+
+### What M1 hands to the next arc
+
+The measurement that matters most is not any lever's size; it is the
+decomposition. **Java build ~226s and TypeScript build ~186s are 85% of
+this harness's warm cost**, and both are dominated by per-program
+toolchain work that a shared cache does not currently touch:
+
+- **TypeScript runs `npm ci` per generated project** — ten times per
+  corpus pass, plus once per service for multi-service systems
+  (`multi-service-media` alone pays four). `~/.npm` is shared, but
+  `node_modules` is materialised per project every time. This is the
+  single largest untouched cost in the harness.
+- **Java runs a full Maven `test-compile` per project**, with
+  `sim-peripherals` alone costing ~67s.
+
+Both are *build*-side, which is precisely the boundary Pillar 6
+declares out of scope. A follow-on arc aimed at build cost has roughly
+**13× the headroom** this one does.
 
 **Contract D log.** Every boundary records both injection paths and
 their observed exit codes, so a reader can confirm the check was run
@@ -1967,7 +2155,7 @@ combinations`.
 
 | Milestone | Scenario-path injection | Process-path injection |
 |---|---|---|
-| M1 (baseline harness) | — | — |
+| M1 (baseline harness) | Perturbed the first expected `"status": 200` → `404` in `sim/quickstart.ciac-sim.json`. Exit **1** in 535s. Report: `sim-corpus-x5: 5 failing combination(s), 5 failing scenario(s), 0 missing result(s), out of 50 combinations.` — **matches the pre-registered expectation exactly**, on both counts and units. Reverted; `git diff` clean. | Pointed `CIAC` (`:57`) at `./target/debug/ciac-does-not-exist`. Exit **1** in **1s**. Report: `sim-corpus-x5: 50 failing combination(s), 0 failing scenario(s), 0 missing result(s), out of 50 combinations.`, with **50** rows carrying `(build/refusal)` — **matches the pre-registered expectation exactly**. Reverted; `git diff` clean. |
 | M2 | — | — |
 | M3 | — | — |
 | M4 | — | — |

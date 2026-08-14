@@ -17,6 +17,15 @@ path = "src/lib.rs"
 name = "stub-backend"
 path = "bin/stub-backend.rs"
 
+# 31UpdatePlan.md M2: the phase-level generation-cost instrument,
+# promoted from a throwaway sandbox tool used to gather M1's own
+# numbers. Not a `#[test]` -- it's a CLI a contributor or CI job runs
+# directly for real timings, matching the `stub-backend` precedent
+# above.
+[[bin]]
+name = "ciac-bench"
+path = "bin/ciac-bench.rs"
+
 [dependencies]
 ciac-backend-python.workspace = true
 ciac-backend-rust.workspace = true
@@ -32,6 +41,10 @@ ciac-syntax.workspace = true
 # fixture needs it too, and `[[bin]]` targets don't see
 # dev-dependencies under a plain `cargo build`.
 serde_json.workspace = true
+# 31UpdatePlan.md M2: `ciac-bench`'s own JSON output shape
+# (`Stats`/`PhaseMeasurement`/etc. in `src/bench.rs`) derives
+# `Serialize` directly rather than hand-building `serde_json::Value`.
+serde.workspace = true
 
 [dev-dependencies]
 cron = "0.12"

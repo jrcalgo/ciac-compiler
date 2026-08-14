@@ -1,13 +1,14 @@
 use anyhow::{anyhow, bail, Context, Result};
 use ciac_codegen::evolution::{diff_records, snapshot_boundary_records, RecordSchema};
 use ciac_codegen::manifest::{
-    build_manifest, hash_bytes, load_manifest, manifest_path, write_manifest,
+    build_manifest, build_manifest_from_hashes, hash_bytes, load_manifest, manifest_path,
+    write_manifest,
 };
 use ciac_codegen::migrations::{diff_schema, snapshot_schema, TableSchema};
 use ciac_codegen::regen::{
     apply_regeneration, plan_regeneration, ApplyMode, RegenMode, RegenPlan, RegenStatus,
 };
-use ciac_codegen::{Backend, GenOptions, GeneratedProject, SimSupport, ValidateStep};
+use ciac_codegen::{Backend, GenOptions, GeneratedProject, SimSupport, TargetInfo, ValidateStep};
 use ciac_diagnostics::render::{AriadneRenderer, Render};
 use ciac_diagnostics::{Diagnostics, ErrorCode, SourceMap};
 use ciac_ir::{FieldType, NormalizedIr};
@@ -62,6 +63,92 @@ pub(crate) fn front_end_quiet(
     diags.sort();
     let has_errors = diags.has_errors();
     Ok((ir, has_errors, sources, diags))
+}
+
+/// The manifest's own `source_hash` formula: the whole resolved source
+/// set (entry file plus every transitively `import`ed file, v0.8 M1),
+/// not just the entry file's bytes -- so the hash changes when an
+/// imported file changes too, even if the entry file itself didn't.
+/// Shared by [`generate`] (which needs the loud, diagnostic-printing
+/// [`front_end`]) and [`compute_source_hash`] (`32UpdatePlan.md` M3's
+/// up-to-date check, which needs the quiet one) so the formula itself
+/// lives in one place.
+fn hash_sources(sources: &SourceMap) -> String {
+    let mut buf = String::new();
+    for file in sources.files() {
+        buf.push_str(&file.name);
+        buf.push('\0');
+        buf.push_str(&file.src);
+        buf.push('\0');
+    }
+    hash_bytes(buf.as_bytes())
+}
+
+/// `32UpdatePlan.md` M3: the fresh half of `build_inner`'s up-to-date
+/// check -- computes exactly the hash [`generate`] would embed in a
+/// new manifest, without running codegen or any of semantic analysis's
+/// downstream consumers. `None` (rather than an error) on a parse
+/// failure: that just means "not provably up to date," and the normal
+/// build path's own `front_end` call reports the failure once, the
+/// usual way -- using the quiet front end here avoids printing the
+/// same diagnostics twice when the caller falls through to a real
+/// build.
+fn compute_source_hash(file: &Path) -> Result<Option<String>> {
+    let (ir, has_errors, sources, _diags) = front_end_quiet(file)?;
+    if ir.is_none() || has_errors {
+        return Ok(None);
+    }
+    Ok(Some(hash_sources(&sources)))
+}
+
+/// `32UpdatePlan.md` M3: every path the manifest tracks still exists on
+/// disk with the hash the manifest recorded. Fail-closed by
+/// construction -- a missing file or a read error both fall through
+/// `Result::is_ok_and`'s `false` default, same as a genuine hash
+/// mismatch.
+fn manifest_files_match_disk(out: &Path, manifest: &ciac_codegen::manifest::Manifest) -> bool {
+    manifest.files.iter().all(|(rel, file)| {
+        std::fs::read(out.join(rel)).is_ok_and(|bytes| hash_bytes(&bytes) == file.hash)
+    })
+}
+
+/// `32UpdatePlan.md` M3: is `out` already exactly what a fresh
+/// `ciac build` with this `recipe` would produce? A no-op rebuild
+/// previously cost nearly as much as a cold one -- full generation,
+/// regeneration planning, and a manifest write, all to conclude
+/// nothing changed -- even though the manifest already records
+/// everything needed to answer that question directly: `source_hash`,
+/// the full `files` map with per-file hashes, and (since v0.18 M5) the
+/// exact [`ciac_codegen::manifest::BuildRecipe`] that produced the
+/// tree. Pillar 5's fail-closed rule is the whole design: a missing
+/// manifest, a `None` recipe (a legacy manifest predating v0.18 M5), a
+/// differing recipe (any of `--deploy`/`--client`/`--profile`/...), a
+/// changed source hash, a single mismatched file hash, or a deleted
+/// file all mean "not up to date, do the real build" -- every check
+/// below returns `false` rather than propagating uncertainty, since a
+/// false negative here just costs the speedup, while a false positive
+/// would skip a build that should have happened.
+fn is_up_to_date(
+    file: &Path,
+    out: &Path,
+    recipe: &ciac_codegen::manifest::BuildRecipe,
+) -> Result<bool> {
+    if !manifest_path(out).exists() {
+        return Ok(false);
+    }
+    let Ok(manifest) = load_manifest(out) else {
+        return Ok(false);
+    };
+    if manifest.recipe.as_ref() != Some(recipe) {
+        return Ok(false);
+    }
+    let Some(fresh_source_hash) = compute_source_hash(file)? else {
+        return Ok(false);
+    };
+    if manifest.source_hash != fresh_source_hash {
+        return Ok(false);
+    }
+    Ok(manifest_files_match_disk(out, &manifest))
 }
 
 pub fn check(file: &Path, json: bool) -> Result<ExitCode> {
@@ -291,6 +378,15 @@ pub(crate) fn build_inner(
             .map(|p| p.display().to_string()),
     };
 
+    // `32UpdatePlan.md` M3: skip generation, regeneration planning and
+    // the manifest write entirely when `out` already matches what this
+    // exact invocation would produce -- `--force` is the only way
+    // around it, matching this milestone's own pre-registered design.
+    if !force && is_up_to_date(file, out, &recipe)? {
+        eprintln!("up to date: {} ({} backend)", out.display(), target);
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let Generated {
         backend,
         project,
@@ -379,8 +475,8 @@ pub(crate) fn build_inner(
         apply_regeneration(&plan, out, ApplyMode::Full)
             .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
         report_regen_plan(&plan, adopt, true);
-        let mut manifest = build_manifest(
-            &project,
+        let mut manifest = build_manifest_from_hashes(
+            plan.manifest_files(),
             env!("CARGO_PKG_VERSION"),
             ciac_syntax::LANGUAGE_VERSION,
             source_hash,
@@ -484,8 +580,8 @@ pub(crate) fn replay_recipe(
     if commit {
         apply_regeneration(&plan, out, ApplyMode::Full)
             .with_context(|| format!("cannot apply regeneration to {}", out.display()))?;
-        let mut manifest = build_manifest(
-            &project,
+        let mut manifest = build_manifest_from_hashes(
+            plan.manifest_files(),
             env!("CARGO_PKG_VERSION"),
             ciac_syntax::LANGUAGE_VERSION,
             source_hash,
@@ -1432,6 +1528,172 @@ fn sim_drive_python(
     )
 }
 
+/// 35UpdatePlan.md M2: the one-line-JSON-on-stdout protocol shared by
+/// every `sim_drive_*` driver's scenario loop, factored out of what
+/// was eight verbatim copies (`:1574-1601` and its seven twins before
+/// this refactor). Argument order, environment, and working directory
+/// differ enough across the five targets that the *build* step stays
+/// with each driver (35UpdatePlan.md's own open questions section
+/// weighs sharing that too, and declines); `build_cmd` is handed each
+/// scenario's resolved absolute path and returns the fully-configured
+/// [`Command`] to run for it. Everything after that -- run captured,
+/// pass stderr through, take the last stdout line, bail if empty,
+/// parse it as a [`crate::json_out::SimScenarioOutcome`], bail with
+/// context on a parse failure -- was identical in all ten functions
+/// and lives here once. `label` names the runner in error messages
+/// exactly as each driver's own duplicated copy did before this
+/// refactor (e.g. "sim_runner", "auto_driver.py", "SystemSimRunner").
+fn run_sim_scenarios(
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+    label: &str,
+    mut build_cmd: impl FnMut(&Path) -> Result<Command>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = build_cmd(&scenario_abs)?;
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run {label} for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "{label} for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse {label}'s result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
+/// 35UpdatePlan.md M5 (lever C): after `uv sync` (which every caller of
+/// [`venv_launcher`] runs immediately beforehand), `uv run python`
+/// re-validates the venv it just synced -- reading `pyproject.toml`/
+/// `uv.lock` again and checking the interpreter is still current --
+/// before running anything, on every single scenario. Once `uv sync`
+/// has completed, `<project_dir>/.venv/bin/python`
+/// (`.venv\Scripts\python.exe` under `cfg!(windows)`) is exactly the
+/// interpreter `uv run` would have resolved to and validated, so
+/// exec'ing it directly skips that repeated validation without
+/// changing which interpreter runs. This is not a new assumption about
+/// venv layout: `sim_drive_python_multi`'s own `PYTHONPATH` assembly
+/// already globs inside `<project>/.venv/lib/*/site-packages` for the
+/// identical reason (a `uv`-managed venv lives at the project root) --
+/// this is a second use of the one layout assumption already made.
+enum VenvLauncher {
+    /// The venv's own interpreter, found where `uv sync` puts it.
+    Direct {
+        // target-literal-ok: the python interpreter's own binary path,
+        // not a target-id match -- see this enum's own doc comment.
+        python: PathBuf,
+        venv_root: PathBuf,
+        bin_dir: PathBuf,
+    },
+    /// `<project_dir>/.venv/bin/python` (or `Scripts\python.exe`) does
+    /// not exist -- e.g. `UV_PROJECT_ENVIRONMENT` pointed the sync
+    /// elsewhere. Falls back to `uv run --project <project_dir> python`:
+    /// the only lever in 35UpdatePlan.md with a fallback, because it is
+    /// the only one where the pre-lever mechanism remains available at
+    /// zero extra cost (35UpdatePlan.md's own open questions section,
+    /// resolved item 3). A non-standard environment gets today's
+    /// performance and today's correctness rather than an error. The
+    /// explicit `--project` (rather than relying on the command's own
+    /// `current_dir`, as the single-service driver's pre-lever call did)
+    /// is what lets one fallback arm serve both the single- and
+    /// multi-service drivers, whose scenario loop runs from different
+    /// working directories (`project_dir` vs. `sim_dir`).
+    Fallback { uv_project: PathBuf },
+}
+
+impl VenvLauncher {
+    /// A fresh [`Command`] for the interpreter this launcher resolved
+    /// to -- the venv's own `python`, or `uv run --project … python` on
+    /// fallback.
+    fn command(&self) -> Command {
+        match self {
+            VenvLauncher::Direct { python, .. } => Command::new(python),
+            VenvLauncher::Fallback { uv_project } => {
+                let mut cmd = Command::new("uv");
+                cmd.arg("run").arg("--project").arg(uv_project);
+                cmd.arg("python"); // target-literal-ok: the python interpreter's own name, not a target-id match
+                cmd
+            }
+        }
+    }
+
+    /// Sets `VIRTUAL_ENV` and prepends the venv's `bin`/`Scripts` to
+    /// `PATH` -- the part of `uv run`'s own environment setup that
+    /// generated driver scripts (or anything they import) could
+    /// plausibly depend on, so exec'ing the interpreter directly
+    /// reproduces it rather than merely running the right binary. A
+    /// no-op on [`VenvLauncher::Fallback`], where `uv run` sets this up
+    /// itself.
+    fn apply_env(&self, cmd: &mut Command) {
+        let VenvLauncher::Direct {
+            venv_root, bin_dir, ..
+        } = self
+        else {
+            return;
+        };
+        cmd.env("VIRTUAL_ENV", venv_root);
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![bin_dir.clone()];
+        dirs.extend(std::env::split_paths(&existing));
+        if let Ok(joined) = std::env::join_paths(dirs) {
+            cmd.env("PATH", joined);
+        }
+    }
+}
+
+/// Resolves [`VenvLauncher::Direct`] against `project_dir`'s `.venv` if
+/// the convention holds, [`VenvLauncher::Fallback`] otherwise. Callers
+/// run `uv sync` on `project_dir` before calling this.
+fn venv_launcher(project_dir: &Path) -> VenvLauncher {
+    let venv_root = project_dir.join(".venv");
+    let bin_dir = if cfg!(windows) {
+        venv_root.join("Scripts")
+    } else {
+        venv_root.join("bin")
+    };
+    // target-literal-ok: the venv's own interpreter filename, not a
+    // target-id match -- see `VenvLauncher`'s own doc comment.
+    let python = bin_dir.join(if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python"
+    });
+    if python.is_file() {
+        VenvLauncher::Direct {
+            python,
+            venv_root,
+            bin_dir,
+        }
+    } else {
+        VenvLauncher::Fallback {
+            uv_project: project_dir.to_path_buf(),
+        }
+    }
+}
+
 /// The single-service path, unchanged in shape from before 28's M3c
 /// (`sim_drive_python` used to be this function's own body directly) --
 /// factored out so `sim_drive_python` can dispatch to it or to
@@ -1452,58 +1714,28 @@ fn sim_drive_python_single(
 
     let pythonpath = std::env::join_paths([sim_dir.to_path_buf(), project_dir.to_path_buf()])
         .context("cannot build PYTHONPATH for the sim runner")?;
+    let venv = venv_launcher(project_dir);
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
-        let mut cmd = Command::new("uv");
-        cmd.arg("run")
-            .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
-            .arg(sim_dir.join("auto_driver.py"))
+    run_sim_scenarios(scenarios, wall_timeout, "auto_driver.py", |scenario_abs| {
+        let mut cmd = venv.command();
+        cmd.arg(sim_dir.join("auto_driver.py"))
             .arg(plan_path)
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .arg("--source-hash")
             .arg(source_hash)
             .arg("--plan-hash")
             .arg(plan_hash)
             .current_dir(project_dir)
             .env("PYTHONPATH", &pythonpath);
+        venv.apply_env(&mut cmd);
         if let Some(record_path) = record {
             cmd.arg("--record").arg(resolve_path(record_path)?);
         }
         if let Some(replay_path) = replay {
             cmd.arg("--replay").arg(resolve_path(replay_path)?);
         }
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run auto_driver.py for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "auto_driver.py for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse auto_driver.py's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// 28UpdatePlan.md M3c: N services, one shared world, one process --
@@ -1582,26 +1814,25 @@ fn sim_drive_python_multi(
     // `multi_driver.py` itself (only the third-party packages on
     // `PYTHONPATH` matter, not which `.venv`'s own `python` binary is
     // invoked) -- the first service's, arbitrarily but deterministically
-    // (declaration order), keeps this reproducible.
+    // (declaration order), keeps this reproducible. 35UpdatePlan.md M5:
+    // this is also why `venv_launcher`'s per-launch choice of
+    // interpreter is safe here -- the PYTHONPATH union above is what
+    // actually determines behavior, not which service's venv answers.
     let (_, driver_project) = &service_args[0];
+    let venv = venv_launcher(driver_project);
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
-        let mut cmd = Command::new("uv");
-        cmd.arg("run")
-            .arg("--project")
-            .arg(driver_project)
-            .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
-            .arg(sim_dir.join("multi_driver.py"))
+    run_sim_scenarios(scenarios, wall_timeout, "multi_driver.py", |scenario_abs| {
+        let mut cmd = venv.command();
+        cmd.arg(sim_dir.join("multi_driver.py"))
             .arg(plan_path)
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .arg("--source-hash")
             .arg(source_hash)
             .arg("--plan-hash")
             .arg(plan_hash)
             .current_dir(sim_dir)
             .env("PYTHONPATH", &pythonpath);
+        venv.apply_env(&mut cmd);
         for (name, dir) in &service_args {
             cmd.arg("--service")
                 .arg(format!("{name}={}", dir.display()));
@@ -1612,36 +1843,8 @@ fn sim_drive_python_multi(
         if let Some(replay_path) = replay {
             cmd.arg("--replay").arg(resolve_path(replay_path)?);
         }
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run multi_driver.py for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "multi_driver.py for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse multi_driver.py's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// Drives every `--scenario` against a generated Rust project's own
@@ -1688,53 +1891,20 @@ fn sim_drive_rust_single(
             project_dir.display()
         );
     }
-    run_in(
-        project_dir,
-        "cargo",
-        &["build", "-q", "--bin", "sim_runner"],
-    )?;
+    run_in_shared_cargo(project_dir, &["build", "-q", "--bin", "sim_runner"])?;
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "sim_runner", |scenario_abs| {
         let mut cmd = Command::new("cargo");
         cmd.arg("run")
             .arg("-q")
             .arg("--bin")
             .arg("sim_runner")
             .arg("--")
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(project_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run sim_runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "sim_runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        apply_shared_cargo_target_dir(&mut cmd);
+        Ok(cmd)
+    })
 }
 
 /// 28UpdatePlan.md M6c: N services, one shared world, one process --
@@ -1763,47 +1933,18 @@ fn sim_drive_rust_multi(
             projects.len()
         );
     }
-    run_in(&runner_dir, "cargo", &["build", "-q"])?;
+    run_in_shared_cargo(&runner_dir, &["build", "-q"])?;
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "system-runner", |scenario_abs| {
         let mut cmd = Command::new("cargo");
         cmd.arg("run")
             .arg("-q")
             .arg("--")
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(&runner_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run system-runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "system-runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse system-runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        apply_shared_cargo_target_dir(&mut cmd);
+        Ok(cmd)
+    })
 }
 
 /// Drives every `--scenario` against a generated TypeScript project's
@@ -1908,43 +2049,13 @@ fn run_node_sim_runner(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "sim_runner", |scenario_abs| {
         let mut cmd = Command::new("node");
         cmd.arg("dist/sim_runner.js")
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(project_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run sim_runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "sim_runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// Drives every `--scenario` against a generated Go project's own
@@ -2054,41 +2165,11 @@ fn run_go_sim_runner(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "sim_runner", |scenario_abs| {
         let mut cmd = Command::new("go");
-        cmd.args(args).arg(&scenario_abs).current_dir(project_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run sim_runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "sim_runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        cmd.args(args).arg(scenario_abs).current_dir(project_dir);
+        Ok(cmd)
+    })
 }
 
 /// Whether `project_dir` has a generated `SimRunner.java` anywhere
@@ -2117,6 +2198,62 @@ fn java_sim_runner_exists(project_dir: &Path) -> bool {
     walk(&project_dir.join("src/test/java"))
 }
 
+/// 35UpdatePlan.md M6 (lever D): locates a compiled `<class_name>.class`
+/// somewhere under `test_classes_dir` (`target/test-classes`, already
+/// populated by `./mvnw test-compile`) and returns its fully-qualified
+/// name, derived from its path relative to `test_classes_dir` --
+/// convention-based lookup in the spirit of `sim_drive_python_multi`'s
+/// own `.venv/lib/*/site-packages` glob (`:1782-1793`), chosen over
+/// parsing the pom's `{{ java_package }}`-derived `<mainClass>`
+/// (`pom.xml.j2:237`) or coupling this driver to codegen's own package
+/// derivation. Bails loudly -- naming every candidate -- on zero or
+/// more than one match: 35UpdatePlan.md's FM4 requires an ambiguous
+/// state to fail rather than silently resolve to the wrong entry point.
+fn find_java_class_fqcn(test_classes_dir: &Path, class_name: &str) -> Result<String> {
+    fn walk(dir: &Path, file_name: &str, root: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, file_name, root, out);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some(file_name) {
+                out.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .with_extension("")
+                        .to_path_buf(),
+                );
+            }
+        }
+    }
+    let file_name = format!("{class_name}.class");
+    let mut matches = Vec::new();
+    walk(test_classes_dir, &file_name, test_classes_dir, &mut matches);
+    match matches.as_slice() {
+        [one] => Ok(one
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(".")),
+        [] => bail!(
+            "no compiled {file_name} found under {} -- expected `./mvnw test-compile` to have \
+             produced one",
+            test_classes_dir.display()
+        ),
+        many => bail!(
+            "ambiguous: {} compiled {file_name} found under {} ({}) -- expected exactly one",
+            many.len(),
+            test_classes_dir.display(),
+            many.iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// Drives every `--scenario` against a generated Java project's own
 /// `src/test/java/.../sim/SimRunner.java` (v0.25 M9) -- the same
 /// shape as `sim_drive_rust`/`sim_drive_typescript`/`sim_drive_go`
@@ -2124,10 +2261,17 @@ fn java_sim_runner_exists(project_dir: &Path) -> bool {
 /// compiled and run once per scenario, one-line JSON reply on
 /// stdout), different toolchain: `./mvnw test-compile` (build once --
 /// `SimRunner` is test-scoped, since `MockMvc`/`spring-test` never sit
-/// on the packaged application's own classpath) then `./mvnw
-/// exec:java` (the pom's own `exec-maven-plugin`, preconfigured with
-/// `SimRunner`'s main class and the `test` classpath scope) once per
-/// scenario.
+/// on the packaged application's own classpath), then a joined
+/// classpath (`target/classes` + `target/test-classes` + `./mvnw
+/// dependency:build-classpath`'s output) and a bare `java -cp` per
+/// scenario -- 35UpdatePlan.md M6, propagating
+/// [`sim_drive_java_multi`]'s own classpath approach (below) into this
+/// driver rather than inventing a second mechanism for the same
+/// target. Unlike `_multi`, `SimRunner.java` is already compiled by
+/// `test-compile` (it lives under this same project's own `src/test/
+/// java`, not at a system root outside any service's Maven build), so
+/// there is no `javac` step here -- only a classpath and a class to run
+/// on it.
 ///
 /// 28UpdatePlan.md M8d: dispatches to [`sim_drive_java_multi`] for a
 /// multi-service system, mirroring [`sim_drive_rust`]/
@@ -2166,46 +2310,45 @@ fn sim_drive_java_single(
     }
     run_in(project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
-        let scenario_arg = format!("-Dexec.args={}", scenario_abs.display());
-        let mut cmd = Command::new("./mvnw");
-        cmd.arg("-q")
-            .arg("-B")
-            .arg("exec:java")
-            .arg(&scenario_arg)
-            .current_dir(project_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run SimRunner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "SimRunner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse SimRunner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let cp_file = project_dir.join("target").join("ciac-sim-classpath.txt");
+    let cp_arg = format!("-Dmdep.outputFile={}", cp_file.display());
+    let status = run_streamed(
+        Command::new("./mvnw")
+            .args(["-q", "-B", "dependency:build-classpath", &cp_arg])
+            .current_dir(project_dir),
+    )
+    .with_context(|| {
+        format!(
+            "failed to run `./mvnw dependency:build-classpath` in {}",
+            project_dir.display()
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "`./mvnw dependency:build-classpath` failed in {}",
+            project_dir.display()
+        );
     }
-    Ok(scenario_outcomes)
+    let deps = std::fs::read_to_string(&cp_file)
+        .with_context(|| format!("reading Maven classpath output {}", cp_file.display()))?;
+    let test_classes_dir = project_dir.join("target/test-classes");
+    let classpath = [
+        project_dir.join("target/classes").display().to_string(),
+        test_classes_dir.display().to_string(),
+        deps.trim().to_owned(),
+    ]
+    .join(sep);
+
+    let fqcn = find_java_class_fqcn(&test_classes_dir, "SimRunner")?;
+
+    run_sim_scenarios(scenarios, wall_timeout, "SimRunner", |scenario_abs| {
+        let mut cmd = Command::new("java");
+        cmd.args(["-cp", &classpath, &fqcn])
+            .arg(scenario_abs)
+            .current_dir(project_dir);
+        Ok(cmd)
+    })
 }
 
 /// 28UpdatePlan.md M8c/M8d: N services, one shared world, one process --
@@ -2304,43 +2447,13 @@ fn sim_drive_java_multi(
     )?;
 
     let full_classpath = format!("{}{sep}{joined_classpath}", compiled_dir.display());
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "SystemSimRunner", |scenario_abs| {
         let mut cmd = Command::new("java");
         cmd.args(["-cp", &full_classpath, "SystemSimRunner"])
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(&runner_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run SystemSimRunner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "SystemSimRunner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse SystemSimRunner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3102,20 +3215,7 @@ fn generate(
     let Some(ir) = ir.filter(|_| !has_errors) else {
         bail!("front-end failed");
     };
-    // Hashes the whole resolved source set (entry file plus every
-    // transitively `import`ed file, v0.8 M1), not just the entry file's
-    // bytes — so the manifest's `source_hash` changes when an imported
-    // file changes too, even if the entry file itself didn't.
-    let source_hash = {
-        let mut buf = String::new();
-        for file in sources.files() {
-            buf.push_str(&file.name);
-            buf.push('\0');
-            buf.push_str(&file.src);
-            buf.push('\0');
-        }
-        hash_bytes(buf.as_bytes())
-    };
+    let source_hash = hash_sources(&sources);
 
     if let Err(err) = ciac_codegen::check_support(backend.as_ref(), &ir) {
         eprintln!("error[{}]: {err}", ErrorCode::UnsupportedConstruct);
@@ -3175,18 +3275,36 @@ fn generate(
         }
     }
 
+    // `32UpdatePlan.md` M6: k8s::build/terraform::build/ci::build each
+    // independently recomputed an identical `GenOptions::default()`-keyed
+    // SystemModel; shared here since all three that run in this build
+    // want the same value. `opts` (the caller's real `--name`, if any)
+    // deliberately stays out of this -- k8s/terraform/ci have never used
+    // it (each always called `build_system` with `GenOptions::default()`
+    // on its own), and folding it in now would be a behavior change,
+    // not a pure dedup, whenever `--name` is combined with a `--deploy`
+    // flag.
+    let deploy_system = (k8s_image.is_some() || terraform.is_some() || ci)
+        .then(|| ciac_codegen::model::build_system(&ir, &GenOptions::default()));
+
     // v0.8 M6: opt-in Kubernetes manifests (`ciac build --deploy k8s`).
     // Compose remains the dev default and is always emitted by each
     // backend above; this is additive production deployment posture.
     if let Some((image_prefix, image_tag)) = k8s_image {
+        let system = deploy_system
+            .as_ref()
+            .expect("k8s_image implies deploy_system");
         for (path, content) in
-            ciac_codegen::k8s::build(&ir, image_prefix, image_tag, profile, secrets)
+            ciac_codegen::k8s::build(system, image_prefix, image_tag, profile, secrets)
         {
             project.add_file(path, content);
         }
     }
     if let Some(tf_profile) = terraform {
-        for (path, content) in ciac_codegen::terraform::build(&ir, tf_profile) {
+        let system = deploy_system
+            .as_ref()
+            .expect("terraform implies deploy_system");
+        for (path, content) in ciac_codegen::terraform::build(system, tf_profile) {
             project.add_file(path, content);
         }
     }
@@ -3194,6 +3312,7 @@ fn generate(
     // ci`) — mirrors what `ciac verify` runs locally, plus an image
     // build/push and a compose smoke job.
     if ci {
+        let system = deploy_system.as_ref().expect("ci implies deploy_system");
         let gate =
             semantic_gate
                 .as_ref()
@@ -3202,7 +3321,7 @@ fn generate(
                     baseline,
                 });
         for (path, content) in ciac_codegen::ci::build(
-            &ir,
+            system,
             backend.target_info().ci_test_steps,
             image_prefix.as_deref(),
             gate,
@@ -3518,6 +3637,16 @@ fn list_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
 /// as before this milestone — an external target still refuses here
 /// with the same message, since `ExternalBackend` was never a member
 /// of `backends()`.
+///
+/// `32UpdatePlan.md` M8 item 5: independent projects (a multi-service
+/// system generates one per service) validate concurrently via
+/// `std::thread::scope` — not `rayon`, per "Determinism and supply
+/// chain" — rather than the old nested serial loop. A single project
+/// keeps the exact pre-milestone behavior (each step's output streams
+/// live to the terminal as it runs); two or more projects switch every
+/// step to captured output, printed as one block per project once that
+/// project finishes, so concurrent subprocesses never interleave their
+/// raw output on the shared terminal.
 fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
     let target_info = backends()
         .into_iter()
@@ -3531,12 +3660,154 @@ fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
             root.display()
         );
     }
-    for project in projects {
-        for step in target_info.validate {
-            run_validate_step(&project, step)?;
+
+    if projects.len() == 1 {
+        run_project_validate(&projects[0], target_info, false)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let results: Vec<(PathBuf, Result<()>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = projects
+            .into_iter()
+            .map(|project| {
+                let target_info = &target_info;
+                scope.spawn(move || {
+                    let result = run_project_validate(&project, target_info, true);
+                    (project, result)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let failed: Vec<(PathBuf, anyhow::Error)> = results
+        .into_iter()
+        .filter_map(|(project, result)| result.err().map(|err| (project, err)))
+        .collect();
+    match failed.len() {
+        0 => Ok(ExitCode::SUCCESS),
+        1 => {
+            let (_, err) = failed.into_iter().next().expect("len checked above");
+            Err(err)
+        }
+        n => {
+            let mut msg = format!("{n} generated projects failed validation:");
+            for (project, err) in &failed {
+                msg.push_str(&format!("\n  {}: {err:#}", project.display()));
+            }
+            Err(anyhow!(msg))
         }
     }
-    Ok(ExitCode::SUCCESS)
+}
+
+/// Runs one project's whole `validate` list, honoring
+/// `target_info.validate_parallel_from` (`32UpdatePlan.md` M8 item 5):
+/// the serial prefix runs in order first, then the order-independent
+/// suffix (if any) runs concurrently within this project too — so a
+/// single Python or TypeScript project still gets its own step-level
+/// speedup even when there's only one project to validate.
+///
+/// `concurrent` is true whenever this call is one of several running
+/// at once (or, for the parallel suffix, whenever there's more than
+/// one concurrent step regardless): every step's output is then
+/// captured and printed as a whole block under `VALIDATE_PRINT_LOCK`
+/// instead of streaming live, so it can't interleave with a sibling's.
+fn run_project_validate(project: &Path, target_info: &TargetInfo, concurrent: bool) -> Result<()> {
+    let steps = target_info.validate;
+    let split = target_info
+        .validate_parallel_from
+        .unwrap_or(steps.len())
+        .min(steps.len());
+    let (prefix, suffix) = steps.split_at(split);
+
+    for step in prefix {
+        if concurrent {
+            run_validate_step_captured(project, step)?;
+        } else {
+            run_validate_step(project, step)?;
+        }
+    }
+
+    if suffix.is_empty() {
+        return Ok(());
+    }
+
+    let results: Vec<Result<()>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = suffix
+            .iter()
+            .map(|step| scope.spawn(|| run_validate_step_captured(project, step)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for result in results {
+        result?;
+    }
+    Ok(())
+}
+
+/// `32UpdatePlan.md` M8 item 6: generated Rust projects' `cargo test`
+/// step is essentially all cold dependency compilation the first time
+/// (each generated project starts with no build cache at all), and
+/// every generated project's `Cargo.toml` pins the same dependency
+/// versions (they come from the same fixed template) — so pointing
+/// repeat `cargo` invocations at one shared, persistent target dir
+/// lets them reuse already-built dependency crates, across both repeat
+/// runs of the same project and different generated projects alike.
+/// Cargo's own target-dir locking makes concurrent use from more than
+/// one `cargo test` invocation at once safe, not only fast run one at
+/// a time. A caller-set `CARGO_TARGET_DIR` is always respected, never
+/// overridden.
+fn shared_cargo_target_dir() -> PathBuf {
+    std::env::temp_dir().join("ciac-verify-cargo-target")
+}
+
+/// `34UpdatePlan.md` M2: `ciac sim`'s two rust drivers
+/// (`sim_drive_rust_single`, `sim_drive_rust_multi`) reuse the same
+/// shared, persistent target dir `apply_validate_env` already gives
+/// `ciac verify` -- every generated project's `Cargo.toml` pins the
+/// same dependency versions (same fixed template), so a `sim` run and
+/// a `verify` run now reuse each other's already-built dependency
+/// crates, not only repeat runs within their own command. Mirrors
+/// `apply_validate_env`'s caller-set guard exactly: a developer with
+/// their own `CARGO_TARGET_DIR` is never overridden.
+fn apply_shared_cargo_target_dir(cmd: &mut Command) {
+    if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        cmd.env("CARGO_TARGET_DIR", shared_cargo_target_dir());
+    }
+}
+
+/// `34UpdatePlan.md` M2: identical to `run_in`, but for the rust sim
+/// drivers' own `cargo build` steps specifically, which apply the
+/// shared target dir above. Left as a separate function rather than
+/// widening `run_in`'s own signature, so every other `run_in` caller
+/// (uv, npm, go, mvnw) is untouched by this change.
+fn run_in_shared_cargo(project: &Path, args: &[&str]) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(args).current_dir(project);
+    apply_shared_cargo_target_dir(&mut cmd);
+    let status = run_streamed(&mut cmd).with_context(|| {
+        format!(
+            "failed to run `cargo {}` in {}",
+            args.join(" "),
+            project.display()
+        )
+    })?;
+    if !status.success() {
+        bail!("`cargo {}` failed in {}", args.join(" "), project.display());
+    }
+    Ok(())
+}
+
+/// Applies a `ValidateStep`'s own declared env vars, plus the shared
+/// `CARGO_TARGET_DIR` (item 6) for `cargo` steps specifically, when the
+/// caller hasn't already set one.
+fn apply_validate_env(cmd: &mut Command, step: &ValidateStep) {
+    for (key, value) in step.env {
+        cmd.env(key, value);
+    }
+    if step.program == "cargo" && std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        cmd.env("CARGO_TARGET_DIR", shared_cargo_target_dir());
+    }
 }
 
 /// Runs one `TargetInfo::validate` step, streaming through the same
@@ -3549,9 +3820,7 @@ fn validate_generated(root: &Path, target: &str) -> Result<ExitCode> {
 fn run_validate_step(project: &Path, step: &ValidateStep) -> Result<()> {
     let mut cmd = Command::new(step.program);
     cmd.args(step.args).current_dir(project);
-    for (key, value) in step.env {
-        cmd.env(key, value);
-    }
+    apply_validate_env(&mut cmd, step);
     let status = run_streamed(&mut cmd).with_context(|| {
         format!(
             "failed to run `{} {}` in {}",
@@ -3561,6 +3830,52 @@ fn run_validate_step(project: &Path, step: &ValidateStep) -> Result<()> {
         )
     })?;
     if !status.success() {
+        bail!(
+            "`{} {}` failed in {} ({})",
+            step.program,
+            step.args.join(" "),
+            project.display(),
+            step.purpose
+        );
+    }
+    Ok(())
+}
+
+/// Serializes printing captured subprocess output across threads
+/// (`32UpdatePlan.md` M8 item 5) so two concurrent validate steps'
+/// output never interleaves mid-write.
+static VALIDATE_PRINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `run_validate_step`'s concurrent-safe sibling: captures the child's
+/// stdout/stderr instead of inheriting the terminal's, then prints the
+/// captured bytes under `VALIDATE_PRINT_LOCK` as one block — otherwise
+/// identical, including the JSON-mode convention (both streams merged
+/// into ciac's own stderr) `run_streamed` already established.
+fn run_validate_step_captured(project: &Path, step: &ValidateStep) -> Result<()> {
+    let mut cmd = Command::new(step.program);
+    cmd.args(step.args).current_dir(project);
+    apply_validate_env(&mut cmd, step);
+    let output = cmd.output().with_context(|| {
+        format!(
+            "failed to run `{} {}` in {}",
+            step.program,
+            step.args.join(" "),
+            project.display()
+        )
+    })?;
+    {
+        use std::io::Write;
+        let _guard = VALIDATE_PRINT_LOCK.lock().unwrap();
+        if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut err = std::io::stderr().lock();
+            err.write_all(&output.stdout).ok();
+            err.write_all(&output.stderr).ok();
+        } else {
+            std::io::stdout().lock().write_all(&output.stdout).ok();
+            std::io::stderr().lock().write_all(&output.stderr).ok();
+        }
+    }
+    if !output.status.success() {
         bail!(
             "`{} {}` failed in {} ({})",
             step.program,
@@ -3656,7 +3971,7 @@ fn find_project_dirs(root: &Path, marker: &str) -> Result<Vec<std::path::PathBuf
 
 #[cfg(test)]
 mod tests {
-    use super::health_probe;
+    use super::{find_java_class_fqcn, health_probe};
     use std::io::{Read, Write};
 
     /// A minimal one-shot HTTP server on an ephemeral port, answering
@@ -3766,5 +4081,88 @@ mod tests {
                  run scripts/sync-vendored-ciac-assets.sh"
             );
         }
+    }
+
+    /// A scratch directory under the system temp dir, unique per test
+    /// run -- `find_java_class_fqcn`'s own three tests each get one,
+    /// removed on drop. No `tempfile` dependency: `crates/ciac` doesn't
+    /// carry one, and 35UpdatePlan.md's own determinism/supply-chain
+    /// section commits to adding none for this arc.
+    struct ScratchDir(std::path::PathBuf);
+    impl ScratchDir {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "ciac-commands-test-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock")
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            ScratchDir(dir)
+        }
+    }
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 35UpdatePlan.md M6/FM4: exactly one `SimRunner.class` under a
+    /// package-qualified path resolves to the FQCN that path implies --
+    /// the ordinary case `sim_drive_java_single` hits on every real
+    /// generated project.
+    #[test]
+    fn find_java_class_fqcn_resolves_the_one_match() {
+        let scratch = ScratchDir::new("one-match");
+        let pkg_dir = scratch.0.join("com/ciac/notes/sim");
+        std::fs::create_dir_all(&pkg_dir).expect("mkdir pkg_dir");
+        std::fs::write(pkg_dir.join("SimRunner.class"), b"").expect("write class file");
+
+        let fqcn =
+            find_java_class_fqcn(&scratch.0, "SimRunner").expect("exactly one match resolves");
+        assert_eq!(fqcn, "com.ciac.notes.sim.SimRunner");
+    }
+
+    /// FM4's zero-match arm: end-to-end, Maven's own incremental
+    /// compiler self-heals a deleted `.class` file on the next
+    /// `test-compile` (confirmed by hand against a real generated
+    /// project), so this is the one FM4 branch verified at the
+    /// function level rather than adversarially through the CLI.
+    #[test]
+    fn find_java_class_fqcn_bails_loudly_on_zero_matches() {
+        let scratch = ScratchDir::new("zero-match");
+        let err = find_java_class_fqcn(&scratch.0, "SimRunner")
+            .expect_err("no SimRunner.class anywhere under an empty dir");
+        let msg = err.to_string();
+        assert!(msg.contains("no compiled SimRunner.class"), "{msg:?}");
+        assert!(msg.contains("test-compile"), "{msg:?}");
+    }
+
+    /// FM4's multi-match arm -- the ambiguity guard 35UpdatePlan.md
+    /// requires: an ambiguous state must fail loudly, naming every
+    /// candidate, rather than silently picking one. Verified
+    /// end-to-end against a real generated project too (a decoy class
+    /// file placed under a sibling package), not only here.
+    #[test]
+    fn find_java_class_fqcn_bails_loudly_and_names_both_on_ambiguity() {
+        let scratch = ScratchDir::new("two-match");
+        let sim_dir = scratch.0.join("com/ciac/notes/sim");
+        let decoy_dir = scratch.0.join("com/ciac/notes/decoy");
+        std::fs::create_dir_all(&sim_dir).expect("mkdir sim_dir");
+        std::fs::create_dir_all(&decoy_dir).expect("mkdir decoy_dir");
+        std::fs::write(sim_dir.join("SimRunner.class"), b"").expect("write sim class file");
+        std::fs::write(decoy_dir.join("SimRunner.class"), b"").expect("write decoy class file");
+
+        let err = find_java_class_fqcn(&scratch.0, "SimRunner")
+            .expect_err("two SimRunner.class files must not resolve silently");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ambiguous: 2 compiled SimRunner.class"),
+            "{msg:?}"
+        );
+        assert!(msg.contains("com/ciac/notes/sim/SimRunner"), "{msg:?}");
+        assert!(msg.contains("com/ciac/notes/decoy/SimRunner"), "{msg:?}");
     }
 }

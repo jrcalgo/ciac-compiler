@@ -19,9 +19,7 @@
 //! other generated file — a team that hand-edits it gets a sidecar on
 //! the next regeneration, not a silent overwrite.
 
-use crate::model::{build_system, SystemModel};
-use crate::GenOptions;
-use ciac_ir::NormalizedIr;
+use crate::model::SystemModel;
 
 /// `ciac build --deploy ci --semantic-baseline <path>` (v0.18 M3): the
 /// two repo-root-relative paths the generated `semantic-compat` job
@@ -45,20 +43,17 @@ pub struct SemanticGate<'a> {
 /// handed; the caller (`ciac/src/commands.rs`) resolves it via the
 /// registry, falling back to [`GENERIC_TEST_STEPS`] for external
 /// backends (v0.8 M2+), which bring their own verification story.
+///
+/// `32UpdatePlan.md` M6: takes an already-built [`SystemModel`] — see
+/// [`crate::k8s::build`]'s own doc comment for why.
 pub fn build(
-    ir: &NormalizedIr,
+    system: &SystemModel,
     ci_test_steps: &str,
     image_prefix: Option<&str>,
     semantic_gate: Option<SemanticGate<'_>>,
 ) -> Vec<(String, String)> {
-    let system = build_system(ir, &GenOptions::default());
     let image_prefix = image_prefix.unwrap_or(&system.project_name).to_owned();
-    let workflow = render_workflow(
-        &system,
-        ci_test_steps,
-        &image_prefix,
-        semantic_gate.as_ref(),
-    );
+    let workflow = render_workflow(system, ci_test_steps, &image_prefix, semantic_gate.as_ref());
     vec![(".github/workflows/ci.yml".to_owned(), workflow)]
 }
 
@@ -200,6 +195,9 @@ fn render_compose_smoke_job(system: &SystemModel) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::build_system;
+    use crate::GenOptions;
+    use ciac_ir::NormalizedIr;
 
     fn compile(src: &str) -> NormalizedIr {
         let mut sources = ciac_diagnostics::SourceMap::new();
@@ -208,6 +206,10 @@ mod tests {
         let program = ciac_syntax::parse(src, file, &mut diags);
         ciac_sema::analyze(&program, &mut diags)
             .unwrap_or_else(|| panic!("compiles: {:?}", diags.codes()))
+    }
+
+    fn system(src: &str) -> SystemModel {
+        build_system(&compile(src), &GenOptions::default())
     }
 
     // v0.22 M1: this module no longer owns per-language step text (it
@@ -219,8 +221,8 @@ mod tests {
 
     #[test]
     fn single_service_python_gets_uv_test_job_and_one_image() {
-        let ir = compile("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
-        let files = build(&ir, PYTHON_STEPS_FIXTURE, None, None);
+        let system = system("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
+        let files = build(&system, PYTHON_STEPS_FIXTURE, None, None);
         assert_eq!(files.len(), 1);
         let (path, content) = &files[0];
         assert_eq!(path, ".github/workflows/ci.yml");
@@ -239,8 +241,8 @@ mod tests {
 
     #[test]
     fn single_service_rust_gets_cargo_test_job() {
-        let ir = compile("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
-        let files = build(&ir, RUST_STEPS_FIXTURE, Some("myimg"), None);
+        let system = system("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
+        let files = build(&system, RUST_STEPS_FIXTURE, Some("myimg"), None);
         let (_, content) = &files[0];
         assert!(content.contains("dtolnay/rust-toolchain@stable"));
         assert!(content.contains("cargo test -q --lib"));
@@ -249,12 +251,12 @@ mod tests {
 
     #[test]
     fn semantic_gate_precedes_test_and_never_touches_baseline() {
-        let ir = compile("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
+        let system = system("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
         let gate = SemanticGate {
             source_file: "architecture/main.ciac",
             baseline: "architecture/.ciac/baselines/main.semantic.json",
         };
-        let files = build(&ir, PYTHON_STEPS_FIXTURE, None, Some(gate));
+        let files = build(&system, PYTHON_STEPS_FIXTURE, None, Some(gate));
         let (_, content) = &files[0];
         assert!(content.contains("  semantic-compat:\n"));
         assert!(content.contains("  test:\n    needs: semantic-compat\n"));
@@ -291,8 +293,8 @@ service UploadApi {
     pipeline Upload: StoreVideo -> publish Uploaded -> Return;
 }
 "#;
-        let ir = compile(src);
-        let files = build(&ir, PYTHON_STEPS_FIXTURE, None, None);
+        let system = build_system(&compile(src), &GenOptions::default());
+        let files = build(&system, PYTHON_STEPS_FIXTURE, None, None);
         let (_, content) = &files[0];
         assert!(content.contains("strategy:"));
         assert!(content.contains("- billing"));
@@ -306,8 +308,8 @@ service UploadApi {
 
     #[test]
     fn never_emits_real_credentials() {
-        let ir = compile("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
-        let files = build(&ir, PYTHON_STEPS_FIXTURE, None, None);
+        let system = system("service Ping;\nrecord Msg { id: Uuid; }\napi Echo: Msg { method: POST; path: \"/echo\"; }\npipeline Echo: Return;\n");
+        let files = build(&system, PYTHON_STEPS_FIXTURE, None, None);
         let (_, content) = &files[0];
         // Only the secrets.* references, never a literal value.
         assert!(content.contains("${{ secrets.REGISTRY_URL }}"));

@@ -16,6 +16,61 @@
 //! headroom on both sides — comfortably above today's steady state so
 //! ordinary variance never trips it, comfortably below the
 //! catastrophe floor so a real regression reliably does.
+//!
+//! **`31UpdatePlan.md` M9 revisited this multiplier** (not merely
+//! asserted it in passing): this file's own premise changed once M6's
+//! callgrind gate and M7's asymptotic guard landed, since this test
+//! was originally the *only* gate and had to catch everything. It now
+//! answers one narrower question — has one backend become an outlier
+//! relative to its peers on the same run — while M6 catches a
+//! shared-path regression uniformly, at a much tighter 1% band, and M7
+//! catches a growth-shape regression. That narrower job argued for
+//! *considering* a smaller multiplier. It was kept at 1000, not
+//! lowered, for a reason found live during this revisit: this
+//! session's own debug-profile measurement of `measure_all()` (the
+//! profile `cargo test --workspace` actually runs this gate under —
+//! `--release` measurements are not representative here, since Java's
+//! JVM-spawn cost is release/debug-invariant while the cheap backends'
+//! own in-process cost is not, which briefly produced a misleadingly
+//! tight ~950-1010x ratio before this was caught) swung from
+//! java-at-131.7x-median to java-at-187.4x-median to java's own total
+//! moving 34.0s → 48.8s across two back-to-back runs with *no code
+//! change at all* — a ~43% run-to-run swing from JVM-spawn variance
+//! alone. Tightening the multiplier into that noise band would trade
+//! "never fires spuriously" for marginal extra sensitivity M6's own
+//! instruction-count gate already provides, more precisely, on exactly
+//! the shared-path case this test structurally cannot isolate a cause
+//! for. Per this arc's own Pillar 7 discipline ("a gate that fires
+//! spuriously twice is fixed or removed — never widened silently"),
+//! shrinking a coarse safety net into a source of flakiness is the
+//! same mistake in the opposite direction. "Revisited" and "changed"
+//! are two different facts; this multiplier's value is the same one
+//! `30UpdatePlan.md` M8 chose, re-confirmed against real M9 data
+//! rather than left standing by default.
+//!
+//! **`32UpdatePlan.md` M9 revisited it again**, for a reason this
+//! arc's own text predicted in advance: item 11 (the Java formatter)
+//! was cut at M7 rather than implemented (see `32UpdatePlan.md`'s own
+//! running log), so java's absolute `generate()` cost is unchanged by
+//! this arc — but M2 (hash once), M4 (lazy template loading) and M6
+//! (IR indexes) all cut the *cheap* backends' own in-process cost,
+//! which is the denominator this ratio is measured against. Three
+//! debug-profile reps of `measure_all()` read java at 415.6x, 493.3x,
+//! 506.5x median (mean ≈ 472x) — roughly 2.5-3x higher than
+//! `31UpdatePlan.md` M9's own 131.7x-187.4x reading, and genuinely
+//! tighter run-to-run here (≈18% spread across three reps, vs. that
+//! revisit's own documented ~43% swing) rather than noisier. Kept at
+//! 1000, unchanged, for the same reason as before with a fresh number
+//! behind it: even the highest of these three reps (506.5x) leaves
+//! very close to 2x headroom before the ceiling, comfortably clear of
+//! this session's own observed noise band, and orders of magnitude
+//! clear of the catastrophe floor (tens of thousands x) this gate
+//! exists to catch. Disclosed rather than left implicit: that
+//! headroom is real but has shrunk from v0.31's ~5-7x to ~2x, and a
+//! future arc that further cuts the cheap backends' cost without ever
+//! touching java's (item 11 remains open, cut here, not abandoned)
+//! should expect to revisit this multiplier again rather than assume
+//! today's 2x margin is permanent.
 
 use ciac_codegen::{BackendError, GenOptions};
 use ciac_integration_tests::{backends, ciac_files, compile_file, examples_dir};

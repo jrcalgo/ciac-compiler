@@ -1665,7 +1665,7 @@ impl<'d> Builder<'d> {
             steps.push(step);
         }
         self.wire_steps(owner, &steps);
-        self.graph.pipelines.push(Pipeline {
+        self.graph.add_pipeline(Pipeline {
             name: decl.name.text.clone(),
             service: self.current_service,
             owner,

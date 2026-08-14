@@ -117,10 +117,13 @@ call to make, the same way choosing a real image registry is.
 ciac build video-platform.ciac --target python --out ./video-platform --deploy ci
 ```
 
-Emits `.github/workflows/ci.yml`: a `test` job running exactly what
-`ciac verify` runs locally (`uv sync && uv run ruff check . && uv run
-pytest -q` for Python, `cargo check` with `RUSTFLAGS=-D warnings` and
-`cargo test -q --lib` for Rust), a `build-image` job per declared
+Emits `.github/workflows/ci.yml`: a `test` job running what `ciac
+verify` runs locally (`uv sync && uv run ruff check . && uv run pytest
+-q` for Python; `cargo check` with `RUSTFLAGS=-D warnings` then `cargo
+test -q --lib` for Rust — locally these are collapsed into one
+`RUSTFLAGS=-D warnings cargo test` step, which proves the same two
+things in about half the wall time, but the emitted workflow keeps the
+two-step form so this generator stays byte-stable), a `build-image` job per declared
 service (matrixed for multi-service systems) that builds the
 Dockerfile on every push and pushes only on a version tag, and a
 `compose-smoke` job that boots the full dev compose stack and polls

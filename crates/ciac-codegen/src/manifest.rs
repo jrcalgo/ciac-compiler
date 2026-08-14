@@ -120,6 +120,49 @@ pub fn build_manifest(
             )
         })
         .collect();
+    manifest_from_files(
+        files,
+        compiler_version,
+        language_version,
+        source_hash,
+        target,
+    )
+}
+
+/// Sibling of [`build_manifest`] for callers that already hold every
+/// file's hash -- `regen::plan_regeneration` computes each file's hash
+/// once into its own `RegenEntry::new_hash`
+/// (`RegenPlan::manifest_files` exposes it as `(path, role, hash)`
+/// triples), and `build_manifest` re-hashing the identical
+/// `GeneratedProject` content a second time on the same build is pure
+/// waste. `32UpdatePlan.md` M2.
+pub fn build_manifest_from_hashes(
+    files: impl IntoIterator<Item = (String, FileRole, String)>,
+    compiler_version: impl Into<String>,
+    language_version: impl Into<String>,
+    source_hash: impl Into<String>,
+    target: impl Into<String>,
+) -> Manifest {
+    let files = files
+        .into_iter()
+        .map(|(path, role, hash)| (path, ManifestFile { role, hash }))
+        .collect();
+    manifest_from_files(
+        files,
+        compiler_version,
+        language_version,
+        source_hash,
+        target,
+    )
+}
+
+fn manifest_from_files(
+    files: BTreeMap<String, ManifestFile>,
+    compiler_version: impl Into<String>,
+    language_version: impl Into<String>,
+    source_hash: impl Into<String>,
+    target: impl Into<String>,
+) -> Manifest {
     Manifest {
         compiler_version: compiler_version.into(),
         source_hash: source_hash.into(),

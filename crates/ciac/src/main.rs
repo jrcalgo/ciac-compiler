@@ -16,25 +16,6 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-// 26UpdatePlan.md M8: `--version` co-presents the compiler number
-// (CARGO_PKG_VERSION, moves every release) and the language number
-// (ciac_syntax::LANGUAGE_VERSION, frozen at v1.0.0) -- the two-version
-// discipline docs/language.md's own stability section commits to.
-// `concat!` requires a literal, so this can't just reference
-// `ciac_syntax::LANGUAGE_VERSION` directly -- it reads its own
-// `vendor/LANGUAGE_VERSION` instead, a physical copy checked into this
-// crate's own directory (found live via a real `cargo publish`
-// failure: packaging never bundles a `../../../LANGUAGE_VERSION` path
-// escaping the crate directory). Run `scripts/sync-vendored-ciac-
-// assets.sh` after `LANGUAGE_VERSION` changes; see this file's own
-// `vendored_language_version_matches_source` test.
-const CLI_VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    " (language ",
-    include_str!("../vendor/LANGUAGE_VERSION"),
-    ")"
-);
-
 #[derive(Parser)]
 #[command(
     name = "ciac",
@@ -693,9 +674,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
-    /// Guards `vendor/LANGUAGE_VERSION`'s own reason for existing:
-    /// `CLI_VERSION` must stay byte-identical to the repo-root
-    /// `LANGUAGE_VERSION` file. Runs only inside the workspace, where
+    /// Guards `vendor/LANGUAGE_VERSION`'s own reason for existing: it
+    /// must stay byte-identical to the repo-root `LANGUAGE_VERSION`
+    /// file. `scripts/sync-vendored-ciac-assets.sh` keeps both this
+    /// crate's copy and `ciac-syntax`'s in step, and `--version` reads
+    /// the latter through `ciac_syntax::LANGUAGE_VERSION`; this crate's
+    /// copy stays vendored and guarded so `cargo package` keeps
+    /// bundling it. Runs only inside the workspace, where
     /// that file is reachable relative to `CARGO_MANIFEST_DIR` -- never
     /// true when building from a published crate's own package
     /// tarball, which contains only the vendored copy this test would

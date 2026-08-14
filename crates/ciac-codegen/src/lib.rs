@@ -252,6 +252,15 @@ pub struct TargetInfo {
     /// Commands `ciac verify`/`build` run to validate a generated
     /// project, in order.
     pub validate: &'static [ValidateStep],
+    /// `32UpdatePlan.md` M8 item 5: `validate[validate_parallel_from..]`
+    /// is order-independent by this target's own contract (neither
+    /// writes into the project tree nor reads output another step in
+    /// that suffix writes) and may run concurrently once
+    /// `validate[..validate_parallel_from]` completes in order.
+    /// `None` (the default for every target until proven otherwise —
+    /// see `32UpdatePlan.md`'s open question 4) means fully serial,
+    /// matching this field's absence before this milestone exactly.
+    pub validate_parallel_from: Option<usize>,
     /// The literal CI test-step YAML `ci.rs` embeds for this target.
     pub ci_test_steps: &'static str,
     /// Compose parameterization (the pre-existing `BackendComposeOpts`,

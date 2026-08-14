@@ -1,8 +1,8 @@
 //! `26UpdatePlan.md` M7: docs/backends.md's two divergence-ledger
 //! tables (Permanent by design / Open (tracked)) can't rot silently.
 //! Every "Closes in" reference (other than an explicit "no plan yet")
-//! must name a plan file that actually exists in the repo root, and no
-//! divergence string may appear in both tables.
+//! must name a plan file that actually exists under [`PLANS_DIR`], and
+//! no divergence string may appear in both tables.
 
 use std::path::Path;
 
@@ -76,6 +76,13 @@ fn repo_root() -> std::path::PathBuf {
         .expect("repo root resolves")
 }
 
+/// Where `NNUpdatePlan.md` files live, relative to the repo root.
+/// They sat at the root until they were moved wholesale into `plans/`;
+/// this test resolved against the root and started failing on every
+/// row that names a real plan, because none of them were at the root
+/// any more.
+const PLANS_DIR: &str = "plans";
+
 /// Finds a `<digits>UpdatePlan.md` token inside `cell`, if any.
 fn plan_file_reference(cell: &str) -> Option<&str> {
     let idx = cell.find("UpdatePlan.md")?;
@@ -122,8 +129,8 @@ fn ledger_tables_are_structurally_sound() {
             )
         });
         assert!(
-            root.join(plan_file).is_file(),
-            "Open row {gap:?} closes in {plan_file}, which does not exist at the repo root"
+            root.join(PLANS_DIR).join(plan_file).is_file(),
+            "Open row {gap:?} closes in {plan_file}, which does not exist in {PLANS_DIR}/"
         );
     }
 

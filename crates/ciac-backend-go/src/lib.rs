@@ -107,6 +107,12 @@ static TARGET_INFO: TargetInfo = TargetInfo {
             purpose: "unit tests pass",
         },
     ],
+    // `32UpdatePlan.md` M8 item 5: left fully serial, per the arc's own
+    // "default when uncertain" rule -- `go build`/`go test` share
+    // `GOCACHE`, and concurrent-safety of `go`'s build cache across
+    // separate process invocations (rather than `go build ./...`'s own
+    // internal package-level parallelism) was not verified here.
+    validate_parallel_from: None,
     ci_test_steps: CI_TEST_STEPS,
     compose: COMPOSE_OPTS,
     dev: DevCommands {

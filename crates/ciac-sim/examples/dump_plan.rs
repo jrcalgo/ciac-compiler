@@ -20,8 +20,7 @@
 //! `serde_json::to_vec`'s exact byte output.
 
 use ciac_diagnostics::{Diagnostics, SourceMap};
-use ciac_sim::SimPlan;
-use sha2::{Digest, Sha256};
+use ciac_sim::{sha256_prefixed, SimPlan};
 use std::path::PathBuf;
 
 fn main() {
@@ -48,9 +47,7 @@ fn main() {
     }
     let ir = ir.expect("no errors implies IR present");
 
-    let mut hasher = Sha256::new();
-    hasher.update(source.as_bytes());
-    let source_hash = format!("sha256:{:x}", hasher.finalize());
+    let source_hash = sha256_prefixed(source.as_bytes());
 
     let plan = SimPlan::from_ir(&ir, source_hash.clone());
     if hash_only {

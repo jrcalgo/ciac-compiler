@@ -40,6 +40,7 @@ static EXTERNAL_TARGET_INFO: TargetInfo = TargetInfo {
     migrations_dir: "migrations",
     migration_filename: |seq, _slug| format!("{seq:04}_migration.sql"),
     validate: &[],
+    validate_parallel_from: None,
     ci_test_steps: crate::ci::GENERIC_TEST_STEPS,
     compose: crate::compose::BackendComposeOpts {
         db_url_scheme: "",

@@ -10,11 +10,15 @@
 // shared library) because this needs concrete per-program types,
 // exactly like every other backend's own generated runner. Lives under
 // `src/test/java` (not the packaged application) since `MockMvc`/
-// `spring-test` only ever sit on the `test` classpath; run via `mvn -q
-// test-compile exec:java` (see pom.xml's own `exec-maven-plugin` --
-// compile once, then one `exec:java` invocation per scenario, the same
-// "compile once, run the driver once per scenario" shape every other
-// target's own toolchain gives for free).
+// `spring-test` only ever sit on the `test` classpath. `ciac sim`
+// drives it by compiling once (`mvn -q test-compile`) and assembling a
+// classpath once, then a bare `java -cp` invocation per scenario --
+// 35UpdatePlan.md M6, propagating the multi-service driver's own
+// approach into this single-service path -- rather than the earlier
+// `mvn -q test-compile exec:java` per scenario. The `exec-maven-plugin`
+// block pom.xml still carries (`<mainClass>` pointing at this class)
+// remains valid for a manual `mvn -q test-compile exec:java`
+// invocation, unchanged.
 //
 // 27UpdatePlan.md M8 widens this from the v0.25 M9 narrow vocabulary
 // (single-service, db/broker only) to the full given/expect surface

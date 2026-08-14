@@ -53,6 +53,7 @@ static TARGET_INFO: TargetInfo = TargetInfo {
     migrations_dir: "migrations",
     migration_filename: |seq, _slug| format!("{seq:04}_migration.sql"),
     validate: &[],
+    validate_parallel_from: None,
     ci_test_steps:
         "      # skeleton-internal has no real CI story; see a real backend's own steps\n",
     compose: ciac_codegen::compose::BackendComposeOpts {
@@ -110,7 +111,7 @@ impl Backend for SkeletonBackend {
                 f.path().to_str().expect("template names are utf-8"),
                 f.contents_utf8().expect("templates are utf-8"),
             )
-        }))?;
+        }));
 
         let mut project = GeneratedProject::new();
         for ctx in &model.services {

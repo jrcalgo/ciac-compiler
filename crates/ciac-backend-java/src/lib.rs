@@ -93,6 +93,9 @@ static TARGET_INFO: TargetInfo = TargetInfo {
         env: &[],
         purpose: "compiles, formats (Spotless), and tests in one invocation (Pillar 8)",
     }],
+    // `32UpdatePlan.md` M8 item 5: a single step -- nothing to
+    // parallelize within one project regardless of this field.
+    validate_parallel_from: None,
     ci_test_steps: CI_TEST_STEPS,
     compose: COMPOSE_OPTS,
     dev: DevCommands {
@@ -986,16 +989,214 @@ const GOOGLE_JAVA_FORMAT_JAR: &[u8] =
 /// calls within a process (and across processes, since the path is
 /// content-addressed by a length check) rather than a fresh temp file
 /// per invocation.
+///
+/// `33UpdatePlan.md` M2: the write itself is a temp-file-plus-rename,
+/// not a direct write to the final path. This matters once callers can
+/// race — M3-M5 parallelize the test suite's `generate()` calls across
+/// worker threads, and `conformance.rs`'s three test fns already race
+/// here today via libtest's own function-level concurrency, just
+/// rarely enough to not have been observed. A direct write left a
+/// window where one thread's `stat` could pass the length check against
+/// a jar another thread was still mid-`write`, reading a torn file.
+/// `std::fs::rename` onto the same filesystem is atomic: every
+/// concurrent reader of the final path sees either the complete old
+/// jar or the complete new one, never a partial write. The existing
+/// length check stays as the fast path — the common case still costs
+/// one `stat` and no write at all.
 fn vendored_jar_path() -> Result<std::path::PathBuf, BackendError> {
     let path = std::env::temp_dir().join("ciac-google-java-format-1.19.2-all-deps.jar");
     let up_to_date = path
         .metadata()
         .is_ok_and(|m| m.len() == GOOGLE_JAVA_FORMAT_JAR.len() as u64);
     if !up_to_date {
-        std::fs::write(&path, GOOGLE_JAVA_FORMAT_JAR)
-            .map_err(|e| BackendError::Other(format!("writing vendored jar to {path:?}: {e}")))?;
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = std::env::temp_dir().join(format!(
+            "ciac-google-java-format-1.19.2-all-deps.jar.tmp-{}-{n}",
+            std::process::id(),
+        ));
+        std::fs::write(&tmp_path, GOOGLE_JAVA_FORMAT_JAR).map_err(|e| {
+            BackendError::Other(format!("writing vendored jar to {tmp_path:?}: {e}"))
+        })?;
+        std::fs::rename(&tmp_path, &path).map_err(|e| {
+            BackendError::Other(format!("renaming vendored jar into place at {path:?}: {e}"))
+        })?;
     }
     Ok(path)
+}
+
+/// The JVM flag set shared between a real formatter invocation and
+/// `mint_cds_archive`'s dry run (`33UpdatePlan.md` M6) -- the same
+/// startup-shape flags must appear on both, since an AppCDS archive
+/// minted under one flag set is silently rejected at use time under a
+/// different one. A formatter run is a few hundred milliseconds of
+/// classloading plus one short burst of work, then exit — the JVM
+/// never lives long enough for C2 to repay its own compilation, so
+/// capping at C1 removes work that never pays off. Measured on
+/// `sim-three-service`'s 55 generated `.java` files, best of three:
+/// 2142ms with the defaults, 1413ms with this flag. `-XX:+UseSerialGC`
+/// was tried alongside it and measured *slower* (1559ms), so it is
+/// deliberately absent — the obvious second startup flag is not a win
+/// here and should not be re-added without a measurement saying
+/// otherwise.
+///
+/// These are startup-shape flags only: none can change a byte
+/// google-java-format emits, which the golden snapshots enforce. They
+/// are HotSpot-specific, but this invocation already requires a
+/// modular OpenJDK for its `--add-exports`/`--add-opens`, so they
+/// narrow nothing that was not already narrow.
+fn apply_common_java_flags(cmd: &mut std::process::Command) {
+    cmd.arg("-XX:TieredStopAtLevel=1")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
+        .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
+        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
+        .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED");
+}
+
+/// This machine's JDK version string, used only to key the AppCDS
+/// archive's filename (`33UpdatePlan.md` M6) so a JDK upgrade mints a
+/// fresh archive instead of the JVM silently rejecting a stale one on
+/// every later run — a slow, silent regression rather than a visible
+/// failure. Shells out to `java -version` once per process (its own
+/// small JVM startup, not the formatter's), cached since it cannot
+/// change mid-process. `None` on any failure to run or parse it, which
+/// propagates to `cds_archive_path()` returning `None` — CDS is skipped
+/// entirely rather than keyed on a guess.
+///
+/// Finds the version line by content (`"version"` appears in both
+/// `openjdk version "…"` and `java version "…"`) rather than assuming
+/// it is `stderr`'s first line: a proxy-configured `JAVA_TOOL_OPTIONS`
+/// (present in this build environment) makes the JVM print a "Picked
+/// up JAVA_TOOL_OPTIONS: …" line first, hundreds of characters long —
+/// taking that unfiltered blew past the filesystem's filename-length
+/// limit and silently failed every mint, caught by testing this
+/// function's actual output rather than trusting that a green test
+/// suite meant CDS was engaging. `.take(64)` bounds the result
+/// defensively regardless of what a future JVM vendor's banner says.
+fn jdk_version_string() -> Option<String> {
+    static VERSION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let output = std::process::Command::new("java")
+                .arg("-version")
+                .output()
+                .ok()?;
+            // `java -version` writes its banner to stderr, not stdout.
+            let version_line = String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .find(|line| line.contains("version"))?
+                .to_owned();
+            let safe: String = version_line
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+                .take(64)
+                .collect();
+            (!safe.is_empty()).then_some(safe)
+        })
+        .clone()
+}
+
+/// Runs one dry-format through `-XX:ArchiveClassesAtExit` to mint a
+/// fresh AppCDS archive at `final_path` (`33UpdatePlan.md` M6). Uses
+/// `apply_common_java_flags` -- the identical flags the real formatter
+/// invocation uses -- so the archive is valid for that invocation
+/// rather than rejected for a flag mismatch. Written atomically (mint
+/// to a unique temp path, then `rename`), matching `vendored_jar_
+/// path()`'s own established pattern, so a concurrent reader of
+/// `final_path` never observes a partial archive.
+fn mint_cds_archive(final_path: &std::path::Path) -> Result<(), BackendError> {
+    let jar_path = vendored_jar_path()?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch = std::env::temp_dir().join(format!("ciac-cds-mint-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&scratch).map_err(|e| {
+        BackendError::Other(format!("creating CDS mint scratch dir {scratch:?}: {e}"))
+    })?;
+    let sample_path = scratch.join("CiacCdsMintSample.java");
+    std::fs::write(&sample_path, "class CiacCdsMintSample {}\n")
+        .map_err(|e| BackendError::Other(format!("writing CDS mint sample file: {e}")))?;
+
+    let tmp_archive =
+        std::env::temp_dir().join(format!("ciac-gjf-mint-{}-{n}.jsa.tmp", std::process::id()));
+
+    let mut cmd = std::process::Command::new("java");
+    apply_common_java_flags(&mut cmd);
+    cmd.arg(format!(
+        "-XX:ArchiveClassesAtExit={}",
+        tmp_archive.display()
+    ))
+    .arg("-jar")
+    .arg(&jar_path)
+    .arg("-i")
+    .arg(&sample_path);
+
+    let result = cmd.output();
+    std::fs::remove_dir_all(&scratch).ok();
+    let output = result.map_err(|e| BackendError::Other(format!("running CDS mint: {e}")))?;
+    if !output.status.success() || !tmp_archive.is_file() {
+        std::fs::remove_file(&tmp_archive).ok();
+        return Err(BackendError::Other(
+            "CDS mint did not produce an archive".to_owned(),
+        ));
+    }
+
+    std::fs::rename(&tmp_archive, final_path).map_err(|e| {
+        std::fs::remove_file(&tmp_archive).ok();
+        BackendError::Other(format!(
+            "renaming CDS archive into place at {final_path:?}: {e}"
+        ))
+    })
+}
+
+/// Path to this machine's AppCDS archive for the vendored formatter
+/// jar (`33UpdatePlan.md` M6), minting it lazily on first use if
+/// absent. Pre-digests the classloading that dominates each JVM
+/// startup — measured on this machine: 0.339s -> 0.145s per
+/// invocation (57%, comfortably past the arc's own >=25% threshold) —
+/// stacking with `apply_common_java_flags`'s own `-XX:TieredStopAtLevel
+/// =1` win rather than replacing it.
+///
+/// Keyed on JDK version + jar length (see `jdk_version_string`), and
+/// guarded by a process-wide `Mutex` around the mint attempt: load-
+/// bearing given `33UpdatePlan.md` M3-M5's test-suite concurrency,
+/// since without it N worker threads would each try to mint the
+/// ~11.6 MB archive simultaneously on first use. The double `metadata`
+/// check (before and after acquiring the lock) means only the first
+/// thread through actually mints; every other thread's second check
+/// sees the winner's completed file. `mint_cds_archive` itself writes
+/// atomically, so this is also safe across separate `ciac` processes,
+/// not just threads within one.
+///
+/// Returns `None` on any failure -- missing `java`, an unparseable
+/// version string, a failed mint -- and every caller treats that as
+/// "proceed without CDS," never as an error to surface. This is safe
+/// because `-XX:SharedArchiveFile` against a missing or corrupt
+/// archive was verified to exit 0 (missing: silent; corrupt: a
+/// `[warning][cds]` line on stderr that `format_batch_in` only reads
+/// when the command itself fails, so it never reaches a user-visible
+/// error message).
+fn cds_archive_path() -> Option<std::path::PathBuf> {
+    static MINT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    let jdk_version = jdk_version_string()?;
+    let path = std::env::temp_dir().join(format!(
+        "ciac-gjf-{jdk_version}-{}.jsa",
+        GOOGLE_JAVA_FORMAT_JAR.len()
+    ));
+    if path.is_file() {
+        return Some(path);
+    }
+
+    let _guard = MINT_LOCK.lock().ok()?;
+    if path.is_file() {
+        // Another thread minted it while this one waited for the lock.
+        return Some(path);
+    }
+    mint_cds_archive(&path).ok()?;
+    Some(path)
 }
 
 /// Batch-formats every `.java` file this backend just generated through
@@ -1027,14 +1228,15 @@ fn format_all_java(project: &mut GeneratedProject) -> Result<(), BackendError> {
 
             let jar_path = vendored_jar_path()?;
             let mut cmd = std::process::Command::new("java");
-            cmd.arg("--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED")
-                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED")
-                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED")
-                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED")
-                .arg("--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED")
-                .arg("--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED")
-                .arg("--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED")
-                .arg("-jar")
+            apply_common_java_flags(&mut cmd);
+            // `33UpdatePlan.md` M6: unconditional when available -- see
+            // `cds_archive_path`'s own doc comment for the fail-soft
+            // guarantee that makes this safe to pass without checking
+            // whether minting actually succeeded.
+            if let Some(cds_path) = cds_archive_path() {
+                cmd.arg(format!("-XX:SharedArchiveFile={}", cds_path.display()));
+            }
+            cmd.arg("-jar")
                 .arg(&jar_path)
                 .arg("-i")
                 .arg(format!("@{}", argfile_path.display()));
@@ -1168,5 +1370,69 @@ mod tests {
             !message.contains("ciac-java-fmt"),
             "error should not leak the scratch directory: {message}"
         );
+    }
+
+    /// `33UpdatePlan.md` M2: pins, as an executable contract, what
+    /// `format_batch.rs`'s `scratch_dir()` doc comment already claims
+    /// in prose -- N threads calling `JavaBackend::generate()`
+    /// concurrently on the same IR must all succeed and produce
+    /// byte-identical output, with no panic and no torn vendored jar.
+    /// Exists specifically to catch the race `vendored_jar_path()`'s
+    /// old check-then-write pattern could hit (this milestone replaces
+    /// it with an atomic temp-file-plus-rename) and to stand as a
+    /// regression test against it recurring. Lands before
+    /// `33UpdatePlan.md` M3-M5 introduce the test suite's own worker
+    /// threads, per that document's Pillar 8 -- the race must be fixed
+    /// and pinned before anything exercises it in anger.
+    #[test]
+    fn concurrent_generate_calls_are_byte_identical_and_do_not_race() {
+        fn dump(project: &GeneratedProject) -> String {
+            let mut out = String::new();
+            for (path, content) in project.files() {
+                out.push_str("============================================================\n");
+                out.push_str(path);
+                out.push('\n');
+                out.push_str(content);
+            }
+            out
+        }
+
+        let ir = ping_ir();
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .max(4);
+
+        let reference = {
+            let backend = JavaBackend;
+            let project = backend
+                .generate(&ir, &GenOptions::default())
+                .expect("serial reference generates");
+            dump(&project)
+        };
+
+        let results: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..worker_count)
+                .map(|_| {
+                    let ir = &ir;
+                    scope.spawn(move || {
+                        let backend = JavaBackend;
+                        let project = backend
+                            .generate(ir, &GenOptions::default())
+                            .expect("concurrent generate succeeds");
+                        dump(&project)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        for (i, result) in results.iter().enumerate() {
+            assert_eq!(
+                &reference, result,
+                "worker {i} produced output differing from the serial reference -- \
+                 concurrent generate() calls raced"
+            );
+        }
     }
 }

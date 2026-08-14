@@ -827,9 +827,13 @@ pom.xml
          pinned explicitly here. -->
     <aws-sdk.version>2.29.52</aws-sdk.version>
     <!-- Not managed by spring-boot-dependencies' own BOM, so pinned
-         explicitly here (SimRunner's own `test-compile exec:java`
-         driver, 25UpdatePlan.md M9, gate broadened to the full
-         8-condition check at 27UpdatePlan.md M8). -->
+         explicitly here (originally for SimRunner's own `test-compile
+         exec:java` driver, 25UpdatePlan.md M9, gate broadened to the
+         full 8-condition check at 27UpdatePlan.md M8; `ciac sim` itself
+         now drives SimRunner via a classpath assembled once and a bare
+         `java -cp` per scenario instead, 35UpdatePlan.md M6, so this
+         plugin is kept for manual `mvn exec:java` invocation of
+         SimRunner, below). -->
     <exec-maven-plugin.version>3.4.1</exec-maven-plugin.version>
   </properties>
 
@@ -916,19 +920,27 @@ pom.xml
           </execution>
         </executions>
       </plugin>
-      <!-- Drives `SimRunner` (25UpdatePlan.md M9, broadened to the
+      <!-- Configures `SimRunner` (25UpdatePlan.md M9, broadened to the
            full 8-condition check at 27UpdatePlan.md M8, matching
            `World.java`'s/`SimRunner.java`'s own emission gate in
-           `lib.rs`): a test-scoped
-           `main`, not the packaged application, since `MockMvc`/
-           `spring-test` only ever sit on the `test` classpath.
-           Running it via `test-compile exec:java` (build once, then
-           one `exec:java` invocation per scenario) mirrors every
-           other target's own "compile once, run the driver once per
-           scenario" shape (Go's `go build` then `go run`; Rust's
-           `cargo build` then a scoped `cargo run`; TypeScript's
-           `npm run build` then `node dist/sim_runner.js`) without
-           packaging a second artifact of its own. -->
+           `lib.rs`) for manual `mvn -q test-compile exec:java`
+           invocation: a test-scoped `main`, not the packaged
+           application, since `MockMvc`/`spring-test` only ever sit on
+           the `test` classpath. `ciac sim` itself no longer drives
+           SimRunner through this plugin: 35UpdatePlan.md M6 replaced
+           the per-scenario `exec:java` call with a classpath assembled
+           once (`dependency:build-classpath`, this same file's own
+           `exec-maven-plugin.version` comment) and a bare `java -cp`
+           invocation per scenario, propagating the multi-service
+           driver's own approach (below) into this single-service path.
+           That leaves java's own shape closer to TypeScript's own
+           "compile once, run the driver once per scenario" pattern
+           (`npm run build` then `node dist/sim_runner.js`) than to Go's
+           (`go build` then `go run`) or Rust's (`cargo build` then a
+           scoped `cargo run`), both of which still re-invoke their own
+           build tool once per scenario; 35UpdatePlan.md measured that
+           cost too small on this arc to be worth removing (see
+           `docs/perf/README.md`). -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
@@ -2836,6 +2848,24 @@ src/main/java/com/ciac/mediaops/state/DataSources.java
 // construction never attempt a connection, restoring the same
 // "constructing this never dials" contract every other provider
 // client bean already keeps.
+//
+// `connectionTimeout(2000)` (32UpdatePlan.md follow-up, found live):
+// construction not dialing doesn't mean nothing ever does -- the same
+// `CommandLineRunner` that forces construction also requests a real
+// connection right after, and this config is built by hand rather
+// than through Spring's own `DataSourceProperties` autoconfiguration,
+// so `spring.datasource.hikari.*` was never reaching it; HikariCP's
+// own 30s `connectionTimeout` default applied silently instead, paid
+// once per genuinely-unreachable attempt. 2s is not a test-only
+// number: the generated `docker-compose.yml`'s own `depends_on`
+// already gates this service's start on its database's `healthcheck`
+// (`condition: service_healthy`), so by the time this constructor
+// runs against a compose-managed database, it is already accepting
+// connections -- this timeout is on the genuinely-unreachable path
+// (a bad `DATABASE_URL`, a database that crashed after startup, a
+// non-compose deployment with no such gate), where failing in
+// seconds rather than half a minute is strictly better, not a
+// reliability trade.
 package com.ciac.mediaops.state;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -2852,6 +2882,7 @@ final class DataSources {
   static DataSource open(String rawUrl) throws Exception {
     HikariConfig config = new HikariConfig();
     config.setInitializationFailTimeout(-1);
+    config.setConnectionTimeout(2000);
     if (rawUrl.startsWith("jdbc:sqlite:")) {
       // The sqlite driver creates the database *file* itself but
       // not missing parent directories (mirrors every other
@@ -3809,11 +3840,15 @@ src/test/java/com/ciac/mediaops/sim/SimRunner.java
 // shared library) because this needs concrete per-program types,
 // exactly like every other backend's own generated runner. Lives under
 // `src/test/java` (not the packaged application) since `MockMvc`/
-// `spring-test` only ever sit on the `test` classpath; run via `mvn -q
-// test-compile exec:java` (see pom.xml's own `exec-maven-plugin` --
-// compile once, then one `exec:java` invocation per scenario, the same
-// "compile once, run the driver once per scenario" shape every other
-// target's own toolchain gives for free).
+// `spring-test` only ever sit on the `test` classpath. `ciac sim`
+// drives it by compiling once (`mvn -q test-compile`) and assembling a
+// classpath once, then a bare `java -cp` invocation per scenario --
+// 35UpdatePlan.md M6, propagating the multi-service driver's own
+// approach into this single-service path -- rather than the earlier
+// `mvn -q test-compile exec:java` per scenario. The `exec-maven-plugin`
+// block pom.xml still carries (`<mainClass>` pointing at this class)
+// remains valid for a manual `mvn -q test-compile exec:java`
+// invocation, unchanged.
 //
 // 27UpdatePlan.md M8 widens this from the v0.25 M9 narrow vocabulary
 // (single-service, db/broker only) to the full given/expect surface

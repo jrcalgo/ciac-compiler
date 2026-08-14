@@ -8,7 +8,7 @@ use logos::Logos;
 /// keywords are reserved.
 #[derive(Logos, Debug, Clone, Copy, PartialEq, Eq)]
 #[logos(skip r"[ \t\r\n]+")]
-#[logos(skip r"//[^\n]*")]
+#[logos(skip(r"//[^\n]*", allow_greedy = true))]
 #[logos(skip r"/\*([^*]|\*[^/])*\*/")]
 pub enum TokenKind {
     // v0.8 M1: multi-file programs.

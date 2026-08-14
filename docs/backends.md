@@ -479,13 +479,21 @@ avoids needing at all.
 `SimRunner.java` (`src/test/java/.../sim/SimRunner.java`) resolves the
 milestone's own pre-registered "SimRunner packaging" open question
 concretely: it lives under `src/test/java` specifically because
-`MockMvc`/`spring-test` only ever sit on the `test` classpath, is
-driven by a new `exec-maven-plugin` entry in the generated `pom.xml`
-(`./mvnw test-compile` once, then `./mvnw exec:java
--Dexec.args=<scenario>` once per scenario — Maven's own "compile once,
-run repeatedly" shape, mirroring `go build`+`go run`/`cargo build`+
-`cargo run`/`npm run build`+`node`), and — the actual design decision —
-never calls `SpringApplication.run` at all. Instead it builds a plain
+`MockMvc`/`spring-test` only ever sit on the `test` classpath. The
+generated `pom.xml`'s own `exec-maven-plugin` entry (`./mvnw
+test-compile` once, then `./mvnw exec:java -Dexec.args=<scenario>` once
+per scenario) originally drove it and remains valid for manual
+invocation, but `ciac sim` itself no longer calls through that plugin:
+`35UpdatePlan.md` M6 replaced the per-scenario `exec:java` bootstrap
+with a classpath assembled once and a bare `java -cp` invocation per
+scenario — Maven's own bootstrap cost scales with a project's
+dependency graph rather than being a flat per-call constant, so the
+saving is largest on programs with the biggest classpaths. That leaves
+java's own shape matching every other target's "compile once, run
+repeatedly" pattern (`go build`+`go run`/`cargo build`+`cargo run`/
+`npm run build`+`node`) more closely than the plugin-per-scenario shape
+did. And — the actual design decision — it never calls
+`SpringApplication.run` at all. Instead it builds a plain
 `AnnotationConfigApplicationContext`, `.scan()`s every package below
 the service root *except* the one holding `Application` itself (whose
 conditional `@EnableScheduling`/`@EnableWebSocket` would otherwise

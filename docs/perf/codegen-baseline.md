@@ -158,10 +158,14 @@ top of M2's dominant fix:
   separate hot path with its own cost profile (virtual-clock
   scheduling, fake I/O), unrelated to `generate()`'s template-rendering
   and formatter costs. `34UpdatePlan.md` reduced its cost via a shared
-  cargo target directory (rust steady-state 3.07×); see
-  `docs/perf/README.md`'s own `34UpdatePlan.md` checkpoint section for
-  the full result, including the parallelization lever that was
-  measured and reverted rather than shipped.
+  cargo target directory (rust steady-state 3.07×); `35UpdatePlan.md`
+  reduced it again by removing four targets' per-scenario re-invocation
+  of their own build tool (python, java — rust's and go's own levers
+  were measured and cut before any code shipped), a cumulative **18.0%**
+  on the full harness; see `docs/perf/README.md`'s own `34UpdatePlan.md`
+  and `35UpdatePlan.md` checkpoint sections for both results, including
+  the parallelization lever that was measured and reverted rather than
+  shipped.
 - **Anything about correctness.** This document says nothing about
   whether generated code is right — that's the golden/negative/
   equivalence suites' job, untouched by this arc, verified separately

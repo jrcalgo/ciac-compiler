@@ -32,6 +32,23 @@
 # threshold; see `34UpdatePlan.md`'s M4 and M6 entries for the full
 # measurement and the reasoning. This script therefore remains
 # structurally serial.
+#
+# `35UpdatePlan.md` M2-M6 removed a different cost: four of five
+# targets were re-invoking their own build tool once per `--scenario`
+# even after the program was already built (`cargo run`, `go run`,
+# `uv run python`, `./mvnw exec:java`) -- work the build tool had
+# already finished. Python (M5) now execs the synced venv's own
+# interpreter directly; Java (M6) now assembles a classpath once and
+# execs a bare `java -cp`, propagating `sim_drive_java_multi`'s own
+# already-correct approach into the `_single` driver. Rust and Go's
+# levers were measured and cut at M1 (ideal savings of 1.3s/1.2s
+# against the whole corpus -- too small to justify their risk); their
+# per-scenario `cargo run`/`go run` calls are unchanged. Measured
+# cumulative effect at that arc's own M7 checkpoint: **~18% faster**
+# on this script's own full run (see `docs/perf/README.md`), with the
+# larger share of it coming from Java, whose `exec:java` bootstrap
+# cost scales with a project's dependency graph rather than being a
+# flat per-call constant.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

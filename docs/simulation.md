@@ -391,13 +391,26 @@ arc closed.
 `ciac sim` embeds its own Python runner (`sim/pyrunner/*.py`, baked
 into the `ciac` binary at compile time via `include_str!`) and writes
 it to a scratch directory outside the generated project on every
-invocation. For each `--scenario`, it invokes the runner once:
+invocation. It runs `uv sync` once, then, for each `--scenario`,
+execs `<project>/.venv/bin/python` directly (35UpdatePlan.md M5; the
+venv layout `uv sync` produces is the same one
+`sim_drive_python_multi`'s own `PYTHONPATH` assembly already reaches
+into):
 
 ```text
-uv run python auto_driver.py plan.json scenario.json \
+.venv/bin/python auto_driver.py plan.json scenario.json \
     --source-hash <hash> --plan-hash <hash> \
     [--record out.json | --replay in.json]
 ```
+
+`uv run python` re-validates the venv it just synced on every
+invocation; execing the interpreter directly skips that repeated
+validation without changing which interpreter runs, setting
+`VIRTUAL_ENV` and prepending the venv's `bin/` to `PATH` to reproduce
+the rest of `uv run`'s environment. Falls back to `uv run --project
+<dir> python` — unchanged prior behavior — if the interpreter isn't
+where the convention expects it (e.g. a redirected
+`UV_PROJECT_ENVIRONMENT`).
 
 One process, one scenario, one JSON reply on stdout, then exit — not a
 persistent session or a streaming step-by-step protocol. The runner
@@ -496,13 +509,26 @@ build`/`verify --target java` emits `src/test/java/.../sim/
 SimRunner.java` whenever the program declares `db` or `queue`, and the
 generated `pom.xml` gains one more plugin — `exec-maven-plugin`,
 preconfigured with `SimRunner`'s main class and the `test` classpath
-scope — purely to drive it; nothing about the packaged application
-changes. `ciac sim --target java` compiles it once (`./mvnw
-test-compile`), then runs it once per `--scenario`:
+scope; nothing about the packaged application changes. That plugin is
+now for manual `mvn -q test-compile exec:java` invocation only.
+`ciac sim --target java` compiles once (`./mvnw test-compile`),
+assembles a classpath once (`./mvnw dependency:build-classpath` +
+`target/classes` + `target/test-classes`), resolves `SimRunner`'s
+fully-qualified name by locating its compiled `.class` file under
+`target/test-classes` rather than parsing the pom, and runs a bare
+`java -cp` once per `--scenario` (35UpdatePlan.md M6 — no Maven in the
+per-scenario loop, propagating `sim_drive_java_multi`'s own approach,
+below, into this single-service path):
 
 ```text
-./mvnw exec:java -Dexec.args=scenario.json
+java -cp <classpath> com.ciac.<pkg>.sim.SimRunner scenario.json
 ```
+
+An `./mvnw exec:java` bootstrap costs seconds per invocation — and
+substantially more on programs with a larger dependency graph, since
+Maven rebuilds its own project model and resolves the plugin chain on
+every call — while a bare `java -cp` invocation against an
+already-compiled classpath does not pay that cost at all.
 
 No implementation-level wrinkle equivalent to TypeScript's `{ logger:
 false }` either: `SimRunner` never calls `SpringApplication.run` (see

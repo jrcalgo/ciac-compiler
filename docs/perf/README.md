@@ -339,6 +339,82 @@ at low risk and real gain; lever 2's mechanism is sound but does not
 clear its bar on this hardware, and is recorded rather than forced.
 M7 and M8 proceed describing the arc as shipped in this shape.
 
+## `35UpdatePlan.md` M7 checkpoint
+
+Subject: `scripts/sim-corpus-x5.sh`'s wall-clock cost again, from a
+different angle — four of five targets were re-invoking their own build
+tool once per `--scenario` even after the program was already built
+(`cargo run`, `go run`, `uv run python`, `./mvnw exec:java`). The
+premise this arc opened on was already stale: `34UpdatePlan.md`'s
+"rust is 63%" was measured *before* its own lever 1 landed; re-measured
+warm and post-lever-1, rust is **7.4%** of the run, java is **46.5%**,
+and typescript — already correct, no lever needed — is **38.2%**.
+
+**M1's controlled marginal-cost experiment** (same program, same
+scenario file repeated `n = 1, 2, 4, 8`, isolating per-invocation
+wrapper overhead from build cost) measured a first-draft cross-program
+fit as contaminated (`m_java` = 26.27 s/scenario with a **negative**
+intercept — `sim-peripherals`'s ~67s build cost, not its scenario
+count, was driving the fit) and replaced it with the controlled design,
+landing on `m_java` = 3.162 s/invocation. Applying the plan's own
+pre-registered rule, that narrowed the arc from four levers to two
+before any lever's code was written: rust (ideal saving 1.3s) and go
+(1.2s) were cut; python (6.3s, 24.2% of its own stream) and java (22.8s,
+the strongest fit in the set) were kept — java's gate, built
+specifically to decide whether it was worth its Contract B cost,
+opened on measurement.
+
+**Lever C (python), shipped:** `.venv/bin/python` execed directly after
+`uv sync`, replacing `uv run python`'s per-scenario re-validation, with
+a `uv run --project <dir> python` fallback when the interpreter isn't
+where the convention expects it.
+
+**Lever D (java), shipped, and the arc's centerpiece:** propagated
+`sim_drive_java_multi`'s own already-correct classpath approach into
+`_single` — a classpath assembled once, a bare `java -cp` per scenario,
+no Maven in the inner loop. Spent this arc's Contract B carve-out:
+**27** java golden snapshots moved, comment-only, verified by an exact
+whitelist match against the three authored replacement blocks (0
+unmatched lines across 35 unique added / 19 unique removed). The first
+draft broke every java combination — XML forbids a literal `--` inside
+`<!-- -->` except immediately before the closing delimiter, and the
+draft's prose used `--` as a separator — caught by Contract A/B
+verification before any commit, not by review; fixed, `xmllint`
+-verified, and re-verified clean.
+
+**Cumulative, measured at the checkpoint:** two reps, **462s / 462s**
+(identical), against M1's frozen warm baseline (544s/583s, mean
+563.5s) — **1.220×, ≈18.0% faster**. This is **3.4× the arc's own
+5.3% projection**, and the gap was investigated rather than credited
+uncritically (this document's own Pillar 1, restated as binding on good
+outcomes too): OS page-cache warmth was ruled out directly
+(`drop_caches` then rerun: 491s, a ~6% cost, not enough to explain 18%);
+the real cause was measured directly via shell, independent of any Rust
+code — M1's controlled experiment used `quickstart`, the corpus's
+smallest program, and Maven's `exec:java` bootstrap cost scales with a
+project's dependency graph rather than being a flat per-call constant.
+On `sim-peripherals` (java's most dependency-heavy program, carrying 4
+of its 12 single-service scenarios): **18.6s/invocation old → 2.10s/
+invocation new, 8.85×**, against the flat 3.162s the projection was
+built from.
+
+**`ciac-bench --compare`**: every delta negative or within documented
+sandbox noise bands; no metric this arc's diff can touch (`ciac-
+codegen`/`ciac-sema`/`ciac-ir` are untouched) showed coherent movement.
+`perf_baseline`/`perf_scaling` flat.
+
+**`scripts/sim-corpus-x5.sh`**: 50/50 green, Contract A held
+byte-identical against M1's baseline at M1, M6, and M7. Contract D run
+at every boundary from M6 onward without exception (a correction: M2
+and M5 had relied on Contract A's sorted-diff alone, a real deviation
+from this document's own Pillar 2, recorded rather than backfilled),
+never once producing a false green.
+
+**Decision: outcome (a) — proceed.** Every contract holds and the
+cumulative result exceeds its own pre-registered threshold by a
+measured, explained margin. M8 and M9 close the arc out as shipped in
+this shape.
+
 ## Discipline this arc adopted (`31UpdatePlan.md` Pillar 7)
 
 Recorded here so later work inherits it as a standing convention:

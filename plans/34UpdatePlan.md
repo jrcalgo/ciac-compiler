@@ -1604,7 +1604,7 @@ carries a measurement or is labelled a hypothesis.*
 
 | Milestone | Threshold | Measured | Verdict |
 |---|---|---|---|
-| M1 | — (baseline freeze) | — | — |
+| M1 | — (baseline freeze) | Full run: rep1 1371.19s, rep2 1239.59s (mean 1305.4s, spread 131.6s, +Contract D's post-revert green run 1167.91s as a third, corroborating data point — mean of all three 1259.6s, range 203.3s). Decomposition: rust 648.26s, typescript 240.14s, python 34.19s, java 266.23s, go 35.01s (sum 1223.82s, within the rep1–rep2 spread — coherence check passes). Rust per-program matrix: 51.3–72.6s each, ten programs, sum 648.26s (see note below). Disk high-water mark: peak 61% / ~22.5 GiB used during rep1, never above 61% (well under the 80% ceiling). Environment stamp matches `docs/perf/baseline.json` exactly. | **Baseline established, with a disclosed correction to this document's own pre-code estimate** — see note below. Not a threshold milestone; nothing to pass or fail. |
 | M2 | ≥2× rust steady-state (half-point 1.5×) | — | — |
 | M3 | — (correctness) | — | — |
 | M4 | ≥2.5× vs M3 (half-point 1.75×) | — | — |
@@ -1613,10 +1613,61 @@ carries a measurement or is labelled a hypothesis.*
 | M7 | — (documentation) | — | — |
 | M8 | — (close-out) | — | — |
 
-**Arc-level target, for the cumulative row at M6 and M8:** full-run
-wall time ~764s (12.7 min) → **~205s (3.4 min), −73%**, with the
-lever-1-only waypoint at ~489s (8.2 min, −35%) recorded separately so
-each lever's contribution is visible rather than only their product.
+**M1 note, per Pillar 1 (a root cause gets a measurement or a label as
+hypothesis).** The real full-run wall time (mean 1305.4s ≈ 21m45s) is
+**≈1.7× this document's own pre-code estimate of ~764s ≈ 12.7min**. The
+estimate was built from isolated single-program timings taken outside
+the actual script (one `quickstart` combination per target, and five
+sequential rust programs against a private then shared target dir); the
+real script adds loop overhead this document did not account for:
+`scenario_args` construction, two `rm -rf "$out"` calls per combination,
+output capture into a shell variable via `$(...)`, and — measured
+directly, not assumed — `user` time (43–46min) consistently running
+**~2× the `real` time** across every full-run rep, meaning the toolchains
+invoked (cargo, npm, mvnw, go) parallelize internally within a single
+serial combination, so per-combination cost does not reduce cleanly to
+a single-core figure. No further root cause is asserted here — this is
+recorded as a measured discrepancy, not chased to a specific line,
+because it changes this document's *denominator* (M1's own job) rather
+than any milestone's *threshold* (which are all ratio-shaped and
+therefore unaffected: M2's ≥2× and M4's ≥2.5× are both measured against
+milestone-boundary figures taken with this same script, not against the
+764s estimate). The **arc-level target below is corrected accordingly**.
+
+**Second M1 finding, from Contract D's Injection A (see the Contract D
+log below): FM9's double-count is not an edge case, it is the normal
+case.** The plan's Injection A recipe assumed a perturbed scenario
+expectation would produce "0 failing combinations, 5 failing scenarios"
+— i.e., that `ciac sim` would report the mismatch in-band via `[FAIL]`
+while still exiting 0. Measured behavior is different: `ciac sim` exits
+**non-zero** on *any* failed scenario expectation, while *also* emitting
+a `[FAIL]` diagnostic line naming the mismatch. Against the unmodified
+script this means the ERROR branch (`:78-79`) and the `[FAIL]`-line
+branch (`:86`) both fire for the same underlying failure on **every**
+scenario mismatch, not merely "a combination that both errors and emits
+`[FAIL]` lines" as an occasional overlap. Verified directly: all five
+`quickstart` target rows carried both a `[FAIL]` line and a
+`(build/refusal)` ERROR line, and the script's own tally read exactly
+**10** — 5 targets × 2 increments each — matching this mechanism exactly.
+This *strengthens* the case for M3's FM9 fix (two separate, correctly
+scoped counters) rather than changing it: the defect is guaranteed to
+fire on the harness's single most common failure shape, not a rare
+combination of two independent failure modes.
+
+**Arc-level target, corrected against M1's measured baseline (supersedes
+the pre-code estimate below, which is retained for its derivation):**
+full-run wall time ~1305s (21.75 min) → **projected ~205s (3.4 min)**,
+now a **−84%** reduction rather than the pre-code −73% figure, since the
+numerator (the achievable parallel floor) was measured independently of
+the serial baseline and does not move; only the denominator changed.
+M6 and M8 measure against this corrected figure.
+
+**Arc-level target, for the cumulative row at M6 and M8 (pre-code
+estimate — superseded by M1's measured figure above, kept here for its
+derivation rather than deleted):** full-run wall time ~764s (12.7 min)
+→ **~205s (3.4 min), −73%**, with the lever-1-only waypoint at ~489s
+(8.2 min, −35%) recorded separately so each lever's contribution is
+visible rather than only their product.
 
 **Contract D log.** Every boundary records both injection paths and
 their observed exit codes here, so that a reader can confirm the check
@@ -1624,7 +1675,7 @@ was actually run rather than asserted:
 
 | Milestone | Scenario-path injection | Process-path injection |
 |---|---|---|
-| M1 (baseline harness) | — | — |
+| M1 (baseline harness) | Perturbed `sim/quickstart.ciac-sim.json`'s `archive_retry` expected status 200→404. Exit **1**. Report: `sim-corpus-x5: 10 failing combination(s) out of 50.` (5 targets × 2 increments each — see the M1 note above on FM9). All five `quickstart` rows named correctly across python/rust/typescript/go/java. Reverted; `git diff` against HEAD empty. | Pointed the script's single global `$CIAC` at a nonexistent binary (the unmodified script has no per-target streams yet, so the plan's later "one target's stream" recipe does not apply pre-M4 — adapted to the whole script, disclosed here). Exit **1** in 0.79s. Report: `sim-corpus-x5: 50 failing combination(s) out of 50.` — all 50 rows carried `(build/refusal)` with the "No such file or directory" message, 0 `[FAIL]` lines (process never reached the simulator). Reverted; `git diff` against HEAD empty. |
 | M2 | — | — |
 | M3 | — | — |
 | M4 | — | — |

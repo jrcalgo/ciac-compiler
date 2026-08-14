@@ -42,7 +42,7 @@ ciac-sim = { path = "crates/ciac-sim", version = "0.29.0" }
 
 # external
 anyhow = "1"
-ariadne = "0.5"
+ariadne = "0.6"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 crossbeam-channel = "0.5"

@@ -1973,7 +1973,7 @@ per Pillar 1's derivation rule; results stay `—` until measured.
 | M4 — lever B, go | *derived at M1, `N = 15`* | — | — |
 | M5 — lever C, python | 1.319× on python's own stream (half-point 1.159×) | **Implemented.** `VenvLauncher` (`Direct`/`Fallback{uv_project}`) resolves `<project>/.venv/bin/python` after `uv sync` and execs it directly per scenario, setting `VIRTUAL_ENV` and prepending `bin` to `PATH`; falls back to `uv run --project <dir> python` when the interpreter isn't there. Full harness: 533s, byte-identical Contract A (75/75 lines) against M1's frozen baseline; zero snapshot movement; 520+ workspace tests green. A precise per-lever timing isolation (repeated single-target reps) is deferred to M7's checkpoint, where all surviving levers are measured together against the frozen baseline — 533s alone, inside M1's own 544–583s warm-noise band, is not distinguishable from noise at n=1. | **Kept**, pending M7's isolated confirmation. |
 | M6 — lever D, java (gated) | 1.112× on java's own stream (half-point 1.056×) | **Implemented.** Gate opened at M1 (`m_java` 3.162 s/invocation, strongest fit in the set, residual/m 0.03). Propagated `sim_drive_java_multi`'s classpath approach into `_single` via a new `find_java_class_fqcn` helper (globs `target/test-classes`, bails naming every candidate on 0 or >1 matches — FM4). Spent the Contract B carve-out: **27 java snapshots moved** (recount from the plan's original 29, corrected during drafting), comment-only, verified by an exact whitelist match against the authored replacement text — 0 unmatched lines across all 35 unique added / 19 unique removed lines. Also reverted an unrelated, pre-existing `expression:` metadata drift (insta front-matter, stale since `33UpdatePlan.md` M5's harness refactor, present in all 145 committed snapshots including the 118 this arc never touches) that the regeneration would otherwise have carried along; not a comment, not caused by this arc, out of the carve-out's scope. **Caught by Contract A/B verification, not by review:** the first draft's pom.xml.j2 comments used `--` as a prose separator, which XML forbids inside `<!-- -->` except immediately before the closing delimiter — broke `mvnw test-compile` on all 10 java combinations with a POM parse error (all 40 non-java combinations stayed green, which is what made the failure immediately legible as an XML-syntax break rather than a logic error). Fixed by replacing `--` with plain punctuation; verified with `xmllint --noout`; snapshots regenerated and re-verified clean. Full harness (post-fix): 456s, byte-identical Contract A (75/75) against M1's frozen baseline, exactly 27 snapshots moved and no others, 523+ workspace tests green. Disk hit 99%/687MB free mid-milestone (FM5, again) from repeated manual verification runs against the shared cargo target dir (grew to 20 GB); cleared via `rm -rf` (safe, pure cache) and re-verified from a clean 65% utilization. | **Kept**, pending M7's isolated confirmation. |
-| M7 — CHECKPOINT | None (output is a decision) | — | — |
+| M7 — CHECKPOINT | None (output is a decision) | **Done — see the M7 note below.** Cumulative: 462s / 462s (2 reps, identical) against M1's 544s/583s warm baseline — **≈18.0% faster, 1.22×**, roughly 3.4× M1's own 5.3% projection. Root cause measured, not assumed: Maven's `exec:java` per-invocation cost scales with project complexity (`sim-peripherals`: 18.6s/invocation old vs 2.1s/invocation new, 8.85×, against `quickstart`'s 3.162s/invocation the projection was built from). `ciac-bench --compare` clean (every delta negative or within documented sandbox noise). `perf_baseline`/`perf_scaling` flat. 524 workspace tests green. | **(a) Proceed** — see below. |
 | M8 — documentation | None | — | — |
 | M9 — close out, 0.33.0 | None | — | — |
 
@@ -2205,7 +2205,7 @@ Contract D table would have obscured the absence of a second check on.
 | M4 | n/a — lever cut at M1, no code shipped. | n/a |
 | M5 | **Not run — deviation, see above.** Covered by Contract A's sorted-diff only. | **Not run — deviation, see above.** |
 | M6 | Same perturbation as M1. Exit **1** in 457s. Report: `sim-corpus-x5: 5 failing combination(s), 5 failing scenario(s), 0 missing result(s), out of 50 combinations.` — **matches exactly**. Reverted; `git diff` clean. | Same as M1. Exit **1** in **1s**. Report: `sim-corpus-x5: 50 failing combination(s), 0 failing scenario(s), 0 missing result(s), out of 50 combinations.`, 50 rows `(build/refusal)` — **matches exactly**. Reverted; `git diff` clean. |
-| M7 | — | — |
+| M7 | Same perturbation as M1/M6. Exit **1** in 455s. Report matches exactly (5 comb / 5 scen). Reverted; `git diff` clean. | Same as M1/M6. Exit **1** in **1s**. Report matches exactly (50 comb / 0 scen, 50 `(build/refusal)` rows). Reverted; `git diff` clean. |
 
 **Snapshot movement log.** Expected zero everywhere except M6.
 
@@ -2216,6 +2216,87 @@ Contract D table would have obscured the absence of a second check on.
 | M4 | n/a — cut | 0 | n/a |
 | M5 | 0 | 0 | n/a |
 | M6 | **27** | **27** | **Yes** — every added/removed line across all 27 files matched an exact whitelist of the three authored comment blocks (35 unique added lines, 19 unique removed lines, 0 unmatched). First regeneration attempt also carried an unrelated `expression:` front-matter drift, reverted before this check; first drafted comment text also broke XML parsing (`--` inside `<!-- -->`), fixed and regenerated before this check. |
+| M7 | 0 | 0 | n/a |
+
+## M7 note — the checkpoint measured 18.0%, 3.4× M1's own projection, and the reason is measured rather than assumed
+
+**The headline number.** Two reps, 462s and 462s — identical to the
+second decimal the harness reports at, which is itself informative
+(zero observed spread at n=2, in a sandbox `31UpdatePlan.md` measured
+at ~68% wall-clock RSD historically). Against M1's frozen warm baseline
+(544s, 583s; mean 563.5s):
+
+```
+563.5s / 462s = 1.220×   ≈ 18.0% faster
+```
+
+This is **3.4× M1's own pre-registered projection** of ~5.3% (29.1s
+ideal saving from levers C and D combined, against a 550s warm run).
+Per this document's own Pillar 1 — restated at M6 as binding on good
+results too, not only shortfalls — an outcome this far from its
+projection is a claim, and it does not get credited to the two levers
+without a measurement showing why.
+
+**Ruled out first: OS page cache.** Every M7-era run followed
+immediately on M6's own verification runs, so the OS's page cache for
+`~/.m2`, `node_modules`, and `.venv/lib` reads was plausibly hotter
+than it was for M1's own warm baseline, taken earlier in the session.
+Tested directly: `sync; echo 1 > /proc/sys/vm/drop_caches` (permitted as
+root in this sandbox), then a third rep from cold OS cache but warm
+build artifacts. Result: **491s** — a ~6% cost, nowhere near enough to
+explain an 18% gap. OS cache warmth is a real but minor contributor,
+not the story.
+
+**The real cause, measured directly, isolated from any Rust code
+change.** M1's controlled marginal-cost experiment (duplicate-scenario,
+`n = 1, 2, 4, 8`) used `quickstart` — the corpus's smallest program —
+specifically to hold build cost constant while isolating per-invocation
+wrapper overhead. That design choice is also its limitation: it
+implicitly assumes `quickstart`'s per-invocation Maven overhead
+generalizes to every java program in the corpus. It does not. Verified
+by running the *same* comparison — old mechanism (`./mvnw -q -B
+exec:java`) against new (bare `java -cp`) — directly via shell, four
+invocations each, on `sim-peripherals` (the corpus's most
+dependency-heavy java program, and the one carrying 4 of java's 12
+single-service scenarios):
+
+| Program | Old (`exec:java`), s/invocation | New (`java -cp`), s/invocation | Ratio |
+|---|---|---|---|
+| `quickstart` (M1's basis) | 7.78 (n=1 absolute; 3.162 marginal) | *(not separately measured)* | — |
+| `sim-peripherals` (measured at M7) | **18.6** | **2.10** | **8.85×** |
+
+Maven's `exec:java` per-invocation cost is dominated by rebuilding its
+own in-memory project model and resolving the plugin chain on every
+call — work whose cost scales with the size of the dependency graph
+Maven has to resolve, not a fixed per-call constant. `quickstart`
+carries the corpus's smallest dependency set by construction (it
+declares almost nothing `has_*`-gated); `sim-peripherals` declares
+cache, auth, HTTP fixtures, and more, pulling in a substantially larger
+Maven dependency tree. M1's flat `m_java = 3.162 s/invocation`
+therefore *understated* the real per-invocation cost on every java
+program more complex than `quickstart` — which, by the corpus's own
+shape, is most of them.
+
+**What this means for the arc's honesty, not just its numbers.** The
+projection wasn't wrong because the reasoning was unsound; it was
+wrong because the controlled experiment's *choice of test program*
+didn't span the corpus's actual complexity range. That is a
+methodology finding worth carrying forward explicitly: a controlled
+marginal-cost experiment isolates the mechanism correctly, but still
+needs to be run against more than the corpus's simplest member if the
+mechanism's cost is plausibly non-uniform across programs — which,
+for anything touching Maven's model resolution, it is.
+
+**Outcome, per Pillar 8: (a) Proceed.** Every contract holds — Contract
+A byte-identical across every milestone boundary this session ran it
+(M1, M6, M7), Contract B's carve-out spent exactly as pre-registered
+and nowhere else, Contract C clean (`ciac-bench --compare`: every delta
+negative or within documented noise bands, none of the arc's code
+touches `ciac-codegen`), Contract D matching its pre-registered
+expectation exactly at every boundary it ran. 524 workspace tests
+green. The cumulative result is not merely acceptable against its
+threshold — it exceeds it by a measured, explained margin. M8 and M9
+proceed as planned.
 
 ## Retrospective
 

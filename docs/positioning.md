@@ -114,7 +114,7 @@ makes the rest of this document worth reading.
 
 As of this document: language version 1.0.0 (frozen syntax, its own
 semver and deprecation policy — [docs/language.md](language.md)),
-compiler version 0.31.0. Every generated project passes lint and its
+compiler version 0.32.0. Every generated project passes lint and its
 own test suite before `ciac build`/`verify` reports success; the
 workspace runs `cargo deny`/`cargo audit` plus per-ecosystem
 dependency scanning (pip-audit, npm audit, govulncheck, and a Java

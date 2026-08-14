@@ -2198,6 +2198,62 @@ fn java_sim_runner_exists(project_dir: &Path) -> bool {
     walk(&project_dir.join("src/test/java"))
 }
 
+/// 35UpdatePlan.md M6 (lever D): locates a compiled `<class_name>.class`
+/// somewhere under `test_classes_dir` (`target/test-classes`, already
+/// populated by `./mvnw test-compile`) and returns its fully-qualified
+/// name, derived from its path relative to `test_classes_dir` --
+/// convention-based lookup in the spirit of `sim_drive_python_multi`'s
+/// own `.venv/lib/*/site-packages` glob (`:1782-1793`), chosen over
+/// parsing the pom's `{{ java_package }}`-derived `<mainClass>`
+/// (`pom.xml.j2:237`) or coupling this driver to codegen's own package
+/// derivation. Bails loudly -- naming every candidate -- on zero or
+/// more than one match: 35UpdatePlan.md's FM4 requires an ambiguous
+/// state to fail rather than silently resolve to the wrong entry point.
+fn find_java_class_fqcn(test_classes_dir: &Path, class_name: &str) -> Result<String> {
+    fn walk(dir: &Path, file_name: &str, root: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, file_name, root, out);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some(file_name) {
+                out.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .with_extension("")
+                        .to_path_buf(),
+                );
+            }
+        }
+    }
+    let file_name = format!("{class_name}.class");
+    let mut matches = Vec::new();
+    walk(test_classes_dir, &file_name, test_classes_dir, &mut matches);
+    match matches.as_slice() {
+        [one] => Ok(one
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(".")),
+        [] => bail!(
+            "no compiled {file_name} found under {} -- expected `./mvnw test-compile` to have \
+             produced one",
+            test_classes_dir.display()
+        ),
+        many => bail!(
+            "ambiguous: {} compiled {file_name} found under {} ({}) -- expected exactly one",
+            many.len(),
+            test_classes_dir.display(),
+            many.iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// Drives every `--scenario` against a generated Java project's own
 /// `src/test/java/.../sim/SimRunner.java` (v0.25 M9) -- the same
 /// shape as `sim_drive_rust`/`sim_drive_typescript`/`sim_drive_go`
@@ -2205,10 +2261,17 @@ fn java_sim_runner_exists(project_dir: &Path) -> bool {
 /// compiled and run once per scenario, one-line JSON reply on
 /// stdout), different toolchain: `./mvnw test-compile` (build once --
 /// `SimRunner` is test-scoped, since `MockMvc`/`spring-test` never sit
-/// on the packaged application's own classpath) then `./mvnw
-/// exec:java` (the pom's own `exec-maven-plugin`, preconfigured with
-/// `SimRunner`'s main class and the `test` classpath scope) once per
-/// scenario.
+/// on the packaged application's own classpath), then a joined
+/// classpath (`target/classes` + `target/test-classes` + `./mvnw
+/// dependency:build-classpath`'s output) and a bare `java -cp` per
+/// scenario -- 35UpdatePlan.md M6, propagating
+/// [`sim_drive_java_multi`]'s own classpath approach (below) into this
+/// driver rather than inventing a second mechanism for the same
+/// target. Unlike `_multi`, `SimRunner.java` is already compiled by
+/// `test-compile` (it lives under this same project's own `src/test/
+/// java`, not at a system root outside any service's Maven build), so
+/// there is no `javac` step here -- only a classpath and a class to run
+/// on it.
 ///
 /// 28UpdatePlan.md M8d: dispatches to [`sim_drive_java_multi`] for a
 /// multi-service system, mirroring [`sim_drive_rust`]/
@@ -2247,13 +2310,42 @@ fn sim_drive_java_single(
     }
     run_in(project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
 
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let cp_file = project_dir.join("target").join("ciac-sim-classpath.txt");
+    let cp_arg = format!("-Dmdep.outputFile={}", cp_file.display());
+    let status = run_streamed(
+        Command::new("./mvnw")
+            .args(["-q", "-B", "dependency:build-classpath", &cp_arg])
+            .current_dir(project_dir),
+    )
+    .with_context(|| {
+        format!(
+            "failed to run `./mvnw dependency:build-classpath` in {}",
+            project_dir.display()
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "`./mvnw dependency:build-classpath` failed in {}",
+            project_dir.display()
+        );
+    }
+    let deps = std::fs::read_to_string(&cp_file)
+        .with_context(|| format!("reading Maven classpath output {}", cp_file.display()))?;
+    let test_classes_dir = project_dir.join("target/test-classes");
+    let classpath = [
+        project_dir.join("target/classes").display().to_string(),
+        test_classes_dir.display().to_string(),
+        deps.trim().to_owned(),
+    ]
+    .join(sep);
+
+    let fqcn = find_java_class_fqcn(&test_classes_dir, "SimRunner")?;
+
     run_sim_scenarios(scenarios, wall_timeout, "SimRunner", |scenario_abs| {
-        let scenario_arg = format!("-Dexec.args={}", scenario_abs.display());
-        let mut cmd = Command::new("./mvnw");
-        cmd.arg("-q")
-            .arg("-B")
-            .arg("exec:java")
-            .arg(&scenario_arg)
+        let mut cmd = Command::new("java");
+        cmd.args(["-cp", &classpath, &fqcn])
+            .arg(scenario_abs)
             .current_dir(project_dir);
         Ok(cmd)
     })
@@ -3879,7 +3971,7 @@ fn find_project_dirs(root: &Path, marker: &str) -> Result<Vec<std::path::PathBuf
 
 #[cfg(test)]
 mod tests {
-    use super::health_probe;
+    use super::{find_java_class_fqcn, health_probe};
     use std::io::{Read, Write};
 
     /// A minimal one-shot HTTP server on an ephemeral port, answering
@@ -3989,5 +4081,88 @@ mod tests {
                  run scripts/sync-vendored-ciac-assets.sh"
             );
         }
+    }
+
+    /// A scratch directory under the system temp dir, unique per test
+    /// run -- `find_java_class_fqcn`'s own three tests each get one,
+    /// removed on drop. No `tempfile` dependency: `crates/ciac` doesn't
+    /// carry one, and 35UpdatePlan.md's own determinism/supply-chain
+    /// section commits to adding none for this arc.
+    struct ScratchDir(std::path::PathBuf);
+    impl ScratchDir {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "ciac-commands-test-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock")
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            ScratchDir(dir)
+        }
+    }
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 35UpdatePlan.md M6/FM4: exactly one `SimRunner.class` under a
+    /// package-qualified path resolves to the FQCN that path implies --
+    /// the ordinary case `sim_drive_java_single` hits on every real
+    /// generated project.
+    #[test]
+    fn find_java_class_fqcn_resolves_the_one_match() {
+        let scratch = ScratchDir::new("one-match");
+        let pkg_dir = scratch.0.join("com/ciac/notes/sim");
+        std::fs::create_dir_all(&pkg_dir).expect("mkdir pkg_dir");
+        std::fs::write(pkg_dir.join("SimRunner.class"), b"").expect("write class file");
+
+        let fqcn =
+            find_java_class_fqcn(&scratch.0, "SimRunner").expect("exactly one match resolves");
+        assert_eq!(fqcn, "com.ciac.notes.sim.SimRunner");
+    }
+
+    /// FM4's zero-match arm: end-to-end, Maven's own incremental
+    /// compiler self-heals a deleted `.class` file on the next
+    /// `test-compile` (confirmed by hand against a real generated
+    /// project), so this is the one FM4 branch verified at the
+    /// function level rather than adversarially through the CLI.
+    #[test]
+    fn find_java_class_fqcn_bails_loudly_on_zero_matches() {
+        let scratch = ScratchDir::new("zero-match");
+        let err = find_java_class_fqcn(&scratch.0, "SimRunner")
+            .expect_err("no SimRunner.class anywhere under an empty dir");
+        let msg = err.to_string();
+        assert!(msg.contains("no compiled SimRunner.class"), "{msg:?}");
+        assert!(msg.contains("test-compile"), "{msg:?}");
+    }
+
+    /// FM4's multi-match arm -- the ambiguity guard 35UpdatePlan.md
+    /// requires: an ambiguous state must fail loudly, naming every
+    /// candidate, rather than silently picking one. Verified
+    /// end-to-end against a real generated project too (a decoy class
+    /// file placed under a sibling package), not only here.
+    #[test]
+    fn find_java_class_fqcn_bails_loudly_and_names_both_on_ambiguity() {
+        let scratch = ScratchDir::new("two-match");
+        let sim_dir = scratch.0.join("com/ciac/notes/sim");
+        let decoy_dir = scratch.0.join("com/ciac/notes/decoy");
+        std::fs::create_dir_all(&sim_dir).expect("mkdir sim_dir");
+        std::fs::create_dir_all(&decoy_dir).expect("mkdir decoy_dir");
+        std::fs::write(sim_dir.join("SimRunner.class"), b"").expect("write sim class file");
+        std::fs::write(decoy_dir.join("SimRunner.class"), b"").expect("write decoy class file");
+
+        let err = find_java_class_fqcn(&scratch.0, "SimRunner")
+            .expect_err("two SimRunner.class files must not resolve silently");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ambiguous: 2 compiled SimRunner.class"),
+            "{msg:?}"
+        );
+        assert!(msg.contains("com/ciac/notes/sim/SimRunner"), "{msg:?}");
+        assert!(msg.contains("com/ciac/notes/decoy/SimRunner"), "{msg:?}");
     }
 }

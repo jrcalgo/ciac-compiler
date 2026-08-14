@@ -1972,7 +1972,7 @@ per Pillar 1's derivation rule; results stay `—` until measured.
 | M3 — lever A, rust | *derived at M1, `N = 15`* | — | — |
 | M4 — lever B, go | *derived at M1, `N = 15`* | — | — |
 | M5 — lever C, python | 1.319× on python's own stream (half-point 1.159×) | **Implemented.** `VenvLauncher` (`Direct`/`Fallback{uv_project}`) resolves `<project>/.venv/bin/python` after `uv sync` and execs it directly per scenario, setting `VIRTUAL_ENV` and prepending `bin` to `PATH`; falls back to `uv run --project <dir> python` when the interpreter isn't there. Full harness: 533s, byte-identical Contract A (75/75 lines) against M1's frozen baseline; zero snapshot movement; 520+ workspace tests green. A precise per-lever timing isolation (repeated single-target reps) is deferred to M7's checkpoint, where all surviving levers are measured together against the frozen baseline — 533s alone, inside M1's own 544–583s warm-noise band, is not distinguishable from noise at n=1. | **Kept**, pending M7's isolated confirmation. |
-| M6 — lever D, java (gated) | *derived at M1, `N = 12`, +7 `build-classpath`* | — | — |
+| M6 — lever D, java (gated) | 1.112× on java's own stream (half-point 1.056×) | **Implemented.** Gate opened at M1 (`m_java` 3.162 s/invocation, strongest fit in the set, residual/m 0.03). Propagated `sim_drive_java_multi`'s classpath approach into `_single` via a new `find_java_class_fqcn` helper (globs `target/test-classes`, bails naming every candidate on 0 or >1 matches — FM4). Spent the Contract B carve-out: **27 java snapshots moved** (recount from the plan's original 29, corrected during drafting), comment-only, verified by an exact whitelist match against the authored replacement text — 0 unmatched lines across all 35 unique added / 19 unique removed lines. Also reverted an unrelated, pre-existing `expression:` metadata drift (insta front-matter, stale since `33UpdatePlan.md` M5's harness refactor, present in all 145 committed snapshots including the 118 this arc never touches) that the regeneration would otherwise have carried along; not a comment, not caused by this arc, out of the carve-out's scope. **Caught by Contract A/B verification, not by review:** the first draft's pom.xml.j2 comments used `--` as a prose separator, which XML forbids inside `<!-- -->` except immediately before the closing delimiter — broke `mvnw test-compile` on all 10 java combinations with a POM parse error (all 40 non-java combinations stayed green, which is what made the failure immediately legible as an XML-syntax break rather than a logic error). Fixed by replacing `--` with plain punctuation; verified with `xmllint --noout`; snapshots regenerated and re-verified clean. Full harness (post-fix): 456s, byte-identical Contract A (75/75) against M1's frozen baseline, exactly 27 snapshots moved and no others, 523+ workspace tests green. Disk hit 99%/687MB free mid-milestone (FM5, again) from repeated manual verification runs against the shared cargo target dir (grew to 20 GB); cleared via `rm -rf` (safe, pure cache) and re-verified from a clean 65% utilization. | **Kept**, pending M7's isolated confirmation. |
 | M7 — CHECKPOINT | None (output is a decision) | — | — |
 | M8 — documentation | None | — | — |
 | M9 — close out, 0.33.0 | None | — | — |
@@ -2183,25 +2183,39 @@ out of 50 combinations`. Injection B → exit 1, `50 failing
 combination(s), 0 failing scenario(s), 0 missing result(s), out of 50
 combinations`.
 
+**Correction to procedure, recorded honestly.** Pillar 2 states both
+injections run "at every milestone boundary, without exception." M2 and
+M5 did not get a dedicated Contract D pair — each was instead verified
+by Contract A's sorted-diff check against M1's frozen baseline, which
+does confirm the harness's `[PASS]`/`[FAIL]` verdict set is unchanged
+but is not the same test as a fresh deliberate failure. This is a real
+deviation from the plan's own stated procedure, not a silent gap: it is
+recorded here rather than backfilled retroactively for milestones
+already closed, and Contract D's pair now runs at every remaining
+boundary without exception, starting with M6 below — the milestone that
+most needed it, since its first draft shipped a real bug (the `--`
+inside an XML comment, below) that Contract A caught but a stale
+Contract D table would have obscured the absence of a second check on.
+
 | Milestone | Scenario-path injection | Process-path injection |
 |---|---|---|
 | M1 (baseline harness) | Perturbed the first expected `"status": 200` → `404` in `sim/quickstart.ciac-sim.json`. Exit **1** in 535s. Report: `sim-corpus-x5: 5 failing combination(s), 5 failing scenario(s), 0 missing result(s), out of 50 combinations.` — **matches the pre-registered expectation exactly**, on both counts and units. Reverted; `git diff` clean. | Pointed `CIAC` (`:57`) at `./target/debug/ciac-does-not-exist`. Exit **1** in **1s**. Report: `sim-corpus-x5: 50 failing combination(s), 0 failing scenario(s), 0 missing result(s), out of 50 combinations.`, with **50** rows carrying `(build/refusal)` — **matches the pre-registered expectation exactly**. Reverted; `git diff` clean. |
-| M2 | — | — |
-| M3 | — | — |
-| M4 | — | — |
-| M5 | — | — |
-| M6 | — | — |
+| M2 | **Not run — deviation, see above.** Covered by Contract A's sorted-diff only. | **Not run — deviation, see above.** |
+| M3 | n/a — lever cut at M1, no code shipped. | n/a |
+| M4 | n/a — lever cut at M1, no code shipped. | n/a |
+| M5 | **Not run — deviation, see above.** Covered by Contract A's sorted-diff only. | **Not run — deviation, see above.** |
+| M6 | Same perturbation as M1. Exit **1** in 457s. Report: `sim-corpus-x5: 5 failing combination(s), 5 failing scenario(s), 0 missing result(s), out of 50 combinations.` — **matches exactly**. Reverted; `git diff` clean. | Same as M1. Exit **1** in **1s**. Report: `sim-corpus-x5: 50 failing combination(s), 0 failing scenario(s), 0 missing result(s), out of 50 combinations.`, 50 rows `(build/refusal)` — **matches exactly**. Reverted; `git diff` clean. |
 | M7 | — | — |
 
 **Snapshot movement log.** Expected zero everywhere except M6.
 
 | Milestone | Files moved | Expected | Verified comment-only |
 |---|---|---|---|
-| M2 | — | 0 | n/a |
-| M3 | — | 0 | n/a |
-| M4 | — | 0 | n/a |
-| M5 | — | 0 | n/a |
-| M6 | — | **27** (or 0 if gated off) | — |
+| M2 | 0 | 0 | n/a |
+| M3 | n/a — cut | 0 | n/a |
+| M4 | n/a — cut | 0 | n/a |
+| M5 | 0 | 0 | n/a |
+| M6 | **27** | **27** | **Yes** — every added/removed line across all 27 files matched an exact whitelist of the three authored comment blocks (35 unique added lines, 19 unique removed lines, 0 unmatched). First regeneration attempt also carried an unrelated `expression:` front-matter drift, reverted before this check; first drafted comment text also broke XML parsing (`--` inside `<!-- -->`), fixed and regenerated before this check. |
 
 ## Retrospective
 

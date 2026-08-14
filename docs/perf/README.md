@@ -281,6 +281,64 @@ gain clears the arc's own ≥30% headline, every apparent "other" metric
 movement traced to noise rather than this arc's code. M8 and M9 run as
 planned.
 
+## `34UpdatePlan.md` M6 checkpoint
+
+Subject: `scripts/sim-corpus-x5.sh`'s wall-clock cost, via two
+independent levers — lever 1 (`ciac sim` reuses the same shared,
+persistent `CARGO_TARGET_DIR` `ciac verify` already uses) and lever 2
+(parallelize the script by target). Lever 1 shipped; lever 2 was
+implemented, measured, and reverted at its own milestone boundary per
+this arc's own pre-registered Pillar 5 rule.
+
+**Lever 1, measured:** rust steady-state per-program cost dropped
+**3.07×** (cold `quickstart` 61.65s → converged `domain-orders`
+20.07s), against a ≥2× threshold — close to the pre-code 3.2× ceiling
+despite this session's overall wall-clock running ~1.7× higher than
+its own pre-code estimates (see `34UpdatePlan.md` M1's own
+reconciliation). Sim results verified byte-identical cold vs.
+warm-shared.
+
+**Lever 2, measured and reverted:** two full-run reps (613.3s, 593.5s
+— agreeing within 3%) landed at **1.64×** against M3's 987.5s serial
+baseline, decisively below the ≥2.5× threshold's 1.75× half-point, not
+a marginal miss. Root cause measured, not assumed: rust's own isolated
+stream (380.89s) slows to ~600s under five-way concurrent execution on
+this sandbox's 4 physical cores — CPU oversubscription the pre-code
+`max(stream)` arithmetic did not model. Reverted per Pillar 5's table
+("gain < half the pre-registered threshold... the complexity is not
+paid for"), following `30UpdatePlan.md` M5's own precedent for
+stopping an arc early. Its numbers are kept on record in
+`34UpdatePlan.md`'s own M4 note for a future arc on hardware where the
+core count no longer binds.
+
+**Cumulative full-run wall time**, against this arc's own frozen M1
+baseline (1305.4s, ~1.7× its own pre-code estimate — see M1's note):
+**929.4s, 1.40×**, all of it lever 1.
+
+**`ciac-bench --compare`, reviewed in its entirety, twice**: once
+against the committed `docs/perf/baseline.json` (apparent regressions
+up to +670% on metrics this arc's diff cannot touch — `syntax::load`,
+`sema::analyze`, `generate()` for every backend, none of which call
+the two sim drivers this arc's only compiler-code change touches),
+diagnosed as a stale baseline against this session's own measurement
+noise rather than accepted at face value; and once via a same-session
+pre-arc-vs-current comparison, which showed no coherent regression —
+mixed movement under 20% on stable metrics, with the noisiest metric
+(`GeneratedProject::write_to`) swinging both directions across
+examples in the same run.
+
+**`scripts/sim-corpus-x5.sh`**: 50/50 green, Contract A held
+(byte-identical `[PASS]`/`[FAIL]` set against M1's baseline,
+sorted-diff verified) at every milestone boundary M1 through M6.
+Contract D — the harness must still be able to fail — run in full at
+every boundary, both injection paths, never once producing a false
+green.
+
+**Decision: outcome (c) — stop and ship what exists.** Lever 1 landed
+at low risk and real gain; lever 2's mechanism is sound but does not
+clear its bar on this hardware, and is recorded rather than forced.
+M7 and M8 proceed describing the arc as shipped in this shape.
+
 ## Discipline this arc adopted (`31UpdatePlan.md` Pillar 7)
 
 Recorded here so later work inherits it as a standing convention:

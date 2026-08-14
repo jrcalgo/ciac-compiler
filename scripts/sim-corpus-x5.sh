@@ -16,6 +16,22 @@
 # Usage: scripts/sim-corpus-x5.sh [--targets python,rust,typescript,go,java]
 #
 # Exits non-zero if any (program, scenario, target) combination fails.
+#
+# `34UpdatePlan.md` M3 rewrote the tally onto per-combination status
+# files (one `.out`, one `.rc` per slot under `$RESULTS`) instead of
+# shell counters, and split the old single, unit-conflating `$FAILED`
+# into `failed_combinations`/`failed_scenarios`, reported separately.
+# `ciac sim` itself (the `commands.rs` CLI, not this script) reuses the
+# same shared, persistent cargo target directory `ciac verify` already
+# uses (M2), so repeat rust builds across programs/runs are cached --
+# nothing here sets `CARGO_TARGET_DIR`. Parallelizing this script by
+# target (M4) was implemented and measured but **not shipped**: on the
+# 4-vCPU sandbox this arc was built and measured on, five concurrent
+# streams slowed the dominant (rust) stream enough via CPU
+# oversubscription that the cumulative gain missed its pre-registered
+# threshold; see `34UpdatePlan.md`'s M4 and M6 entries for the full
+# measurement and the reasoning. This script therefore remains
+# structurally serial.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 

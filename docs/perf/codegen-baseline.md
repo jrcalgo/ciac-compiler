@@ -157,7 +157,11 @@ top of M2's dominant fix:
 - **Simulation runtime** (`ciac sim`, `scripts/sim-corpus-x5.sh`) — a
   separate hot path with its own cost profile (virtual-clock
   scheduling, fake I/O), unrelated to `generate()`'s template-rendering
-  and formatter costs.
+  and formatter costs. `34UpdatePlan.md` reduced its cost via a shared
+  cargo target directory (rust steady-state 3.07×); see
+  `docs/perf/README.md`'s own `34UpdatePlan.md` checkpoint section for
+  the full result, including the parallelization lever that was
+  measured and reverted rather than shipped.
 - **Anything about correctness.** This document says nothing about
   whether generated code is right — that's the golden/negative/
   equivalence suites' job, untouched by this arc, verified separately

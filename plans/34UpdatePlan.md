@@ -1606,7 +1606,7 @@ carries a measurement or is labelled a hypothesis.*
 |---|---|---|---|
 | M1 | — (baseline freeze) | Full run: rep1 1371.19s, rep2 1239.59s (mean 1305.4s, spread 131.6s, +Contract D's post-revert green run 1167.91s as a third, corroborating data point — mean of all three 1259.6s, range 203.3s). Decomposition: rust 648.26s, typescript 240.14s, python 34.19s, java 266.23s, go 35.01s (sum 1223.82s, within the rep1–rep2 spread — coherence check passes). Rust per-program matrix: 51.3–72.6s each, ten programs, sum 648.26s (see note below). Disk high-water mark: peak 61% / ~22.5 GiB used during rep1, never above 61% (well under the 80% ceiling). Environment stamp matches `docs/perf/baseline.json` exactly. | **Baseline established, with a disclosed correction to this document's own pre-code estimate** — see note below. Not a threshold milestone; nothing to pass or fail. |
 | M2 | ≥2× rust steady-state (half-point 1.5×) | Steady-state (exact reproduction of the pre-code methodology): cold `quickstart` 61.65s → converged `domain-orders` 20.07s = **3.07×** — within noise of the pre-code 3.2× ceiling, confirming the *ratio* held even though this session's absolute times run ~1.7× the pre-code estimate (see M1's note). Whole rust-stream sum (10 programs, mixed cold/warm, includes the 3 multi-service programs on their own different code path): 648.26s → 380.89s = 1.70× (below 2×, but this is not the threshold metric — see note below). Whole-script full run: mean 1305.4s → 964.6s = 1.35× (lever 1 alone, before lever 2). | **PASS — threshold cleared** (3.07× ≥ 2×). |
-| M3 | — (correctness) | — | — |
+| M3 | — (correctness) | Green, run 3× (16m20s, 16m27s, 16m35s — noise-band consistent with M2), each sorted-diff-verified against M1's baseline set (75/75 lines identical). Contract D both paths run in full: Injection A now reports **"5 failing combination(s), 5 failing scenario(s)"** — correctly separated, correctly labelled, replacing the pre-M3 conflated "10" — exit 1; Injection B reproduces M1/M2 exactly (50/50, exit 1, <1.1s). Both reverted, final green reconfirmed (17m16s). `cargo clippy --workspace --all-targets -- -D warnings` clean; 521 workspace tests pass; zero snapshot movement (Contract B holds); Contract C not applicable (script-only milestone, no compiler code touched). | **PASS — correctness proven, FM9's fix verified against its own pre-registered two-shape test.** |
 | M4 | ≥2.5× vs M3 (half-point 1.75×) | — | — |
 | M5 | — (adversarial evidence) | — | — |
 | M6 | — (checkpoint) | — | — |
@@ -1728,6 +1728,40 @@ combinations, exit 1. This is recorded as a reasoned, scoped decision —
 not a silent skip — and Injection A returns to being run in full at M3
 (which does touch the script) and every boundary after.
 
+**M3 note — a real bug the sorted-diff check caught, and a process
+near-miss.** The first M3 script draft passed `basename "$program"
+.ciac` into `slot_id()`, stripping the `.ciac` extension from the
+filename-safe slot id used to reconstruct the report's PROGRAM column.
+Contract A's sorted-diff check against M1's baseline caught it
+immediately: the `[PASS]`/`[FAIL]` *verdicts* matched, but the printed
+PROGRAM text read `domain-orders` instead of `domain-orders.ciac`,
+which the diff surfaced as 75 non-matching lines despite every
+substantive result being correct. Fixed by keeping `.ciac` in the slot
+id (stripping it only where `run_combination` builds the `--out`
+directory name, which needs it) and re-verified. This is exactly what
+Pillar 2 exists to catch — a mistake invisible to "does it exit 0" and
+visible only to a byte-level comparison against a frozen baseline.
+
+Separately, and disclosed because this series' own practice is to keep
+process mistakes in the record rather than edit them out: reverting
+Injection B's temporary `$CIAC` edit was done with `git checkout --
+scripts/sim-corpus-x5.sh`, which is safe only when the file's
+*non-injection* content is already committed. At this point in M3 it
+was not — the entire M3 rewrite was still uncommitted working-tree
+content — so that checkout reverted the file all the way back to the
+pre-M3, pre-existing HEAD version, silently discarding the rewrite
+along with the injection. Caught immediately by re-reading the file
+(the system's own file-change tracking surfaced the pre-M3 content
+where the M3 rewrite was expected) rather than by a later test failure.
+Recovered by reconstructing the M3 script from this document's own
+authoring context and re-running the full verification sequence a
+third time from scratch (green, sorted-diff against M1, both Contract
+D paths) before trusting it. The corrected procedure, used for the
+rest of this arc: **commit a script rewrite before running any
+injection test against it**, so `git checkout --` reverts only the
+injection, never uncommitted milestone work. M4 onward follows this
+order.
+
 **Arc-level target, for the cumulative row at M6 and M8 (pre-code
 estimate — superseded by M1's measured figure above, kept here for its
 derivation rather than deleted):** full-run wall time ~764s (12.7 min)
@@ -1743,7 +1777,7 @@ was actually run rather than asserted:
 |---|---|---|
 | M1 (baseline harness) | Perturbed `sim/quickstart.ciac-sim.json`'s `archive_retry` expected status 200→404. Exit **1**. Report: `sim-corpus-x5: 10 failing combination(s) out of 50.` (5 targets × 2 increments each — see the M1 note above on FM9). All five `quickstart` rows named correctly across python/rust/typescript/go/java. Reverted; `git diff` against HEAD empty. | Pointed the script's single global `$CIAC` at a nonexistent binary (the unmodified script has no per-target streams yet, so the plan's later "one target's stream" recipe does not apply pre-M4 — adapted to the whole script, disclosed here). Exit **1** in 0.79s. Report: `sim-corpus-x5: 50 failing combination(s) out of 50.` — all 50 rows carried `(build/refusal)` with the "No such file or directory" message, 0 `[FAIL]` lines (process never reached the simulator). Reverted; `git diff` against HEAD empty. |
 | M2 | Not re-run at this boundary — see the M2 note above (script has zero diff; Contract A's full green run and the separate cold-vs-warm-shared byte-identity check jointly re-establish the same result M1 measured: 10 failing combinations, exit 1). | Re-run with M2's code live: pointed the global `$CIAC` at a nonexistent binary. Exit **1** in 0.94s. Report: `sim-corpus-x5: 50 failing combination(s) out of 50.` — matches M1 exactly. Reverted; `git diff scripts/sim-corpus-x5.sh` empty. |
-| M3 | — | — |
+| M3 | Perturbed `sim/quickstart.ciac-sim.json` (200→404). Exit **1**. Report: `sim-corpus-x5: 5 failing combination(s), 5 failing scenario(s), 0 missing result(s), out of 50 combinations.` — FM9's fix verified directly: the two counts are now correctly separated (5 combinations errored, the same 5 scenario mismatches also parsed as `[FAIL]` lines) instead of the pre-M3 conflated `10`. All five `quickstart` rows named correctly. Reverted; re-verified against the M3 script backup that the script itself was untouched by this injection. | Re-run with M3's rewritten tally: pointed `$CIAC` at a nonexistent binary. Exit **1** in <1.1s. Report: `sim-corpus-x5: 50 failing combination(s), 0 failing scenario(s), 0 missing result(s), out of 50 combinations.` — matches M1/M2 exactly, now in the corrected two-counter format. Reverted. |
 | M4 | — | — |
 | M5 | — | — |
 | M6 | — | — |

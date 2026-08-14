@@ -1938,7 +1938,7 @@ per Pillar 1's derivation rule; results stay `—` until measured.
 | Milestone | Threshold (pre-registered) | Measured | Pillar 5 verdict |
 |---|---|---|---|
 | M1 — baseline + marginal-cost fit + java gate | None (establishes denominators) | **Done — see the M1 note below.** Warm steady state 544/583s; cold 952s. Combined ideal saving across all four levers **31.5s = 6.5%**. | **Narrowed**: levers A (rust) and B (go) cut pre-implementation; C and D retained; M2 retained on independent grounds. |
-| M2 — shared runner helper (refactor) | None (correctness; no measurable regression) | — | — |
+| M2 — shared runner helper (refactor) | None (correctness; no measurable regression) | **Done.** `run_sim_scenarios` introduced; all ten call sites (8 duplicated blocks) routed through it. `commands.rs`: 271 lines removed, 88 added, net −183. Full harness report byte-identical to M1's frozen Contract A baseline (sorted diff empty, 75/75 lines). Zero snapshot movement. `cargo test --workspace` green, 520+ tests, 0 failures. `cargo fmt`/`cargo clippy -D warnings` clean. | **Kept.** |
 | M3 — lever A, rust | *derived at M1, `N = 15`* | — | — |
 | M4 — lever B, go | *derived at M1, `N = 15`* | — | — |
 | M5 — lever C, python | *derived at M1, `N = 15`* | — | — |

@@ -1528,6 +1528,63 @@ fn sim_drive_python(
     )
 }
 
+/// 35UpdatePlan.md M2: the one-line-JSON-on-stdout protocol shared by
+/// every `sim_drive_*` driver's scenario loop, factored out of what
+/// was eight verbatim copies (`:1574-1601` and its seven twins before
+/// this refactor). Argument order, environment, and working directory
+/// differ enough across the five targets that the *build* step stays
+/// with each driver (35UpdatePlan.md's own open questions section
+/// weighs sharing that too, and declines); `build_cmd` is handed each
+/// scenario's resolved absolute path and returns the fully-configured
+/// [`Command`] to run for it. Everything after that -- run captured,
+/// pass stderr through, take the last stdout line, bail if empty,
+/// parse it as a [`crate::json_out::SimScenarioOutcome`], bail with
+/// context on a parse failure -- was identical in all ten functions
+/// and lives here once. `label` names the runner in error messages
+/// exactly as each driver's own duplicated copy did before this
+/// refactor (e.g. "sim_runner", "auto_driver.py", "SystemSimRunner").
+fn run_sim_scenarios(
+    scenarios: &[PathBuf],
+    wall_timeout: Option<std::time::Duration>,
+    label: &str,
+    mut build_cmd: impl FnMut(&Path) -> Result<Command>,
+) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
+    let mut scenario_outcomes = Vec::new();
+    for scenario_path in scenarios {
+        let scenario_abs = resolve_path(scenario_path)?;
+        let mut cmd = build_cmd(&scenario_abs)?;
+
+        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
+            format!(
+                "failed to run {label} for scenario {}",
+                scenario_path.display()
+            )
+        })?;
+        if !output.stderr.is_empty() {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let last_line = stdout.lines().next_back().unwrap_or("").trim();
+        if last_line.is_empty() {
+            bail!(
+                "{label} for scenario {} exited with {} and printed no result on stdout",
+                scenario_path.display(),
+                output.status
+            );
+        }
+        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
+            .with_context(|| {
+                format!(
+                    "cannot parse {label}'s result for scenario {}: {last_line:?}",
+                    scenario_path.display()
+                )
+            })?;
+        scenario_outcomes.push(outcome);
+    }
+    Ok(scenario_outcomes)
+}
+
 /// The single-service path, unchanged in shape from before 28's M3c
 /// (`sim_drive_python` used to be this function's own body directly) --
 /// factored out so `sim_drive_python` can dispatch to it or to
@@ -1549,15 +1606,13 @@ fn sim_drive_python_single(
     let pythonpath = std::env::join_paths([sim_dir.to_path_buf(), project_dir.to_path_buf()])
         .context("cannot build PYTHONPATH for the sim runner")?;
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "auto_driver.py", |scenario_abs| {
         let mut cmd = Command::new("uv");
         cmd.arg("run")
             .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
             .arg(sim_dir.join("auto_driver.py"))
             .arg(plan_path)
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .arg("--source-hash")
             .arg(source_hash)
             .arg("--plan-hash")
@@ -1570,36 +1625,8 @@ fn sim_drive_python_single(
         if let Some(replay_path) = replay {
             cmd.arg("--replay").arg(resolve_path(replay_path)?);
         }
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run auto_driver.py for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "auto_driver.py for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse auto_driver.py's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// 28UpdatePlan.md M3c: N services, one shared world, one process --
@@ -1681,9 +1708,7 @@ fn sim_drive_python_multi(
     // (declaration order), keeps this reproducible.
     let (_, driver_project) = &service_args[0];
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "multi_driver.py", |scenario_abs| {
         let mut cmd = Command::new("uv");
         cmd.arg("run")
             .arg("--project")
@@ -1691,7 +1716,7 @@ fn sim_drive_python_multi(
             .arg("python") // target-literal-ok: the python interpreter's own name, not a target-id match
             .arg(sim_dir.join("multi_driver.py"))
             .arg(plan_path)
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .arg("--source-hash")
             .arg(source_hash)
             .arg("--plan-hash")
@@ -1708,36 +1733,8 @@ fn sim_drive_python_multi(
         if let Some(replay_path) = replay {
             cmd.arg("--replay").arg(resolve_path(replay_path)?);
         }
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run multi_driver.py for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "multi_driver.py for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse multi_driver.py's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// Drives every `--scenario` against a generated Rust project's own
@@ -1786,48 +1783,18 @@ fn sim_drive_rust_single(
     }
     run_in_shared_cargo(project_dir, &["build", "-q", "--bin", "sim_runner"])?;
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "sim_runner", |scenario_abs| {
         let mut cmd = Command::new("cargo");
         cmd.arg("run")
             .arg("-q")
             .arg("--bin")
             .arg("sim_runner")
             .arg("--")
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(project_dir);
         apply_shared_cargo_target_dir(&mut cmd);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run sim_runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "sim_runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// 28UpdatePlan.md M6c: N services, one shared world, one process --
@@ -1858,46 +1825,16 @@ fn sim_drive_rust_multi(
     }
     run_in_shared_cargo(&runner_dir, &["build", "-q"])?;
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "system-runner", |scenario_abs| {
         let mut cmd = Command::new("cargo");
         cmd.arg("run")
             .arg("-q")
             .arg("--")
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(&runner_dir);
         apply_shared_cargo_target_dir(&mut cmd);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run system-runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "system-runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse system-runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// Drives every `--scenario` against a generated TypeScript project's
@@ -2002,43 +1939,13 @@ fn run_node_sim_runner(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "sim_runner", |scenario_abs| {
         let mut cmd = Command::new("node");
         cmd.arg("dist/sim_runner.js")
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(project_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run sim_runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "sim_runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// Drives every `--scenario` against a generated Go project's own
@@ -2148,41 +2055,11 @@ fn run_go_sim_runner(
     scenarios: &[PathBuf],
     wall_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<crate::json_out::SimScenarioOutcome>> {
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "sim_runner", |scenario_abs| {
         let mut cmd = Command::new("go");
-        cmd.args(args).arg(&scenario_abs).current_dir(project_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run sim_runner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "sim_runner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse sim_runner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        cmd.args(args).arg(scenario_abs).current_dir(project_dir);
+        Ok(cmd)
+    })
 }
 
 /// Whether `project_dir` has a generated `SimRunner.java` anywhere
@@ -2260,9 +2137,7 @@ fn sim_drive_java_single(
     }
     run_in(project_dir, "./mvnw", &["-q", "-B", "test-compile"])?;
 
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "SimRunner", |scenario_abs| {
         let scenario_arg = format!("-Dexec.args={}", scenario_abs.display());
         let mut cmd = Command::new("./mvnw");
         cmd.arg("-q")
@@ -2270,36 +2145,8 @@ fn sim_drive_java_single(
             .arg("exec:java")
             .arg(&scenario_arg)
             .current_dir(project_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run SimRunner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "SimRunner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse SimRunner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 /// 28UpdatePlan.md M8c/M8d: N services, one shared world, one process --
@@ -2398,43 +2245,13 @@ fn sim_drive_java_multi(
     )?;
 
     let full_classpath = format!("{}{sep}{joined_classpath}", compiled_dir.display());
-    let mut scenario_outcomes = Vec::new();
-    for scenario_path in scenarios {
-        let scenario_abs = resolve_path(scenario_path)?;
+    run_sim_scenarios(scenarios, wall_timeout, "SystemSimRunner", |scenario_abs| {
         let mut cmd = Command::new("java");
         cmd.args(["-cp", &full_classpath, "SystemSimRunner"])
-            .arg(&scenario_abs)
+            .arg(scenario_abs)
             .current_dir(&runner_dir);
-
-        let output = run_captured(&mut cmd, wall_timeout).with_context(|| {
-            format!(
-                "failed to run SystemSimRunner for scenario {}",
-                scenario_path.display()
-            )
-        })?;
-        if !output.stderr.is_empty() {
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let last_line = stdout.lines().next_back().unwrap_or("").trim();
-        if last_line.is_empty() {
-            bail!(
-                "SystemSimRunner for scenario {} exited with {} and printed no result on stdout",
-                scenario_path.display(),
-                output.status
-            );
-        }
-        let outcome: crate::json_out::SimScenarioOutcome = serde_json::from_str(last_line)
-            .with_context(|| {
-                format!(
-                    "cannot parse SystemSimRunner's result for scenario {}: {last_line:?}",
-                    scenario_path.display()
-                )
-            })?;
-        scenario_outcomes.push(outcome);
-    }
-    Ok(scenario_outcomes)
+        Ok(cmd)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -52,7 +52,7 @@ insta = { version = "1", features = ["json"] }
 logos = "0.16"
 ctrlc = "3"
 lsp-server = "0.10"
-lsp-types = "0.95"
+lsp-types = "0.97"
 notify = "8"
 minijinja = { version = "2", features = ["loader"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

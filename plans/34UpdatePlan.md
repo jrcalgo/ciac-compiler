@@ -1607,7 +1607,7 @@ carries a measurement or is labelled a hypothesis.*
 | M1 | — (baseline freeze) | Full run: rep1 1371.19s, rep2 1239.59s (mean 1305.4s, spread 131.6s, +Contract D's post-revert green run 1167.91s as a third, corroborating data point — mean of all three 1259.6s, range 203.3s). Decomposition: rust 648.26s, typescript 240.14s, python 34.19s, java 266.23s, go 35.01s (sum 1223.82s, within the rep1–rep2 spread — coherence check passes). Rust per-program matrix: 51.3–72.6s each, ten programs, sum 648.26s (see note below). Disk high-water mark: peak 61% / ~22.5 GiB used during rep1, never above 61% (well under the 80% ceiling). Environment stamp matches `docs/perf/baseline.json` exactly. | **Baseline established, with a disclosed correction to this document's own pre-code estimate** — see note below. Not a threshold milestone; nothing to pass or fail. |
 | M2 | ≥2× rust steady-state (half-point 1.5×) | Steady-state (exact reproduction of the pre-code methodology): cold `quickstart` 61.65s → converged `domain-orders` 20.07s = **3.07×** — within noise of the pre-code 3.2× ceiling, confirming the *ratio* held even though this session's absolute times run ~1.7× the pre-code estimate (see M1's note). Whole rust-stream sum (10 programs, mixed cold/warm, includes the 3 multi-service programs on their own different code path): 648.26s → 380.89s = 1.70× (below 2×, but this is not the threshold metric — see note below). Whole-script full run: mean 1305.4s → 964.6s = 1.35× (lever 1 alone, before lever 2). | **PASS — threshold cleared** (3.07× ≥ 2×). |
 | M3 | — (correctness) | Green, run 3× (16m20s, 16m27s, 16m35s — noise-band consistent with M2), each sorted-diff-verified against M1's baseline set (75/75 lines identical). Contract D both paths run in full: Injection A now reports **"5 failing combination(s), 5 failing scenario(s)"** — correctly separated, correctly labelled, replacing the pre-M3 conflated "10" — exit 1; Injection B reproduces M1/M2 exactly (50/50, exit 1, <1.1s). Both reverted, final green reconfirmed (17m16s). `cargo clippy --workspace --all-targets -- -D warnings` clean; 521 workspace tests pass; zero snapshot movement (Contract B holds); Contract C not applicable (script-only milestone, no compiler code touched). | **PASS — correctness proven, FM9's fix verified against its own pre-registered two-shape test.** |
-| M4 | ≥2.5× vs M3 (half-point 1.75×) | — | — |
+| M4 | ≥2.5× vs M3 (half-point 1.75×) | M3 baseline (mean of its 3 reps): 987.5s. M4 measured at 2 reps: 613.3s (fresh shared cache) and 593.5s (warm), mean 603.4s — **ratio 1.64× (rep-level 1.61× and 1.66×)**. M4 would need to land under 564.3s to clear the 1.75× half-point and under 395.0s to clear the 2.5× threshold; both readings land 5-9% above the half-point line, consistently across two independent reps (agreeing within 3% of each other). Correctness was not in question — real concurrent execution was verified directly (a 2-target smoke test showed 37.2s wall against a ~65s serial-equivalent sum), Contract A held (75/75 sorted-diff match against M1's baseline on both full reps), and no job-control noise or scripting defect was found. **Root cause, measured not assumed:** rust's own stream, isolated, measured 380.89s at M2 (fresh shared cache, all 10 programs). Under M4's 5-way concurrent execution, the whole run's wall time (which rust's own stream dominates, since every other stream finishes well inside its runtime) lands at ~600s -- a ~1.58× slowdown for rust's own stream specifically, attributable to CPU oversubscription: 5 concurrent target streams (several themselves multi-threaded -- cargo's own parallel compilation, in particular) compete for 4 physical cores, so the streams measurably slow each other down rather than running at their isolated speeds as the pre-code arithmetic assumed. | **REVERT — Pillar 5's table, applied to the letter.** Gain (1.64×) is below the half-point (1.75×), which the table's third-from-last row governs with no graduated option: "the complexity is not paid for." See the note below for the full decision and what it means for the rest of the arc. |
 | M5 | — (adversarial evidence) | — | — |
 | M6 | — (checkpoint) | — | — |
 | M7 | — (documentation) | — | — |
@@ -1761,6 +1761,85 @@ rest of this arc: **commit a script rewrite before running any
 injection test against it**, so `git checkout --` reverts only the
 injection, never uncommitted milestone work. M4 onward follows this
 order.
+
+**M4 note — the decision, in full, and what it means for the rest of
+the arc.** Lever 2 was implemented exactly as designed: `set -m`,
+`run_target_stream()` wrapping M3's already-verified `run_combination`
+with no changes to its own logic, one background job per target, an
+explicit per-PID `wait` loop feeding `stream_failure`, and a
+program-major sorted `ALL_SLOTS` computed in the parent before any
+stream launches (FM3). Correctness was verified directly, not assumed:
+a 2-target smoke test showed genuine concurrent execution (37.2s wall
+against user time of 71.7s -- the two streams overlapped, they did not
+serialize), and two full 5-target runs both reproduced M1's exact
+`[PASS]`/`[FAIL]` set via the same sorted-diff check used at every
+prior boundary. The mechanism works.
+
+What it does not do, on this specific machine, is clear the
+pre-registered bar. Measured at two reps (613.3s cold-cache, 593.5s
+warm-cache -- the two agree within 3%, so this is not a noisy single
+reading), M4 delivers **1.64× against M3's 987.5s baseline**, against
+a **≥2.5× threshold with a 1.75× half-point**. Both reps land 5-9%
+above the half-point line, not near it. Pillar 1 requires a measurement
+behind any root cause offered for a miss, and one exists here: rust's
+own isolated stream (M2's own measurement) took 380.89s; under M4's
+five concurrent streams it appears to cost close to 600s, since rust
+is by far the longest stream and the whole run's wall time closely
+tracks it. That is a **~1.58× slowdown of the critical path itself
+under contention** -- five CPU-hungry streams (cargo's own parallel
+compilation among them) competing for **4 physical cores** on this
+sandbox. The pre-code arithmetic's `max(stream)` model assumed streams
+run at their isolated speed once parallelized; on hardware where the
+stream count exceeds the core count, they do not, and the erosion is
+large enough here to move the whole milestone across the half-point
+line by itself.
+
+**Pillar 5's table is followed to the letter, because that is the
+entire reason it was pre-registered before this milestone's code
+existed.** "Gain < ½ the pre-registered threshold" has exactly one
+row and no graduated reading: "Revert. The complexity is not paid
+for." Measuring 1.64× against a 1.75× line is not ambiguous enough to
+argue around, and this document exists specifically so that a
+disappointing number does not get quietly reinterpreted in the
+moment it is produced. **`scripts/sim-corpus-x5.sh` is reverted to its
+M3 state** (`git checkout -- scripts/sim-corpus-x5.sh` against the
+M3 commit) immediately following this entry.
+
+This is not a failure of the arc -- it is the arc's own instrument
+working as designed, and it has a direct precedent: `30UpdatePlan.md`
+M5 stopped an arc early on exactly these grounds and Pillar 7 names
+that outcome explicitly as "(c) Stop and ship what exists... recorded
+as a legitimate success." That is the outcome taken here, decided at
+M4's own boundary rather than deferred to M6, because Pillar 5's table
+already renders the verdict unambiguously and there is no benefit to
+waiting for a checkpoint to restate a decision the pre-registered rule
+has already made. **What ships from this arc: M2's lever 1** (shared
+cargo target dir), verified at 3.07× steady-state with byte-identical
+results, delivering a real, low-risk, low-complexity ~1.32×
+whole-run improvement (M1's 1305.4s baseline → M3's 987.5s, which is
+M2's lever 1 plus M3's file-based tally rewrite, itself a pure
+correctness improvement with no included performance claim). **What
+does not ship: lever 2** (target-axis parallelism), for a reason now
+measured and on record rather than merely suspected: this sandbox's 4
+physical cores are the binding constraint, not the design.
+
+**What this changes downstream.** M5's own text ties three of its five
+adversarial checks directly to concurrency existing ("no meaning
+against a serial script") and its process-group cleanup (FM4) defends
+specifically against orphaned children of *backgrounded* jobs -- with
+M4 reverted, that milestone's scope collapses to whichever of its
+items still apply to a serial script (FM5's pre-flight disk check has
+independent value and is picked up at M6 as a small addition, not
+scoped to a separate milestone for a single check). M6 proceeds as the
+checkpoint it always was, now confirming the state after a Pillar 5
+revert rather than after a full M5 hardening pass -- Pillar 7's outcome
+(c) is what M6 records, not a fresh decision. M7's documentation and
+M8's close-out both describe the arc as shipped: lever 1 landed, lever
+2 was implemented, measured, and reverted with its numbers preserved
+for the next arc to reconsider on hardware where the core count no
+longer binds -- exactly the kind of "measured, un-taken opportunity"
+this document's own "Confidence and handoff" section already
+anticipated needing to record.
 
 **Arc-level target, for the cumulative row at M6 and M8 (pre-code
 estimate — superseded by M1's measured figure above, kept here for its

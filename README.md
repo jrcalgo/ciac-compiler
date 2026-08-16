@@ -1,19 +1,16 @@
 # CIaC — Code-Infrastructure-as-Code Compiler
 
-One `.ciac` source file. Five production-quality backends — Python,
-Rust, TypeScript, Go, Java — generated at parity, each idiomatic in
-its own ecosystem, byte-identical on every rebuild. The same file
-runs as a deterministic simulation of the *whole system*, failures
-and all, with no database, broker, or Docker. `ciac build` emits a
-real deploy: compose today, Kubernetes or Terraform or CI on request.
-The compiler owns the wiring; your business logic lives in generated
-stubs that are yours to edit and never overwritten.
+CIaC is a system-level intermediate language that both humans and
+coding agents can operate on.
 
-Code-Infrastructure-as-Code (CIaC) compiler is not a scaffolding template you fork and diverge from, and not
-a runtime you deploy — it's a compiler you keep running against a
-source file for the system's whole life. If that tradeoff isn't one
-you want, or your architecture doesn't fit a typed graph of
-services/APIs/pipelines/streams, it's the wrong tool for you.
+Define an entire typed service system in one `.ciac` source file. CIaC
+can compile it to Python, Rust, TypeScript, Go, or Java, generate the
+infrastructure wiring, and deterministically simulate the whole system
+before you deploy anything in production.
+
+CIaC is a compiler, not a framework, scaffolding template or runtime.
+Your source file(s) describe the architecture; generated stubs contain
+the application logic and remain yours to edit even during re-compilation.
 
 ## Fifteen minutes, start to finish
 
